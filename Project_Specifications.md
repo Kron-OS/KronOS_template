@@ -122,3 +122,4 @@ Define the Roles in Keycloak that match our application roles: org-admin, case-l
 
 Model the Team/Org membership. There are a couple of ways:
 - We could use a separate realm per organization, but that gets complex to manage. Instead, we’ll use a single realm and use Groups to represent organizations/teams. For example, create a Group for each team (Team A, Team B). Users can be placed into a group corresponding to their org. We can also map a group membership into the token as a claim (so our app knows which org the user is in). Keycloak can include group membership in the JWT token. We might also encode the org in the username or a custom attribute.
+ 
