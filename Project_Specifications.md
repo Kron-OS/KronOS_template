@@ -108,7 +108,7 @@ We will document everything as part of an “Information Security Management” 
 
 Tamper Resistance: We might implement additional protections like checksums or digital signatures on evidence and logs.
 
-6. Identity, Authorization, and Single Sign-On (SSO)
+## 6. Identity, Authorization, and Single Sign-On (SSO)
 
 We have chosen Keycloak (an open-source Identity and Access Management solution) as the central authentication and authorization server. Keycloak will handle user identities, authentication (login), and issuing tokens that our services (API, OpenSearch) will trust. This provides a unified SSO experience and robust security features out-of-the-box.
 
@@ -121,5 +121,44 @@ Within the realm, define Clients for our applications:
 Define the Roles in Keycloak that match our application roles: org-admin, case-lead, analyst, read-only.
 
 Model the Team/Org membership. There are a couple of ways:
-- We could use a separate realm per organization, but that gets complex to manage. Instead, we’ll use a single realm and use Groups to represent organizations/teams. For example, create a Group for each team (Team A, Team B). Users can be placed into a group corresponding to their org. We can also map a group membership into the token as a claim (so our app knows which org the user is in). Keycloak can include group membership in the JWT token. We might also encode the org in the username or a custom attribute.
- 
+- Use a separate realm per organization, but that gets complex to manage. Instead, we’ll use a single realm and use Groups to represent organizations/teams. For example, create a Group for each team (Team A, Team B). Users can be placed into a group corresponding to their org. We can also map a group membership into the token as a claim (so our app knows which org the user is in). Keycloak can include group membership in the JWT token. We might also encode the org in the username or a custom attribute.
+- Use Keycloak’s multi-tenant support via Realms: but managing multiple realms (one per tenant) would mean replicating client configuration for each, and dealing with identity across realms beacause Keycloak doesn’t share identities across realms
+
+Configure token settings: 
+- We will set the access token lifespan to a suitable length. By default Keycloak uses short time tockens but since the users are expected to stay connected for a long time we will extend it to 12h or a day.
+- Another possibility is to rely on refresh tokens and an SSO session lifespan. Keycloak can keep the user logged, even if tokens expire sooner, it will refresh them. We’ll set “SSO Session Max” to 24 hours. 
+- We will enable “Refresh Token” rotation for security, so each refresh invalidates the old token.
+
+SSO User Login Flow: 
+- When a user accesses our web application, if not already authenticated, they will be redirected to Keycloak’s login page;
+- The user enters credentials;
+- Upon successful login, Keycloak will issue an ID Token and Access Token (JWT) for the client.
+
+JWT Tokens: 
+- The Access Token JWT is the crucial piece, it will contain the user’s identity and roles. 
+- We will configure a Role Mapper in Keycloak to ensure the roles are in the token.
+- The token will contains essentials information about the client (org, team, role)
+
+API Authorization with JWT: 
+- Our backend API will use the JWT access token for auth on each request (the frontend will include it in Authorization: Bearer <token> header); 
+- The API needs to verify and decode the JWT;
+- We will fetch Keycloak’s public key or certificate to verify the token’s signature (Keycloak exposes the public keys).
+- We can cache this key. 
+- Using a library like python-jose or PyJWT with the RS256 public key, we validate that the token is valid.
+
+- On each API request, we will check the actions: e.g., if a user tries to access a case that is not their org, we deny. If an Analyst tries to call an admin-only API, we deny. This check is straightforward since we have the roles list from the JWT. By doing this in the API, we ensure even if someone got an access token, they can only do what their token’s roles allow (and tokens can’t be modified by the user due to the signature).
+
+Integration with OpenSearch Security Plugin: 
+- One powerful aspect is that OpenSearch can also directly trust JWTs (Keycloak-issued) for auth. We will configure OpenSearch’s securityconfig to use JWT/OpenID auth. 
+- In opensearch-security/config.yml, define an authentication domain of type openid. 
+- The steps to make opensearch use keycloak auth system have to be defined
+- In OpenSearch Dashboards config , we’ll configure the OpenID settings to point to Keycloak. Dashboards will redirect users to Keycloak, just like our app does. After login, Keycloak redirects back to Dashboards with a JWT, and Dashboards will pass that to OpenSearch cluster on requests. We will ensure the roles_key in config is set to “roles” so that the roles from the token are mapped.
+
+Role Mapping in OpenSearch: 
+- We will map the Keycloak roles to OpenSearch permissions. For example, create OpenSearch roles: org-admin-role, analyst-role, etc., with specific index permissions. We can then map JWT claims to these.
+- We might use a one-to-one naming to keep it simple. This way, when an Analyst uses Dashboards, their token’s “analyst” role will map to a role that perhaps allows read-only search on indices. We might give case-lead a role that allows managing index patterns or writing annotations. Org-admin might have a role to view all indices in that org (though if indices are per case and prefixed, we might incorporate org identifier into the index name and use wildcards in permissions).
+- see cht42/opensearch-keycloak
+
+
+Logging and Audit (Keycloak): 
+- Keycloak can log all logins and events. We will enable logging of events like login success, failure, logout, admin changes. 
