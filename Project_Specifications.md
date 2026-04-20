@@ -1,38 +1,69 @@
 # Project Architecture and Implementation Plan
+
+> **Review log**
+> - 2026-04-20 — Part 1 reviewed (see `reviews/Part_1_Review.md`, issues #1 / #7).
+>   Key decisions fed back into §1 below: adopt Keycloak 26 **Organizations** rather than Groups-only; commit to an explicit permission matrix; fix the OpenSearch `roles_key` Keycloak-mapper pitfall; plan index rollover to avoid shard explosion.
+
 ## 1. Users, Teams, and Access Control
 
-Multi-Tenancy and Roles: 
-- The system will be multi-tenant, allowing data segregation by team/organization. 
-- Each user belongs to a team, and their access is restricted to that team’s cases and data. 
-- We will implement Role-Based Access Control (RBAC), meaning user roles are scoped to their organization. 
+> Status: **reviewed 2026-04-20.** Narrative below has been updated; detailed design, permission matrix, and milestones live in `reviews/Part_1_Review.md`.
+
+Multi-Tenancy and Roles:
+- The system will be multi-tenant, allowing data segregation by team/organization.
+- Each user belongs to a team, and their access is restricted to that team’s cases and data.
+- We will implement Role-Based Access Control (RBAC), meaning user roles are scoped to their organization.
 - For example, a user could be an Analyst in one team but have no access to another team’s data – the permissions are isolated per tenant. This avoids any cross-tenant data leakage by ensuring each organization’s environment is isolated.
 
 Defined User Roles: We will define roles to mirror typical usage scenarios:
 - Org Admin: Can manage the organization (invite users, etc.) and access all cases and files in their org.
 - Case Lead: Owner/manager of one or more cases. They can see all files and results for cases they lead.
 - Analyst: Can view and work on cases they are assigned to.
-- Read-Only: Can view cases/data (if permitted) but cannot make changes. For external user or autidor.
+- Read-Only: Can view cases/data (if permitted) but cannot make changes. For external user or auditor.
 
-These roles will be implemented in the IdProvider (Keycloak) and enforced in the application. A multi-tenant RBAC model will let us assign roles per tenant instead of globally. In our current plan, a user will likely belong to only one org.
+These roles will be implemented in the IdProvider (Keycloak) and enforced in the application. A multi-tenant RBAC model will let us assign roles per tenant instead of globally. In our current plan, a user will likely belong to only one org (migration path for multi-org users is tracked in the Part 1 review, §5.2).
 
-Data Isolation: 
-- All data objects (cases, evidence, events) will carry a Tenant/Org ID attribute. The backend will always check this against the authenticated user’s org. 
-- This guarantees that even if a request is made for an object from another org, it will be denied. 
-- On the OpenSearch side, we will consider using separate indices per tenant or per case for stronger isolation. 
-- OpenSearch’s security plugin can map roles to index permissions, so we could have index naming like org1-case-* that only Org1’s roles can read. Keycloak roles will map to OpenSearch roles of the same name, as suggested by community guides.
+Tenant model (**decision 2026-04-20**):
+- Use a **single Keycloak realm** and adopt the first-class **Organizations** feature (Keycloak ≥ 26) instead of modelling tenants only through Groups.
+- The `organization` client scope is requested on every login, so each access token carries an `organization` claim (id + alias) that acts as the authoritative `org_id` throughout the platform.
+- Groups remain available for secondary grouping inside an org, but they are not the tenancy boundary.
+- Realm-per-tenant is rejected for v1 because of Keycloak's documented performance degradation beyond ~100 realms and the duplicated client/flow/theme configuration.
 
-Team Management: 
-- Initially, each user will be tied to one team (we won’t support multi-org users at first). 
-- We will provide an interface for an Org Admin to create a team (organization) and invite or add users to it. 
-- This might be done through Keycloak’s admin console or via our app using Keycloak’s API. Once a user is part of a team, all cases they create or access will be tagged with that team.
+Data Isolation:
+- All data objects (cases, evidence, events) will carry a Tenant/Org ID attribute. The backend will always check this against the authenticated user’s org, via a guard middleware that also prepares future Postgres Row-Level Security.
+- This guarantees that even if a request is made for an object from another org, it will be denied.
+- OpenSearch indices follow the naming convention `kronos-{org_alias}-case-{case_id}-{yyyymm}` fronted by a per-case alias and an ISM rollover policy (size 30 GB / 30 days) to keep shard count bounded (≤ 1 000 shards per 16 GB of heap, per OpenSearch guidance).
+- OpenSearch roles (`kronos_org_admin`, `kronos_case_lead`, `kronos_analyst`, `kronos_read_only`) are defined in `roles.yml` and mapped from the JWT using both the flat `roles` claim **and** the `organization.alias` claim, with Document-Level Security on `tenant_id` as defence in depth.
 
-SSO Integration for Multi-Tenancy: 
-- By leveraging Keycloak, users will authenticate through a single login page, and upon success the issued token will include their team/org membership (for example, as a realm attribute or a group claim) and roles. 
-- Our application will decode the token to get user identity, org, and roles on each request. We’ll ensure the token’s org claim matches the resource’s org ID for every operation.
+Team Management:
+- Initially, each user will be tied to one team (we won’t support multi-org users at first).
+- We will provide an interface for an Org Admin to create a team (organization) and invite or add users to it.
+- This is done through our backend, which calls Keycloak’s Admin REST API using a service account scoped via **Admin Fine Grained Permissions** to exactly the Organization(s) the caller administers — the backend is never granted realm-wide admin.
+- Once a user is part of a team, all cases they create or access will be tagged with that team.
 
-Org Administration: 
-- We will create a special section in the UI for Org Admins where they can manage users. 
-- This likely involves calling our backend which in turn uses Keycloak’s REST API or admin client to create users and assign roles. We plan to use Keycloak’s capabilities as much as possible, so our app becomes mostly an intermediary to apply our business logic (like ensuring the user’s org ID is set correctly).
+SSO Integration for Multi-Tenancy:
+- By leveraging Keycloak, users authenticate through a single login page, and upon success the issued token includes their organization membership (via the standard `organization` scope) and roles.
+- A custom client scope `kronos-roles` contains a **Realm-Role mapper with "Multivalued" enabled** that flattens roles to a top-level `roles` claim. This is mandatory because OpenSearch Security's `roles_key` does not walk the default nested `realm_access.roles` path.
+- Access-token lifespan is tuned to **15 min**, with refresh-token rotation and reuse detection; SSO session max stays at 24 h. (Previous proposal of 12–24 h access tokens is abandoned for security reasons.)
+
+Org Administration:
+- We will create a special section in the UI for Org Admins where they can manage users.
+- The backend applies the permission matrix below before calling Keycloak.
+
+Authoritative permission matrix (v1):
+
+| Verb / Resource          | org-admin | case-lead (of case) | analyst (member) | read-only (member) |
+| ------------------------ | :-------: | :-----------------: | :--------------: | :----------------: |
+| Create case              |     ✔     |          ✔          |         ✘        |          ✘         |
+| Assign members           |     ✔     |          ✔          |         ✘        |          ✘         |
+| Upload evidence          |     ✔     |          ✔          |         ✔        |          ✘         |
+| Read evidence metadata   |     ✔     |          ✔          |         ✔        |          ✔         |
+| Download original file   |     ✔     |          ✔          |     ✔ (logged)   |      ✘ (v1)        |
+| Search timeline (OS)     |     ✔     |          ✔          |         ✔        |          ✔         |
+| Delete case/evidence     |     ✔     |          ✔          |         ✘        |          ✘         |
+| Manage org users         |     ✔     |          ✘          |         ✘        |          ✘         |
+| View audit log           |     ✔     |        ✔ (own)      |         ✘        |          ✘         |
+
+Open questions (must be resolved before starting §1 implementation): see `reviews/Part_1_Review.md` §6.
 
 By structuring users by organization and role, we satisfy the need to keep data accessible only to the right people. In summary, multi-tenant RBAC will be at the core of access control, with each tenant’s data siloed and roles defined per tenant to limit permissions appropriately.
 
