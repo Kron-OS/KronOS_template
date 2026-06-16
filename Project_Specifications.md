@@ -9,6 +9,8 @@
 >   Key decisions fed back into §3 below: ECS-based timeline schema with a `kronos.*` provenance block (case/evidence/sha256); **intermediate ingester** between Plaso and OpenSearch instead of `psort -o opensearch` direct write; per-artefact parser slots (`evtx-rs` fast path, Plaso sandbox container, custom text-log parsers); explicit Celery DAG with deterministic OpenSearch `_id`s; line-aware splitter for text logs only — binary forensic formats are parsed whole; UTC + DST-fold handling; SRUM and other heavy parsers isolated on a memory-capped queue.
 > - 2026-06-16 — Part 4 reviewed (see `reviews/Part_4_Review.md`, issues #4 / #15).
 >   Key decisions fed back into §4 below: SPA = React 19 + Vite + TanStack Router + Keycloak-js (PKCE); resumable upload via **Uppy** (S3-multipart primary, tus.io fallback) with client-side magic-byte pre-check; OS Dashboards embedded in iframe with mandatory CSP `frame-ancestors` and SSO via the existing Keycloak realm; **one OS Dashboards tenant per org** (not per case) — per-case scoping via locked URL filter on `kronos.case_id`; real-time status via **SSE** authenticated by a short-lived one-shot ticket, polling fallback after 10 s; explicit status-pill mapping per §2 FSM; explicit error catalogue keyed on `evidence.error_reason`; v1 collaboration = independent analysis only (CRDT/shared annotations deferred to v2); Harfanglab-style custom graph view deferred to v2.
+> - 2026-06-16 — Part 5 reviewed (see `reviews/Part_5_Review.md`, issues #5 / #17).
+>   Key decisions fed back into §5 below: explicit four-zone trust boundary (DMZ / App / Data / Observability) with mTLS on every internal hop; internal CA via **`step-ca`** (or Vault PKI) issuing 24 h workload certs, TLS 1.3 only, no self-signed in v1; MinIO **SSE-KMS** via **KES** backed by **HashiCorp Vault / OpenBao** mandatory from bucket creation (at-rest encryption is no longer deferred); parser sandboxing split — **gVisor** for the fast Celery slot, **Firecracker microVM** for the Plaso slot, both with `network=none`; **tamper-evident audit log** = per-row hash chain + daily Merkle root anchored by the §2 RFC 3161 TSA + standalone `kronos-attest verify` CLI; SIEM = **Wazuh** on the existing OpenSearch cluster (separate `wazuh-alerts-*` indices) with a write-once cold archive bucket, pinned ≥ Wazuh 5.1; **Falco** DaemonSet for runtime detection; hardened **Chainguard / Wolfi** base images with Trivy CI gate and Cosign-signed SBOMs; ISO 27001 mapping migrated to the **2022 revision** with **A.5.28 Collection of Evidence** as the cornerstone control; MinIO active-active replication + erasure coding + Vault snapshots for BC/DR (RPO 5 min / RTO 15 min); explicit incident-response runbook aligned with NIST SP 800-86.
 
 ## 1. Users, Teams, and Access Control
 
@@ -319,49 +321,108 @@ Open questions (must be resolved before starting §4 implementation): see `revie
 
 ## 5. Security and Compliance
 
-Security is paramount given the sensitive nature of digital evidence. We will implement several measures in line with ISO 27001 controls and general best practices:
+> Status: **reviewed 2026-06-16.** Narrative below has been updated; trust-boundary diagram, ISO 27001:2022 control matrix, parser sandbox decision, tamper-evidence verifier design, and milestones live in `reviews/Part_5_Review.md`.
 
+Trust-boundary model (**decision 2026-06-16**):
+- Four zones: **DMZ** (NGINX edge, browser-facing TLS 1.3), **App** (backend API, Keycloak, Celery brokers/workers), **Data** (Postgres, MinIO, OpenSearch, Sigstore RFC 3161 TSA, Vault/KES), **Observability** (Wazuh server/dashboard, Falco aggregator, cold SIEM archive bucket).
+- Data zone is unreachable from anything other than the App zone. Observability zone reads from App and Data over a dedicated read-only audit identity.
+- Every internal hop is mTLS-authenticated; SPIFFE-style service identities (`spiffe://kronos.example/<service>`) are issued by the internal CA and verified on both ends.
 
-Data Residency and Retention: 
-- All user data (uploaded evidence) resides on the designated on-premises server/storage. We will enforce the retention period as mentioned: by default, 365 days.
+Data residency and retention:
+- All evidence stays on the designated on-prem MinIO cluster. Default retention 365 days (configurable per case, capped by org policy — see §2).
 
-Transport Security (TLS 1.3): All network communication in the system will be secured with encryption. This includes:
- - The web app and API will be served over HTTPS with TLS 1.3 only, using strong cipher suites. We’ll obtain or generate certificates (for on-prem, likely a self-signed or enterprise CA certificate initially; we can also integrate Let’s Encrypt if the server is internet-accessible for convenience).
- - Internal components like OpenSearch and Keycloak will also communicate over TLS where applicable. OpenSearch nodes will have certificates for inter-node encryption and for the client (Dashboards) to node encryption. Keycloak can be run with HTTPS enabled.
+Transport security (**decision 2026-06-16**):
+- **TLS 1.3 only**, every hop, internal and external. No TLS 1.2 fallback.
+- **Internal CA:** `step-ca` deployed HA (or Vault PKI if Vault is already in for SSE-KMS — final choice is an open question, see review §6). Workload certificates are **24 h max** and auto-renewed via ACME (`cert-manager` `ClusterIssuer` on Kubernetes, `step` agent otherwise). "Self-signed initially" is rejected because it trains operators to ignore TLS errors.
+- Edge (browser-facing) TLS uses Let's Encrypt or the org's commercial CA; the internal CA stays internal.
 
+At-rest encryption (**decision 2026-06-16**):
+- **MinIO SSE-KMS** is mandatory and is set at **bucket creation time** (the configuration cannot be retro-fitted without copying every object out and back in).
+- **KES** sidecar runs alongside MinIO and talks to **HashiCorp Vault** or **OpenBao** (open-source MPL fork; pick is an open question) via the Transit engine. Master keys never leave Vault.
+- Combined with §2 Object Lock Compliance + Legal Hold, this gives encrypted WORM storage. A stolen disk reveals nothing; a compromised MinIO root account still cannot delete locked objects nor decrypt them without Vault unsealed.
+- **Auto-unseal is rejected for v1** because it shifts custody of the unseal key to a cloud KMS, defeating the audit story. Unseal uses 3-of-5 offline key shares.
 
-Input Validation and File Type Restrictions: 
-- As mentioned, we will block certain file types from being uploaded. Executable files (.exe, .dll, scripts, etc.) will be rejected. 
-- Additionally, all files will be treated as untrusted, even if they are of allowed type. We won’t execute them except through our parsers.
-- We may also run a quick antivirus scan on uploaded files as a precaution, especially if users might inadvertently upload infected files.
+Input validation and file-type restrictions:
+- Enforced by §2 (libmagic + per-artefact magic-byte table + executable blocklist). §5 owns nothing additional here — listed for completeness.
 
-Sandboxed Parsing: 
-- To enhance security when data parsing, we could use a sandbox like gVisor.
-- We must make performance tests to ckeck if it is light or very time consuming. 
+Antivirus scan:
+- ClamAV post-store / pre-promotion scan per §2 decision. §5 owns the alert path (ClamAV signal → Wazuh rule pack).
 
+Parser sandboxing (**decision 2026-06-16**):
+- **Two-slot model**:
 
-Logging and Monitoring:
-- All security-relevant events will be logged. This includes login attempts on the web app, any permission denials, uploads and downloads of evidence, and system errors.
-- If someone tries to access a case they shouldn’t, we will log the denied request and the username/IP. We will review these logs periodically or integrate with a SIEM.
+  | Celery queue          | Sandbox             | RAM cap | Network | Used for                                            |
+  | --------------------- | ------------------- | ------- | ------- | --------------------------------------------------- |
+  | `q.parse.fast`        | gVisor (`runsc`)    | 1 GB    | none    | evtx-rs, text-log parsers — startup matters         |
+  | `q.parse.plaso`       | Firecracker microVM | 2 GB    | none    | Plaso (REGF/SRUM/EVTX/SQLite C parsers)             |
+  | `q.parse.plaso.heavy` | Firecracker microVM | 4 GB    | none    | SRUM / Amcache only                                 |
 
-Access Control:
-- Within the application, we enforce least privilege.
+- Read-only Wolfi rootfs + writable tmpfs scratch; MinIO access via one-shot presigned URL injected at boot; **no outbound network device** in either sandbox. Sandbox escape attempts are caught by Falco rules on the host kernel.
 
-Secure Configuration: We will follow best practices for securing each component:
- - Keycloak: use secure passwords for admin, turn off any unnecessary open registration or public endpoints, set token lifespans appropriately. We’ll also configure Keycloak to require strong passwords for user accounts.
- - OpenSearch: enable its security plugin, disable demo accounts, use HTTPS for client and node communication, and keep it on a private network or localhost-only for access.
- - API: implement rate limiting to mitigate brute force or DoS, and use input validation on all API parameters. We will also ensure serialization is handled safely.
+Tamper resistance and audit-log integrity (**decision 2026-06-16**):
+- Per-row hash chain on `audit_log` (`row_hash = sha256(prev_row_hash || canonical_json(row))`) — silent row deletion becomes detectable.
+- Daily Merkle root of all `audit_log` rows is anchored by the same Sigstore RFC 3161 TSA used for evidence timestamping (§2). Stored in a new `audit_anchor(date, root_hash, tsa_token)` table.
+- Standalone **`kronos-attest verify` CLI** is the third-party-runnable verifier: `--day` rechecks the audit chain + Merkle root + TSA token; `--case` re-reads every evidence object from MinIO, recomputes SHA-256 against `evidence.sha256`, re-verifies the per-evidence RFC 3161 token. Read-only access only — no write paths.
 
-We will document everything as part of an “Information Security Management” approach:
- - A.8.2 (Information Classification): Case data is clearly sensitive, we treat all evidence as confidential. Only authorized team members access it.
- - A.9 (Access Control): As described, strong authentication via Keycloak and role-based access ensures only the right people access the right data.
- - A.10 (Cryptography): TLS for data in transit, in the future we will consider encrypting files on rest and implementing a key manager.
- - A.12.3 (Backup): We should consider backups of the data within retention period.
- - A.12.4 (Logging): We have extensive logging of actions, stored securely (not modifiable by normal users).
- - A.14 (System acquisition, development, maintenance): As developers, we’ll follow secure coding practices. The user specifically is asking for this plan, which shows security is built-in from design (secure by design).
- - A.13 (Communications security): Covered with TLS and network segregation.
+Logging, monitoring and SIEM (**decision 2026-06-16**):
+- **Wazuh** is the SIEM. Wazuh Indexer is a logical layer on the existing OpenSearch cluster (separate index prefix `wazuh-alerts-*`, separate role, dedicated DLS).
+- Wazuh agents on every host forward FIM, syscall, and auth events. Keycloak event plugin, MinIO bucket access logs, OpenSearch Security audit log, backend application audit events, and Falco runtime alerts all converge in the same cluster.
+- Custom Kron-OS rule pack: RBAC-denial bursts, `evidence.delete` by non-admin, Object Lock override attempts, Vault seal/unseal events out of hours, shell-in-container in any parser sandbox.
+- **Cold SIEM archive:** every Wazuh alert is mirrored to a write-once MinIO bucket (`kronos-siem-archive`, Object Lock 7 y) so a compromised SIEM cannot rewrite history.
+- Pin **Wazuh ≥ 5.1** (the 5.0 silent-data-destruction CVE is patched in 5.1; tracked in the runbook).
 
-Tamper Resistance: We might implement additional protections like checksums or digital signatures on evidence and logs.
+Runtime threat detection (**decision 2026-06-16**):
+- **Falco** DaemonSet (or sidecar on non-K8s deployments), eBPF CO-RE probe, kernel ≥ 5.8. Default rules + Kron-OS overlay. Alerts → fluent-bit → `falco-alerts-*` → Wazuh.
+
+Vulnerability management (**decision 2026-06-16**):
+- **Chainguard Wolfi** base images for every Kron-OS container. Daily upstream rebuild track.
+- CI gate: `trivy image --severity HIGH,CRITICAL --exit-code 1` on every PR. SBOM (SPDX) published as an OCI artefact next to the image; Cosign signature with a Vault-Transit-resident key (Sigstore-compatible).
+- Nightly `trivy fs` against running images, results indexed and SIEM-alerted.
+- Patch SLA: CRITICAL = 24 h, HIGH = 7 d, MEDIUM = 30 d.
+
+Secrets management (**decision 2026-06-16**):
+- **Vault / OpenBao** is the system-of-record for: KES master keys, MinIO root creds, Postgres dynamic creds, OpenSearch admin certs, Keycloak admin client secrets, TSA signing key, Cosign signing key.
+- No secrets in env vars, ConfigMaps, or git. Service identity via AppRole or Kubernetes-auth; Postgres dynamic creds where supported. Vault audit log shipped into Wazuh.
+
+Backup and disaster recovery (**decision 2026-06-16**):
+- MinIO **active-active replication** between the primary on-prem cluster and a warm-standby cluster (mesh topology; per-bucket replication; versioning + Object Lock required). RPO ≈ minutes (async replication lag), **RPO target 5 min / RTO target 15 min**.
+- Intra-cluster **Reed-Solomon erasure coding** (default 10+4) for drive-failure tolerance; MinIO "rewind" for point-in-time recovery.
+- Postgres WAL ship to a dedicated encrypted backup bucket (separate SSE key from evidence); 7-day PITR.
+- Vault integrated-storage snapshots every 6 h to the same encrypted backup bucket; unseal-key shares stored offline.
+- OpenSearch snapshot repository on MinIO; daily; quarterly restore test.
+- DR drill: full failover tested twice a year.
+
+Rate-limiting and API hardening:
+- NGINX edge enforces per-IP and per-`sub`-claim `limit_req`; request-body cap (per §2, the `POST /evidence` payload is metadata-only after the presigned-URL refactor).
+- Backend: Keycloak brute-force protection on the IDP side; backend's own per-user soft cap on evidence creation.
+- Security headers at the edge: HSTS (`max-age=63072000; includeSubDomains; preload`), CSP (`frame-ancestors 'self' https://app.kronos.example`, see §4), `Referrer-Policy: strict-origin-when-cross-origin`, `X-Content-Type-Options: nosniff`.
+
+ISO 27001:2022 alignment (**decision 2026-06-16** — migrated from the 2013 numbering):
+
+| Control (2022) | Title                                       | Kron-OS evidence                                                                                |
+| -------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| A.5.15         | Access control                              | §1 RBAC matrix; Keycloak Organizations; OpenSearch DLS.                                         |
+| A.5.17         | Authentication information                  | Keycloak PKCE + refresh-rotation; 15-min access tokens.                                         |
+| A.5.24/.25/.26 | Incident management / assessment / response | Wazuh detection + NIST SP 800-86 runbook (collect / examine / analyse / report).                 |
+| **A.5.28**     | **Collection of evidence**                  | The product itself — §2 FSM + RFC 3161 + Merkle root + `kronos-attest verify`.                  |
+| A.5.30         | ICT readiness for business continuity       | MinIO active-active + Vault HA + OpenSearch snapshots; RPO 5 / RTO 15.                          |
+| A.5.33         | Protection of records                       | Object Lock Compliance + Legal Hold + SSE-KMS.                                                  |
+| A.8.5          | Secure authentication                       | Keycloak + mandatory MFA for org-admin.                                                         |
+| A.8.7          | Protection against malware                  | ClamAV (§2) + Falco runtime + Trivy CI.                                                         |
+| A.8.13         | Information backup                          | §5 backup-and-DR section.                                                                       |
+| A.8.15         | Logging                                     | `audit_log` (§1) + Wazuh + daily Merkle anchor.                                                 |
+| A.8.16         | Monitoring activities                       | Wazuh, Falco, OS Security audit log.                                                            |
+| A.8.20         | Network security                            | Four-zone trust-boundary diagram + mTLS + egress allowlist.                                     |
+| A.8.24         | Use of cryptography                         | TLS 1.3 + SSE-KMS + RFC 3161 + Cosign.                                                          |
+| A.8.25/.28     | Secure SDLC / coding                        | Trivy + Cosign + SBOM + Semgrep + CodeQL in CI.                                                 |
+
+The full control matrix (incl. A.8.2/.6/.9/.10/.23) and per-control owner are in `reviews/Part_5_Review.md` §5.7.
+
+Incident response (**decision 2026-06-16**):
+- Aligned with NIST SP 800-86 / ISO/IEC 27037: **collect → examine → analyse → report**.
+- Kron-OS dogfoods itself: an internal forensic case is opened in the product for every incident; raw logs are uploaded as evidence; `kronos-attest verify` produces the chain-of-custody attestation appended to the post-incident report.
+
+Open questions (must be resolved before starting §5 implementation): see `reviews/Part_5_Review.md` §6.
 
 ## 6. Identity, Authorization, and Single Sign-On (SSO)
 
