@@ -7,6 +7,8 @@
 >   Key decisions fed back into §2 below: presigned S3 multipart upload (tus.io fallback); MinIO **Object Lock Compliance** mode + Legal Hold for true WORM; whole-file SHA-256 verified server-side; libmagic allowlist with a per-artefact magic-byte table; ClamAV post-store quarantine scan; explicit evidence FSM; RFC 3161 timestamping; chain-of-custody reuses §1 `audit_log`.
 > - 2026-06-16 — Part 3 reviewed (see `reviews/Part_3_Review.md`, issues #3 / #13).
 >   Key decisions fed back into §3 below: ECS-based timeline schema with a `kronos.*` provenance block (case/evidence/sha256); **intermediate ingester** between Plaso and OpenSearch instead of `psort -o opensearch` direct write; per-artefact parser slots (`evtx-rs` fast path, Plaso sandbox container, custom text-log parsers); explicit Celery DAG with deterministic OpenSearch `_id`s; line-aware splitter for text logs only — binary forensic formats are parsed whole; UTC + DST-fold handling; SRUM and other heavy parsers isolated on a memory-capped queue.
+> - 2026-06-16 — Part 4 reviewed (see `reviews/Part_4_Review.md`, issues #4 / #15).
+>   Key decisions fed back into §4 below: SPA = React 19 + Vite + TanStack Router + Keycloak-js (PKCE); resumable upload via **Uppy** (S3-multipart primary, tus.io fallback) with client-side magic-byte pre-check; OS Dashboards embedded in iframe with mandatory CSP `frame-ancestors` and SSO via the existing Keycloak realm; **one OS Dashboards tenant per org** (not per case) — per-case scoping via locked URL filter on `kronos.case_id`; real-time status via **SSE** authenticated by a short-lived one-shot ticket, polling fallback after 10 s; explicit status-pill mapping per §2 FSM; explicit error catalogue keyed on `evidence.error_reason`; v1 collaboration = independent analysis only (CRDT/shared annotations deferred to v2); Harfanglab-style custom graph view deferred to v2.
 
 ## 1. Users, Teams, and Access Control
 
@@ -211,35 +213,108 @@ Open questions (must be resolved before starting §3 implementation): see `revie
 
 ## 4. Workflows and User Experience
 
+> Status: **reviewed 2026-06-16.** Narrative below has been updated; detailed design, route map, component contracts, error catalogue and milestones live in `reviews/Part_4_Review.md`.
 
-Case Lifecycle: 
-- The user experience is built around cases. A Case represents an investigation to which evidence files are attached. 
-- The typical workflow will be: an authorized user (Case Lead or Org Admin) creates a new case, providing basic info like case name, description, and maybe a case ID/reference. Once the case exists, team members (Case Lead, Analysts on that case) can begin uploading evidence to the case. 
-- The UI will have an “Add Evidence” button, which allows file selection and upload (multiple files allowed). Users will see an evidence list for the case, with each file’s name, size, hash, uploader, and current status.
+SPA stack (**decision 2026-06-16**):
+- **React 19 + TypeScript + Vite** with TanStack Router (type-safe routes) and TanStack Query (server cache). UI built with Tailwind v4 + shadcn/ui.
+- **Auth:** `keycloak-js` v26 with PKCE. Access token kept in memory; refresh token in an HTTP-only cookie; silent refresh via Keycloak iframe. Routes are protected at the router level using the §1 permission matrix.
+- State for transient UI lives in a thin Zustand store; no Redux.
 
-Evidence Processing Flow:
-- After upload, the user will observe the file going through states: e.g., "Uploading", “Received – parsing queued”, then “Parsing”, then “Ingesting”, then “Complete”.
-- We will provide a progress indicator or at least a spinner and status text.
-- For large files, parsing could take a long time, so we may also show logs or a percentage if we can get that.
-- The user can continue using the app or come back later – the processing happens in background.
+Case Lifecycle:
+- The UX is built around cases. A Case is the investigation to which evidence files are attached.
+- An Org Admin or Case Lead creates a new case (name, description, reference). On creation a Celery task `provision_dashboards_index_pattern` upserts the OS Dashboards index pattern `kronos-{org_alias}-case-{case_id}-*` and a default Discover view inside the org tenant.
+- Team members assigned to the case (Case Lead, Analysts) can then upload evidence via an "Add Evidence" drawer. The evidence list shows filename, size, SHA-256 (truncated, click-to-copy), uploader, uploaded_at, status pill, and progress.
 
-Viewing Results (Timeline Analysis):
-- Once evidence is ingested (Complete), the user can switch to the Timeline view for that case.
-- Rather than building a completely new UI for timeline analysis from scratch (which is complex), we will integrate OpenSearch Dashboards as the primary analysis interface.
-- OpenSearch Dashboards (the Kibana-equivalent for OpenSearch) will be set up with index patterns for the case timelines. For example, when a case “Alpha” is created, we might create an index pattern case_alpha_* in Dashboards.
-- The user can click a “Open Timeline Analysis” button in our web app, which either embeds the Dashboards in an iframe or opens a new browser tab to OpenSearch Dashboards pointed at the case’s index. Since we plan to have SSO integration, the user will not need to re-login – Keycloak will allow Dashboards access.
-- In Dashboards, we can have pre-built visualizations or just let users use Discover to filter and search events.
-- We may create a custom front end app using js framework to visualize data in different opensearch views, as Harfanglab makes with network connections. 
+Resumable upload UX (**decision 2026-06-16**):
+- **Uppy** is the uploader component, configured with two plugins: `@uppy/aws-s3-multipart` (primary path, talks to the §2 `POST /evidence` presigned-URL endpoints) and `@uppy/tus` (fallback path against tusd).
+- Client-side allowlist pre-check (extension + magic bytes via the `file-type` npm package) **before** requesting upload URLs — saves a round-trip on obviously-wrong files. Server-side validation per §2 remains the authority.
+- Per-chunk progress drives the row's progress bar via Uppy's `upload-progress` event. On `complete`, the SPA optimistically flips the row to `SCANNING`; the SSE channel reconciles transitions thereafter.
 
-User Interface Design: The web application will have a clean UI with a few main views:
- - Dashboard/Cases List: shows all cases the user has access to. From here they can create a new case or select an existing one.
- - Case Detail View: shows case info and the list of evidence items. This is where files can be uploaded and their statuses seen. We’ll also show maybe summary stats.
- - Timeline/Analysis View: this might simply link into OpenSearch Dashboards as described. 
- - Collaborative Features: Since data is team-based, multiple analysts might be looking at the timeline simultaneously. Using OpenSearch Dashboards means they could each apply filters independently, etc., without interfering with each other.
+Evidence processing flow:
+- The UI surfaces explicit states from the §2 FSM with colour-coded pills and progress:
 
-Handling Errors:
-- If a file fails to parse (status goes to ERROR), the UI will reflect that and perhaps offer a retry button.
-- The error details (from logs) might be surfaced in a minimal way, e.g., “Parse failed: invalid format” or a generic “An error occurred. Please check the file format or contact support.” We will not expose raw stack traces to the end user, but we will log them for developers/admins.
+  | FSM state    | UI label                | Color                     | Progress                                                     |
+  | ------------ | ----------------------- | ------------------------- | ------------------------------------------------------------ |
+  | `UPLOADING`  | "Uploading"             | slate                     | Uppy per-chunk bytes percent                                 |
+  | `SCANNING`   | "Scanning (AV)"         | indigo (indeterminate)    | indeterminate                                                |
+  | `HASHING`    | "Verifying hash"        | indigo (indeterminate)    | indeterminate                                                |
+  | `RECEIVED`   | "Queued for parsing"    | blue                      | none                                                         |
+  | `PARSING`    | "Parsing"               | amber                     | `parsed_bytes / total_bytes` when text, else indeterminate   |
+  | `INGESTING`  | "Ingesting"             | amber                     | `indexed_docs / parsed_records` when known                   |
+  | `COMPLETE`   | "Ready"                 | emerald                   | full                                                         |
+  | `ERROR`      | "Error" + reason chip   | red                       | retry button if FSM and `error_reason` allow                 |
+  | `PURGED`     | "Purged (retention)"    | slate (disabled)          | n/a                                                          |
+
+- For large files, the user can leave the page; processing continues in background and the row updates when they return.
+
+Real-time status channel (**decision 2026-06-16**):
+- **Server-Sent Events** (SSE) is the primary channel — unidirectional server → client, survives corporate proxies that strip the WebSocket `Upgrade` header. Endpoint: `GET /sse/cases/{caseId}/evidence?ticket={shortLivedTicket}`.
+- **Auth via short-lived ticket** (not Bearer JWT) because the W3C `EventSource` API does not accept custom headers. SPA calls `POST /sse/ticket` (Bearer-authenticated) and receives `{ticket, expires_in: 60}` bound to `(user_id, org_id, case_id)`. The ticket is single-use.
+- **Polling fallback** if `EventSource` does not reach `OPEN` within 10 s: `GET /cases/{caseId}/evidence` every 5 s. Same UI surface, slower transitions.
+- Event payloads:
+  ```jsonc
+  // evt: status
+  {"evidence_id":"…","status":"PARSING","progress":{"kind":"bytes","done":314572800,"total":1073741824}}
+  // evt: error
+  {"evidence_id":"…","reason_code":"parser_oom","retryable":true}
+  ```
+
+Timeline analysis — OpenSearch Dashboards (**decision 2026-06-16**):
+- Timeline analysis is delivered by **OpenSearch Dashboards embedded in an iframe** inside the SPA at `/cases/{caseId}/timeline`. No bespoke timeline UI in v1.
+- **Tenant strategy:** one Dashboards tenant per org (`kronos-{org_alias}`), **not** one per case. Saved searches, Lens visualisations, and dashboards live in the org tenant; per-case scoping is enforced by a locked URL filter on `kronos.case_id` (plus document-level security on the same field at the OS Security layer).
+- **SSO handoff:** Dashboards is configured as an OIDC RP against the same Keycloak realm (cf. `cht42/opensearch-keycloak`); because the user already holds an SSO session cookie from the SPA login, the OIDC dance completes silently — no second password prompt. The OS Security `openid` auth domain MUST be the **first** domain in `config.yml`; `roles_key: roles` matches the flat claim from §1; `subject_key: preferred_username`.
+- **Iframe URL template:**
+  ```
+  https://dashboards.kronos.example/app/data-explorer/discover#/?
+    embed=true&show-top-menu=false&show-query-input=true&show-time-filter=true
+    &_g=(filters:!((meta:(disabled:!f,key:kronos.case_id),
+                    query:(match_phrase:(kronos.case_id:'{caseId}'))))),
+        time:(from:now-30d,to:now))
+    &_a=(index:'{indexPatternId}',interval:auto,…)
+  ```
+- **Mandatory reverse-proxy hardening** (NGINX, before day one):
+  - `Content-Security-Policy: frame-ancestors 'self' https://app.kronos.example` — OS Dashboards ships with no `X-Frame-Options` / no `frame-ancestors` (clickjacking RFC #5639 still open), so we add it ourselves.
+  - `X-Frame-Options: SAMEORIGIN` kept as defence-in-depth for older browsers.
+  - When Dashboards is on a different sub-domain, rewrite `Set-Cookie` to add `Partitioned; SameSite=None; Secure` (CHIPS) — required for Chrome 130+ third-party-cookie phase-out. Preferred path is to serve Dashboards under the **same** parent domain (`app.kronos.example/dashboards/`) and avoid CHIPS entirely.
+
+Custom OpenSearch view (Harfanglab-style):
+- Explicitly **v2** scope. v1 ships OS Dashboards Discover + a Kron-OS Lens preset (auth events, process-tree summary, top-N hosts/users). A React Flow / D3 process-graph view is deferred.
+
+User interface views (v1):
+- **Cases List** (`/cases`) — org-scoped list of cases the user can access; create-new button gated by §1 permission matrix (org-admin or case-lead).
+- **Case Detail** (`/cases/{caseId}`) — tabs:
+  - *Evidence* (default): list with status pills, hover actions (download, legal-hold toggle, delete, retry) gated by RBAC.
+  - *Timeline*: OS Dashboards iframe scoped to this case.
+  - *Audit log*: paginated `audit_log` rows filtered to this case (org-admin / case-lead only, per §1 matrix).
+  - *Settings*: retention override (capped by org policy), members management.
+- **Evidence Detail drawer** — chain-of-custody, hash, timestamps, error detail (when applicable), per-state audit entries.
+- **Org Admin** (`/admin/org`) — users, roles, retention defaults, legal-hold overrides.
+
+Collaboration (**decision 2026-06-16**):
+- v1 = **independent analysis only.** Two analysts open the same case in their own iframes; each has their own URL/filter state; OS Dashboards already handles transient per-user state. A 30 s polling refresh on the evidence list keeps it current.
+- True co-presence (shared cursors, live tags, "Alice tagged event X") needs a CRDT backend (Yjs + Hocuspocus/Liveblocks). **Deferred to v2** — Timesketch's annotation/story model is the north star.
+
+Error UX (**decision 2026-06-16**):
+- Authoritative error catalogue keyed on `evidence.error_reason`:
+
+  | `error_reason`                  | UI title                  | Hint                                                                       | Retry? |
+  | ------------------------------- | ------------------------- | -------------------------------------------------------------------------- | :----: |
+  | `upload_hash_mismatch`          | Hash mismatch             | Try uploading again — the file may have been corrupted in transit.         |   ✔    |
+  | `av_infected`                   | Antivirus blocked         | The file matched a malware signature. Contact your org admin.              |   ✘    |
+  | `unsupported_format`            | Unsupported file type     | Allowed formats: EVTX, Prefetch, REGF, SRUM, …                             |   ✘    |
+  | `parser_oom`                    | Parser ran out of memory  | Use the "heavy" queue or split the artefact.                               |   ✔    |
+  | `parser_format_error`           | File could not be parsed  | The file may be corrupted. Re-export from the source machine.              |   ✔    |
+  | `ingest_count_mismatch`         | Ingest verification failed| Auto-retried; if it persists, contact support with the diagnostic ID.      |   ✔    |
+  | `tsa_unreachable`               | Timestamp authority down  | Custody timestamp will be retried automatically.                           |  auto  |
+
+- Every error row exposes an opaque **diagnostic ID** (= `audit_log.id` of the failing transition). Support reads the audit row for the technical detail; the analyst never sees a stack trace.
+- Retry is offered only when `error_reason` is retryable **and** the FSM permits it (per §2). Read-only users never see Retry.
+
+Status transitions hand-off:
+- §3 → §4 entry: `COMPLETE` makes the *Timeline* tab clickable. Until then it shows "Indexing in progress…" with a count of completed evidence vs total.
+- §4 owns: evidence list rendering, status-pill rendering, SSE channel, upload UX, OS Dashboards embed; consumes §1 (auth, RBAC), §2 (evidence FSM + upload protocol), §3 (event index naming, ECS schema).
+
+Open questions (must be resolved before starting §4 implementation): see `reviews/Part_4_Review.md` §6.
 
 
 ## 5. Security and Compliance
