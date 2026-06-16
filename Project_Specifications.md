@@ -11,6 +11,8 @@
 >   Key decisions fed back into §4 below: SPA = React 19 + Vite + TanStack Router + Keycloak-js (PKCE); resumable upload via **Uppy** (S3-multipart primary, tus.io fallback) with client-side magic-byte pre-check; OS Dashboards embedded in iframe with mandatory CSP `frame-ancestors` and SSO via the existing Keycloak realm; **one OS Dashboards tenant per org** (not per case) — per-case scoping via locked URL filter on `kronos.case_id`; real-time status via **SSE** authenticated by a short-lived one-shot ticket, polling fallback after 10 s; explicit status-pill mapping per §2 FSM; explicit error catalogue keyed on `evidence.error_reason`; v1 collaboration = independent analysis only (CRDT/shared annotations deferred to v2); Harfanglab-style custom graph view deferred to v2.
 > - 2026-06-16 — Part 5 reviewed (see `reviews/Part_5_Review.md`, issues #5 / #17).
 >   Key decisions fed back into §5 below: explicit four-zone trust boundary (DMZ / App / Data / Observability) with mTLS on every internal hop; internal CA via **`step-ca`** (or Vault PKI) issuing 24 h workload certs, TLS 1.3 only, no self-signed in v1; MinIO **SSE-KMS** via **KES** backed by **HashiCorp Vault / OpenBao** mandatory from bucket creation (at-rest encryption is no longer deferred); parser sandboxing split — **gVisor** for the fast Celery slot, **Firecracker microVM** for the Plaso slot, both with `network=none`; **tamper-evident audit log** = per-row hash chain + daily Merkle root anchored by the §2 RFC 3161 TSA + standalone `kronos-attest verify` CLI; SIEM = **Wazuh** on the existing OpenSearch cluster (separate `wazuh-alerts-*` indices) with a write-once cold archive bucket, pinned ≥ Wazuh 5.1; **Falco** DaemonSet for runtime detection; hardened **Chainguard / Wolfi** base images with Trivy CI gate and Cosign-signed SBOMs; ISO 27001 mapping migrated to the **2022 revision** with **A.5.28 Collection of Evidence** as the cornerstone control; MinIO active-active replication + erasure coding + Vault snapshots for BC/DR (RPO 5 min / RTO 15 min); explicit incident-response runbook aligned with NIST SP 800-86.
+> - 2026-06-16 — Part 6 reviewed (see `reviews/Part_6_Review.md`, issues #6 / #19).
+>   Key decisions fed back into §6 below: re-cast §6 as the **integration contract** that consumes §1/§4/§5 rather than restating them; client manifest pins three confidential clients (`kronos-backend`, `opensearch-dashboards`, `kronos-attest`) + one public PKCE SPA client (`kronos-spa`), no client secrets in the browser; canonical token claim shape locked (`organization.<alias>.id` map, top-level multivalued `roles`, `acr` for step-up, `preferred_username` for audit); OpenSearch Security OIDC auth domain pinned `order: 0` / `challenge: false`, `subject_key: preferred_username`, `roles_key: roles`, with the normative `config.yml` / `roles_mapping.yml` / `opensearch_dashboards.yml` snippets committed to the review; backend JWT pipeline = JWKS cache + `kid` re-fetch on miss + strict `iss`/`aud`/`exp`/`alg` (never `none`) + ACR enforcement (RFC 9470); refresh tokens transported as **HttpOnly + Secure + SameSite=Strict** cookies via a backend `/auth/refresh` proxy — `keycloak-js` localStorage default rejected; backend service account scoped by **Keycloak 26.7 FGAP V2 on Organizations** (Authorization-Services policy as 26.6 interim); federation via Keycloak **identity brokering** (LDAP/AD `READ_ONLY`, SAML, upstream OIDC) with first-login Org-assignment Required Action until 26.7 IdP-mapper auto-assignment; **step-up authentication** (`acr=aal2`) required for `org-admin`, `evidence.delete`, `legal_hold.{set,cleared}` — WebAuthn passkey preferred, TOTP fallback; OIDC **backchannel logout** wired for backend + Dashboards (no dots in IdP aliases per #42209); Keycloak realm event-listener → Wazuh sink with a custom Kron-OS decoder/rule pack; canonical end-to-end **session-lifetime table** (access 15 min / refresh 24 h / SSO idle 2 h / SSO max 24 h) committed to §6.
 
 ## 1. Users, Teams, and Access Control
 
@@ -426,54 +428,120 @@ Open questions (must be resolved before starting §5 implementation): see `revie
 
 ## 6. Identity, Authorization, and Single Sign-On (SSO)
 
-We have chosen Keycloak (an open-source Identity and Access Management solution) as the central authentication and authorization server. Keycloak will handle user identities, authentication (login), and issuing tokens that our services (API, OpenSearch) will trust. This provides a unified SSO experience and robust security features out-of-the-box.
+> Status: **reviewed 2026-06-16.** Narrative below has been updated; realm export, client manifests, the OpenSearch Security OIDC YAML, the backend JWT pipeline, federation, MFA / step-up, backchannel logout, and the Keycloak → Wazuh sink live in `reviews/Part_6_Review.md`. §6 consumes §1 (RBAC + Organizations + `kronos-roles` scope), §4 (Dashboards iframe + CSP), and §5 (Vault, Wazuh, ACR step-up policy).
 
-Keycloak Setup: We will deploy a Keycloak server on-prem (via a container). The following configuration will be done in Keycloak:
-Create a Realm to contain our users and roles.
-Within the realm, define Clients for our applications:
-- One client for our Web App/API.
-- One client for OpenSearch Dashboards integration. OpenSearch’s security plugin acts as an OpenID Connect Relying Party. In the Keycloak realm we’ll create a client (e.g., opensearch-dashboards) that will represent OpenSearch Dashboards. We will configure this client with settings Keycloak requires.
+Keycloak deployment (**decision 2026-06-16**):
+- **Keycloak ≥ 26.6** (target 26.7 for FGAP V2 on Organizations), deployed on-prem in the App zone (§5) behind mTLS.
+- **Single realm `kronos`.** Tenants are modelled as **Keycloak Organizations** (§1), not Groups. Realm-per-tenant is rejected; Groups are kept available for in-org sub-grouping only.
+- Secrets (admin password, client secrets, signing keys, event-listener bearer) live in Vault / OpenBao (§5); no secrets in env vars, ConfigMaps, or git.
 
-Define the Roles in Keycloak that match our application roles: org-admin, case-lead, analyst, read-only.
+Realm topology and client manifest (**decision 2026-06-16**):
 
-Model the Team/Org membership. There are a couple of ways:
-- Use a separate realm per organization, but that gets complex to manage. Instead, we’ll use a single realm and use Groups to represent organizations/teams. For example, create a Group for each team (Team A, Team B). Users can be placed into a group corresponding to their org. We can also map a group membership into the token as a claim (so our app knows which org the user is in). Keycloak can include group membership in the JWT token. We might also encode the org in the username or a custom attribute.
-- Use Keycloak’s multi-tenant support via Realms: but managing multiple realms (one per tenant) would mean replicating client configuration for each, and dealing with identity across realms beacause Keycloak doesn’t share identities across realms
+| Client                  | Type          | Flow                                | Default scopes                              | Notes                                                                              |
+| ----------------------- | ------------- | ----------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `kronos-spa`            | public        | Auth Code + PKCE (S256)             | `openid profile email roles organization`   | redirect=`https://app.kronos.example/*`; post-logout=`/login`; **no client secret**; refresh tokens never exposed to JS |
+| `kronos-backend`        | confidential  | client-credentials + token exchange | `roles organization`                        | client secret in Vault; FGAP-V2 scoped to caller's Organization(s); rotated quarterly |
+| `opensearch-dashboards` | confidential  | Auth Code                           | `openid profile email roles organization`   | client secret in Vault; backchannel-logout URL set; logout URL `/dashboards/auth/logout` |
+| `kronos-attest`         | confidential  | client-credentials                  | `openid roles`                              | used by §5 `kronos-attest verify --online`; read-only audit role only               |
 
-Configure token settings: 
-- We will set the access token lifespan to a suitable length. By default Keycloak uses short time tockens but since the users are expected to stay connected for a long time we will extend it to 12h or a day.
-- Another possibility is to rely on refresh tokens and an SSO session lifespan. Keycloak can keep the user logged, even if tokens expire sooner, it will refresh them. We’ll set “SSO Session Max” to 24 hours. 
-- We will enable “Refresh Token” rotation for security, so each refresh invalidates the old token.
+Realm roles: `org-admin`, `case-lead`, `analyst`, `read-only` (mirror the §1 permission matrix). Mapped 1-to-1 to OpenSearch roles `kronos_org_admin` / `kronos_case_lead` / `kronos_analyst` / `kronos_read_only` (`roles_mapping.yml`).
 
-SSO User Login Flow: 
-- When a user accesses our web application, if not already authenticated, they will be redirected to Keycloak’s login page;
-- The user enters credentials;
-- Upon successful login, Keycloak will issue an ID Token and Access Token (JWT) for the client.
+Client scopes:
+- `kronos-roles` — Realm-Role mapper with **Multivalued = true** flattening roles to a top-level `roles` claim. Mandatory because OpenSearch Security's `roles_key` cannot walk the default nested `realm_access.roles` path.
+- `organization` — built-in optional scope (Keycloak 26 Organizations); requested on every login so the token carries the org claim.
+- `openid profile email` — standard.
 
-JWT Tokens: 
-- The Access Token JWT is the crucial piece, it will contain the user’s identity and roles. 
-- We will configure a Role Mapper in Keycloak to ensure the roles are in the token.
-- The token will contains essentials information about the client (org, team, role)
+Token claim shape (**decision 2026-06-16**) — canonical access-token payload:
 
-API Authorization with JWT: 
-- Our backend API will use the JWT access token for auth on each request (the frontend will include it in Authorization: Bearer <token> header); 
-- The API needs to verify and decode the JWT;
-- We will fetch Keycloak’s public key or certificate to verify the token’s signature (Keycloak exposes the public keys).
-- We can cache this key. 
-- Using a library like python-jose or PyJWT with the RS256 public key, we validate that the token is valid.
+```jsonc
+{
+  "iss": "https://idp.kronos.example/realms/kronos",
+  "aud": ["kronos-backend"],
+  "sub": "9c7f4e1a-…",
+  "preferred_username": "alice@acme.example",
+  "given_name": "Alice", "family_name": "Doe",
+  "email": "alice@acme.example", "email_verified": true,
+  "roles": ["analyst"],
+  "organization": { "acme": { "id": "0f2c1f1c-…" } },
+  "acr": "aal1",        // → "aal2" after step-up
+  "amr": ["pwd"],       // → ["pwd","webauthn"] after step-up
+  "exp": 1750008900, "iat": 1750008000
+}
+```
 
-- On each API request, we will check the actions: e.g., if a user tries to access a case that is not their org, we deny. If an Analyst tries to call an admin-only API, we deny. This check is straightforward since we have the roles list from the JWT. By doing this in the API, we ensure even if someone got an access token, they can only do what their token’s roles allow (and tokens can’t be modified by the user due to the signature).
+The token shape is already multi-org-ready (`organization` is a map keyed by alias). For v1 the backend reads the first entry; for v2 (multi-org users) it loops.
 
-Integration with OpenSearch Security Plugin: 
-- One powerful aspect is that OpenSearch can also directly trust JWTs (Keycloak-issued) for auth. We will configure OpenSearch’s securityconfig to use JWT/OpenID auth. 
-- In opensearch-security/config.yml, define an authentication domain of type openid. 
-- The steps to make opensearch use keycloak auth system have to be defined
-- In OpenSearch Dashboards config , we’ll configure the OpenID settings to point to Keycloak. Dashboards will redirect users to Keycloak, just like our app does. After login, Keycloak redirects back to Dashboards with a JWT, and Dashboards will pass that to OpenSearch cluster on requests. We will ensure the roles_key in config is set to “roles” so that the roles from the token are mapped.
+Session-lifetime table (**decision 2026-06-16** — supersedes §1's loose statement; single source of truth):
 
-Role Mapping in OpenSearch: 
-- We will map the Keycloak roles to OpenSearch permissions. For example, create OpenSearch roles: org-admin-role, analyst-role, etc., with specific index permissions. We can then map JWT claims to these.
-- We might use a one-to-one naming to keep it simple. This way, when an Analyst uses Dashboards, their token’s “analyst” role will map to a role that perhaps allows read-only search on indices. We might give case-lead a role that allows managing index patterns or writing annotations. Org-admin might have a role to view all indices in that org (though if indices are per case and prefixed, we might incorporate org identifier into the index name and use wildcards in permissions).
-- see cht42/opensearch-keycloak
+| Setting                                  | v1 value                       |
+| ---------------------------------------- | ------------------------------ |
+| Access-token lifetime                    | **15 min**                     |
+| Refresh-token lifetime                   | 24 h                           |
+| SSO session idle                         | 2 h                            |
+| SSO session max                          | 24 h                           |
+| Refresh-token rotation                   | On                             |
+| Refresh-token reuse detection            | On (full-chain revoke)         |
+| OpenSearch Dashboards session            | Aligned to OIDC token (no separate cookie max) |
+| MFA required for `org-admin`             | Yes (`acr=aal2`)               |
+| Required Action: WebAuthn on first login | `org-admin` only (v1)          |
 
-Logging and Audit (Keycloak): 
-- Keycloak can log all logins and events. We will enable logging of events like login success, failure, logout, admin changes. 
+SPA OIDC wiring (**decision 2026-06-16**):
+- `keycloak-js` v26 with `pkceMethod: 'S256'`, `responseMode: 'fragment'`, `useNonce: true`, `checkLoginIframe: false`.
+- Access token kept in memory; **refresh token in an HttpOnly + Secure + SameSite=Strict cookie** scoped to `/auth`, proxied via the backend `POST /auth/refresh` route. `keycloak-js`'s default localStorage path is **rejected** — XSS-readable.
+- Silent refresh `(exp - now - 60s)` ahead of expiry; on refresh failure → Keycloak login (preserving `returnTo`).
+- Step-up: on backend `401 insufficient_user_authentication` (RFC 9470), SPA calls `keycloak.login({ acrValues: 'aal2', prompt: 'login' })` and replays the original request.
+
+Backend JWT validation pipeline (**decision 2026-06-16**):
+1. Extract Bearer at the gateway; unauthenticated requests are rejected before reaching the application.
+2. **JWKS cache** keyed by `(iss, kid)`, TTL 10 min; on `kid` miss re-fetch JWKS once before failing (handles Keycloak key rotation).
+3. **Verify** `alg ∈ {RS256, PS256}` (never `none`); `iss` matches the realm URL; `aud` contains `kronos-backend`; `exp > now - 30s`; `nbf <= now + 30s`; `typ` is `Bearer` (never `ID`).
+4. **Decode** `org_id` from `organization[*].id` (first entry for v1), `org_alias` from the key, `roles` from the top-level claim, `acr` for step-up checks.
+5. **Authorise** against the §1 permission matrix; if `required_acr > token.acr`, return `401 insufficient_user_authentication` with `acr_values` hint.
+6. **Audit** to the unified `audit_log` (§1/§2) with `who / when / action / resource / decision / ip`.
+
+OpenSearch Security OIDC integration (**decision 2026-06-16**):
+- OIDC auth domain **first** in `config.yml` (`order: 0`, `challenge: false`); basic-auth domain after for internal probes only.
+- `subject_key: preferred_username` (audit-friendly); `roles_key: roles` (matches the flat `kronos-roles` claim); `jwt_clock_skew_tolerance_seconds: 30`.
+- OS Dashboards configured as an OIDC RP against the same realm (`cht42/opensearch-keycloak` pattern): `opensearch_security.openid.connect_url` points at the realm's `.well-known/openid-configuration`; secret rendered from Vault at boot; cookies `Secure; SameSite=Lax`; multi-tenancy enabled (one OS Dashboards tenant per org per §4).
+- Per-tenant Document-Level Security on `tenant_id` and the locked URL filter on `kronos.case_id` (§4) provide belt-and-braces isolation.
+
+Service-account scoping (**decision 2026-06-16**):
+- `kronos-backend` has **no realm-wide role**. With Keycloak 26.7+ it is granted FGAP V2 `manage` scope on each Organization it administers; on 26.6 the equivalent is achieved via an Authorization-Services policy on `realm-management` keyed off Group/Org membership (slower — ~200 ms per Admin API call, tolerated for v1).
+- The backend re-checks `target_user.organization == caller.organization` before dispatching the Admin REST call (defence-in-depth even if FGAP later misconfigures).
+
+Federation — upstream IdPs (**decision 2026-06-16**):
+- **Keycloak Identity Brokering** is the federation strategy. Realm-per-IdP is rejected (same reasoning as realm-per-tenant).
+- **LDAP / Active Directory** via the built-in User Storage Provider: LDAPS only, bind credential in Vault, **edit mode = `READ_ONLY`** (clients keep their own directory), weekly full + hourly changed sync.
+- **SAML 2.0 upstream IdP** (e.g. Azure AD, Okta): added via Identity Brokering; per-IdP claim mapper translates a SAML attribute (e.g. Azure AD `tid`) into the Kron-OS `organization` shape; IdP-init flow needs the Phase Two `RelayState` SPI.
+- **Upstream OIDC IdP** (e.g. customer's Okta tenant): same brokering pattern; claim mapper for `organization`.
+- **Org auto-assignment on first login:** v1 uses a Required Action ("Confirm Organization"); v1.1+ (Keycloak 26.7) switches to the new IdP-mapper auto-assignment from external claims.
+
+MFA and step-up authentication (**decision 2026-06-16**):
+- **OAuth 2.0 Step-Up Authentication Challenge (RFC 9470)** is the contract between backend and SPA.
+- ACR policy:
+
+| Action / role                                            | Required ACR | Factor                              |
+| -------------------------------------------------------- | :----------: | ----------------------------------- |
+| Login (any user)                                         | `aal1`       | Password                            |
+| `evidence.upload`, `evidence.download` (analyst, audited) | `aal1`      | Password                            |
+| `evidence.delete`                                        | `aal2`       | Password + WebAuthn / TOTP          |
+| `evidence.legal_hold.set` / `.cleared`                   | `aal2`       | Password + WebAuthn / TOTP          |
+| Any `org-admin` action                                   | `aal2`       | Password + WebAuthn (passkey) preferred; TOTP fallback |
+
+- **WebAuthn (passkey)** is the preferred second factor; TOTP (OATH) is the fallback. Passkey-autofill (Conditional UI) tracked but not in v1 (SPI add-on).
+- Backend issues `401 insufficient_user_authentication` with `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="aal2"` when policy is unmet.
+
+OIDC Backchannel Logout (**decision 2026-06-16**):
+- `kronos-backend`, `opensearch-dashboards`, and `kronos-attest` register `backchannel.logout.url`; `kronos-spa` does not (no server-side session — backend invalidation is authoritative, the SPA re-authenticates on next request).
+- Backend's endpoint `POST /auth/backchannel-logout` validates the `logout_token` JWT and invalidates the session cache + revokes the refresh-token chain.
+- OS Dashboards uses the OpenSearch Security plugin's built-in endpoint.
+- **IdP aliases avoid dots** (workaround for keycloak/keycloak#42209).
+- `backchannel.logout.session.required: true` for all confidential clients (workaround for keycloak/keycloak#45761).
+
+Keycloak event sink → Wazuh SIEM (**decision 2026-06-16**):
+- Realm Events on for login + admin events; persisted 30 d in the Keycloak DB as defence-in-depth (the long-term archive lives in the §5 cold MinIO bucket).
+- Event listener emits one-line JSON to stdout; Wazuh agent on the Keycloak host tails it; custom Wazuh decoder pack `kronos-keycloak.xml`; alerts feed `wazuh-alerts-*` (§5).
+- Custom rule pack: ≥5 failed logins in 5 min, `client.create|update` outside the GitOps window, `user.deletion` not preceded by a backend `user.purge`, `org-admin` grant outside change window (high), IdP added/modified (critical, potential federation tampering).
+- Every successful login, token issuance and admin event is also mirrored into the unified `audit_log` (§1) via `POST /internal/admin/audit-event` from a Keycloak admin webhook, so tenant traceability lives in one canonical store.
+
+Open questions (must be resolved before starting §6 implementation): see `reviews/Part_6_Review.md` §6.
