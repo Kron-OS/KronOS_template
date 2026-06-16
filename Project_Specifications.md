@@ -5,6 +5,8 @@
 >   Key decisions fed back into §1 below: adopt Keycloak 26 **Organizations** rather than Groups-only; commit to an explicit permission matrix; fix the OpenSearch `roles_key` Keycloak-mapper pitfall; plan index rollover to avoid shard explosion.
 > - 2026-06-16 — Part 2 reviewed (see `reviews/Part_2_Review.md`, issues #2 / #11).
 >   Key decisions fed back into §2 below: presigned S3 multipart upload (tus.io fallback); MinIO **Object Lock Compliance** mode + Legal Hold for true WORM; whole-file SHA-256 verified server-side; libmagic allowlist with a per-artefact magic-byte table; ClamAV post-store quarantine scan; explicit evidence FSM; RFC 3161 timestamping; chain-of-custody reuses §1 `audit_log`.
+> - 2026-06-16 — Part 3 reviewed (see `reviews/Part_3_Review.md`, issues #3 / #13).
+>   Key decisions fed back into §3 below: ECS-based timeline schema with a `kronos.*` provenance block (case/evidence/sha256); **intermediate ingester** between Plaso and OpenSearch instead of `psort -o opensearch` direct write; per-artefact parser slots (`evtx-rs` fast path, Plaso sandbox container, custom text-log parsers); explicit Celery DAG with deterministic OpenSearch `_id`s; line-aware splitter for text logs only — binary forensic formats are parsed whole; UTC + DST-fold handling; SRUM and other heavy parsers isolated on a memory-capped queue.
 
 ## 1. Users, Teams, and Access Control
 
@@ -145,35 +147,67 @@ Open questions (must be resolved before starting §2 implementation): see `revie
 
 ## 3. Parsing Scope and Timeline Model
 
+> Status: **reviewed 2026-06-16.** Narrative below has been updated; parser-coverage matrix, ECS-based event schema, Celery DAG, and milestones live in `reviews/Part_3_Review.md`.
 
-Supported Artifact Types: 
-- The platform will accept all types of timeline based files. 
-- The scope includes: Windows Event Logs (EVTX), Prefetch files (.pf), SRUM, Shimcache, Amcache, Windows Registry hives (SYSTEM, SOFTWARE, NTUSER.DAT, etc.), browser history files (e.g., Chrome/Firefox SQLite databases), web proxy logs, DNS query logs, Linux system logs (such as journald or syslog files), web server logs (Apache/Nginx), cloud service logs (AWS CloudTrail, GCP audit logs, Azure logs). 
-- This is an ambitious list, but many of these are handled by existing libraries and tools.
+Supported artefact types (v1):
+- Windows Event Logs (EVTX), Prefetch (.pf), Windows Registry hives (SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, etc.), SRUM, Shimcache, Amcache.
+- Browser history SQLite databases (Chrome, Firefox), EML / MBOX.
+- Linux journald and syslog; Apache and Nginx access/error logs.
+- Cloud audit logs: AWS CloudTrail, GCP audit logs, Azure activity logs (custom text parsers in v1).
+- Generic CSV / JSON / NDJSON timeline-shaped logs.
+- The complete `(artefact, parser slot, Plaso parser name, notes)` matrix lives in `reviews/Part_3_Review.md` §5.8.
 
-Using log2timeline: 
-- We plan to integrate log2timeline to handle the heavy lifting of parsing whenever possible. 
-- Plaso can output results in various formats, including JSON or direct indexing into an OpenSearch/Elasticsearch database. 
-- In fact, Plaso’s psort tool has an OpenSearch output module that can send parsed events straight to an OpenSearch index.. We’ll verify if we can use that output mode (it requires the opensearchpy client and some config for index name, etc.).
+Parser strategy (**decision 2026-06-16**):
+- A **dispatcher** maps `evidence.artefact_type` to one of three parser slots:
+  - `evtx-rs` (Rust + Python bindings) — fast path for EVTX, on the order of 650–1600× faster than `python-evtx` with multi-threading; Plaso is the fallback for crafted/corrupt records.
+  - **Plaso (log2timeline)** runs inside a dedicated `kronos/plaso` container with no network egress and a 2 GB memory cap (4 GB for the SRUM "heavy" queue). Used for Prefetch, REGF, SRUM, Shimcache, Amcache, SQLite, journald, syslog, EML/MBOX.
+  - Custom text-log parsers for CSV / NDJSON / Apache / Nginx / CloudTrail / GCP / Azure (no Plaso preset exists for these, and they need ECS-aligned field mappings).
+- Plaso's automatic format detection (`pysigscan`) is used to confirm the dispatcher's choice before parsing starts.
+- Parser presets (`win_gen`, `linux`, `webhist`, …) scope the work; we never run Plaso with the default "everything" preset.
 
-Automatic Format Detection: 
-- We must see if Plaso handle automatic parser detection. If not we would have to implement the feature. 
+OpenSearch output path (**decision 2026-06-16**):
+- We do **not** use `psort -o opensearch` direct write. Instead Plaso writes JSONL (`psort -o json_line --output-time-zone UTC`) to a tmpfs file, and a Kronos **ingester worker** reads it, normalises into ECS, adds the `kronos.*` provenance block, and bulk-indexes via `opensearch-py` with deterministic `_id`s.
+- This preserves the chain of custody (every event carries `kronos.evidence_id` and `kronos.evidence_sha256`) and lets us emit ECS-aligned fields that OpenSearch Dashboards understands out of the box.
 
-Timeline Data Model: 
-- All parsed events will be converted into a unified timeline schema. 
-- At minimum, each event will have a timestamp (in UTC), a description/message, a source (which artifact it came from), and other fields like host, user, etc.
+Timeline event schema (**decision 2026-06-16**):
+- Aligned with the **Elastic Common Schema (ECS)** — `@timestamp` (UTC, ISO-8601 with `Z`), `event.{kind,category,action,module,dataset,original,timezone}`, `host.*`, `user.*`, `process.*`, `file.*`.
+- Plus a `kronos.*` provenance/extension block: `tenant_id`, `org_alias`, `case_id`, `evidence_id`, `evidence_sha256`, `tz_fold`, `parser_version`, `ingest_id`. Mandatory on every event.
+- `event.original` (raw record) capped at 32 KB; oversized originals spill to MinIO and are referenced via `kronos.original_object_key`.
+- Index template that backs `kronos-{org_alias}-case-{case_id}-{yyyymm}` enforces this mapping.
 
-Integration into Celery Workflow: 
-- The parsing will happen asynchronously in worker processes. 
-- The workflow for a given file will be: (1) Celery task starts -> (2) update file status to PARSING -> (3) run the parser (Plaso or other) -> (4) on success, update status to INGESTING (if separate, or directly to COMPLETE if using direct output) -> (5) confirm data is in OpenSearch, update status to COMPLETE. 
-- If an error occurs at any step, catch it, log it, mark status ERROR.
+Celery DAG (**decision 2026-06-16**):
 
-Performance Considerations: 
-- Parsing can be time-consuming, especially for large files. 
-- Users will see the parsing status, but we should also consider splitting tasks if needed. 
-- For instance, if a user uploaded a 1GB CSV log, we might want to split it into multiple tasks.
+```
+chain(
+   dispatch_parse,                 // status → PARSING
+   parse_artefact,                 // Plaso / evtx-rs / text parser → JSONL
+   chord(
+       group(index_chunk x N),     // status → INGESTING on first chunk
+       finalize_evidence           // count check → status COMPLETE
+   )
+)
+```
 
-Finally, we will document the time normalization clearly: everything in UTC. Consistency in time storage will prevent confusion when analysts collaborate in different time zones.
+- Queues: `q.parse.fast` (evtx-rs, text parsers), `q.parse.plaso` (Plaso sandbox), `q.parse.plaso.heavy` (SRUM with 4 GB cgroup), `q.index` (OpenSearch bulk).
+- **Idempotent OpenSearch ingestion:** `_id = sha1(evidence_id + ":" + parser + ":" + record_index)`. Retried tasks upsert instead of duplicating.
+- **Retry policy:** transient errors (OpenSearch 5xx, MinIO timeouts, container start failure) retry up to 5× with exponential back-off 30 s → 8 min ± jitter. Deterministic errors (parser exception, OOM, format mismatch) go straight to `ERROR` — no retry.
+- **Orphan sweeper:** beat job aborts parse tasks running > 6 h.
+
+Large-file handling (**decision 2026-06-16**):
+- **Text logs only** (CSV, NDJSON, syslog, Apache, Nginx, CloudTrail/GCP/Azure JSON) are split into ~500 k-line chunks when `line_count > 1 000 000`. Chunk boundaries snap to the next `\n`; the CSV header is re-emitted on every chunk so each `index_chunk` task is self-contained.
+- **Binary forensic artefacts** (EVTX, REGF, .pf, SQLite, SRUM, journald) are parsed whole — their internal state (B-trees, chunks, transaction logs) makes mid-file splits incorrect. Parallelism is across files, not within one binary file.
+- Plaso already parallelises across files inside a single parse task via its task-based multi-processing; Celery parallelises across evidence items.
+
+UTC and DST-fold handling (**decision 2026-06-16**):
+- Every event stores `@timestamp` in UTC with the `Z` suffix.
+- When the parser knows the source timezone it populates `event.timezone` (IANA name, e.g. `Europe/Paris`).
+- Ambiguous local times (DST fall-back) are resolved with `dateutil.tz.datetime_ambiguous()` / `datetime_exists()` and `fold` semantics (PEP-495). When ambiguity cannot be resolved from artefact context, both candidates are stored (`@timestamp` = early, `kronos.alt_timestamp` = late, `kronos.tz_fold = -1`) and Dashboards surfaces a warning badge. `pytz` is **not** used (deprecated semantics).
+
+Status transitions:
+- §2 → §3 entry: `RECEIVED → PARSING` triggered by `dispatch_parse`.
+- §3 → §4 exit: `INGESTING → COMPLETE` triggered by `finalize_evidence` once `indexed_docs == parsed_records`. Mismatch ⇒ `ERROR` with `error_reason='ingest_count_mismatch'`. All transitions write to the unified `audit_log` (§1/§2 vocabulary).
+
+Open questions (must be resolved before starting §3 implementation): see `reviews/Part_3_Review.md` §6.
 
 ## 4. Workflows and User Experience
 
