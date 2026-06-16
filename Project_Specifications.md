@@ -229,6 +229,7 @@ Viewing Results (Timeline Analysis):
 - OpenSearch Dashboards (the Kibana-equivalent for OpenSearch) will be set up with index patterns for the case timelines. For example, when a case “Alpha” is created, we might create an index pattern case_alpha_* in Dashboards.
 - The user can click a “Open Timeline Analysis” button in our web app, which either embeds the Dashboards in an iframe or opens a new browser tab to OpenSearch Dashboards pointed at the case’s index. Since we plan to have SSO integration, the user will not need to re-login – Keycloak will allow Dashboards access.
 - In Dashboards, we can have pre-built visualizations or just let users use Discover to filter and search events.
+- We may create a custom front end app using js framework to visualize data in different opensearch views, as Harfanglab makes with network connections. 
 
 User Interface Design: The web application will have a clean UI with a few main views:
  - Dashboard/Cases List: shows all cases the user has access to. From here they can create a new case or select an existing one.
