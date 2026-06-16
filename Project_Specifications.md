@@ -3,6 +3,8 @@
 > **Review log**
 > - 2026-04-20 — Part 1 reviewed (see `reviews/Part_1_Review.md`, issues #1 / #7).
 >   Key decisions fed back into §1 below: adopt Keycloak 26 **Organizations** rather than Groups-only; commit to an explicit permission matrix; fix the OpenSearch `roles_key` Keycloak-mapper pitfall; plan index rollover to avoid shard explosion.
+> - 2026-06-16 — Part 2 reviewed (see `reviews/Part_2_Review.md`, issues #2 / #11).
+>   Key decisions fed back into §2 below: presigned S3 multipart upload (tus.io fallback); MinIO **Object Lock Compliance** mode + Legal Hold for true WORM; whole-file SHA-256 verified server-side; libmagic allowlist with a per-artefact magic-byte table; ClamAV post-store quarantine scan; explicit evidence FSM; RFC 3161 timestamping; chain-of-custody reuses §1 `audit_log`.
 
 ## 1. Users, Teams, and Access Control
 
@@ -69,38 +71,77 @@ By structuring users by organization and role, we satisfy the need to keep data 
 
 ## 2. Evidence Intake and Chain of Custody
 
+> Status: **reviewed 2026-06-16.** Narrative below has been updated; detailed design, file-type allowlist, evidence FSM and milestones live in `reviews/Part_2_Review.md`.
 
-Evidence Upload Process: 
-- Users can upload evidence files to the system by creating or selecting a case and then uploading files to that case. 
-- We will only accept raw evidence files (uncompressed) up to a size of ~1 GB each, at least initially. 
-- Accepting raw files means users should provide files in their original format (e.g., EVTX logs, binary .pf prefetch files, etc.). 
-- We will maintain an allowlist of file types/extensions that are expected (Windows event logs, registry hives, CSV logs, etc.) and block any executables or unusual file types that are not part of the forensic artifact list. If needed, we can verify file type by magic header as well.
+Evidence Upload Process:
+- Users upload evidence files to a case via the web app.
+- Raw (uncompressed) files up to **~1 GB** each are accepted in v1.
+- Accepted formats are forensic artefacts in their original binary form (EVTX, Prefetch, registry hives, browser SQLite, CSV/JSON/NDJSON logs, journald, EML/MBOX). Executables (`.exe`, `.dll`, `.scr`, `.bat`, `.cmd`, `.ps1`, `.js`, `.vbs`, `.jar`) are blocklisted.
+- The allowlist is enforced by **both** extension *and* libmagic / magic-byte signature (see the file-type table in `reviews/Part_2_Review.md` §5.4); a mismatch returns `415 Unsupported Media Type` before any bytes hit storage.
 
-Storage and Hashing: 
-- Upon upload, the file will be streamed to an object storage and a cryptographic hash (SHA-256 or better) of the file will be computed. 
-- This hash serves as the digital fingerprint of the evidence. It will be stored in our database and used to verify integrity later. 
-- We will log metadata such as upload timestamp, the user who uploaded, and the case it belongs to. 
-- The evidence file itself is write-once/read-many (WORM) by policy. Our application will never modify the original file, preserving its integrity.
+Upload protocol (**decision 2026-06-16**):
+- **Primary path:** S3 multipart upload via **presigned URLs**. The backend creates an `evidence` row in status `UPLOADING` and returns the presigned URLs; the browser uploads parts directly to MinIO. Per-part retry recovers from network jitter.
+- **Fallback:** `tusd` (tus.io protocol) for environments where multipart-with-presigned-URLs is blocked by intermediate proxies.
+- The backend's `POST /evidence` route only mints URLs, so the NGINX body-size limit applies to a tiny metadata payload — not to the 1 GB file.
 
-Chain of Custody Logging:
-- Maintaining a chain of custody is crucial. The system will automatically generate an audit trail entry for each significant action on an evidence file. 
-- This includes: when it was uploaded (time, by whom, from what IP if available), when it was processed by the parser, when it was indexed into OpenSearch. 
-- Each log will have the user, timestamp, and action. This chronological log of custody ensures we know “who had charge of the evidence at any given time” and what was done.
+Storage and Hashing (**decision 2026-06-16**):
+- Files land first in a per-org **quarantine bucket** (`kronos-evidence-{org_alias}-quarantine`, versioning on, no Object Lock).
+- After AV scan + hash verification, the object is `CopyObject`-ed into the per-org **evidence bucket** (`kronos-evidence-{org_alias}`, versioning on, **MinIO Object Lock in Compliance mode**, retain-until = `now() + retention_days`). The quarantine version is then deleted.
+- **Whole-file SHA-256** is the forensic fingerprint. The S3 multipart ETag is *not* a SHA-256 of the file — it is a hash of the part-checksums — so we compute the SHA-256 ourselves and store it in `evidence.sha256` plus as MinIO user metadata `x-amz-meta-sha256`.
+- Hash protocol: client streams a rolling SHA-256 and sends it on `POST /evidence/{id}/complete`; Celery task `verify_evidence_hash` re-reads the stored object and confirms the value before promotion. Mismatch ⇒ status `ERROR`, custody entry, quarantine retained for investigation.
+- WORM is enforced at the storage layer (Object Lock Compliance), **not** by application convention; even the root account cannot delete before the lock expires.
+- **Legal Hold** is exposed as a first-class concept (`PUT /evidence/{id}/legal-hold`, `org-admin` / `case-lead` of the case only). A legal-held object cannot be purged regardless of retention.
 
-File Status Tracking: 
-- We will implement a status field for each evidence item to track its state in the pipeline. 
-- Possible states: UPLOADING (in progress), RECEIVED (stored and awaiting processing), PARSING (the parser worker is analyzing it), INGESTING (loading parsed data to OpenSearch), COMPLETE (fully ingested and available), or ERROR (if processing failed). 
-- The status will update as the Celery workflow moves along. Users will be able to see these statuses in the UI for each file, giving them transparency into where their evidence is in the process.
+Antivirus scan (**decision 2026-06-16**):
+- **ClamAV (`clamd`)** runs as a dedicated long-lived sidecar with a thin REST wrapper (`/v2/scan`); `freshclam` refreshes signatures every 6 h.
+- Scan is **post-store / pre-promotion**, triggered by the MinIO `s3:ObjectCreated:CompleteMultipartUpload` notification on the quarantine bucket — no UI latency cost, no risk of losing a 1 GB upload to a signature mismatch mid-stream.
+- Infected ⇒ status `ERROR`, custody entry `evidence.scan.infected`, quarantine object retained for org-admin review.
 
-Retention Period: 
-- We will enforce a data retention policy as part of intake. 
-- Configuration will specify (e.g., 365 days) after which evidence and its derived data should be purged, unless the case is actively extended.After the chosen time, the system may automatically delete the evidence file and associated index data from OpenSearch. 
-- This will be made clear to users. All deletions will also be logged.
+Chain-of-Custody Logging (**decision 2026-06-16**):
+- **Reuses the unified `audit_log` table defined in §1 review** — one canonical log for access decisions and custody events. New `action` values: `evidence.upload.start|complete`, `evidence.scan.clean|infected`, `evidence.hash.verified|mismatch`, `evidence.promoted`, `evidence.legal_hold.set|cleared`, `evidence.download`, `evidence.delete`, `evidence.parse.start|success|error`, `evidence.ingest.success|error`, `evidence.tsa.anchored`.
+- Each entry carries `who / when / action / resource / decision / ip` and references `evidence.id` via `resource_id`.
 
-Security Measures for Intake: 
-- All uploads will be done via HTTPS (TLS 1.3) to protect evidence in transit. 
-- We’ll also implement scanning of metadata (like checking file header signatures) to ensure it matches the extension and expected format, any file that doesn’t match known artifact types could be rejected or flagged. 
-- While we won’t execute or open the files beyond parsing them with our tools, we remain cautious of malformed files that could exploit parser vulnerabilities. For that, we will in the future consider using protections like gVisor.
+Trusted Timestamping (**decision 2026-06-16**):
+- A self-hosted **Sigstore RFC 3161 TSA** is reachable only from the backend.
+- On the `evidence.hash.verified` transition, the SHA-256 is timestamped and the TimeStampToken stored in `evidence.rfc3161_token` — non-repudiable proof of acquisition time, aligned with the ISO/IEC 27037 + NIST SP 800-86 chain-of-custody standards.
+- The same TSA anchors the daily Merkle root of `audit_log` rows defined in §1 review.
+
+Evidence status FSM (**decision 2026-06-16**):
+- States: `UPLOADING` → `SCANNING` → `HASHING` → `RECEIVED` → `PARSING` → `INGESTING` → `COMPLETE`. `ERROR` is reachable from `SCANNING`, `HASHING`, `PARSING`, `INGESTING` and is non-terminal (org-admin can retry).
+- Orphan `UPLOADING` rows older than 24 h are aborted by a Celery beat job, releasing pending multipart parts.
+
+Retention Period (**decision 2026-06-16**):
+- Default 365 days, configurable per case (override stored on the case row, capped by org policy).
+- The Object Lock retain-until date is set at promotion time. The daily `evidence_retention_purge` Celery beat job deletes objects only after Object Lock has expired *and* `legal_hold = false`; soft-deletes the row (`status='PURGED'`) so the custodial record survives indefinitely.
+- OpenSearch ISM rollover (§1) aligns on the same window so timeline data is purged in lock-step.
+
+Security Measures for Intake:
+- All uploads use HTTPS (TLS 1.3). The presigned URLs are time-limited (15 min) and bound to the uploader's IP where the LB supports it.
+- File type is verified by libmagic *and* a per-artefact magic-byte signature (table in `reviews/Part_2_Review.md` §5.4); the executable blocklist is enforced even when the user re-extensions the file.
+- Parser sandboxing (gVisor / Firecracker) is tracked under §5 (Security and Compliance) and not duplicated here.
+
+Authoritative `evidence` schema (v1, summary):
+
+| Column            | Type           | Notes                                                                 |
+| ----------------- | -------------- | --------------------------------------------------------------------- |
+| id                | UUID PK        |                                                                       |
+| case_id           | UUID FK        | references `case_(id)`                                                |
+| org_id            | UUID FK        | references `org(id)` (defence in depth for §1 RLS)                    |
+| filename          | TEXT           |                                                                       |
+| size_bytes        | BIGINT         |                                                                       |
+| sha256            | BYTEA(32)      | whole-file SHA-256, unique per `(org_id, case_id, sha256)`            |
+| mime_detected     | TEXT           | from libmagic                                                         |
+| artefact_type     | TEXT           | enum from §5.4 allowlist                                              |
+| status            | TEXT           | FSM enum                                                              |
+| bucket / object_key | TEXT         | MinIO location                                                        |
+| object_lock_until | TIMESTAMPTZ   | mirrors S3 Object Lock retention                                      |
+| legal_hold        | BOOLEAN        | default false                                                         |
+| rfc3161_token     | BYTEA          | TSA-signed timestamp of `sha256`                                      |
+| uploaded_by       | UUID FK        | references `app_user(id)`                                             |
+| uploaded_at       | TIMESTAMPTZ    | default `now()`                                                       |
+| error_reason      | TEXT           | populated when `status='ERROR'`                                       |
+
+Open questions (must be resolved before starting §2 implementation): see `reviews/Part_2_Review.md` §6.
 
 ## 3. Parsing Scope and Timeline Model
 
