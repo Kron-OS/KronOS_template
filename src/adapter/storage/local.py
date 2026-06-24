@@ -86,6 +86,13 @@ class LocalEvidenceStorage(EvidenceStorage):
         path.write_bytes(data)
         self._quarantine[object_key] = path
 
+    def write_evidence(self, object_key: str, data: bytes) -> None:
+        """Write bytes directly to an evidence key (used by parsing tests)."""
+        path = self._base / "evidence" / object_key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        self._evidence[object_key] = path
+
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
@@ -99,7 +106,7 @@ class LocalEvidenceStorage(EvidenceStorage):
         return f"{evidence.metadata.org_alias}/{evidence.metadata.case_id}/{evidence.evidence_id}"
 
     @staticmethod
-    async def _file_stream(path: Path, chunk_size: int) -> AsyncIterator[bytes]:  # type: ignore[misc]
+    async def _file_stream(path: Path, chunk_size: int) -> AsyncIterator[bytes]:
         with path.open("rb") as fh:
             while True:
                 chunk = fh.read(chunk_size)

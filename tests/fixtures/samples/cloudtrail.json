@@ -1,0 +1,26 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {"type": "IAMUser", "userName": "alice", "accountId": "123456789012"},
+      "eventTime": "2024-01-15T10:30:00Z",
+      "eventName": "DescribeInstances",
+      "eventSource": "ec2.amazonaws.com",
+      "sourceIPAddress": "192.0.2.1",
+      "awsRegion": "us-east-1",
+      "requestParameters": {"maxResults": 100},
+      "responseElements": null
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {"type": "IAMUser", "userName": "bob", "accountId": "123456789012"},
+      "eventTime": "2024-01-15T10:31:00Z",
+      "eventName": "RunInstances",
+      "eventSource": "ec2.amazonaws.com",
+      "sourceIPAddress": "198.51.100.5",
+      "awsRegion": "us-west-2",
+      "requestParameters": {"imageId": "ami-12345678"},
+      "responseElements": {"instancesSet": {"items": [{"instanceId": "i-0abc123"}]}}
+    }
+  ]
+}

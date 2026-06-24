@@ -24,6 +24,7 @@ dependencies = [
     "structlog>=24.1",
     "python-multipart>=0.0.9",
     "clamd>=1.0.2",
+    "evtx>=0.8",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +54,8 @@ omit = [
     "src/config.py",                              # pydantic-settings; needs real env vars
     "src/adapter/repository/postgres_*.py",       # infrastructure; covered by integration tests
     "src/adapter/storage/s3.py",                  # infrastructure; covered by integration tests
+    "src/adapter/queue/celery_queue.py",          # infrastructure; needs real Celery broker
+    "src/external/celery_app.py",                 # infrastructure; needs real Celery broker
 ]
 
 [tool.mypy]

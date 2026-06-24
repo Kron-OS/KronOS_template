@@ -1,4 +1,4 @@
-"""Evidence upload routes: request presigned URL + finalize upload."""
+"""Evidence upload and parse routes."""
 
 from __future__ import annotations
 
@@ -9,11 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from src.application.evidence_intake import EvidenceIntakeService
+from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.user import TenantContext
-from src.exceptions import KronOSException, ValidationError
+from src.exceptions import KronOSException, ParsingError, ValidationError
 from src.external.dependencies import (
     get_intake_service,
+    get_parsing_orchestration_service,
     get_tenant_context,
 )
 
@@ -116,6 +118,33 @@ async def finalize_upload(
             tenant=tenant,
         )
     except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return _to_evidence_out(evidence)
+
+
+@router.post(
+    "/parse/start/{evidence_id}",
+    response_model=EvidenceOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_parsing(
+    evidence_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    orchestrator: Annotated[
+        ParsingOrchestrationService, Depends(get_parsing_orchestration_service)
+    ],
+) -> EvidenceOut:
+    """Transition RECEIVED evidence to PARSING and enqueue the parse task."""
+    try:
+        evidence = await orchestrator.start_parsing(evidence_id, tenant)
+    except (ValidationError, ParsingError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
