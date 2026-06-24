@@ -1,0 +1,38 @@
+{
+  "policy": {
+    "description": "Rollover kronos-* indices at 30 GB or 30 days; delete after 365 days",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {
+            "rollover": {
+              "min_index_age": "30d",
+              "min_size": "30gb"
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "365d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [{ "delete": {} }],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["kronos-*"],
+        "priority": 100
+      }
+    ]
+  }
+}

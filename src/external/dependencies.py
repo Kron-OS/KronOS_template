@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 
+from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.evidence import EvidenceRepository
@@ -22,6 +23,7 @@ from src.application.hashing import HashService
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.scanning import AntivirusScanner, NoOpScanner
+from src.application.timeline_ingest import TimelineIngestionService
 from src.application.validation import EvidenceValidator, default_validator_chain
 from src.domain.user import Role, TenantContext
 
@@ -35,6 +37,7 @@ _evidence_storage: EvidenceStorage | None = None
 _scanner: AntivirusScanner = NoOpScanner()
 _task_queue: TaskQueue = InMemoryTaskQueue()
 _parser_registry: ParserRegistry | None = None
+_opensearch_client: AbstractTimelineIndex = InMemoryOpenSearchClient()
 _max_upload_bytes: int = 1_073_741_824
 _presigned_expiry: int = 3600
 
@@ -133,10 +136,24 @@ def get_intake_service(
     )
 
 
+def get_opensearch_client() -> AbstractTimelineIndex:
+    return _opensearch_client
+
+
+def get_timeline_ingest_service(
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> TimelineIngestionService:
+    return TimelineIngestionService(
+        opensearch=_opensearch_client,
+        audit_log=audit_log,
+    )
+
+
 def get_parsing_orchestration_service(
     evidence_repository: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
     storage: Annotated[EvidenceStorage, Depends(get_evidence_storage)],
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    timeline_ingest: Annotated[TimelineIngestionService, Depends(get_timeline_ingest_service)],
 ) -> ParsingOrchestrationService:
     """FastAPI dependency for ParsingOrchestrationService."""
     return ParsingOrchestrationService(
@@ -145,6 +162,7 @@ def get_parsing_orchestration_service(
         audit_log=audit_log,
         parser_registry=get_parser_registry(),
         task_queue=get_task_queue(),
+        timeline_ingest=timeline_ingest,
     )
 
 
@@ -165,12 +183,17 @@ def _build_tenant_from_task(org_id: str, user_id: str) -> TenantContext:
 def _build_orchestration_service() -> ParsingOrchestrationService:
     """Build ParsingOrchestrationService for Celery workers (no FastAPI context)."""
     audit_log = get_audit_log_service(get_audit_log_repository())
+    timeline_ingest = TimelineIngestionService(
+        opensearch=_opensearch_client,
+        audit_log=audit_log,
+    )
     return ParsingOrchestrationService(
         evidence_repository=get_evidence_repository(),
         storage=get_evidence_storage(),
         audit_log=audit_log,
         parser_registry=get_parser_registry(),
         task_queue=get_task_queue(),
+        timeline_ingest=timeline_ingest,
     )
 
 
@@ -235,12 +258,14 @@ def configure_dependencies(
     scanner: AntivirusScanner | None = None,
     task_queue: TaskQueue | None = None,
     parser_registry: ParserRegistry | None = None,
+    opensearch_client: AbstractTimelineIndex | None = None,
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
-    global _scanner, _task_queue, _parser_registry, _max_upload_bytes, _presigned_expiry
+    global _scanner, _task_queue, _parser_registry, _opensearch_client
+    global _max_upload_bytes, _presigned_expiry
     _audit_log_repository = audit_log_repository
     _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
@@ -250,6 +275,8 @@ def configure_dependencies(
         _task_queue = task_queue
     if parser_registry is not None:
         _parser_registry = parser_registry
+    if opensearch_client is not None:
+        _opensearch_client = opensearch_client
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
 
@@ -257,12 +284,13 @@ def configure_dependencies(
 def reset_dependencies() -> None:
     """Reset all dependency bindings — used only in tests."""
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
-    global _task_queue, _parser_registry, _max_upload_bytes, _presigned_expiry
+    global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
     _scanner = NoOpScanner()
     _task_queue = InMemoryTaskQueue()
     _parser_registry = None
+    _opensearch_client = InMemoryOpenSearchClient()
     _max_upload_bytes = 1_073_741_824
     _presigned_expiry = 3600

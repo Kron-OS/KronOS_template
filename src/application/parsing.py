@@ -61,4 +61,4 @@ class ForensicParser(ABC):
         """
         # Stub body makes this an async generator consistent with concrete subclasses.
         return
-        yield  # noqa: unreachable
+        yield  # noqa: RET504

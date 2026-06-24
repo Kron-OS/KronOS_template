@@ -1,0 +1,58 @@
+{
+  "index_patterns": ["kronos-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "message": { "type": "text" },
+        "event": {
+          "properties": {
+            "kind":     { "type": "keyword" },
+            "category": { "type": "keyword" },
+            "type":     { "type": "keyword" },
+            "outcome":  { "type": "keyword" },
+            "original": { "type": "keyword", "index": false }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "os": {
+              "properties": {
+                "name": { "type": "keyword" }
+              }
+            }
+          }
+        },
+        "user": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "id":   { "type": "keyword" }
+          }
+        },
+        "process": {
+          "properties": {
+            "pid":  { "type": "long" },
+            "name": { "type": "keyword" }
+          }
+        },
+        "kronos": {
+          "properties": {
+            "evidence_id":      { "type": "keyword" },
+            "case_id":          { "type": "keyword" },
+            "org_id":           { "type": "keyword" },
+            "sha256":           { "type": "keyword" },
+            "parser":           { "type": "keyword" },
+            "parser_version":   { "type": "keyword" },
+            "record_index":     { "type": "long" },
+            "ingest_timestamp": { "type": "date" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections.abc import AsyncGenerator, AsyncIterator
+from typing import TYPE_CHECKING
 
 from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
@@ -14,8 +16,12 @@ from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
+from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import ParsingError, ValidationError
+
+if TYPE_CHECKING:
+    from src.application.timeline_ingest import TimelineIngestionService
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +30,7 @@ _HEADER_BYTES = 8192
 
 
 def _make_document_id(evidence_id: uuid.UUID, parser_name: str, record_index: int) -> str:
-    """Deterministic SHA-1 id for idempotent OpenSearch ingestion (Phase 4)."""
+    """Deterministic SHA-1 id for idempotent OpenSearch ingestion."""
     key = f"{evidence_id}:{parser_name}:{record_index}"
     return hashlib.sha1(key.encode()).hexdigest()  # noqa: S324
 
@@ -39,12 +45,14 @@ class ParsingOrchestrationService:
         audit_log: AuditLogService,
         parser_registry: ParserRegistry,
         task_queue: TaskQueue,
+        timeline_ingest: TimelineIngestionService | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
         self._audit = audit_log
         self._registry = parser_registry
         self._task_queue = task_queue
+        self._timeline_ingest = timeline_ingest
 
     async def start_parsing(
         self,
@@ -119,13 +127,10 @@ class ParsingOrchestrationService:
         Steps:
           1. Load evidence; assert state == PARSING.
           2. Detect parser from storage header.
-          3. Stream object and feed to parser.parse().
-          4. Assign deterministic document_id to each record.
-          5. On success: transition → COMPLETE; log PARSE_COMPLETED with record_count.
-          6. On exception: transition → ERROR; log PARSE_FAILED; re-raise.
-          7. Return total record count.
-
-        Note: records are counted but not forwarded to OpenSearch yet (Phase 4).
+          3. Stream object; feed annotated records to timeline ingest (if wired).
+          4. On success: transition → COMPLETE; log PARSE_COMPLETED with record_count.
+          5. On exception: transition → ERROR; log PARSE_FAILED; re-raise.
+          6. Return total record count.
         """
         evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
         if evidence is None:
@@ -149,13 +154,18 @@ class ParsingOrchestrationService:
         try:
             parser = await self._detect_parser(evidence, evidence_key)
             stream = await self._storage.stream_object(evidence_key)
+            annotated = _annotate_records(
+                parser.parse(stream, evidence, tenant),
+                evidence_id,
+                parser.parser_name,
+            )
 
-            count = 0
-            async for record in parser.parse(stream, evidence, tenant):
-                # Attach deterministic document_id for Phase 4 OpenSearch ingestion.
-                doc_id = _make_document_id(evidence_id, parser.parser_name, count)
-                record.model_copy(update={"document_id": doc_id})
-                count += 1
+            if self._timeline_ingest is not None:
+                count = await self._timeline_ingest.ingest_records(annotated, tenant, evidence_id)
+            else:
+                count = 0
+                async for _ in annotated:
+                    count += 1
 
             evidence = evidence.with_state(EvidenceState.COMPLETE)
             await self._repo.update(evidence)
@@ -216,3 +226,16 @@ class ParsingOrchestrationService:
                 },
             )
         return parser
+
+
+async def _annotate_records(
+    source: AsyncIterator[TimelineRecord],
+    evidence_id: uuid.UUID,
+    parser_name: str,
+) -> AsyncGenerator[TimelineRecord, None]:
+    """Wrap a parser's output stream, assigning deterministic document_id to each record."""
+    count = 0
+    async for record in source:
+        doc_id = _make_document_id(evidence_id, parser_name, count)
+        yield record.model_copy(update={"document_id": doc_id})
+        count += 1
