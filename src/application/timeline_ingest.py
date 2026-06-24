@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterable
 from typing import Any
@@ -18,6 +19,7 @@ from src.exceptions import StorageError
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_SIZE = 500
+_FLUSH_INTERVAL_SECONDS = 30
 
 
 class TimelineIngestionService:
@@ -39,6 +41,8 @@ class TimelineIngestionService:
         self._audit = audit_log
         self._batch_size = batch_size
         self._normalizer = ECSNormalizer()
+        self._ism_applied = False
+        self._provisioned_orgs: set[str] = set()
 
     async def ingest_records(
         self,
@@ -54,6 +58,15 @@ class TimelineIngestionService:
         Raises:
             StorageError: if the underlying bulk request fails.
         """
+        if not self._ism_applied:
+            await self._opensearch.ensure_ism_policy()
+            self._ism_applied = True
+
+        org_key = str(tenant.org_id)
+        if org_key not in self._provisioned_orgs:
+            await self._opensearch.ensure_tenant_role(str(tenant.org_id), tenant.org_alias)
+            self._provisioned_orgs.add(org_key)
+
         await self._audit.log(
             AuditEventType.INGEST_STARTED,
             org_id=tenant.org_id,
@@ -65,6 +78,7 @@ class TimelineIngestionService:
 
         batch: list[tuple[str, str, dict[str, Any]]] = []
         total = 0
+        last_flush = time.monotonic()
 
         try:
             async for record in records:
@@ -77,9 +91,11 @@ class TimelineIngestionService:
                 body = self._normalizer.to_document(record)
                 batch.append((index, doc_id, body))
 
-                if len(batch) >= self._batch_size:
+                elapsed = time.monotonic() - last_flush
+                if len(batch) >= self._batch_size or elapsed >= _FLUSH_INTERVAL_SECONDS:
                     total += await self._flush(batch)
                     batch = []
+                    last_flush = time.monotonic()
 
             if batch:
                 total += await self._flush(batch)

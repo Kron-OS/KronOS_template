@@ -107,6 +107,8 @@ class CloudTrailParser(ForensicParser):
 
         extra: dict[str, Any] = {
             "event.action": event_name,
+            "event.module": "aws",
+            "event.dataset": "aws.cloudtrail",
             "cloud.service.name": event_source,
             "cloud.region": ct.get("awsRegion"),
             "source.ip": ct.get("sourceIPAddress"),
@@ -135,6 +137,7 @@ class CloudTrailParser(ForensicParser):
                 "message": f"{event_name} by {user_name or 'unknown'} on {event_source}",
                 "event.kind": "event",
                 "event.category": ["cloud"],
+                "event.original": json.dumps(ct)[:32768],
                 "user.name": user_name,
                 "user.id": user_id,
             },

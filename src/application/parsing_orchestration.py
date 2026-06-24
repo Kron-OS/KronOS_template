@@ -18,7 +18,7 @@ from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import ParsingError, ValidationError
+from src.exceptions import ParsingError, StorageError, ValidationError
 
 if TYPE_CHECKING:
     from src.application.timeline_ingest import TimelineIngestionService
@@ -158,6 +158,7 @@ class ParsingOrchestrationService:
                 parser.parse(stream, evidence, tenant),
                 evidence_id,
                 parser.parser_name,
+                tenant.org_alias,
             )
 
             if self._timeline_ingest is not None:
@@ -182,6 +183,20 @@ class ParsingOrchestrationService:
             )
             return count
 
+        except StorageError as exc:
+            # Ingest failure: INGEST_FAILED already logged by TimelineIngestionService.
+            # Transition evidence to ERROR and log at orchestration level, then re-raise
+            # as StorageError (not ParsingError) to preserve the correct error category.
+            evidence = evidence.with_error("ingest_failed")
+            await self._repo.update(evidence)
+            await self._audit.log(
+                AuditEventType.PARSE_FAILED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                evidence_id=evidence.evidence_id,
+                details={"error": str(exc), "error_type": "StorageError"},
+            )
+            raise
         except (ParsingError, ValidationError):
             raise
         except Exception as exc:
@@ -232,10 +247,12 @@ async def _annotate_records(
     source: AsyncIterator[TimelineRecord],
     evidence_id: uuid.UUID,
     parser_name: str,
+    org_alias: str,
 ) -> AsyncGenerator[TimelineRecord, None]:
-    """Wrap a parser's output stream, assigning deterministic document_id to each record."""
+    """Wrap a parser's output stream, assigning deterministic document_id and org_alias."""
     count = 0
     async for record in source:
         doc_id = _make_document_id(evidence_id, parser_name, count)
-        yield record.model_copy(update={"document_id": doc_id})
+        updated_kronos = record.kronos.model_copy(update={"org_alias": org_alias})
+        yield record.model_copy(update={"document_id": doc_id, "kronos": updated_kronos})
         count += 1

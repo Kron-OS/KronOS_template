@@ -17,6 +17,7 @@ class KronosProvenance(BaseModel):
     evidence_id: uuid.UUID
     case_id: uuid.UUID
     org_id: uuid.UUID
+    org_alias: str = Field(default="", description="Human-readable org alias for querying")
     sha256: str = Field(description="SHA-256 of the source evidence file")
     parser: str = Field(description="Parser name that produced this record (e.g. evtx-rs)")
     parser_version: str

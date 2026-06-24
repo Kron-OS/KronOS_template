@@ -54,6 +54,7 @@ class ECSNormalizer:
                 "evidence_id": str(record.kronos.evidence_id),
                 "case_id": str(record.kronos.case_id),
                 "org_id": str(record.kronos.org_id),
+                "org_alias": record.kronos.org_alias,
                 "sha256": record.kronos.sha256,
                 "parser": record.kronos.parser,
                 "parser_version": record.kronos.parser_version,

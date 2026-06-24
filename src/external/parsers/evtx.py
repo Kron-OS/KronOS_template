@@ -125,7 +125,10 @@ class FastEvtxParser(ForensicParser):
         if isinstance(security, dict):
             user_id = security.get("#attributes", {}).get("UserID")
 
-        extra: dict[str, Any] = {}
+        extra: dict[str, Any] = {
+            "event.module": "windows",
+            "event.dataset": "windows.evtx",
+        }
         if event_id:
             extra["event.code"] = event_id
         if system.get("Channel"):
@@ -153,6 +156,7 @@ class FastEvtxParser(ForensicParser):
                 "@timestamp": ts,
                 "event.kind": "event",
                 "event.category": ["host"],
+                "event.original": raw.get("data", "")[:32768],
                 "host.name": host_name,
                 "user.id": user_id,
             },

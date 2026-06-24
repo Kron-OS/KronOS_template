@@ -111,6 +111,8 @@ class NginxParser(ForensicParser):
         bytes_sent: int | None = int(m["bytes_sent"]) if m["bytes_sent"] != "-" else None
 
         extra: dict[str, Any] = {
+            "event.module": "nginx",
+            "event.dataset": "nginx.access",
             "source.ip": m["remote_addr"],
             "http.request.method": m["method"],
             "url.path": m["path"],
@@ -140,6 +142,7 @@ class NginxParser(ForensicParser):
                 "event.kind": "event",
                 "event.category": ["web"],
                 "event.type": ["access"],
+                "event.original": line[:32768],
                 "user.name": remote_user,
             },
             extra=extra,
