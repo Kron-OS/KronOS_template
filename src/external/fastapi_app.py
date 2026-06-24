@@ -16,13 +16,32 @@ from src.exceptions import (
 from src.external.routes import evidence as evidence_routes
 
 
-def create_app() -> FastAPI:
-    """Construct and configure the KronOS FastAPI application."""
+def create_app(
+    keycloak_issuer: str | None = None,
+    keycloak_audience: str = "kronos-backend",
+    keycloak_jwks_url: str | None = None,
+) -> FastAPI:
+    """Construct and configure the KronOS FastAPI application.
+
+    When *keycloak_issuer* and *keycloak_jwks_url* are provided the JWT
+    validator is registered in ``app.state.keycloak_validator`` so the
+    ``get_tenant_context`` dependency can use it.  Tests may omit these
+    and override ``get_tenant_context`` via ``app.dependency_overrides``.
+    """
     app = FastAPI(
         title="KronOS",
         description="Forensically sound, multi-tenant evidence management platform",
         version="0.1.0",
     )
+
+    if keycloak_issuer and keycloak_jwks_url:
+        from src.external.middleware.keycloak_auth import KeycloakTokenValidator  # noqa: PLC0415
+
+        app.state.keycloak_validator = KeycloakTokenValidator(
+            issuer=keycloak_issuer,
+            audience=keycloak_audience,
+            jwks_url=keycloak_jwks_url,
+        )
 
     app.include_router(evidence_routes.router)
     _register_exception_handlers(app)

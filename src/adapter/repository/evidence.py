@@ -31,3 +31,7 @@ class EvidenceRepository(ABC):
     @abstractmethod
     def stream_by_state(self, state: EvidenceState, org_id: uuid.UUID) -> AsyncIterator[Evidence]:
         """Yield all evidence in a given state for an org (used by recovery tasks)."""
+
+    @abstractmethod
+    async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
+        """Delete evidence metadata. Returns True if the record existed, False otherwise."""

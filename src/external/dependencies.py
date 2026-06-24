@@ -7,10 +7,9 @@ bindings via FastAPI's ``app.dependency_overrides`` or by calling
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends
 
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
@@ -26,6 +25,8 @@ from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.validation import EvidenceValidator, default_validator_chain
 from src.domain.user import Role, TenantContext
+from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
+from src.external.middleware.tenant_context import get_tenant_context as get_tenant_context
 
 # ---------------------------------------------------------------------------
 # Singleton configuration store — only one instance, set at startup.
@@ -198,52 +199,16 @@ def _build_orchestration_service() -> ParsingOrchestrationService:
 
 
 # ---------------------------------------------------------------------------
-# Placeholder auth dependency — replaced by Keycloak JWT parsing in Phase 5.
-#
-# Reads org/user identity from HTTP headers so routes are testable without
-# a running Keycloak instance.  The header names mirror what the Phase 5
-# JWT middleware will populate after token verification.
+# Auth dependency — JWT-based TenantContext extraction (Phase 5).
+# Re-exported here so routes continue to import from this module unchanged.
 # ---------------------------------------------------------------------------
 
+_step_up_auth = _StepUpAuth()
 
-def get_tenant_context(
-    x_org_id: Annotated[str, Header(description="Organization UUID")] = "",
-    x_org_alias: Annotated[str, Header(description="Organization alias")] = "",
-    x_user_id: Annotated[str, Header(description="User UUID")] = "",
-    x_username: Annotated[str, Header(description="Username")] = "",
-    x_roles: Annotated[str, Header(description="Comma-separated roles")] = "analyst",
-    x_correlation_id: Annotated[str, Header(description="Request correlation ID")] = "",
-) -> TenantContext:
-    """Extract TenantContext from request headers (Phase 2 placeholder).
 
-    In Phase 5 this function is replaced by JWT-based extraction.  The header
-    shape is identical to what the JWT middleware will populate, so routes
-    require zero changes at that point.
-    """
-    try:
-        org_id = uuid.UUID(x_org_id)
-        user_id = uuid.UUID(x_user_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid auth headers",
-        ) from exc
-
-    raw_roles = {r.strip() for r in x_roles.split(",") if r.strip()}
-    roles: frozenset[Role] = frozenset()
-    try:
-        roles = frozenset(Role(r) for r in raw_roles)
-    except ValueError:
-        pass
-
-    return TenantContext(
-        org_id=org_id,
-        org_alias=x_org_alias or "unknown",
-        user_id=user_id,
-        username=x_username or "unknown",
-        roles=roles,
-        correlation_id=x_correlation_id or str(uuid.uuid4()),
-    )
+def get_step_up_auth() -> _StepUpAuth:
+    """Return the shared StepUpAuth instance."""
+    return _step_up_auth
 
 
 # ---------------------------------------------------------------------------

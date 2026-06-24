@@ -89,6 +89,13 @@ class InMemoryEvidenceRepository(EvidenceRepository):
             if ev.state == state and ev.metadata.org_id == org_id:
                 yield ev
 
+    async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
+        ev = self._store.get(evidence_id)
+        if ev and ev.metadata.org_id == org_id:
+            del self._store[evidence_id]
+            return True
+        return False
+
 
 @pytest.fixture
 def audit_repo() -> InMemoryAuditLogRepository:

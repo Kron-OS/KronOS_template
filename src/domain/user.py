@@ -50,3 +50,4 @@ class TenantContext(BaseModel):
     username: str
     roles: frozenset[Role]
     correlation_id: str = Field(description="JWT jti claim for cross-hop tracing")
+    acr: str = Field(default="aal1", description="ACR — aal1 (password) or aal2 (MFA)")

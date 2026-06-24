@@ -5,19 +5,22 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.domain.evidence import Evidence, EvidenceState
-from src.domain.user import TenantContext
-from src.exceptions import KronOSException, ParsingError, ValidationError
+from src.domain.user import Role, TenantContext
+from src.exceptions import AuthorizationError, KronOSException, ParsingError, ValidationError
 from src.external.dependencies import (
     get_intake_service,
     get_parsing_orchestration_service,
+    get_step_up_auth,
     get_tenant_context,
 )
+from src.external.middleware.rbac import requires_role
+from src.external.middleware.step_up_auth import StepUpAuth
 
 router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
@@ -154,6 +157,56 @@ async def start_parsing(
         ) from exc
 
     return _to_evidence_out(evidence)
+
+
+@router.delete(
+    "/{evidence_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_evidence(
+    evidence_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN))],
+    intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+    step_up_auth: Annotated[StepUpAuth, Depends(get_step_up_auth)],
+    x_step_up_ticket: Annotated[str, Header(description="One-time step-up ticket UUID")] = "",
+) -> None:
+    """Delete evidence metadata. Requires org-admin role + aal2 step-up ticket.
+
+    The underlying WORM object is retained in MinIO until its retention period
+    expires (per regulatory requirements).  Only the platform metadata record
+    is removed.
+
+    Clients must first obtain a step-up ticket via ``POST /api/step-up/ticket``
+    (requires aal2 JWT) and pass it in the ``X-Step-Up-Ticket`` header.
+    """
+    step_up_auth.assert_acr(tenant)
+
+    try:
+        ticket_id = uuid.UUID(x_step_up_ticket)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid X-Step-Up-Ticket header",
+            headers={"WWW-Authenticate": 'Bearer error="insufficient_user_authentication"'},
+        ) from exc
+
+    step_up_auth.consume_ticket(
+        ticket_id=ticket_id,
+        user_id=tenant.user_id,
+        operation="evidence.delete",
+        resource_id=str(evidence_id),
+    )
+
+    try:
+        await intake.delete_evidence(evidence_id=evidence_id, tenant=tenant)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,8 @@ from src.application.scanning import AntivirusScanner
 from src.application.validation import EvidenceValidator
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
-from src.domain.user import TenantContext
-from src.exceptions import ValidationError
+from src.domain.user import Role, TenantContext
+from src.exceptions import AuthorizationError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +274,55 @@ class EvidenceIntakeService:
             details={"sha256": hash_result.sha256},
         )
         return evidence
+
+    async def delete_evidence(
+        self,
+        evidence_id: uuid.UUID,
+        tenant: TenantContext,
+    ) -> None:
+        """Delete evidence metadata after verifying org scope and org-admin role.
+
+        The WORM-locked object in MinIO cannot be removed before its retention
+        period expires; only the platform metadata record is deleted here.
+        Step-up ticket verification is the caller's responsibility (route layer).
+
+        Raises:
+            ValidationError: if evidence is not found for this org.
+            AuthorizationError: if the tenant lacks the ORG_ADMIN role.
+        """
+        if Role.ORG_ADMIN not in tenant.roles:
+            raise AuthorizationError(
+                "Only org-admin may delete evidence",
+                context={"user_id": str(tenant.user_id), "org_id": str(tenant.org_id)},
+            )
+
+        evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
+        if evidence is None:
+            raise ValidationError(
+                "Evidence not found",
+                context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+
+        await self._audit.log(
+            AuditEventType.EVIDENCE_DELETED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            actor_username=tenant.username,
+            evidence_id=evidence_id,
+            details={"step_up_verified": True},
+        )
+
+        deleted = await self._repo.delete_by_id(evidence_id, tenant.org_id)
+        if not deleted:
+            logger.warning(
+                "evidence_delete_not_found_in_repo",
+                extra={"evidence_id": str(evidence_id)},
+            )
+
+        logger.info(
+            "evidence_deleted",
+            extra={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+        )
 
     async def _promote(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
