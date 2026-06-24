@@ -15,13 +15,15 @@ dependencies = [
     "celery>=5.4",
     "redis>=5.0",
     "asyncpg>=0.29",
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
     "boto3>=1.34",
     "aiobotocore>=2.13",
     "opensearch-py>=2.6",
     "python-jose[cryptography]>=3.3",
     "httpx>=0.27",
     "structlog>=24.1",
+    "python-multipart>=0.0.9",
+    "clamd>=1.0.2",
 ]
 
 [project.optional-dependencies]
@@ -33,18 +35,24 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.4",
     "black>=24.4",
-    "testcontainers>=4.5",
+    "testcontainers[postgres,minio]>=4.5",
     "factory-boy>=3.3",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=80"]
+markers = [
+    "integration: requires Docker (Postgres + MinIO containers)",
+]
 
 [tool.coverage.run]
 omit = [
-    "src/config.py",          # pydantic-settings; validated at runtime, not unit-testable
+    "src/config.py",                              # pydantic-settings; needs real env vars
+    "src/adapter/repository/postgres_*.py",       # infrastructure; covered by integration tests
+    "src/adapter/storage/s3.py",                  # infrastructure; covered by integration tests
 ]
 
 [tool.mypy]

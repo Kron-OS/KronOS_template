@@ -1,0 +1,59 @@
+"""Integration test fixtures: Postgres + MinIO testcontainers."""
+
+from __future__ import annotations
+
+import shutil
+
+import pytest
+
+# Skip all integration tests when Docker is not available.
+if not shutil.which("docker"):
+    pytest.skip("Docker not available — skipping integration tests", allow_module_level=True)
+
+
+@pytest.fixture(scope="session")
+def postgres_engine():  # type: ignore[no-untyped-def]
+    """Start a Postgres container and return a SQLAlchemy AsyncEngine."""
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16-alpine") as pg:
+        import asyncio
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        url = pg.get_connection_url().replace("psycopg2", "asyncpg")
+        engine = create_async_engine(url, echo=False)
+
+        # Create tables synchronously before yielding.
+        async def _setup() -> None:
+            from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
+            from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
+
+            await PostgresEvidenceRepository.create_tables(engine)
+            await PostgresAuditLogRepository.create_tables(engine)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        yield engine
+        asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
+@pytest.fixture(scope="session")
+def minio_storage(tmp_path_factory):  # type: ignore[no-untyped-def]
+    """Start a MinIO container and return a configured S3EvidenceStorage."""
+    try:
+        from testcontainers.minio import MinioContainer
+    except ImportError:
+        pytest.skip("testcontainers[minio] not installed")
+
+    with MinioContainer() as minio:
+        from src.adapter.storage.s3 import S3EvidenceStorage
+
+        storage = S3EvidenceStorage(
+            endpoint_url=minio.get_url(),
+            access_key=minio.access_key,
+            secret_key=minio.secret_key,
+            quarantine_bucket_prefix="kronos-evidence",
+            evidence_bucket_prefix="kronos-evidence",
+            use_tls=False,
+        )
+        yield storage
