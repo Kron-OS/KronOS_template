@@ -171,7 +171,7 @@ class AuditLogService:
         Returns (False, detail_message) if a break is detected.
         """
         prev_hash = _GENESIS_HASH
-        async for event in self._repository.stream_by_case(org_id):  # type: ignore[arg-type]
+        async for event in self._repository.stream_by_case(org_id):
             expected = compute_row_hash(event.prev_row_hash or _GENESIS_HASH, event)
             if event.row_hash != expected:
                 detail = (

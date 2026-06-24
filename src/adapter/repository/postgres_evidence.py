@@ -100,7 +100,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             return None
         return self._from_row(row._asdict())
 
-    async def stream_by_case(  # type: ignore[override]
+    async def stream_by_case(
         self, case_id: uuid.UUID, org_id: uuid.UUID
     ) -> AsyncIterator[Evidence]:
         async with self._engine.connect() as conn:
@@ -115,7 +115,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_state(  # type: ignore[override]
+    async def stream_by_state(
         self, state: EvidenceState, org_id: uuid.UUID
     ) -> AsyncIterator[Evidence]:
         async with self._engine.connect() as conn:

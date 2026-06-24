@@ -80,7 +80,7 @@ class PostgresAuditLogRepository(AuditLogRepository):
             ).one_or_none()
         return row[0] if (row and row[0] is not None) else 0
 
-    async def stream_by_evidence(  # type: ignore[override]
+    async def stream_by_evidence(
         self, evidence_id: uuid.UUID
     ) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
@@ -92,7 +92,7 @@ class PostgresAuditLogRepository(AuditLogRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_case(  # type: ignore[override]
+    async def stream_by_case(
         self, case_id: uuid.UUID
     ) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:

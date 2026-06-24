@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-from typing import Any
 
 from src.domain.user import TenantContext
 from src.exceptions import AuthenticationError

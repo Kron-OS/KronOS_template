@@ -188,7 +188,7 @@ class S3EvidenceStorage(EvidenceStorage):
             await self._run(self._client.create_bucket, **kwargs)
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
 
-    async def _s3_stream(  # type: ignore[misc]
+    async def _s3_stream(
         self, bucket: str, key: str, chunk_size: int
     ) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()

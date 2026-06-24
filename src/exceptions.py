@@ -4,7 +4,7 @@
 class KronOSException(Exception):  # noqa: N818
     """Base exception for all KronOS errors."""
 
-    def __init__(self, message: str, context: dict | None = None) -> None:
+    def __init__(self, message: str, context: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.context = context or {}
 

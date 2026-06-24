@@ -36,7 +36,10 @@ class _JwksCache:
         self._fetched_at: dict[str, float] = {}
 
     def is_stale(self, issuer: str) -> bool:
-        return time.monotonic() - self._fetched_at.get(issuer, 0.0) >= _JWKS_TTL_SECONDS
+        fetched = self._fetched_at.get(issuer)
+        if fetched is None:
+            return True
+        return time.monotonic() - fetched >= _JWKS_TTL_SECONDS
 
     def update(self, issuer: str, jwks: dict[str, Any]) -> None:
         for key_data in jwks.get("keys", []):

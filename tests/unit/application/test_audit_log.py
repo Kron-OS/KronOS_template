@@ -164,5 +164,5 @@ class TestAuditLogErrors:
 
 
 def await_coro(coro):  # type: ignore[no-untyped-def]
-    """Run a coroutine in the event loop for synchronous test methods."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run a coroutine in a fresh event loop (safe after pytest-asyncio closes its loop)."""
+    return asyncio.run(coro)
