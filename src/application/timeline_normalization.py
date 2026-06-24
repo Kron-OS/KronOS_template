@@ -65,8 +65,9 @@ class ECSNormalizer:
             raw["message"] = record.message
 
         doc = _clean_none(raw)
-        # Merge extra fields at the top level (format-specific preserved fields).
-        doc.update(record.extra)
+        # Merge extra fields, expanding dotted keys into nested dicts (ECS convention).
+        for key, value in record.extra.items():
+            _set_dotted(doc, key, value)
         return doc
 
 
@@ -81,3 +82,20 @@ def _clean_none(obj: dict[str, Any]) -> dict[str, Any]:
         elif value is not None:
             result[key] = value
     return result
+
+
+def _set_dotted(doc: dict[str, Any], key: str, value: Any) -> None:
+    """Set a value in *doc* using a dotted key path, merging into existing nested dicts.
+
+    ``_set_dotted(doc, "event.code", "4624")`` is equivalent to
+    ``doc.setdefault("event", {})["code"] = "4624"``.
+    Non-dotted keys are set directly.
+    """
+    parts = key.split(".", 1)
+    if len(parts) == 1:
+        doc[key] = value
+    else:
+        head, tail = parts
+        if head not in doc or not isinstance(doc[head], dict):
+            doc[head] = {}
+        _set_dotted(doc[head], tail, value)

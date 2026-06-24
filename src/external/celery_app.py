@@ -1,21 +1,24 @@
 """Celery application and parse task definitions.
 
-Broker/backend URLs are read from environment variables with safe defaults so
-this module can be imported in development without a running Redis instance.
-The actual production values come from src/config.py at worker startup.
+Broker/backend URLs come from pydantic Settings (src/config.py), which reads
+from environment variables.  Importing Settings here means the app will validate
+configuration at worker startup rather than silently using defaults.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 
 from celery import Celery
 
+from src.config import Settings
+
+_settings = Settings()
+
 celery_app = Celery(
     "kronos",
-    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1"),
+    broker=_settings.celery_broker_url.get_secret_value(),
+    backend=_settings.celery_result_backend.get_secret_value(),
 )
 celery_app.conf.task_routes = {
     "kronos.parse_fast": {"queue": "parse.fast"},

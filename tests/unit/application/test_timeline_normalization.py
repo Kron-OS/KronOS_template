@@ -82,7 +82,8 @@ class TestECSNormalizer:
         doc = self.normalizer.to_document(record)
         assert doc.get("message") == "Test event"
 
-    def test_extra_fields_merged_at_top_level(self) -> None:
+    def test_extra_dotted_ecs_keys_are_nested(self) -> None:
+        """Dotted extra keys like event.code must be nested, not stored as flat strings."""
         from src.domain.timeline import KronosProvenance, TimelineRecord
 
         record = TimelineRecord(
@@ -90,21 +91,46 @@ class TestECSNormalizer:
                 "@timestamp": datetime(2024, 1, 1, tzinfo=UTC),
                 "message": "x",
             },
-            extra={"aws.region": "us-east-1", "custom_field": 42},
+            extra={"event.code": "4624", "custom_field": 42},
             kronos=KronosProvenance(
                 evidence_id=uuid.uuid4(),
                 case_id=uuid.uuid4(),
                 org_id=uuid.uuid4(),
                 sha256="b" * 64,
-                parser="cloudtrail",
-                parser_version="1.0.0",
+                parser="evtx-rs",
+                parser_version="0.8",
                 record_index=0,
                 ingest_timestamp=datetime.now(UTC),
             ),
         )
         doc = self.normalizer.to_document(record)
-        assert doc["aws.region"] == "us-east-1"
+        # event.code must be nested inside the event block, not a top-level dotted key
+        assert "event.code" not in doc
+        assert doc["event"]["code"] == "4624"
+        # Non-dotted extra keys stay at top level
         assert doc["custom_field"] == 42
+
+    def test_extra_deeply_nested_dotted_key(self) -> None:
+        """Multi-segment dotted keys like winlog.event_data.SubjectUserName are deeply nested."""
+        from src.domain.timeline import KronosProvenance, TimelineRecord
+
+        record = TimelineRecord(
+            **{"@timestamp": datetime(2024, 1, 1, tzinfo=UTC)},
+            extra={"winlog.event_data.SubjectUserName": "SYSTEM"},
+            kronos=KronosProvenance(
+                evidence_id=uuid.uuid4(),
+                case_id=uuid.uuid4(),
+                org_id=uuid.uuid4(),
+                sha256="d" * 64,
+                parser="evtx-rs",
+                parser_version="0.8",
+                record_index=0,
+                ingest_timestamp=datetime.now(UTC),
+            ),
+        )
+        doc = self.normalizer.to_document(record)
+        assert "winlog.event_data.SubjectUserName" not in doc
+        assert doc["winlog"]["event_data"]["SubjectUserName"] == "SYSTEM"
 
     def test_ingest_timestamp_is_iso_string(self) -> None:
         record = make_timeline_record()

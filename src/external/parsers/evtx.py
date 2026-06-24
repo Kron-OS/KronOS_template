@@ -69,17 +69,25 @@ class FastEvtxParser(ForensicParser):
         buf = io.BytesIO(b"".join(chunks))
 
         idx = 0
-        with evtx.PyEvtxParser(buf) as parser:
-            for raw_record in parser.records_json():
-                try:
-                    record = self._to_timeline_record(raw_record, idx, evidence)
-                    yield record
-                    idx += 1
-                except Exception:
-                    logger.debug(
-                        "evtx_parser: skipping malformed record",
-                        extra={"record_id": raw_record.get("event_record_id")},
-                    )
+        # PyEvtxParser does not implement the context manager protocol; use directly.
+        # records_json() may yield RuntimeError objects for malformed records per library docs.
+        parser = evtx.PyEvtxParser(buf)
+        for raw_record in parser.records_json():
+            if isinstance(raw_record, RuntimeError):
+                logger.debug(
+                    "evtx_parser: skipping malformed record (library error)",
+                    extra={"error": str(raw_record)},
+                )
+                continue
+            try:
+                record = self._to_timeline_record(raw_record, idx, evidence)
+                yield record
+                idx += 1
+            except Exception:
+                logger.debug(
+                    "evtx_parser: skipping malformed record",
+                    extra={"record_id": raw_record.get("event_record_id")},
+                )
 
     # ------------------------------------------------------------------
     # Private helpers
