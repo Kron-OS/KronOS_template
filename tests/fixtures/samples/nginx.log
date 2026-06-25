@@ -1,0 +1,5 @@
+192.168.1.1 - frank [15/Jan/2024:10:00:00 +0000] "GET /index.html HTTP/1.1" 200 1024 "https://example.com/" "Mozilla/5.0"
+10.0.0.2 - - [15/Jan/2024:10:00:01 +0000] "POST /api/login HTTP/1.1" 401 256 "-" "curl/7.68.0"
+172.16.0.5 - alice [15/Jan/2024:10:00:02 +0000] "GET /dashboard HTTP/1.1" 200 8192 "https://example.com/index.html" "Chrome/120.0"
+192.168.1.50 - - [15/Jan/2024:10:00:03 +0000] "GET /robots.txt HTTP/1.0" 404 128 "-" "Googlebot/2.1"
+10.10.10.10 - - [15/Jan/2024:10:00:04 +0000] "DELETE /api/resource/42 HTTP/1.1" 204 0 "-" "python-requests/2.31"
