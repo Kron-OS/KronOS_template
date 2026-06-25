@@ -141,15 +141,13 @@ def test_tenant_context_fields_present() -> None:
 
 
 def test_tenant_context_immutable() -> None:
-    """TenantContext is immutable (frozen)."""
-    from pydantic import BaseModel
+    """TenantContext is immutable (frozen Pydantic model)."""
+    import pydantic
 
     tenant = valid_tenant()
-    # TenantContext is a frozen Pydantic BaseModel
-    assert isinstance(tenant, BaseModel)
-    # Attempting to set a field on frozen model raises AttributeError
-    with pytest.raises(AttributeError):
-        tenant.org_id = uuid.uuid4()
+    assert isinstance(tenant, pydantic.BaseModel)
+    with pytest.raises(pydantic.ValidationError):
+        tenant.org_id = uuid.uuid4()  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -168,18 +166,16 @@ def test_step_up_ticket_issued_and_consumed() -> None:
     operation = "evidence.delete"
     resource_id = "resource123"
 
-    # Issue a ticket
     ticket_id = step_up.issue_ticket(
         user_id=user_id,
         operation=operation,
         resource_id=resource_id,
     )
 
-    # Ticket should be a UUID
     assert ticket_id is not None
     assert isinstance(ticket_id, uuid.UUID)
 
-    # Ticket should be valid immediately (consume_ticket returns None on success)
+    # First consume succeeds (returns None)
     step_up.consume_ticket(
         ticket_id=ticket_id,
         user_id=user_id,
@@ -187,7 +183,7 @@ def test_step_up_ticket_issued_and_consumed() -> None:
         resource_id=resource_id,
     )
 
-    # Second consume should fail (single-use) — raises HTTPException
+    # Second consume raises (single-use)
     with pytest.raises(HTTPException):
         step_up.consume_ticket(
             ticket_id=ticket_id,
@@ -215,7 +211,6 @@ def test_step_up_ticket_wrong_user_rejected() -> None:
         resource_id=resource_id,
     )
 
-    # user2 cannot consume user1's ticket — raises HTTPException
     with pytest.raises(HTTPException):
         step_up.consume_ticket(
             ticket_id=ticket_id,
