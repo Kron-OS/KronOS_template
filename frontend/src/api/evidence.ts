@@ -55,6 +55,22 @@ export async function getSSETicket(caseId: string): Promise<SSETicket> {
   return res.data
 }
 
+export async function finalizeUploadWithHash(
+  evidenceId: string,
+  clientSha256: string,
+): Promise<Evidence> {
+  const res = await apiClient.post<Evidence>(
+    `/api/evidence/upload/finalize/${evidenceId}`,
+    { client_sha256: clientSha256 },
+  )
+  return res.data
+}
+
+export async function getDashboardUrl(caseId: string): Promise<{ url: string }> {
+  const res = await apiClient.get<{ url: string }>(`/api/cases/${caseId}/dashboard-url`)
+  return res.data
+}
+
 export async function deleteEvidence(id: string): Promise<void> {
   await apiClient.delete(`/api/evidence/${id}`)
 }

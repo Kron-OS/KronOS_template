@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCase } from '../api/cases'
-import { getEvidence, getAuditLog } from '../api/evidence'
+import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
 import { StatusPill } from '../components/StatusPill'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { UploadDrawer } from '../components/UploadDrawer'
+import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
 import type { Evidence, AuditEvent, SSEStatusEvent, SSEErrorEvent } from '../types'
@@ -27,6 +28,7 @@ function truncateHash(hash: string | null): string {
 function EvidenceTab({ caseId }: { caseId: string }) {
   const queryClient = useQueryClient()
   const [showUpload, setShowUpload] = useState(false)
+  const [selectedEvidence, setSelectedEvidence] = useState<Evidence | null>(null)
   const { data, isLoading, error } = useQuery({
     queryKey: ['evidence', caseId],
     queryFn: () => getEvidence(caseId),
@@ -92,22 +94,39 @@ function EvidenceTab({ caseId }: { caseId: string }) {
                 <th className="px-4 py-3 font-medium">SHA-256</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Uploader</th>
+                <th className="px-4 py-3 font-medium sr-only">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
               {data.items.map((ev) => (
-                <tr key={ev.id} className="hover:bg-gray-900/40">
+                <tr
+                  key={ev.id}
+                  className="cursor-pointer hover:bg-gray-900/40"
+                  onClick={() => setSelectedEvidence(ev)}
+                >
                   <td className="max-w-xs truncate px-4 py-3 font-mono text-gray-200">
                     {ev.filename}
                   </td>
                   <td className="px-4 py-3 text-gray-400">{formatBytes(ev.sizeBytes)}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                  <td
+                    className="px-4 py-3 font-mono text-xs text-gray-500"
+                    title={ev.sha256 ?? undefined}
+                  >
                     {truncateHash(ev.sha256)}
                   </td>
                   <td className="px-4 py-3">
                     <StatusPill state={ev.state} />
                   </td>
                   <td className="px-4 py-3 text-gray-400">{ev.uploadedBy}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setSelectedEvidence(ev) }}
+                      className="text-xs text-indigo-400 hover:underline"
+                    >
+                      Details
+                    </button>
+                  </td>
                 </tr>
               ))}
               {data.items.length === 0 && (
@@ -127,14 +146,62 @@ function EvidenceTab({ caseId }: { caseId: string }) {
         open={showUpload}
         onClose={() => setShowUpload(false)}
       />
+
+      <EvidenceDetailDrawer
+        evidence={selectedEvidence}
+        onClose={() => setSelectedEvidence(null)}
+      />
     </div>
   )
 }
 
-function TimelineTab() {
+function TimelineTab({ caseId }: { caseId: string }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['dashboardUrl', caseId],
+    queryFn: () => getDashboardUrl(caseId),
+    staleTime: 300_000,
+    retry: 1,
+  })
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size="lg" />
+      </div>
+    )
+  }
+
+  if (error || !data) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-800 py-16 text-sm text-gray-500">
+        <p>Timeline analysis unavailable — no parsed evidence yet.</p>
+        <p className="text-xs text-gray-600">
+          Upload and process evidence to view the forensic timeline.
+        </p>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex h-64 items-center justify-center rounded-lg border border-gray-800 text-sm text-gray-500">
-      Configure OpenSearch Dashboards URL in settings to embed the timeline view.
+    <div className="flex flex-col gap-2">
+      <div className="flex justify-end">
+        <a
+          href={data.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-indigo-400 hover:underline"
+        >
+          Open in new tab
+        </a>
+      </div>
+      <iframe
+        src={data.url}
+        allow="fullscreen"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+        title="Timeline Analysis"
+        className="w-full rounded-lg border border-gray-800"
+        style={{ height: '70vh' }}
+      />
     </div>
   )
 }
@@ -383,7 +450,7 @@ export function CaseDetailPage() {
       </div>
 
       {activeTab === 'evidence' && <EvidenceTab caseId={caseId} />}
-      {activeTab === 'timeline' && <TimelineTab />}
+      {activeTab === 'timeline' && <TimelineTab caseId={caseId} />}
       {activeTab === 'auditlog' && <AuditLogTab caseId={caseId} />}
       {activeTab === 'settings' && <SettingsTab caseId={caseId} />}
     </div>

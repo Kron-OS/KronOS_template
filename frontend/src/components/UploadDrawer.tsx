@@ -1,9 +1,80 @@
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { requestUpload, finalizeUpload } from '../api/evidence'
+import { requestUpload, finalizeUploadWithHash } from '../api/evidence'
 import { Spinner } from './Spinner'
 import { ErrorBanner } from './ErrorBanner'
-const ALLOWED_EXTENSIONS = new Set(['evtx', 'json', 'log', 'zip', 'gz', 'jsonl'])
+
+const ALLOWED_EXTENSIONS = new Set([
+  'evtx', 'json', 'jsonl', 'csv', 'log', 'gz', 'zip', 'sqlite', 'db',
+])
+
+const BLOCKED_EXTENSIONS = new Set([
+  'exe', 'dll', 'scr', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'jar', 'msi', 'com',
+])
+
+async function computeSHA256(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+async function validateFileMagic(file: File): Promise<{ ok: boolean; reason?: string }> {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+
+  if (BLOCKED_EXTENSIONS.has(ext)) {
+    return { ok: false, reason: `Blocked file type: .${ext}` }
+  }
+
+  // Read first 262 bytes for magic byte check
+  const slice = file.slice(0, 262)
+  const buf = await slice.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+
+  // EVTX: ElfFile\x00
+  if (
+    bytes[0] === 0x45 && bytes[1] === 0x6c && bytes[2] === 0x66 &&
+    bytes[3] === 0x46 && bytes[4] === 0x69 && bytes[5] === 0x6c &&
+    bytes[6] === 0x65 && bytes[7] === 0x00
+  ) {
+    return { ok: true }
+  }
+
+  // GZIP: \x1f\x8b
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) return { ok: true }
+
+  // ZIP / .zip: PK\x03\x04
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+    return { ok: true }
+  }
+
+  // SQLite: "SQLite format 3\x00"
+  const sqliteMagic = [0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00]
+  if (sqliteMagic.every((b, i) => bytes[i] === b)) return { ok: true }
+
+  // Prefetch: MAM\x04
+  if (bytes[0] === 0x4d && bytes[1] === 0x41 && bytes[2] === 0x4d && bytes[3] === 0x04) {
+    return { ok: true }
+  }
+
+  // Text-based formats (json, jsonl, csv, log) — check for printable ASCII start
+  if (['json', 'jsonl', 'csv', 'log'].includes(ext)) {
+    const isText = bytes.slice(0, 8).every((b) => b >= 0x09 && b <= 0x7e)
+    if (isText) return { ok: true }
+  }
+
+  // MZ header (Windows PE) — always reject
+  if (bytes[0] === 0x4d && bytes[1] === 0x5a) {
+    return { ok: false, reason: 'Windows executable files are not accepted' }
+  }
+
+  if (!ALLOWED_EXTENSIONS.has(ext)) {
+    return { ok: false, reason: `Unsupported extension: .${ext}` }
+  }
+
+  return { ok: true }
+}
 
 interface FileProgress {
   name: string
@@ -23,6 +94,13 @@ async function uploadFile(
   file: File,
   onProgress: (pct: number) => void,
 ): Promise<void> {
+  const validation = await validateFileMagic(file)
+  if (!validation.ok) {
+    throw new Error(validation.reason ?? 'File rejected by pre-check')
+  }
+
+  const sha256 = await computeSHA256(file)
+
   const upload = await requestUpload(
     caseId,
     file.name,
@@ -41,7 +119,7 @@ async function uploadFile(
     xhr.send(file)
   })
 
-  await finalizeUpload(upload.evidenceId)
+  await finalizeUploadWithHash(upload.evidenceId, sha256)
 }
 
 export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
@@ -61,13 +139,13 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files ?? [])
-    const invalid = selected.filter((f) => {
+    const blocked = selected.filter((f) => {
       const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
-      return !ALLOWED_EXTENSIONS.has(ext)
+      return BLOCKED_EXTENSIONS.has(ext)
     })
-    if (invalid.length > 0) {
+    if (blocked.length > 0) {
       setGlobalError(
-        `Unsupported file type(s): ${invalid.map((f) => f.name).join(', ')}. Allowed: evtx, json, log, zip, gz`,
+        `Blocked file type(s): ${blocked.map((f) => f.name).join(', ')}`,
       )
       e.target.value = ''
       return
@@ -130,7 +208,7 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
           htmlFor="evidence-file-input"
         >
           <span>Click to select files</span>
-          <span className="text-xs text-gray-600">evtx, json, log, zip, gz</span>
+          <span className="text-xs text-gray-600">evtx, json, jsonl, csv, log, gz, zip, sqlite</span>
           <input
             id="evidence-file-input"
             ref={inputRef}

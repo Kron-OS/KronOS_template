@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@variant dark (&:where(.dark, .dark *));
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -16,6 +17,12 @@ body {
   font-family: system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Light mode override — activated when .dark is absent from <html> */
+html:not(.dark) body {
+  background-color: #f9fafb; /* gray-50 */
+  color: #111827; /* gray-900 */
 }
 
 #root {

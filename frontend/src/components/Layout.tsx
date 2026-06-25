@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { keycloak } from '../keycloak'
 import { useAuthStore } from '../store/auth'
@@ -7,8 +7,28 @@ interface LayoutProps {
   children: ReactNode
 }
 
+function useDarkMode() {
+  const [dark, setDark] = useState<boolean>(() => {
+    const stored = localStorage.getItem('kronos-theme')
+    if (stored) return stored === 'dark'
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  })
+
+  useEffect(() => {
+    if (dark) {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+    localStorage.setItem('kronos-theme', dark ? 'dark' : 'light')
+  }, [dark])
+
+  return [dark, setDark] as const
+}
+
 export function Layout({ children }: LayoutProps) {
   const user = useAuthStore((s) => s.user)
+  const [dark, setDark] = useDarkMode()
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-950 text-gray-100">
@@ -42,6 +62,15 @@ export function Layout({ children }: LayoutProps) {
                 )}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setDark((d) => !d)}
+              className="rounded px-2 py-1.5 text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+              aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {dark ? '☀' : '◑'}
+            </button>
             <button
               type="button"
               onClick={() => keycloak.logout()}
