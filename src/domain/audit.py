@@ -50,6 +50,16 @@ class AuditEventType(StrEnum):
     # Audit integrity
     AUDIT_HASH_CHAIN_VERIFIED = "audit.hash_chain_verified"
     AUDIT_HASH_CHAIN_TAMPERED = "audit.hash_chain_tampered"
+    AUDIT_MERKLE_ANCHORED = "audit.merkle_anchored"
+
+    # RFC 3161 timestamping
+    EVIDENCE_TSA_ANCHORED = "evidence.tsa_anchored"
+
+    # Org administration
+    ORG_USER_INVITED = "org.user_invited"
+    ORG_USER_ROLE_CHANGED = "org.user_role_changed"
+    ORG_USER_REMOVED = "org.user_removed"
+    ORG_SETTINGS_UPDATED = "org.settings_updated"
 
     # Generic
     SYSTEM_ERROR = "system.error"

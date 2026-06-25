@@ -8,7 +8,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from src.adapter.repository.audit_log import AuditLogRepository
@@ -181,3 +181,72 @@ class AuditLogService:
                 return False, detail
             prev_hash = event.row_hash  # noqa: F841 — kept for readability
         return True, None
+
+    async def anchor_day(
+        self,
+        anchor_date: date,
+        org_id: uuid.UUID,
+        timestamp_service: Any | None = None,
+    ) -> str:
+        """Compute the Merkle root of the day's audit events and anchor it.
+
+        Collects all events for org_id on anchor_date, computes the Merkle root,
+        optionally calls the RFC 3161 TSA, then persists the anchor and emits
+        AUDIT_MERKLE_ANCHORED.
+
+        Returns the hex Merkle root hash.
+        """
+        from src.adapter.repository.audit_log import AnchorRepository  # noqa: PLC0415
+
+        events: list[AuditEvent] = []
+        async for event in self._repository.stream_by_case(org_id):
+            if event.occurred_at.date() == anchor_date:
+                events.append(event)
+
+        root_hash = build_merkle_root(events)
+
+        tsa_token: bytes | None = None
+        if timestamp_service is not None:
+            try:
+                tsa_token = await timestamp_service.timestamp(bytes.fromhex(root_hash))
+            except Exception as exc:
+                logger.warning("tsa_anchor_failed", extra={"error": str(exc)})
+
+        if isinstance(self._repository, AnchorRepository):
+            await self._repository.save_anchor(anchor_date, root_hash, tsa_token)
+
+        await self.log(
+            AuditEventType.AUDIT_MERKLE_ANCHORED,
+            org_id=org_id,
+            details={"date": anchor_date.isoformat(), "root_hash": root_hash, "event_count": len(events)},
+        )
+        logger.info("audit_merkle_anchored", extra={"date": str(anchor_date), "root_hash": root_hash})
+        return root_hash
+
+
+def build_merkle_root(events: list[AuditEvent]) -> str:
+    """Build SHA-256 Merkle root over events sorted by sequence_number.
+
+    Leaf i = sha256(events[i].row_hash.encode()).
+    Parent = sha256(left_child_bytes || right_child_bytes).
+    Odd number of nodes: last node is duplicated.
+    Empty list returns sha256(b"empty").
+    """
+    if not events:
+        return hashlib.sha256(b"empty").hexdigest()
+
+    sorted_events = sorted(events, key=lambda e: e.sequence_number)
+    layer: list[bytes] = [
+        hashlib.sha256((e.row_hash or "").encode()).digest() for e in sorted_events
+    ]
+
+    while len(layer) > 1:
+        if len(layer) % 2 == 1:
+            layer.append(layer[-1])  # duplicate last node for odd count
+        next_layer: list[bytes] = []
+        for i in range(0, len(layer), 2):
+            combined = hashlib.sha256(layer[i] + layer[i + 1]).digest()
+            next_layer.append(combined)
+        layer = next_layer
+
+    return layer[0].hex()

@@ -11,6 +11,7 @@
 
 ### For Backend Tasks (Phase 1–5 — ✅ COMPLETE)
 This document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
+Warning : Never deploy docker containers or break system. You can use ~/venv/ python env for running tests. Commit your modifications on current branch, push them, but no pull request.
 
 ### For All Other Tasks (Frontend, Infra, Security, etc.)
 ⭐ **Go to [`roadmap.md`](./roadmap.md)** — it contains:
