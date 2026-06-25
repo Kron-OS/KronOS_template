@@ -1,19 +1,36 @@
 # KronOS Backend: Implementation Guidelines
 
 **Project:** KronOS — Forensically sound, multi-tenant evidence management and forensic timeline analysis platform  
-**Status:** Design specifications finalized (6 reviews completed 2026-04-20 to 2026-06-16)  
-**Next Phase:** Backend implementation (10 weeks, 5 sequential phases)  
-**Branch:** `claude/focused-wozniak-pz1rqh`
+**Status:** Backend complete (Phases 1–5, 89% coverage). Frontend & infrastructure roadmap in [`roadmap.md`](./roadmap.md).  
+**Design authority:** `Project_Specifications.md` + `reviews/Part_*.md`  
+**Branch:** Work on designated feature branches; follow git workflow below.
 
 ---
 
-## Quick Start for Code-Writing Agents
+## 🚀 Quick Start for All Agents
 
-1. **Read Base Guidelines (§A–D below)** — applies to all phases
-2. **Find your phase** (§Phase 1–5) — each agent works sequentially
-3. **Follow the phase prompt** — includes context, objectives, code stubs, tests, deliverables
-4. **Check the checklist** — verify completeness before merging
-5. **Merge to `main`** when phase is done; next agent starts immediately
+### For Backend Tasks (Phase 1–5 — ✅ COMPLETE)
+This document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
+
+### For All Other Tasks (Frontend, Infra, Security, etc.)
+⭐ **Go to [`roadmap.md`](./roadmap.md)** — it contains:
+- 9 main implementation sections (Frontend SPA, Advanced Parsing, Chain of Custody, Security, Observability, Infrastructure, CI/CD, v2 features)
+- Self-contained **agent prompts** for each step (one per section, sometimes multiple per substep)
+- All prompts reference `Project_Specifications.md` and `reviews/Part_*.md` — no prior conversation assumed
+- Progress checklist per section
+
+**Workflow:**
+1. Find your section in `roadmap.md` (e.g., "2. Frontend SPA")
+2. Read the agent prompt(s) for that section
+3. Execute the prompt as a new agent task
+4. Check off completion in the progress tracking (see below)
+5. Next agent starts immediately on the next unchecked step
+
+---
+
+## Progress Tracking
+
+See [`PROGRESS.md`](./PROGRESS.md) for a live checklist of all roadmap items. Update it after each section completes.
 
 ---
 
