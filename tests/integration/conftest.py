@@ -20,9 +20,15 @@ def postgres_engine():  # type: ignore[no-untyped-def]
         import asyncio
 
         from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.pool import NullPool
 
         url = pg.get_connection_url().replace("psycopg2", "asyncpg")
-        engine = create_async_engine(url, echo=False)
+        # NullPool: the engine is session-scoped but pytest-asyncio runs each
+        # test in its own event loop. asyncpg connections are bound to the loop
+        # that created them, so a pooled connection reused across loops raises
+        # "another operation is in progress". NullPool opens a fresh connection
+        # on the current loop per operation and closes it after, avoiding reuse.
+        engine = create_async_engine(url, echo=False, poolclass=NullPool)
 
         # Create tables synchronously before yielding.
         async def _setup() -> None:
