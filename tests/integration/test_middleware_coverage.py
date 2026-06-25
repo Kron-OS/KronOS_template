@@ -142,13 +142,13 @@ def test_tenant_context_fields_present() -> None:
 
 def test_tenant_context_immutable() -> None:
     """TenantContext is immutable (frozen)."""
-    import dataclasses
+    from pydantic import BaseModel
 
     tenant = valid_tenant()
-    # Should be a frozen dataclass
-    assert dataclasses.is_dataclass(tenant)
-    # Attempting to set a field should raise
-    with pytest.raises((AttributeError, dataclasses.FrozenInstanceError)):
+    # TenantContext is a frozen Pydantic BaseModel
+    assert isinstance(tenant, BaseModel)
+    # Attempting to set a field on frozen model raises AttributeError
+    with pytest.raises(AttributeError):
         tenant.org_id = uuid.uuid4()
 
 
@@ -159,42 +159,67 @@ def test_tenant_context_immutable() -> None:
 
 def test_step_up_ticket_issued_and_consumed() -> None:
     """Step-up ticket is issued for sensitive operations, then consumed."""
+    from fastapi import HTTPException
+
     from src.external.middleware.step_up_auth import StepUpAuth
 
     step_up = StepUpAuth()
     user_id = uuid.uuid4()
+    operation = "evidence.delete"
+    resource_id = "resource123"
 
     # Issue a ticket
     ticket_id = step_up.issue_ticket(
         user_id=user_id,
-        operation="evidence.delete",
-        resource_id="resource123",
+        operation=operation,
+        resource_id=resource_id,
     )
 
     # Ticket should be a UUID
     assert ticket_id is not None
-    assert isinstance(ticket_id, (str, uuid.UUID))
+    assert isinstance(ticket_id, uuid.UUID)
 
-    # Ticket should be valid immediately
-    assert step_up.consume_ticket(user_id=user_id, ticket_id=ticket_id) is True
+    # Ticket should be valid immediately (consume_ticket returns None on success)
+    step_up.consume_ticket(
+        ticket_id=ticket_id,
+        user_id=user_id,
+        operation=operation,
+        resource_id=resource_id,
+    )
 
-    # Second consume should fail (single-use)
-    assert step_up.consume_ticket(user_id=user_id, ticket_id=ticket_id) is False
+    # Second consume should fail (single-use) — raises HTTPException
+    with pytest.raises(HTTPException):
+        step_up.consume_ticket(
+            ticket_id=ticket_id,
+            user_id=user_id,
+            operation=operation,
+            resource_id=resource_id,
+        )
 
 
 def test_step_up_ticket_wrong_user_rejected() -> None:
     """Step-up ticket issued for user1 cannot be used by user2."""
+    from fastapi import HTTPException
+
     from src.external.middleware.step_up_auth import StepUpAuth
 
     step_up = StepUpAuth()
     user1 = uuid.uuid4()
     user2 = uuid.uuid4()
+    operation = "evidence.delete"
+    resource_id = "resource123"
 
     ticket_id = step_up.issue_ticket(
         user_id=user1,
-        operation="evidence.delete",
-        resource_id="resource123",
+        operation=operation,
+        resource_id=resource_id,
     )
 
-    # user2 cannot consume user1's ticket
-    assert step_up.consume_ticket(user_id=user2, ticket_id=ticket_id) is False
+    # user2 cannot consume user1's ticket — raises HTTPException
+    with pytest.raises(HTTPException):
+        step_up.consume_ticket(
+            ticket_id=ticket_id,
+            user_id=user2,
+            operation=operation,
+            resource_id=resource_id,
+        )
