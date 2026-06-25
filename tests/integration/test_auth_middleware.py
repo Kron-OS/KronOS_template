@@ -114,7 +114,7 @@ def _seed_evidence(
     )
     import asyncio
 
-    asyncio.get_event_loop().run_until_complete(repo.save(ev))
+    asyncio.run(repo.save(ev))
     return ev
 
 
