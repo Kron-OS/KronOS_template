@@ -13,7 +13,9 @@ from src.exceptions import (
     StorageError,
     ValidationError,
 )
+from src.external.routes import audit as audit_routes
 from src.external.routes import evidence as evidence_routes
+from src.external.routes import sse as sse_routes
 
 
 def create_app(
@@ -44,6 +46,8 @@ def create_app(
         )
 
     app.include_router(evidence_routes.router)
+    app.include_router(audit_routes.router)
+    app.include_router(sse_routes.router)
     _register_exception_handlers(app)
 
     return app
