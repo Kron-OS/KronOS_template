@@ -32,9 +32,9 @@ def postgres_engine():  # type: ignore[no-untyped-def]
             await PostgresEvidenceRepository.create_tables(engine)
             await PostgresAuditLogRepository.create_tables(engine)
 
-        asyncio.get_event_loop().run_until_complete(_setup())
+        asyncio.run(_setup())
         yield engine
-        asyncio.get_event_loop().run_until_complete(engine.dispose())
+        asyncio.run(engine.dispose())
 
 
 @pytest.fixture(scope="session")

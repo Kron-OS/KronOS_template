@@ -130,6 +130,17 @@ class PostgresEvidenceRepository(EvidenceRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
+    async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
+        """Delete evidence metadata scoped to org_id. Returns True if a row was deleted."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                evidence_table.delete().where(
+                    evidence_table.c.evidence_id == evidence_id,
+                    evidence_table.c.org_id == org_id,
+                )
+            )
+        return result.rowcount > 0
+
     # ------------------------------------------------------------------
     # Row ↔ domain mapping
     # ------------------------------------------------------------------
