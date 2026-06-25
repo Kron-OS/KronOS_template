@@ -1,0 +1,47 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kronos_test
+          POSTGRES_USER: kronos
+          POSTGRES_PASSWORD: kronos_test_password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Run integration tests
+        run: pytest tests/integration/ -v --tb=short -m integration
+        timeout-minutes: 20
+        env:
+          DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test
+          REDIS_URL: redis://localhost:6379/0
+          MINIO_ENDPOINT: http://localhost:9000
+          OPENSEARCH_URL: http://localhost:9200

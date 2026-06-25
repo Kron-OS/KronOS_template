@@ -1,0 +1,149 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kronos_test
+      POSTGRES_USER: kronos
+      POSTGRES_PASSWORD: kronos_test_password
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -d kronos_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: kronos_minio
+      MINIO_ROOT_PASSWORD: kronos_minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - minio_data:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      KC_DB: dev-mem
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_FEATURES: organization,token-exchange
+    ports: ["8080:8080"]
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/kronos-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:stable
+    ports: ["3310:3310"]
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  kronos-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: kronos_minio
+      MINIO_SECRET_KEY: kronos_minio_password
+      OPENSEARCH_URL: http://opensearch:9200
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/kronos
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/kronos/protocol/openid-connect/certs
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+    command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000
+
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: kronos_minio
+      MINIO_SECRET_KEY: kronos_minio_password
+      OPENSEARCH_URL: http://opensearch:9200
+    depends_on:
+      - redis
+      - postgres
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
+
+  # RFC 3161 TSA — FreeTSA compatible mock for testing chain-of-custody timestamping
+  tsa:
+    image: freetsa/freetsa:latest
+    ports: ["318:318"]
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'quit' | openssl s_client -connect localhost:318 2>/dev/null || curl -sf http://localhost:80/index.php || true"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # NGINX reverse proxy — serves frontend SPA and proxies /api/ to backend
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - kronos-backend
+
+volumes:
+  postgres_data:
+  minio_data:
+  opensearch_data:
