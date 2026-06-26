@@ -1,0 +1,33 @@
+{{- if .Values.networkPolicies.enabled }}
+# Default-deny egress from App zone; only allow to Data zone and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kronos.fullname" . }}-deny-app-internet-egress
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: app
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow traffic to Data zone only
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/zone: data
+    # Allow traffic to Keycloak (auth zone — same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: keycloak
+{{- end }}

@@ -1,0 +1,173 @@
+global:
+  imageRegistry: ""
+  storageClass: ""
+  imagePullSecrets: []
+
+image:
+  repository: ghcr.io/kron-os/kronos-backend
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+resources:
+  backend:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  celeryFast:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  celeryPlaso:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+  celeryIndex:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  celeryBeat:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "200m"
+      memory: "512Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  host: kronos.example.com
+  tls: true
+  certManager:
+    enabled: true
+    issuerName: step-ca-issuer
+    issuerKind: ClusterIssuer
+
+service:
+  type: ClusterIP
+  port: 8000
+
+keycloak:
+  url: https://auth.kronos.example.com
+  realm: kronos
+  clientId: kronos-backend
+  existingSecret: kronos-keycloak-secret
+  secretKey: client-secret
+
+opensearch:
+  url: https://opensearch:9200
+  dashboardsUrl: https://dashboards.kronos.example.com
+  existingSecret: kronos-opensearch-secret
+
+minio:
+  endpoint: minio:9000
+  useTls: true
+  existingSecret: kronos-minio-secret
+
+vault:
+  addr: https://vault:8200
+  role: kronos-backend
+  agentInject: true
+
+celery:
+  workers:
+    fast:
+      replicas: 2
+      queues: "q.parse.fast"
+      concurrency: 4
+    plaso:
+      replicas: 1
+      queues: "q.parse.plaso"
+      concurrency: 1
+    index:
+      replicas: 2
+      queues: "q.index"
+      concurrency: 8
+
+gvisorRuntimeClass: "gvisor"
+firecrackerRuntimeClass: "firecracker"
+
+networkPolicies:
+  enabled: true
+
+postgresql:
+  enabled: true
+  auth:
+    database: kronos
+    username: kronos
+    existingSecret: kronos-postgres-secret
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    existingSecret: kronos-redis-secret
+    existingSecretPasswordKey: redis-password
+  master:
+    persistence:
+      size: 8Gi
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+nginx:
+  image:
+    repository: nginx
+    tag: alpine
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

@@ -57,3 +57,20 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_bytes: int = 1_073_741_824  # 1 GB
     presigned_url_expiry_seconds: int = 3600
+
+    # OpenSearch Dashboards (iframe embed)
+    opensearch_dashboards_url: str | None = Field(
+        default=None,
+        description="OS Dashboards base URL for timeline iframe embed, e.g. http://opensearch-dashboards:5601",
+    )
+
+    # RFC 3161 TSA
+    tsa_url: str | None = Field(
+        default=None,
+        description="RFC 3161 TSA endpoint, e.g. http://tsa:318/api/v1/timestamp",
+    )
+
+    # mTLS (internal service-to-service)
+    tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
+    tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")
+    tls_ca_path: str | None = Field(default=None, description="Path to CA bundle for mTLS verification")

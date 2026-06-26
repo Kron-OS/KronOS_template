@@ -14,6 +14,7 @@ from fastapi import Depends
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.audit_log import AuditLogRepository
+from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
@@ -34,6 +35,7 @@ from src.external.middleware.tenant_context import get_tenant_context as get_ten
 
 _audit_log_repository: AuditLogRepository | None = None
 _evidence_repository: EvidenceRepository | None = None
+_case_repository: CaseRepository = InMemoryCaseRepository()
 _evidence_storage: EvidenceStorage | None = None
 _scanner: AntivirusScanner = NoOpScanner()
 _task_queue: TaskQueue = InMemoryTaskQueue()
@@ -41,6 +43,7 @@ _parser_registry: ParserRegistry | None = None
 _opensearch_client: AbstractTimelineIndex = InMemoryOpenSearchClient()
 _max_upload_bytes: int = 1_073_741_824
 _presigned_expiry: int = 3600
+_opensearch_dashboards_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +67,14 @@ def get_evidence_repository() -> EvidenceRepository:
             "Call configure_dependencies() at application startup."
         )
     return _evidence_repository
+
+
+def get_case_repository() -> CaseRepository:
+    return _case_repository
+
+
+def get_opensearch_dashboards_url() -> str | None:
+    return _opensearch_dashboards_url
 
 
 def get_evidence_storage() -> EvidenceStorage:
@@ -224,13 +235,14 @@ def configure_dependencies(
     task_queue: TaskQueue | None = None,
     parser_registry: ParserRegistry | None = None,
     opensearch_client: AbstractTimelineIndex | None = None,
+    case_repository: CaseRepository | None = None,
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
     global _scanner, _task_queue, _parser_registry, _opensearch_client
-    global _max_upload_bytes, _presigned_expiry
+    global _max_upload_bytes, _presigned_expiry, _case_repository
     _audit_log_repository = audit_log_repository
     _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
@@ -242,6 +254,8 @@ def configure_dependencies(
         _parser_registry = parser_registry
     if opensearch_client is not None:
         _opensearch_client = opensearch_client
+    if case_repository is not None:
+        _case_repository = case_repository
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
 
@@ -250,9 +264,11 @@ def reset_dependencies() -> None:
     """Reset all dependency bindings — used only in tests."""
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
+    global _case_repository
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
+    _case_repository = InMemoryCaseRepository()
     _scanner = NoOpScanner()
     _task_queue = InMemoryTaskQueue()
     _parser_registry = None

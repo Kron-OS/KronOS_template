@@ -13,7 +13,10 @@ from src.exceptions import (
     StorageError,
     ValidationError,
 )
+from src.external.routes import admin as admin_routes
 from src.external.routes import audit as audit_routes
+from src.external.routes import auth as auth_routes
+from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
 
@@ -45,7 +48,10 @@ def create_app(
             jwks_url=keycloak_jwks_url,
         )
 
+    app.include_router(auth_routes.router)
+    app.include_router(cases_routes.router)
     app.include_router(evidence_routes.router)
+    app.include_router(admin_routes.router)
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
     _register_exception_handlers(app)

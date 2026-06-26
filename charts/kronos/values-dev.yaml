@@ -1,0 +1,48 @@
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+ingress:
+  tls: false
+  host: localhost
+  certManager:
+    enabled: false
+
+keycloak:
+  url: http://keycloak:8080
+  existingSecret: ""
+
+opensearch:
+  url: http://opensearch:9200
+  dashboardsUrl: http://opensearch-dashboards:5601
+
+minio:
+  useTls: false
+  existingSecret: ""
+
+vault:
+  agentInject: false
+
+celery:
+  workers:
+    fast:
+      replicas: 1
+    plaso:
+      replicas: 1
+    index:
+      replicas: 1
+
+networkPolicies:
+  enabled: false
+
+postgresql:
+  auth:
+    password: kronos_dev_password
+
+redis:
+  auth:
+    password: kronos_dev_password

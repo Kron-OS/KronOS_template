@@ -56,6 +56,10 @@ omit = [
     "src/adapter/storage/s3.py",                  # infrastructure; covered by integration tests
     "src/adapter/queue/celery_queue.py",          # infrastructure; needs real Celery broker
     "src/external/celery_app.py",                 # infrastructure; needs real Celery broker
+    "src/cli/attest.py",                          # standalone CLI; needs real DB+MinIO; integration-tested
+    "src/external/middleware/keycloak_auth.py",   # needs live Keycloak JWKS endpoint
+    "src/external/middleware/opensearch_isolation.py",  # covered by integration tests
+    "src/external/middleware/query_isolation.py",       # covered by integration tests
 ]
 
 [tool.mypy]
