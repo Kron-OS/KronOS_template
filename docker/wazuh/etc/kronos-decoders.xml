@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<decoder_list>
+
+  <!-- ===================================================================
+       KronOS Wazuh Decoders
+       Three log sources forwarded via Fluent Bit:
+         1. kronos-audit    — FastAPI audit log (JSON)
+         2. kronos-keycloak — Keycloak event log (JSON)
+         3. kronos-falco    — Falco runtime alerts (JSON)
+       =================================================================== -->
+
+  <!-- ---------------------------------------------------------------
+       1. KronOS Audit Log — emitted by AuditLogService
+       Sample: {"timestamp":"...","event_type":"evidence.upload.requested","user_id":"...","org_id":"...","evidence_id":"..."}
+       --------------------------------------------------------------- -->
+  <decoder name="kronos-audit">
+    <prematch>{"event_type":</prematch>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+
+  <decoder name="kronos-audit-fields">
+    <parent>kronos-audit</parent>
+    <use_own_name>true</use_own_name>
+    <json_null_field>discard</json_null_field>
+    <var name="event_type">event_type</var>
+    <var name="user_id">user_id</var>
+    <var name="org_id">org_id</var>
+    <var name="evidence_id">evidence_id</var>
+    <var name="case_id">case_id</var>
+    <var name="endpoint">endpoint</var>
+    <var name="error_type">error_type</var>
+  </decoder>
+
+  <!-- ---------------------------------------------------------------
+       2. Keycloak event log (login, logout, token-refresh, errors)
+       Sample: {"type":"LOGIN","realmId":"...","userId":"...","clientId":"...","ipAddress":"..."}
+       --------------------------------------------------------------- -->
+  <decoder name="kronos-keycloak">
+    <prematch>{"type":"</prematch>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+
+  <decoder name="kronos-keycloak-fields">
+    <parent>kronos-keycloak</parent>
+    <use_own_name>true</use_own_name>
+    <json_null_field>discard</json_null_field>
+    <var name="event_type">type</var>
+    <var name="user_id">userId</var>
+    <var name="client_id">clientId</var>
+    <var name="ip_address">ipAddress</var>
+    <var name="realm">realmId</var>
+  </decoder>
+
+  <!-- ---------------------------------------------------------------
+       3. Falco runtime alert (container security events)
+       Sample: {"output_fields":{"proc.name":"...","container.image.repository":"..."},"rule":"...","priority":"CRITICAL"}
+       --------------------------------------------------------------- -->
+  <decoder name="kronos-falco">
+    <prematch>{"output_fields":</prematch>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+
+  <decoder name="kronos-falco-fields">
+    <parent>kronos-falco</parent>
+    <use_own_name>true</use_own_name>
+    <json_null_field>discard</json_null_field>
+    <var name="falco_rule">rule</var>
+    <var name="falco_priority">priority</var>
+    <var name="container_image">output_fields.container.image.repository</var>
+    <var name="proc_name">output_fields.proc.name</var>
+  </decoder>
+
+</decoder_list>

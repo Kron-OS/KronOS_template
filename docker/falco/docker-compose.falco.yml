@@ -1,0 +1,47 @@
+version: "3.9"
+
+# Falco runtime security — detects anomalous container behaviour.
+# Requires privileged mode + /dev, /proc, /sys mounts for kernel driver.
+# NOT for production Kubernetes — use Falco Helm chart with eBPF driver there.
+# Include: docker compose -f docker-compose.dev.yml -f docker/falco/docker-compose.falco.yml up
+
+services:
+  falco:
+    image: falcosecurity/falco-no-driver:0.38.2
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    network_mode: host
+    volumes:
+      - /dev:/host/dev:ro
+      - /proc:/host/proc:ro
+      - /boot:/host/boot:ro
+      - /lib/modules:/host/lib/modules:ro
+      - /usr:/host/usr:ro
+      - /etc:/host/etc:ro
+      - ./falco/kronos_rules.yaml:/etc/falco/rules.d/kronos_rules.yaml:ro
+    environment:
+      HOST_ROOT: /host
+    command:
+      - /usr/bin/falco
+      - --modern-bpf
+      - --json-output
+      - --output-route=file
+      - --output-file=/var/log/falco/falco.log
+    volumes:
+      - /dev:/host/dev:ro
+      - /proc:/host/proc:ro
+      - /boot:/host/boot:ro
+      - /lib/modules:/host/lib/modules:ro
+      - /usr:/host/usr:ro
+      - /etc:/host/etc:ro
+      - ./falco/kronos_rules.yaml:/etc/falco/rules.d/kronos_rules.yaml:ro
+      - falco_logs:/var/log/falco
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep falco || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  falco_logs:

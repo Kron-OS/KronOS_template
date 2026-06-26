@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<group name="kronos,">
+
+  <!-- ===================================================================
+       KronOS Custom Wazuh Rules — range 100100-100199
+       Decode kronos.* audit events forwarded via Fluent Bit → Wazuh.
+       =================================================================== -->
+
+  <!-- Rule 100100: Base group — decoded kronos audit event received -->
+  <rule id="100100" level="0">
+    <decoded_as>kronos-audit</decoded_as>
+    <description>KronOS audit event received</description>
+    <group>kronos,audit,</group>
+  </rule>
+
+  <!-- Rule 100101: Evidence upload initiated -->
+  <rule id="100101" level="3" frequency="1" timeframe="60">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">evidence.upload.requested</field>
+    <description>KronOS: Evidence upload requested by $(user_id)</description>
+    <group>kronos,evidence,upload,</group>
+  </rule>
+
+  <!-- Rule 100102: Evidence hashing complete — forensic baseline recorded -->
+  <rule id="100102" level="4">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">evidence.upload.finalized</field>
+    <description>KronOS: Evidence hash recorded — $(evidence_id)</description>
+    <group>kronos,evidence,intake,</group>
+  </rule>
+
+  <!-- Rule 100103: Virus detected in evidence upload -->
+  <rule id="100103" level="12">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">evidence.scan.failed</field>
+    <description>KronOS: Malware detected in upload — $(evidence_id) (user=$(user_id))</description>
+    <group>kronos,evidence,malware,</group>
+  </rule>
+
+  <!-- Rule 100104: Audit hash-chain verification failure — tamper event -->
+  <rule id="100104" level="15">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">audit.chain.verify.failed</field>
+    <description>KronOS: Audit log chain BROKEN — possible tampering</description>
+    <group>kronos,audit,integrity,tamper,pci_dss_10.5.2,</group>
+  </rule>
+
+  <!-- Rule 100105: Step-up MFA bypass attempt (403 on delete without MFA ticket) -->
+  <rule id="100105" level="10">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">auth.step_up.denied</field>
+    <description>KronOS: Step-up auth denied for $(user_id) — possible bypass attempt</description>
+    <group>kronos,auth,step_up,</group>
+  </rule>
+
+  <!-- Rule 100106: RBAC violation — user accessed restricted endpoint -->
+  <rule id="100106" level="8">
+    <if_matched_sid>100100</if_matched_sid>
+    <field name="event_type">auth.rbac.denied</field>
+    <description>KronOS: RBAC violation — $(user_id) denied on $(endpoint)</description>
+    <group>kronos,auth,rbac,</group>
+  </rule>
+
+  <!-- Rule 100107: Brute-force heuristic — >5 RBAC denials within 60s from same user -->
+  <rule id="100107" level="12" frequency="5" timeframe="60">
+    <if_matched_sid>100106</if_matched_sid>
+    <same_field>user_id</same_field>
+    <description>KronOS: Possible privilege escalation — repeated RBAC denials for $(user_id)</description>
+    <group>kronos,auth,brute_force,</group>
+  </rule>
+
+</group>

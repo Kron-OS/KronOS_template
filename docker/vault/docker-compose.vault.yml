@@ -1,0 +1,55 @@
+version: "3.9"
+
+# HashiCorp Vault — Transit engine holds the master key for MinIO SSE-KMS.
+# Dev mode only (file backend). Production: use Raft HA + Shamir 3-of-5 unseal.
+# Include: docker compose -f docker-compose.dev.yml -f docker/vault/docker-compose.vault.yml up
+
+services:
+  vault:
+    image: hashicorp/vault:1.17
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-root}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "8200:8200"
+    command: vault server -dev
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=http://localhost:8200 vault status 2>/dev/null || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vault-init:
+    image: hashicorp/vault:1.17
+    restart: "no"
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        vault secrets enable transit 2>/dev/null || echo "transit already enabled"
+        vault write -f transit/keys/kronos-evidence type=aes256-gcm96 2>/dev/null || echo "key already exists"
+        vault policy write kronos-kes - <<'POLICY'
+        path "transit/keys/kronos-evidence" { capabilities = ["read"] }
+        path "transit/encrypt/kronos-evidence" { capabilities = ["update"] }
+        path "transit/decrypt/kronos-evidence" { capabilities = ["update"] }
+        path "transit/generate-data-key/kronos-evidence" { capabilities = ["update"] }
+        path "transit/datakey/plaintext/kronos-evidence" { capabilities = ["update"] }
+        POLICY
+        vault auth enable approle 2>/dev/null || echo "approle already enabled"
+        vault write auth/approle/role/kronos-kes \
+          policies=kronos-kes \
+          token_ttl=1h \
+          token_max_ttl=4h 2>/dev/null || echo "role already exists"
+        echo "Vault initialized successfully."
+
+volumes: {}

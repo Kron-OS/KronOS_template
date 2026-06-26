@@ -1,0 +1,49 @@
+version: "3.9"
+
+# Fluent Bit log aggregator — collects KronOS app, Falco, NGINX logs.
+# Forwards to OpenSearch and Wazuh.
+# Include: docker compose -f docker-compose.dev.yml \
+#            -f docker/wazuh/docker-compose.wazuh.yml \
+#            -f docker/falco/docker-compose.falco.yml \
+#            -f docker/fluent-bit/docker-compose.fluent-bit.yml up
+
+services:
+  fluent-bit:
+    image: fluent/fluent-bit:3.1
+    restart: unless-stopped
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - kronos_app_logs:/var/log/kronos:ro
+      - falco_logs:/var/log/falco:ro
+      - nginx_logs:/var/log/nginx:ro
+      - fluent_storage:/var/log/flb-storage
+    environment:
+      OPENSEARCH_HOST: opensearch
+      OPENSEARCH_PORT: 9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-admin}
+      WAZUH_HOST: wazuh-manager
+      KRONOS_CLUSTER: dev
+      KRONOS_ENV: development
+    ports:
+      - "2020:2020"   # HTTP monitoring API
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:2020/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - kronos-internal
+
+volumes:
+  kronos_app_logs:
+    external: true
+  falco_logs:
+    external: true
+  nginx_logs:
+    external: true
+  fluent_storage:
+
+networks:
+  kronos-internal:
+    external: true

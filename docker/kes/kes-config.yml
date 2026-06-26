@@ -1,0 +1,43 @@
+version: v1
+
+# KES — MinIO Key Encryption Service
+# Stateless shim between MinIO and Vault Transit engine.
+# MinIO sends DEK-wrap requests; KES forwards to Vault; master key never leaves Vault.
+
+address: 0.0.0.0:7373
+
+tls:
+  cert: /etc/kes/certs/server.crt
+  key: /etc/kes/certs/server.key
+  # CA bundle for mTLS client verification (MinIO presents its cert)
+  ca: /etc/kes/certs/ca.crt
+
+# Admin identity is disabled — access controlled by policy identities only
+admin:
+  identity: disabled
+
+# Policy: MinIO is allowed to use the kronos-evidence master key
+policy:
+  kronos-minio:
+    allow:
+      - /v1/key/create/kronos-evidence*
+      - /v1/key/generate/kronos-evidence*
+      - /v1/key/decrypt/kronos-evidence*
+      - /v1/key/bulk/decrypt/kronos-evidence*
+      - /v1/status
+    # MinIO's mTLS certificate identity (SHA-256 of cert)
+    # Replace with actual MinIO cert fingerprint in production
+    identities:
+      - "${MINIO_TLS_IDENTITY:-_}"
+
+keystore:
+  vault:
+    endpoint: http://vault:8200
+    transit:
+      engine_path: transit/
+      key_name: kronos-evidence
+      # Vault AppRole credentials (injected via environment)
+    approle:
+      id: ${VAULT_APPROLE_ID:-}
+      secret: ${VAULT_APPROLE_SECRET:-}
+      retry: 15s

@@ -1,0 +1,70 @@
+version: "3.9"
+
+# Wazuh SIEM stack — manager + dashboard.
+# IMPORTANT: Must use Wazuh ≥5.1. Wazuh 5.0 has a silent data-destruction CVE.
+# Include: docker compose -f docker-compose.dev.yml -f docker/wazuh/docker-compose.wazuh.yml up
+
+services:
+  wazuh-manager:
+    image: wazuh/wazuh-manager:5.1.0
+    restart: unless-stopped
+    hostname: wazuh-manager
+    environment:
+      WAZUH_API_USER: wazuh-wui
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-MyS3cretP4ssw0rd!}
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - wazuh_filebeat_etc:/etc/filebeat
+      - wazuh_filebeat_var:/var/lib/filebeat
+      - ./wazuh/etc/kronos-rules.xml:/var/ossec/etc/rules/kronos-rules.xml:ro
+      - ./wazuh/etc/kronos-decoders.xml:/var/ossec/etc/decoders/kronos-decoders.xml:ro
+    ports:
+      - "1514:1514/udp"    # Wazuh agent (UDP)
+      - "1515:1515"        # Wazuh agent enrollment
+      - "514:514/udp"      # Syslog
+      - "55000:55000"      # Wazuh API
+    networks:
+      - kronos-internal
+
+  wazuh-dashboard:
+    image: wazuh/wazuh-dashboard:5.1.0
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-admin}
+      WAZUH_API_URL: https://wazuh-manager
+      WAZUH_API_PORT: 55000
+      WAZUH_API_USER: wazuh-wui
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-MyS3cretP4ssw0rd!}
+    ports:
+      - "5602:5601"   # Separate port from main OpenSearch Dashboards
+    depends_on:
+      - wazuh-manager
+    networks:
+      - kronos-internal
+
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  wazuh_filebeat_etc:
+  wazuh_filebeat_var:
+
+networks:
+  kronos-internal:
+    external: true
