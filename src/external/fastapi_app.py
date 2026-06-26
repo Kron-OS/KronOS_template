@@ -99,3 +99,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(KronOSException)
     async def kronos_error_handler(request: Request, exc: KronOSException) -> JSONResponse:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+# Module-level instance for uvicorn/gunicorn entrypoints.
+app = create_app()
