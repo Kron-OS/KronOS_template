@@ -244,9 +244,9 @@ services:
     command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   nginx:
-    image: nginx:alpine
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
     ports: ["80:80"]
     depends_on:
       - kronos-backend
