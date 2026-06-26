@@ -1,19 +1,15 @@
-"""Regression / bug-report tests for S3EvidenceStorage bucket routing.
+"""Regression tests for S3EvidenceStorage bucket routing & naming.
 
-These tests were written during the 2026-06 security & deployment audit.
-They are executable bug reports: each asserts the *correct* behaviour and is
-marked ``xfail`` because the current implementation is defective.  When a bug
-is fixed the corresponding test flips to XPASS, signalling that the xfail
-marker should be removed.
+Originally written as executable bug reports during the 2026-06 security audit
+(findings C-1 and C-2); the defects have since been fixed, so these now assert
+the corrected behaviour and guard against regressions.
 
-See ``docs/SECURITY_AUDIT.md`` (findings C-1 and C-2) for full write-ups.
+See ``docs/SECURITY_AUDIT.md`` for the write-ups.
 """
 
 from __future__ import annotations
 
 import uuid
-
-import pytest
 
 from src.adapter.storage.s3 import S3EvidenceStorage
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
@@ -45,80 +41,42 @@ def _evidence(org_alias: str = "acme") -> Evidence:
 
 
 # ---------------------------------------------------------------------------
-# C-1: stream_object() / object_exists() always resolve to the quarantine
-#      bucket, so a *promoted* evidence object (which has been deleted from
-#      quarantine) can never be read.  This silently breaks parsing in
-#      production; it is masked in the test-suite because LocalEvidenceStorage
-#      searches both buckets.
+# C-1: reads are now bucket-aware. A quarantine key resolves to the quarantine
+#      bucket; the SAME key resolves to the evidence bucket when the caller asks
+#      for it (parsing reads post-promotion evidence with bucket="evidence").
 # ---------------------------------------------------------------------------
 
 
-def test_bucket_for_key_resolves_quarantine_correctly() -> None:
-    """A quarantine key must resolve to the quarantine bucket (sanity)."""
-    storage = _make_storage("kronos", "kronos")
+def test_quarantine_read_resolves_to_quarantine_bucket() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
     ev = _evidence("acme")
-    quarantine_key = f"{ev.metadata.org_alias}/{ev.metadata.case_id}/{ev.evidence_id}"
-    assert storage._bucket_for_key(quarantine_key) == storage._quarantine_bucket("acme")
+    key = f"{ev.metadata.org_alias}/{ev.metadata.case_id}/{ev.evidence_id}"
+    assert storage._bucket_for(key, "quarantine") == storage._quarantine_bucket("acme")
 
 
-@pytest.mark.xfail(
-    reason="BUG C-1: _bucket_for_key() ignores the evidence/quarantine "
-    "distinction and always returns the quarantine bucket. After promotion the "
-    "object lives ONLY in the evidence bucket, so parsing's stream_object() on "
-    "the evidence key fails with 'Object not found' in production.",
-    strict=True,
-)
-def test_evidence_key_must_resolve_to_evidence_bucket() -> None:
-    """After promotion, reads must target the WORM evidence bucket, not quarantine."""
-    storage = _make_storage("kronos", "kronos")
+def test_evidence_read_resolves_to_evidence_bucket() -> None:
+    """After promotion, reads must target the WORM evidence bucket (fix C-1)."""
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
     ev = _evidence("acme")
-    # promote_to_evidence_bucket / LocalEvidenceStorage produce identical key
-    # layouts for both buckets, so the key alone is ambiguous.
     evidence_key = f"{ev.metadata.org_alias}/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
-    assert storage._bucket_for_key(evidence_key) == storage._evidence_bucket("acme")
+    assert storage._bucket_for(evidence_key, "evidence") == storage._evidence_bucket("acme")
+    # ...and the two buckets are genuinely distinct.
+    assert storage._evidence_bucket("acme") != storage._quarantine_bucket("acme")
 
 
 # ---------------------------------------------------------------------------
-# C-2: The bucket names the application computes do not match the bucket names
-#      created by scripts/provision_buckets.sh, so a freshly provisioned
-#      deployment cannot find its buckets.
-#
-#      provision_buckets.sh creates:   kronos-<org>-quarantine
-#                                       kronos-<org>-evidence
-#      S3EvidenceStorage computes:     <q_prefix>-<org>-quarantine
-#                                       <e_prefix>-<org>            (no -evidence suffix!)
-#
-#      With the documented default config prefix "kronos-evidence" the app looks
-#      for "kronos-evidence-<org>-quarantine" / "kronos-evidence-<org>" — neither
-#      of which exists.  No single prefix value can make both names line up,
-#      because the evidence bucket helper omits the "-evidence" suffix entirely.
+# C-2: bucket names match the canonical convention in Project_Specifications.md
+#      §2 and scripts/provision_buckets.sh:
+#        quarantine -> "kronos-evidence-<org>-quarantine"
+#        evidence   -> "kronos-evidence-<org>"
 # ---------------------------------------------------------------------------
 
-_PROVISIONED_QUARANTINE = "kronos-acme-quarantine"
-_PROVISIONED_EVIDENCE = "kronos-acme-evidence"
+_PROVISIONED_QUARANTINE = "kronos-evidence-acme-quarantine"
+_PROVISIONED_EVIDENCE = "kronos-evidence-acme"
 
 
-@pytest.mark.xfail(
-    reason="BUG C-2: default config prefix 'kronos-evidence' yields bucket names "
-    "that do not match scripts/provision_buckets.sh.",
-    strict=True,
-)
-def test_default_config_prefix_matches_provisioned_buckets() -> None:
-    # config.py default: minio_quarantine_bucket_prefix == minio_evidence_bucket_prefix
-    #                    == "kronos-evidence"
+def test_default_prefix_matches_provisioned_buckets() -> None:
+    # config.py default prefix is "kronos-evidence" for both buckets.
     storage = _make_storage("kronos-evidence", "kronos-evidence")
     assert storage._quarantine_bucket("acme") == _PROVISIONED_QUARANTINE
-    assert storage._evidence_bucket("acme") == _PROVISIONED_EVIDENCE
-
-
-@pytest.mark.xfail(
-    reason="BUG C-2: even with prefix 'kronos' the evidence-bucket helper omits "
-    "the '-evidence' suffix, so it cannot match the provisioned bucket name.",
-    strict=True,
-)
-def test_no_prefix_value_can_align_both_bucket_names() -> None:
-    storage = _make_storage("kronos", "kronos")
-    # Quarantine lines up with prefix "kronos"...
-    assert storage._quarantine_bucket("acme") == _PROVISIONED_QUARANTINE
-    # ...but the evidence bucket is "kronos-acme", never "kronos-acme-evidence".
     assert storage._evidence_bucket("acme") == _PROVISIONED_EVIDENCE

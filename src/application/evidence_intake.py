@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
@@ -20,6 +21,26 @@ logger = logging.getLogger(__name__)
 
 # How many bytes to read from the quarantine object for magic-byte validation.
 _HEADER_BYTES = 8192
+
+
+async def _cap_stream(
+    source: AsyncIterator[bytes], max_bytes: int, evidence_id: uuid.UUID
+) -> AsyncIterator[bytes]:
+    """Re-yield *source* but abort once more than *max_bytes* have been seen.
+
+    The size limit declared at ``request_upload`` is only the client's claim;
+    this enforces the real uploaded byte count while the object is streamed for
+    scanning/hashing, so an under-declared upload cannot bypass the cap.
+    """
+    seen = 0
+    async for chunk in source:
+        seen += len(chunk)
+        if seen > max_bytes:
+            raise ValidationError(
+                "Uploaded file exceeds the maximum permitted size",
+                context={"evidence_id": str(evidence_id), "max_bytes": max_bytes},
+            )
+        yield chunk
 
 
 class EvidenceIntakeService:
@@ -203,8 +224,22 @@ class EvidenceIntakeService:
     async def _run_scan(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
     ) -> Evidence:
-        stream = await self._storage.stream_object(quarantine_key)
-        scan_result = await self._scanner.scan_stream(stream)
+        raw_stream = await self._storage.stream_object(quarantine_key)
+        # Enforce the real uploaded size before trusting the file further.
+        stream = _cap_stream(raw_stream, self._max_upload_bytes, evidence.evidence_id)
+        try:
+            scan_result = await self._scanner.scan_stream(stream)
+        except ValidationError:
+            evidence = evidence.with_error("size_limit_exceeded")
+            await self._repo.update(evidence)
+            await self._audit.log(
+                AuditEventType.EVIDENCE_ERROR,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                evidence_id=evidence.evidence_id,
+                details={"step": "size_enforcement"},
+            )
+            raise
 
         if not scan_result.is_clean:
             evidence = evidence.with_error(f"infected:{scan_result.threat_name}")
@@ -279,12 +314,19 @@ class EvidenceIntakeService:
         self,
         evidence_id: uuid.UUID,
         tenant: TenantContext,
+        *,
+        step_up_verified: bool = False,
     ) -> None:
         """Delete evidence metadata after verifying org scope and org-admin role.
 
         The WORM-locked object in MinIO cannot be removed before its retention
         period expires; only the platform metadata record is deleted here.
-        Step-up ticket verification is the caller's responsibility (route layer).
+
+        Step-up (MFA) is verified by the caller (the route consumes a one-time
+        ticket); the caller passes the *actual* outcome via ``step_up_verified``
+        so the immutable audit record never asserts a verification that did not
+        happen.  The default is ``False``: a caller that did not verify step-up
+        will record that truthfully.
 
         Raises:
             ValidationError: if evidence is not found for this org.
@@ -309,7 +351,7 @@ class EvidenceIntakeService:
             actor_user_id=tenant.user_id,
             actor_username=tenant.username,
             evidence_id=evidence_id,
-            details={"step_up_verified": True},
+            details={"step_up_verified": step_up_verified},
         )
 
         deleted = await self._repo.delete_by_id(evidence_id, tenant.org_id)

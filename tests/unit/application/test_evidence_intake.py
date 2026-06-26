@@ -378,3 +378,56 @@ class TestFinalizeUploadErrors:
                 client_sha256=_sha256(b"\x4d\x5a" + b"\x00" * 98),
                 tenant=tenant,
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: upload size enforcement (audit finding M-2)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadSizeEnforcement:
+    """The real uploaded byte count is enforced, not just the client's claim."""
+
+    def _small_cap_intake(self, audit_repo, evidence_repo, local_storage, max_bytes: int):
+        from src.application.audit_log import AuditLogService
+
+        return EvidenceIntakeService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            # Validators see the (small) claimed size and pass; the service must
+            # still reject the oversized real file while streaming.
+            validator=default_validator_chain(max_upload_bytes=max_bytes),
+            scanner=NoOpScanner(),
+            hash_service=HashService(),
+            max_upload_bytes=max_bytes,
+        )
+
+    @pytest.mark.asyncio
+    async def test_under_declared_oversized_upload_is_rejected(
+        self, audit_repo, evidence_repo, local_storage, tenant
+    ) -> None:
+        intake = self._small_cap_intake(audit_repo, evidence_repo, local_storage, max_bytes=64)
+
+        # Client claims a tiny size (passes request-time validation)...
+        evidence, presigned = await intake.request_upload(
+            filename="huge.json",
+            content_type="application/json",
+            size_bytes=1,
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        # ...but actually uploads far more than the cap.
+        oversized = b'{"x":"' + b"A" * 4096 + b'"}'
+        _simulate_upload(local_storage, presigned.object_key, oversized)
+
+        with pytest.raises(ValidationError, match="maximum permitted size"):
+            await intake.finalize_upload(
+                evidence_id=evidence.evidence_id,
+                client_sha256=_sha256(oversized),
+                tenant=tenant,
+            )
+
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored.state == EvidenceState.ERROR
+        assert stored.error_reason == "size_limit_exceeded"

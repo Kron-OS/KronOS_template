@@ -29,7 +29,6 @@ from src.exceptions import AuthorizationError, ValidationError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
 from tests.fixtures.factories import make_evidence_metadata
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -350,7 +349,7 @@ class _NoopStorage:
 
         return PresignedUploadResponse("http://fake/upload", "key/test", expires_in_seconds)
 
-    async def stream_object(self, object_key, chunk_size=65536):
+    async def stream_object(self, object_key, chunk_size=65536, *, bucket="quarantine"):
         yield b"\x00" * 16
 
     async def promote_to_evidence_bucket(self, quarantine_key, evidence):
@@ -359,7 +358,7 @@ class _NoopStorage:
     async def delete_from_quarantine(self, quarantine_key):
         pass
 
-    async def object_exists(self, object_key):
+    async def object_exists(self, object_key, *, bucket="quarantine"):
         return True
 
 
@@ -719,9 +718,7 @@ async def test_timeline_ingest_batch_flush() -> None:
     audit_log = AuditLogService(audit_repo)
     opensearch = InMemoryOpenSearchClient()
     # Tiny batch size to force multiple flushes
-    service = TimelineIngestionService(
-        opensearch=opensearch, audit_log=audit_log, batch_size=3
-    )
+    service = TimelineIngestionService(opensearch=opensearch, audit_log=audit_log, batch_size=3)
 
     tenant = _make_tenant()
 
@@ -841,9 +838,7 @@ async def test_get_tenant_context_with_valid_validator() -> None:
     mock_credentials = MagicMock(spec=HTTPAuthorizationCredentials)
     mock_credentials.credentials = "fake.jwt.token"
 
-    tenant = await get_tenant_context(
-        request=mock_request, credentials=mock_credentials
-    )
+    tenant = await get_tenant_context(request=mock_request, credentials=mock_credentials)
     assert tenant.org_id == expected_tenant.org_id
     mock_validator.validate_and_extract.assert_called_once_with("fake.jwt.token")
 

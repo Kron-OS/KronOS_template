@@ -12,7 +12,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
+from src.adapter.storage.storage import BucketKind, EvidenceStorage, PresignedUploadResponse
 from src.domain.evidence import Evidence
 from src.exceptions import StorageError
 
@@ -81,10 +81,15 @@ class S3EvidenceStorage(EvidenceStorage):
             url=url, object_key=key, expires_in_seconds=expires_in_seconds
         )
 
-    async def stream_object(self, object_key: str, chunk_size: int = 65536) -> AsyncIterator[bytes]:
-        # Determine which bucket holds the key based on path convention.
-        bucket = self._bucket_for_key(object_key)
-        return self._s3_stream(bucket, object_key, chunk_size)
+    async def stream_object(
+        self,
+        object_key: str,
+        chunk_size: int = 65536,
+        *,
+        bucket: BucketKind = "quarantine",
+    ) -> AsyncIterator[bytes]:
+        bucket_name = self._bucket_for(object_key, bucket)
+        return self._s3_stream(bucket_name, object_key, chunk_size)
 
     async def promote_to_evidence_bucket(self, quarantine_key: str, evidence: Evidence) -> str:
         q_bucket = self._quarantine_bucket(evidence.metadata.org_alias)
@@ -123,10 +128,10 @@ class S3EvidenceStorage(EvidenceStorage):
                 context={"quarantine_key": quarantine_key, "error": str(exc)},
             ) from exc
 
-    async def object_exists(self, object_key: str) -> bool:
-        bucket = self._bucket_for_key(object_key)
+    async def object_exists(self, object_key: str, *, bucket: BucketKind = "quarantine") -> bool:
+        bucket_name = self._bucket_for(object_key, bucket)
         try:
-            await self._run(self._client.head_object, Bucket=bucket, Key=object_key)
+            await self._run(self._client.head_object, Bucket=bucket_name, Key=object_key)
             return True
         except ClientError as exc:
             if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -158,11 +163,17 @@ class S3EvidenceStorage(EvidenceStorage):
         return f"{self._quarantine_prefix}-{org_alias}-quarantine"
 
     def _evidence_bucket(self, org_alias: str) -> str:
+        # Canonical evidence bucket per Project_Specifications.md §2:
+        # "<prefix>-<org>" (e.g. "kronos-evidence-acme"). No extra suffix; the
+        # quarantine bucket is distinguished by its "-quarantine" suffix.
         return f"{self._evidence_prefix}-{org_alias}"
 
-    def _bucket_for_key(self, key: str) -> str:
-        # Keys are prefixed with org_alias; evidence keys have no "-quarantine" suffix.
+    def _bucket_for(self, key: str, bucket: BucketKind) -> str:
+        # Quarantine and evidence keys are identical, so the caller states which
+        # bucket it means; we derive the per-org bucket name from the key prefix.
         org_alias = key.split("/")[0]
+        if bucket == "evidence":
+            return self._evidence_bucket(org_alias)
         return self._quarantine_bucket(org_alias)
 
     @staticmethod
@@ -188,9 +199,7 @@ class S3EvidenceStorage(EvidenceStorage):
             await self._run(self._client.create_bucket, **kwargs)
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
 
-    async def _s3_stream(
-        self, bucket: str, key: str, chunk_size: int
-    ) -> AsyncIterator[bytes]:
+    async def _s3_stream(self, bucket: str, key: str, chunk_size: int) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()
         try:
             response = await self._run(self._client.get_object, Bucket=bucket, Key=key)

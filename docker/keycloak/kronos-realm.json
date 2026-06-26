@@ -19,6 +19,9 @@
   "maxDeltaTimeSeconds": 43200,
   "failureFactor": 5,
   "accessTokenLifespan": 300,
+  "attributes": {
+    "acr.loa.map": "{\"aal1\":1,\"aal2\":2}"
+  },
   "refreshTokenMaxReuse": 0,
   "roles": {
     "realm": [
@@ -170,14 +173,14 @@
     "email",
     "web-origins",
     "acr",
-    "kronos-roles"
+    "kronos-roles",
+    "organization"
   ],
   "defaultOptionalClientScopes": [
     "offline_access",
     "address",
     "phone",
-    "microprofile-jwt",
-    "organization"
+    "microprofile-jwt"
   ],
   "users": [
     {
@@ -190,7 +193,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "admin",
+          "value": "DevAdmin#2026",
           "temporary": false
         }
       ],
@@ -207,7 +210,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "analyst123",
+          "value": "DevAnalyst#2026",
           "temporary": false
         }
       ],
@@ -224,7 +227,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "caselead123",
+          "value": "DevCaseLead#2026",
           "temporary": false
         }
       ],

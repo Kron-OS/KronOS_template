@@ -7,33 +7,63 @@ storage), and third-party tool configuration (NGINX, Keycloak, MinIO/KES/Vault,
 OpenSearch, Docker, step-ca). Backend tooling: `~/venv` (Python 3.11), 367
 existing unit tests pass at 82 % coverage.
 
-This document records findings only. No production behaviour was changed by the
-audit; the accompanying tests are executable bug-reports (`xfail`) so the suite
-stays green while each defect is tracked. Severity uses
-**Critical / High / Medium / Low**.
-
----
+**Update 2026-06-26 (follow-up):** Most findings have been fixed on this branch;
+the `Status` column tracks each. The accompanying tests now assert the corrected
+behaviour (and guard against regression).
 
 ## Summary table
 
-| ID  | Severity | Area | Finding |
-|-----|----------|------|---------|
-| C-1 | Critical | Storage | `S3EvidenceStorage` always reads from the quarantine bucket; promoted evidence is unreadable → parsing breaks in prod |
-| C-2 | Critical | Storage/Infra | App bucket names ≠ `provision_buckets.sh` bucket names; no prefix value reconciles them |
-| H-1 | High | NGINX | `upstream backend` points at host `backend`, but the compose service is `kronos-backend` → 502 on all `/api` and `/auth` |
-| H-2 | High | Docker | Deps installed to `/root/.local`, then `USER kronos` runs with no access (root home is `0700`) → container can't start |
-| H-3 | High | Keycloak/Auth | `organization` is an *optional* client scope and the SPA never requests it, but the backend hard-requires the claim → every request 401s |
-| M-1 | Medium | Audit | `delete_evidence` hard-codes `step_up_verified: True` in the immutable audit log regardless of actual verification |
-| M-2 | Medium | Intake | File-size limit is only checked against client-claimed size; real uploaded size is never enforced → size/DoS bypass |
-| M-3 | Medium | Keycloak/Auth | No `acr`→LoA mapping; tokens can't carry `acr=aal2`, so step-up-gated deletion is unsatisfiable |
-| M-4 | Medium | Auth/Scale | Step-up tickets + JWKS cache are per-process; with `--workers 2` / multiple pods they don't share → intermittent 401 |
-| M-5 | Medium | Docker | Production image installs `.[dev]` (pytest, mypy, ruff…) → bloat + attack surface |
-| L-1 | Low | NGINX | CSP allows `script-src 'unsafe-inline'` → weakens XSS defence |
-| L-2 | Low | NGINX | Only the plain-HTTP `:80` server is active; the TLS 1.3 block is commented out (HSTS on HTTP is ignored) |
-| L-3 | Low | Keycloak | Dev user passwords violate the realm `passwordPolicy length(12)` |
-| L-4 | Low | Secrets | Committed client secret + `changeme_in_production` placeholders; must be rotated/overridden in prod |
-| L-5 | Low | Crypto | Merkle tree lacks leaf/branch domain separation and duplicates the last odd node (CVE-2012-2459 class) |
-| L-6 | Low | Infra | Dev NGINX mounts only `nginx.conf`, not the built SPA → `/` 404 in dev |
+| ID  | Severity | Area | Finding | Status |
+|-----|----------|------|---------|--------|
+| C-1 | Critical | Storage | `S3EvidenceStorage` always reads from the quarantine bucket; promoted evidence is unreadable → parsing breaks in prod | ✅ Fixed |
+| C-2 | Critical | Storage/Infra | App bucket names ≠ `provision_buckets.sh` bucket names; no prefix value reconciles them | ✅ Fixed |
+| H-1 | High | NGINX | `upstream backend` points at host `backend`, but the compose service is `kronos-backend` → 502 on all `/api` and `/auth` | ✅ Fixed |
+| H-2 | High | Docker | Deps installed to `/root/.local`, then `USER kronos` runs with no access (root home is `0700`) → container can't start | ✅ Fixed |
+| H-3 | High | Keycloak/Auth | `organization` is an *optional* client scope and the SPA never requests it, but the backend hard-requires the claim → every request 401s | ✅ Fixed |
+| M-1 | Medium | Audit | `delete_evidence` hard-codes `step_up_verified: True` in the immutable audit log regardless of actual verification | ✅ Fixed |
+| M-2 | Medium | Intake | File-size limit is only checked against client-claimed size; real uploaded size is never enforced → size/DoS bypass | ✅ Fixed |
+| M-3 | Medium | Keycloak/Auth | No `acr`→LoA mapping; tokens can't carry `acr=aal2`, so step-up-gated deletion is unsatisfiable | ⚠️ Partial — `acr.loa.map` added; MFA browser flow still to bind |
+| M-4 | Medium | Auth/Scale | Step-up tickets + JWKS cache are per-process; with multiple workers/pods they don't share → intermittent 401 | ⚠️ Partial — 1 worker/container; **prod runs 2 replicas**, so a shared (Redis) ticket store or single replica + sticky sessions is still required |
+| M-5 | Medium | Docker | Production image installs `.[dev]` (pytest, mypy, ruff…) → bloat + attack surface | ✅ Fixed |
+| L-1 | Low | NGINX | CSP allows `script-src 'unsafe-inline'` → weakens XSS defence | ✅ Fixed |
+| L-2 | Low | NGINX | Only the plain-HTTP `:80` server is active; the TLS 1.3 block is commented out (HSTS on HTTP is ignored) | 📋 Documented (enable at prod) |
+| L-3 | Low | Keycloak | Dev user passwords violate the realm `passwordPolicy length(12)` | ✅ Fixed |
+| L-4 | Low | Secrets | Committed client secret + `changeme_in_production` placeholders; must be rotated/overridden in prod | 📋 Documented |
+| L-5 | Low | Crypto | Merkle tree lacks leaf/branch domain separation and duplicates the last odd node (CVE-2012-2459 class) | 📋 Deferred (changing the anchor format breaks existing anchors) |
+| L-6 | Low | Infra | Dev NGINX mounts only `nginx.conf`, not the built SPA → `/` 404 in dev | 📋 Documented |
+
+### Fixes applied on this branch
+
+- **C-1** — `EvidenceStorage` reads are now bucket-aware (`stream_object`/
+  `object_exists` take `bucket="quarantine"|"evidence"`); parsing reads from the
+  evidence bucket.
+- **C-2** — the canonical names per `Project_Specifications.md` §2 /
+  `reviews/Part_2_Review.md` are `kronos-evidence-<org>-quarantine` and
+  `kronos-evidence-<org>`; the code and config already matched them. The actual
+  deviation was in `scripts/provision_buckets.sh` (it created
+  `kronos-<org>-quarantine` / `kronos-<org>-evidence`), which has been corrected
+  to the canonical names.
+- **H-1** — NGINX upstream now targets `kronos-backend:8000`.
+- **H-2/M-5** — Dockerfile builds a venv at `/opt/venv`, installs runtime deps
+  only (`pip install .`), copies it `--chown=kronos`, and runs as `kronos`.
+- **H-3** — `organization` moved to `defaultDefaultClientScopes`; the SPA also
+  requests `scope=organization` explicitly.
+- **M-1** — `delete_evidence(..., step_up_verified: bool=False)`; the route passes
+  `True` only after consuming a valid aal2 ticket, so the log is truthful.
+- **M-2** — `finalize_upload` enforces the real byte count while streaming
+  (`_cap_stream`), rejecting under-declared oversized uploads.
+- **M-3** — realm `acr.loa.map` added (`{"aal1":1,"aal2":2}`). Emitting `aal2`
+  still requires binding an MFA browser flow with LoA conditions (manual,
+  environment-specific).
+- **M-4** — backend now runs a single uvicorn worker per container (was 2), which
+  removes the in-container split. This is only a partial mitigation: both
+  `docker-compose.prod.yml` (`replicas: 2`) and the Helm chart
+  (`replicaCount: 2`) run multiple backend instances, so a step-up ticket issued
+  by one instance is still unknown to another. A proper fix requires
+  externalising the ticket store (Redis) — until then, run a single replica or
+  enable sticky sessions at the load balancer. **Not fully resolved.**
+- **L-1** — CSP `script-src` no longer allows `'unsafe-inline'`.
+- **L-3** — dev user passwords now satisfy `length(12)`.
 
 ---
 
@@ -62,41 +92,35 @@ It is masked in CI because `LocalEvidenceStorage.stream_object` searches *both*
 buckets.
 
 **Impact:** No evidence can be parsed/indexed in any real deployment.
-**Fix:** Make the storage API bucket-aware, e.g. add an explicit
-`bucket: Literal["quarantine","evidence"]` argument (or separate
-`stream_quarantine`/`stream_evidence` methods), and have callers pass the bucket
-they mean. Encode the bucket in the key prefix if a single method must remain.
-**Test:** `tests/unit/adapter/test_s3_storage_bugs.py::test_evidence_key_must_resolve_to_evidence_bucket`
+**Fix applied:** the storage API is now bucket-aware — `stream_object()` /
+`object_exists()` take `bucket: BucketKind = "quarantine"`; parsing passes
+`bucket="evidence"`. `LocalEvidenceStorage` is now strict (one bucket per call)
+so this can't be masked again.
+**Test:** `tests/unit/adapter/test_s3_storage_bugs.py::test_evidence_read_resolves_to_evidence_bucket`
 
-### C-2 — Bucket names don't match the provisioning script
+### C-2 — Provisioning script used non-canonical bucket names
 
-`scripts/provision_buckets.sh` creates:
+The canonical names are defined by the design authority — `Project_Specifications.md`
+§2 (lines 96–97) and `reviews/Part_2_Review.md` (lines 139, 146):
 
 ```
-kronos-<org>-quarantine
-kronos-<org>-evidence
+kronos-evidence-<org>-quarantine    (quarantine, no Object Lock)
+kronos-evidence-<org>               (evidence, WORM Object Lock Compliance)
 ```
 
-`S3EvidenceStorage` computes:
-
-```python
-def _quarantine_bucket(self, org): return f"{q_prefix}-{org}-quarantine"
-def _evidence_bucket(self, org):   return f"{e_prefix}-{org}"   # no -evidence suffix
-```
-
-With the documented default config (`minio_quarantine_bucket_prefix ==
-minio_evidence_bucket_prefix == "kronos-evidence"`) the app looks for
-`kronos-evidence-<org>-quarantine` and `kronos-evidence-<org>` — **neither
-exists**. And no single prefix can fix both: the evidence helper omits the
-`-evidence` suffix entirely, so it can never produce `kronos-<org>-evidence`.
+`S3EvidenceStorage` and `config.py` already produced exactly these names
+(`_quarantine_bucket = "<prefix>-<org>-quarantine"`, `_evidence_bucket =
+"<prefix>-<org>"`, prefix `kronos-evidence`). The deviation was in
+`scripts/provision_buckets.sh`, which created `kronos-<org>-quarantine` /
+`kronos-<org>-evidence` — so the application looked for buckets the script never
+created.
 
 **Impact:** A freshly provisioned deployment can't find its buckets; uploads and
 promotion fail.
-**Fix:** Make the naming convention authoritative in one place and have both the
-script and `S3EvidenceStorage` derive from it. Add the `-evidence` suffix to
-`_evidence_bucket` and set the default prefix to `kronos`.
-**Tests:** `test_default_config_prefix_matches_provisioned_buckets`,
-`test_no_prefix_value_can_align_both_bucket_names`
+**Fix applied:** `provision_buckets.sh` now creates the canonical
+`kronos-evidence-<org>-quarantine` and `kronos-evidence-<org>` buckets (prefix
+overridable via `BUCKET_PREFIX`). Code/config were left as-is (already correct).
+**Test:** `tests/unit/adapter/test_s3_storage_bugs.py::test_default_prefix_matches_provisioned_buckets`
 
 ---
 
