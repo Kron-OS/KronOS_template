@@ -74,8 +74,21 @@
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5173/*"
-      }
+        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "kronos-backend-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "kronos-backend",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "kronos-backend",
