@@ -138,7 +138,10 @@ class FirecrackerLauncher:
                     **{"@timestamp": ts},
                     message=raw.get("message") or raw.get("description"),
                     event_original=raw.get("message") or raw.get("description"),
-                    extra={k: v for k, v in raw.items() if k not in {"datetime", "@timestamp", "timestamp", "message", "description"}},
+                    extra={
+                    k: v for k, v in raw.items()
+                    if k not in {"datetime", "@timestamp", "timestamp", "message", "description"}
+                },
                     kronos=KronosProvenance(
                         evidence_id=_uuid.UUID(evidence_id),
                         case_id=_uuid.UUID(case_id),
@@ -155,7 +158,10 @@ class FirecrackerLauncher:
                 record_index += 1
 
             except Exception as exc:  # noqa: BLE001
-                logger.warning("plaso_record_parse_error", extra={"error": str(exc), "line": line[:200]})
+                logger.warning(
+                    "plaso_record_parse_error",
+                    extra={"error": str(exc), "line": line[:200]},
+                )
 
         proc.wait()
         if proc.returncode not in (0, None):
@@ -166,4 +172,7 @@ class FirecrackerLauncher:
             )
             raise RuntimeError(f"Plaso worker exited with code {proc.returncode}: {stderr[:200]}")
 
-        logger.info("firecracker_stream_complete", extra={"evidence_id": evidence_id, "records": record_index})
+        logger.info(
+            "firecracker_stream_complete",
+            extra={"evidence_id": evidence_id, "records": record_index},
+        )

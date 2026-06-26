@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from kronos_attest.verifier import ChainVerifier
+from kronos_attest.verifier import ChainVerifier, MerkleVerifier
 
 
 @dataclass
