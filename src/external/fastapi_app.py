@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.exceptions import (
@@ -60,6 +61,14 @@ def create_app(
             audience=keycloak_audience,
             jwks_url=keycloak_jwks_url,
         )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost", "http://localhost:5173", "http://localhost:4173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(auth_routes.router)
     app.include_router(cases_routes.router)
