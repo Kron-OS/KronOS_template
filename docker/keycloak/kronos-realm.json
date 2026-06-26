@@ -174,7 +174,11 @@
             "claim.name": "organization",
             "id.token.claim": "true",
             "access.token.claim": "true",
-            "userinfo.token.claim": "true"
+            "userinfo.token.claim": "true",
+            "jsonType.label": "JSON",
+            "multivalued": "true",
+            "addOrganizationId": "true",
+            "addOrganizationAttributes": "false"
           }
         }
       ]
@@ -197,6 +201,7 @@
   ],
   "users": [
     {
+      "id": "10000000-0000-4000-8000-000000000001",
       "username": "admin",
       "email": "admin@kronos.dev",
       "firstName": "Admin",
@@ -214,6 +219,7 @@
       "requiredActions": []
     },
     {
+      "id": "10000000-0000-4000-8000-000000000002",
       "username": "analyst",
       "email": "analyst@kronos.dev",
       "firstName": "Test",
@@ -231,6 +237,7 @@
       "requiredActions": []
     },
     {
+      "id": "10000000-0000-4000-8000-000000000003",
       "username": "case-lead",
       "email": "caselead@kronos.dev",
       "firstName": "Case",
@@ -246,6 +253,26 @@
       ],
       "realmRoles": ["case-lead"],
       "requiredActions": []
+    }
+  ],
+  "organizations": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "KronOS Dev",
+      "alias": "kronos-dev",
+      "enabled": true,
+      "description": "Default development organization",
+      "domains": [
+        {
+          "name": "kronos.dev",
+          "verified": true
+        }
+      ],
+      "members": [
+        { "id": "10000000-0000-4000-8000-000000000001" },
+        { "id": "10000000-0000-4000-8000-000000000002" },
+        { "id": "10000000-0000-4000-8000-000000000003" }
+      ]
     }
   ],
   "passwordPolicy": "length(12) and notUsername and notEmail",

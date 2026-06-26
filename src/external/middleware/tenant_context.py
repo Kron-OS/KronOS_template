@@ -40,7 +40,7 @@ async def get_tenant_context(
     try:
         return await validator.validate_and_extract(credentials.credentials)
     except AuthenticationError as exc:
-        logger.warning("jwt_validation_failed", extra={"detail": str(exc)})
+        logger.warning("jwt_validation_failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
