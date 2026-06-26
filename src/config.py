@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 1_073_741_824  # 1 GB
     presigned_url_expiry_seconds: int = 3600
 
+    # Step-up ticket store: "memory" (single replica only) or "redis" (shared
+    # across workers/replicas). Production with >1 backend replica MUST use
+    # "redis"; otherwise a ticket issued by one replica is unknown to another.
+    step_up_ticket_store: str = "memory"
+
     # OpenSearch Dashboards (iframe embed)
     opensearch_dashboards_url: str | None = Field(
         default=None,

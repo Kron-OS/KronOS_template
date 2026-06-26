@@ -189,6 +189,7 @@ Secrets have **no defaults** — a missing required var fails fast at startup.
 | `TSA_URL` | – | RFC 3161 timestamping endpoint |
 | `CLAMD_HOST`, `CLAMD_PORT` | – | ClamAV (default `localhost:3310`) |
 | `MAX_UPLOAD_BYTES`, `PRESIGNED_URL_EXPIRY_SECONDS` | – | intake limits |
+| `STEP_UP_TICKET_STORE` | – | `memory` (default, single replica) or `redis` (shared across replicas — **required when running >1 backend replica**) |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH`, `TLS_CA_PATH` | – | internal mTLS |
 | `OPENSEARCH_DASHBOARDS_URL` | – | timeline iframe embed |
 

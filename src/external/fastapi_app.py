@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -25,6 +27,7 @@ def create_app(
     keycloak_issuer: str | None = None,
     keycloak_audience: str = "kronos-backend",
     keycloak_jwks_url: str | None = None,
+    step_up_ticket_store: Any | None = None,
 ) -> FastAPI:
     """Construct and configure the KronOS FastAPI application.
 
@@ -32,7 +35,17 @@ def create_app(
     validator is registered in ``app.state.keycloak_validator`` so the
     ``get_tenant_context`` dependency can use it.  Tests may omit these
     and override ``get_tenant_context`` via ``app.dependency_overrides``.
+
+    *step_up_ticket_store* (a ``TicketStore``) wires step-up tickets into a
+    shared backend (e.g. ``RedisTicketStore``); when omitted, the process-local
+    in-memory store is used. Production with multiple replicas must pass a Redis
+    store (build it with ``dependencies.build_step_up_ticket_store(settings)``).
     """
+    if step_up_ticket_store is not None:
+        from src.external.dependencies import configure_step_up_auth  # noqa: PLC0415
+
+        configure_step_up_auth(step_up_ticket_store)
+
     app = FastAPI(
         title="KronOS",
         description="Forensically sound, multi-tenant evidence management platform",

@@ -23,7 +23,7 @@ behaviour (and guard against regression).
 | M-1 | Medium | Audit | `delete_evidence` hard-codes `step_up_verified: True` in the immutable audit log regardless of actual verification | ✅ Fixed |
 | M-2 | Medium | Intake | File-size limit is only checked against client-claimed size; real uploaded size is never enforced → size/DoS bypass | ✅ Fixed |
 | M-3 | Medium | Keycloak/Auth | No `acr`→LoA mapping; tokens can't carry `acr=aal2`, so step-up-gated deletion is unsatisfiable | ⚠️ Partial — `acr.loa.map` added; MFA browser flow still to bind |
-| M-4 | Medium | Auth/Scale | Step-up tickets + JWKS cache are per-process; with multiple workers/pods they don't share → intermittent 401 | ⚠️ Partial — 1 worker/container; **prod runs 2 replicas**, so a shared (Redis) ticket store or single replica + sticky sessions is still required |
+| M-4 | Medium | Auth/Scale | Step-up tickets + JWKS cache are per-process; with multiple workers/pods they don't share → intermittent 401 | ✅ Fixed — Redis-backed ticket store (atomic single-use) shared across replicas; enable with `STEP_UP_TICKET_STORE=redis` |
 | M-5 | Medium | Docker | Production image installs `.[dev]` (pytest, mypy, ruff…) → bloat + attack surface | ✅ Fixed |
 | L-1 | Low | NGINX | CSP allows `script-src 'unsafe-inline'` → weakens XSS defence | ✅ Fixed |
 | L-2 | Low | NGINX | Only the plain-HTTP `:80` server is active; the TLS 1.3 block is commented out (HSTS on HTTP is ignored) | 📋 Documented (enable at prod) |
@@ -55,13 +55,19 @@ behaviour (and guard against regression).
 - **M-3** — realm `acr.loa.map` added (`{"aal1":1,"aal2":2}`). Emitting `aal2`
   still requires binding an MFA browser flow with LoA conditions (manual,
   environment-specific).
-- **M-4** — backend now runs a single uvicorn worker per container (was 2), which
-  removes the in-container split. This is only a partial mitigation: both
-  `docker-compose.prod.yml` (`replicas: 2`) and the Helm chart
-  (`replicaCount: 2`) run multiple backend instances, so a step-up ticket issued
-  by one instance is still unknown to another. A proper fix requires
-  externalising the ticket store (Redis) — until then, run a single replica or
-  enable sticky sessions at the load balancer. **Not fully resolved.**
+- **M-4** — step-up tickets are now stored behind a pluggable `TicketStore`
+  (`src/external/middleware/step_up_store.py`). `RedisTicketStore` uses an atomic
+  `GETDEL` so a ticket is spent exactly once even when multiple replicas race,
+  and any replica can consume a ticket issued by another. `StepUpAuth` keeps its
+  sync API (no route/test churn); the default is still the in-memory store.
+  **To activate in production:** set `STEP_UP_TICKET_STORE=redis` and have the
+  app bootstrap pass `dependencies.build_step_up_ticket_store(settings)` into
+  `create_app(step_up_ticket_store=...)` (or call
+  `dependencies.configure_step_up_auth(store)`). Tests
+  (`tests/unit/middleware/test_step_up_store.py`) prove cross-instance sharing
+  and single-use. The backend also runs a single uvicorn worker per container.
+  *Note:* the JWKS cache remains per-process — that is a performance concern
+  only (each process re-fetches), not a correctness one.
 - **L-1** — CSP `script-src` no longer allows `'unsafe-inline'`.
 - **L-3** — dev user passwords now satisfy `length(12)`.
 

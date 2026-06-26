@@ -7,7 +7,7 @@ bindings via FastAPI's ``app.dependency_overrides`` or by calling
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends
 
@@ -27,6 +27,11 @@ from src.application.timeline_ingest import TimelineIngestionService
 from src.application.validation import EvidenceValidator, default_validator_chain
 from src.domain.user import Role, TenantContext
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
+from src.external.middleware.step_up_store import (
+    InMemoryTicketStore,
+    RedisTicketStore,
+    TicketStore,
+)
 from src.external.middleware.tenant_context import get_tenant_context as get_tenant_context
 
 # ---------------------------------------------------------------------------
@@ -99,8 +104,8 @@ def configure_clamav_from_settings() -> None:
     """
     global _scanner
     try:
-        from src.config import Settings  # noqa: PLC0415
         from src.application.scanning import ClamAVScanner  # noqa: PLC0415
+        from src.config import Settings  # noqa: PLC0415
 
         s = Settings()
         _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
@@ -240,6 +245,33 @@ def get_step_up_auth() -> _StepUpAuth:
     return _step_up_auth
 
 
+def configure_step_up_auth(store: TicketStore) -> None:
+    """Replace the process StepUpAuth with one backed by *store*.
+
+    Call at startup with a ``RedisTicketStore`` to make step-up tickets work
+    across multiple backend workers/replicas (audit M-4).
+    """
+    global _step_up_auth
+    _step_up_auth = _StepUpAuth(store=store)
+
+
+def build_step_up_ticket_store(settings: Any) -> TicketStore:
+    """Build a TicketStore from settings: Redis when configured, else in-memory.
+
+    ``settings.step_up_ticket_store == "redis"`` selects the shared Redis store
+    using ``settings.redis_url``; any other value yields the process-local store.
+    """
+    if getattr(settings, "step_up_ticket_store", "memory") == "redis":
+        import redis  # noqa: PLC0415
+
+        url = settings.redis_url
+        # redis_url may be a pydantic SecretStr.
+        url = url.get_secret_value() if hasattr(url, "get_secret_value") else str(url)
+        client = redis.Redis.from_url(url, decode_responses=True)
+        return RedisTicketStore(client)
+    return InMemoryTicketStore()
+
+
 # ---------------------------------------------------------------------------
 # Runtime configuration — called once at application startup.
 # ---------------------------------------------------------------------------
@@ -282,7 +314,8 @@ def reset_dependencies() -> None:
     """Reset all dependency bindings — used only in tests."""
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
-    global _case_repository
+    global _case_repository, _step_up_auth
+    _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None

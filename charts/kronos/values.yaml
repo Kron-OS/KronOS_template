@@ -101,6 +101,11 @@ vault:
   role: kronos-backend
   agentInject: true
 
+# Step-up (RFC 9470) ticket store. Use "redis" whenever replicaCount > 1 so
+# tickets are shared across backend pods (audit M-4); "memory" is single-pod only.
+stepUp:
+  ticketStore: redis
+
 celery:
   workers:
     fast:
