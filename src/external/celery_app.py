@@ -29,16 +29,16 @@ celery_app = Celery(
 
 celery_app.conf.update(
     task_routes={
-        "kronos.dispatch_parse": {"queue": "default"},
-        "kronos.parse_artefact_fast": {"queue": "parse.fast"},
-        "kronos.parse_artefact_heavy": {"queue": "parse.heavy"},
-        "kronos.finalize_evidence": {"queue": "default"},
-        "kronos.abort_orphan_uploads": {"queue": "default"},
-        "kronos.abort_orphan_parses": {"queue": "default"},
-        "kronos.anchor_audit_log": {"queue": "default"},
-        # Legacy names kept for backward compat with queued tasks in broker.
-        "kronos.parse_fast": {"queue": "parse.fast"},
-        "kronos.parse_heavy": {"queue": "parse.heavy"},
+        "kronos.dispatch_parse": {"queue": "q.index"},
+        "kronos.parse_artefact_fast": {"queue": "q.parse.fast"},
+        "kronos.parse_artefact_heavy": {"queue": "q.parse.plaso"},
+        "kronos.finalize_evidence": {"queue": "q.index"},
+        "kronos.abort_orphan_uploads": {"queue": "q.index"},
+        "kronos.abort_orphan_parses": {"queue": "q.index"},
+        "kronos.anchor_audit_log": {"queue": "q.index"},
+        # Legacy aliases — also routed to correct queues.
+        "kronos.parse_fast": {"queue": "q.parse.fast"},
+        "kronos.parse_heavy": {"queue": "q.parse.plaso"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -125,7 +125,7 @@ def dispatch_parse(
     bind=True,
     max_retries=3,
     default_retry_delay=30,
-    queue="parse.fast",
+    queue="q.parse.fast",
 )
 def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> dict:  # type: ignore[return]
     """Fast parse task — runs in gVisor sandbox.
@@ -138,7 +138,12 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     orch, _ = _deps()
     try:
         count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
-        return {"evidence_id": evidence_id, "record_count": count}
+        result = {"evidence_id": evidence_id, "record_count": count}
+        finalize_evidence.apply_async(
+            kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
+            queue="q.index",
+        )
+        return result
     except Exception as exc:
         logger.error("parse_fast_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
         raise self.retry(exc=exc)  # type: ignore[attr-defined]
@@ -154,7 +159,7 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     bind=True,
     max_retries=2,
     default_retry_delay=120,
-    queue="parse.heavy",
+    queue="q.parse.plaso",
     time_limit=600,
     soft_time_limit=540,
 )
@@ -169,7 +174,12 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
     orch, _ = _deps()
     try:
         count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
-        return {"evidence_id": evidence_id, "record_count": count}
+        result = {"evidence_id": evidence_id, "record_count": count}
+        finalize_evidence.apply_async(
+            kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
+            queue="q.index",
+        )
+        return result
     except Exception as exc:
         logger.error("parse_heavy_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
         raise self.retry(exc=exc)  # type: ignore[attr-defined]
@@ -375,8 +385,12 @@ def anchor_audit_log(self: object) -> str:
                 ]
             root = layer[0].hex()
 
+        import uuid as _uuid  # noqa: PLC0415
+        # System actor sentinel — no real user, no org scope for cross-org anchor.
+        _SYSTEM_ACTOR = _uuid.UUID("00000000-0000-0000-0000-000000000001")
         await audit_svc.log(
             AuditEventType.AUDIT_MERKLE_ANCHORED,
+            actor_user_id=_SYSTEM_ACTOR,
             details={
                 "merkle_root": root,
                 "event_count": len(events),
@@ -396,13 +410,19 @@ def anchor_audit_log(self: object) -> str:
 
 @celery_app.task(name="kronos.parse_fast", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
 def parse_evidence_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias for parse_artefact_fast."""
-    result = parse_artefact_fast(evidence_id, org_id=org_id, user_id=user_id)
-    return result.get("record_count", 0) if isinstance(result, dict) else 0
+    """Legacy alias — re-dispatches via Celery (does not call directly)."""
+    result = parse_artefact_fast.apply(
+        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
+    )
+    data = result.get() if hasattr(result, "get") else {}
+    return data.get("record_count", 0) if isinstance(data, dict) else 0
 
 
 @celery_app.task(name="kronos.parse_heavy", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
 def parse_evidence_heavy(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias for parse_artefact_heavy."""
-    result = parse_artefact_heavy(evidence_id, org_id=org_id, user_id=user_id)
-    return result.get("record_count", 0) if isinstance(result, dict) else 0
+    """Legacy alias — re-dispatches via Celery (does not call directly)."""
+    result = parse_artefact_heavy.apply(
+        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
+    )
+    data = result.get() if hasattr(result, "get") else {}
+    return data.get("record_count", 0) if isinstance(data, dict) else 0

@@ -37,6 +37,14 @@ class AuditLogRepository(ABC):
     def stream_by_case(self, case_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
         """Yield audit events for a given case in chronological order."""
 
+    @abstractmethod
+    def stream_by_org(self, org_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
+        """Yield ALL audit events for an org in chronological order (by sequence_number).
+
+        Used by verify_chain and anchor_day — must return the complete org chain,
+        not filtered by case_id.
+        """
+
     async def list_by_date_range(
         self, start: datetime, end: datetime
     ) -> list[AuditEvent]:

@@ -70,6 +70,10 @@ class Settings(BaseSettings):
         description="RFC 3161 TSA endpoint, e.g. http://tsa:318/api/v1/timestamp",
     )
 
+    # ClamAV antivirus
+    clamd_host: str = Field(default="localhost", description="clamd TCP host")
+    clamd_port: int = Field(default=3310, description="clamd TCP port")
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

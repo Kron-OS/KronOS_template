@@ -9,9 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.domain.user import Role, TenantContext
-from src.external.dependencies import get_tenant_context
+from src.external.dependencies import get_evidence_repository, get_tenant_context
 from src.external.fastapi_app import create_app
 from src.external.routes import sse as sse_module
+from tests.conftest import InMemoryEvidenceRepository
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +38,10 @@ def sse_client():
             correlation_id=str(uuid.uuid4()),
         )
 
+    evidence_repo = InMemoryEvidenceRepository()
     app = create_app()
     app.dependency_overrides[get_tenant_context] = _fixed_tenant
+    app.dependency_overrides[get_evidence_repository] = lambda: evidence_repo
     return TestClient(app), fixed_org, fixed_user
 
 

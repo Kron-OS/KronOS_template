@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 _AAL2 = "aal2"
 _TICKET_TTL_SECONDS = 300  # 5 minutes
 
+# Maps ACR string values to integer levels for safe numeric comparison.
+# Lexicographic comparison ("aal10" < "aal2") would give wrong results.
+_ACR_LEVEL: dict[str, int] = {"aal1": 1, "aal2": 2}
+
+
+def _acr_level(acr: str) -> int:
+    """Return the numeric level for an ACR string, defaulting to 0 (least trusted)."""
+    return _ACR_LEVEL.get(acr, 0)
+
 
 @dataclass
 class _Ticket:
@@ -45,7 +54,7 @@ class StepUpAuth:
 
     def assert_acr(self, tenant: TenantContext, required_acr: str = _AAL2) -> None:
         """Raise HTTP 401 (RFC 9470) if the tenant's ACR does not meet *required_acr*."""
-        if tenant.acr < required_acr:
+        if _acr_level(tenant.acr) < _acr_level(required_acr):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Step-up authentication required",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import struct
-from datetime import datetime
+from datetime import UTC, datetime
 
 import httpx
 
@@ -96,7 +96,7 @@ class RFC3161TimestampService:
                     "TSA token digest mismatch",
                     context={"expected": digest.hex(), "got": embedded_digest.hex()},
                 )
-            return gen_time if isinstance(gen_time, datetime) else datetime.utcnow()
+            return gen_time if isinstance(gen_time, datetime) else datetime.now(UTC)
         except ImportError:
             logger.warning("rfc3161ng not installed; returning current time as stub verify")
-            return datetime.utcnow()
+            return datetime.now(UTC)

@@ -8,12 +8,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.adapter.repository.case_repository import CaseRepository
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.user import Role, TenantContext
 from src.exceptions import AuthorizationError, KronOSException, ParsingError, ValidationError
 from src.external.dependencies import (
+    get_case_repository,
     get_intake_service,
     get_parsing_orchestration_service,
     get_step_up_auth,
@@ -76,8 +78,16 @@ async def request_upload(
     body: UploadRequestIn,
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
 ) -> UploadRequestOut:
     """Create an Evidence record and return a presigned URL for direct upload."""
+    case = await case_repo.get_by_id(body.case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Case not found or does not belong to your organisation",
+        )
+
     try:
         evidence, presigned = await intake.request_upload(
             filename=body.filename,

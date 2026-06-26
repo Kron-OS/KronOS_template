@@ -158,7 +158,10 @@ def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
     except (KeyError, ValueError) as exc:
         raise AuthenticationError(f"Invalid or missing 'sub' claim: {exc}") from exc
 
-    roles = _map_roles(claims.get("roles", []))
+    # Keycloak maps realm roles to realm_access.roles (standard Keycloak claim structure).
+    # The kronos-realm.json mapper uses claim.name "realm_access.roles".
+    realm_access: dict = claims.get("realm_access", {})
+    roles = _map_roles(realm_access.get("roles", []))
     jti: str = claims.get("jti") or str(uuid.uuid4())
     acr: str = claims.get("acr", "aal1")
 

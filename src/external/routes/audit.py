@@ -9,7 +9,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from src.application.audit_log import AuditLogService, build_merkle_root
+from src.application.audit_log import AuditLogService
+from kronos_attest.verifier import build_merkle_root
 from src.domain.audit import AuditEvent
 from src.domain.user import TenantContext
 from src.exceptions import KronOSException
@@ -117,9 +118,7 @@ async def merkle_proof(
     """
     events: list[AuditEvent] = []
     target: AuditEvent | None = None
-    async for ev in audit_svc._repository.stream_by_case(tenant.org_id):
-        if ev.org_id != tenant.org_id:
-            continue
+    async for ev in audit_svc._repository.stream_by_org(tenant.org_id):
         events.append(ev)
         if ev.event_id == event_id:
             target = ev
@@ -133,7 +132,8 @@ async def merkle_proof(
     leaf_hash = leaves[target_idx].hex()
 
     proof = _build_proof(leaves, target_idx)
-    root_hash = build_merkle_root(sorted_events)
+    row_hash_strings = [e.row_hash or "" for e in sorted_events]
+    root_hash = build_merkle_root(row_hash_strings)
 
     return MerkleProofResponse(
         event_id=event_id,

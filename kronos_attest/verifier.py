@@ -97,6 +97,16 @@ class ChainVerifier:
 
         Events should be sorted by sequence_number (ascending).
         Returns a ChainVerificationResult with any detected breaks.
+
+        SECURITY: We use the running tracked prev_hash, NOT the stored
+        prev_row_hash field.  Using the stored field allows an attacker to
+        forge a consistent chain by adjusting prev_row_hash on each event,
+        bypassing the tamper-detection guarantee.
+
+        For the Merkle root we always use the *stored* row_hash (even if
+        tampered), so the computed root matches what the server anchored at the
+        time of the anchor operation.  A mismatch between the computed root and
+        the stored anchor root therefore indicates tampering.
         """
         sorted_events = sorted(events, key=lambda e: e.get("sequence_number", 0))
         prev_hash = GENESIS_HASH
@@ -104,10 +114,12 @@ class ChainVerifier:
         row_hashes: list[str] = []
 
         for ev in sorted_events:
-            expected_prev = ev.get("prev_row_hash") or prev_hash
-            computed = compute_row_hash(expected_prev, ev)
+            # Recompute using the running tracked hash — not the stored field.
+            computed = compute_row_hash(prev_hash, ev)
             stored = ev.get("row_hash", "")
-            row_hashes.append(stored or computed)
+            # Always include the stored hash in the Merkle layer so we can
+            # compare against the server-anchored root.
+            row_hashes.append(stored if stored else computed)
 
             if stored and stored != computed:
                 breaks.append(
@@ -118,7 +130,8 @@ class ChainVerifier:
                         computed_hash=computed,
                     )
                 )
-            prev_hash = stored or computed
+            # Advance the running hash: use stored if valid, computed if missing.
+            prev_hash = stored if stored else computed
 
         root = build_merkle_root(row_hashes)
         return ChainVerificationResult(

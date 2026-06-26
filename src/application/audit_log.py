@@ -169,17 +169,22 @@ class AuditLogService:
 
         Returns (True, None) if chain is intact.
         Returns (False, detail_message) if a break is detected.
+
+        NOTE: uses the running tracked prev_hash, NOT the stored prev_row_hash field.
+        This prevents an attacker who can write to the DB from bypassing verification
+        by adjusting the stored prev_row_hash to match tampered content.
         """
         prev_hash = _GENESIS_HASH
-        async for event in self._repository.stream_by_case(org_id):
-            expected = compute_row_hash(event.prev_row_hash or _GENESIS_HASH, event)
+        async for event in self._repository.stream_by_org(org_id):
+            expected = compute_row_hash(prev_hash, event)
             if event.row_hash != expected:
                 detail = (
-                    f"Hash mismatch at seq={event.sequence_number} " f"event_id={event.event_id}"
+                    f"Hash mismatch at seq={event.sequence_number} "
+                    f"event_id={event.event_id}"
                 )
                 logger.warning("audit_chain_tampered", extra={"detail": detail})
                 return False, detail
-            prev_hash = event.row_hash  # noqa: F841 — kept for readability
+            prev_hash = event.row_hash or prev_hash
         return True, None
 
     async def anchor_day(
@@ -199,7 +204,7 @@ class AuditLogService:
         from src.adapter.repository.audit_log import AnchorRepository  # noqa: PLC0415
 
         events: list[AuditEvent] = []
-        async for event in self._repository.stream_by_case(org_id):
+        async for event in self._repository.stream_by_org(org_id):
             if event.occurred_at.date() == anchor_date:
                 events.append(event)
 

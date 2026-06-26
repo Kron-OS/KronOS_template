@@ -49,12 +49,13 @@ def _make_claims(**overrides: Any) -> dict[str, Any]:
     now = int(time.time())
     org_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
+    # Keycloak 26+ puts realm roles at realm_access.roles, NOT at the top level.
     claims: dict[str, Any] = {
         "iss": _ISSUER,
         "aud": _AUDIENCE,
         "sub": user_id,
         "preferred_username": "alice@acme.example",
-        "roles": ["analyst"],
+        "realm_access": {"roles": ["analyst"]},
         "organization": {"acme": {"id": org_id}},
         "acr": "aal1",
         "jti": str(uuid.uuid4()),
@@ -139,7 +140,7 @@ def test_extract_tenant_happy_path() -> None:
     claims = _make_claims(
         sub=str(user_id),
         organization={"acme": {"id": str(org_id)}},
-        roles=["case-lead", "analyst"],
+        realm_access={"roles": ["case-lead", "analyst"]},
         acr="aal2",
     )
     tenant = _extract_tenant(claims)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,13 +42,16 @@ class OrgUsersResponse(BaseModel):
     total: int
 
 
+_OrgRole = Literal["org-admin", "case-lead", "analyst", "read-only"]
+
+
 class InviteUserIn(BaseModel):
     email: str = Field(description="Email address of the user to invite")
-    role: str = Field(description="Role to assign: org_admin | case_lead | analyst | read_only")
+    role: _OrgRole = Field(description="Role to assign")
 
 
 class UpdateRoleIn(BaseModel):
-    role: str
+    role: _OrgRole
 
 
 class OrgSettingsOut(BaseModel):
@@ -196,7 +199,8 @@ async def update_org_settings(
 
 def _assert_aal2(tenant: TenantContext) -> None:
     """Raise 401 step-up challenge if the token doesn't satisfy aal2."""
-    if tenant.acr < "aal2":
+    _ACR_LEVEL = {"aal1": 1, "aal2": 2}
+    if _ACR_LEVEL.get(tenant.acr, 0) < 2:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Step-up authentication required for this operation",

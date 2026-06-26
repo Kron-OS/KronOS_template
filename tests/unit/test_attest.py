@@ -56,11 +56,11 @@ def _make_event(
     return ev
 
 
-def _make_chain(n: int) -> list[dict[str, Any]]:
+def _make_chain(n: int, day: str = "2026-06-25") -> list[dict[str, Any]]:
     events = []
     prev = GENESIS_HASH
     for i in range(n):
-        ev = _make_event(i, prev_hash=prev)
+        ev = _make_event(i, prev_hash=prev, day=day)
         prev = ev["row_hash"]
         events.append(ev)
     return events
@@ -178,7 +178,8 @@ class TestDayReport:
         assert report.tsa_anchored is False
 
     def test_day_with_events(self) -> None:
-        events = [_make_event(i, day="2026-06-25") for i in range(3)]
+        # Use _make_chain so each event's prev_hash chains correctly.
+        events = _make_chain(3, day="2026-06-25")
         reporter = AttestationReport()
         report = reporter.day_report(events, "2026-06-25")
         assert report.event_count == 3

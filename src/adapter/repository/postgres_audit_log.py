@@ -104,6 +104,18 @@ class PostgresAuditLogRepository(AuditLogRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
+    async def stream_by_org(
+        self, org_id: uuid.UUID
+    ) -> AsyncIterator[AuditEvent]:
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                audit_log_table.select()
+                .where(audit_log_table.c.org_id == org_id)
+                .order_by(audit_log_table.c.sequence_number)
+            )
+            for row in result:
+                yield self._from_row(row._asdict())
+
     @staticmethod
     def _to_row(event: AuditEvent) -> dict[str, Any]:
         return {

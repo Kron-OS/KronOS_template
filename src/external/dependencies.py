@@ -90,6 +90,24 @@ def get_scanner() -> AntivirusScanner:
     return _scanner
 
 
+def configure_clamav_from_settings() -> None:
+    """Wire ClamAVScanner using CLAMD_HOST / CLAMD_PORT from Settings.
+
+    Call at application startup after configure_dependencies() if ClamAV
+    is available.  Falls back to the existing NoOpScanner if Settings
+    cannot be instantiated (e.g., in unit tests).
+    """
+    global _scanner
+    try:
+        from src.config import Settings  # noqa: PLC0415
+        from src.application.scanning import ClamAVScanner  # noqa: PLC0415
+
+        s = Settings()
+        _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
+    except Exception:
+        pass  # keep NoOpScanner in test/dev environments without ClamAV
+
+
 def get_task_queue() -> TaskQueue:
     return _task_queue
 

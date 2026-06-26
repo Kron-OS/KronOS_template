@@ -110,7 +110,8 @@ class FirecrackerLauncher:
         """Read JSONL from subprocess stdout and yield TimelineRecord objects."""
         import uuid as _uuid
 
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError("Plaso worker subprocess stdout pipe is not available")
         record_index = 0
         ingest_ts = datetime.now(UTC)
 

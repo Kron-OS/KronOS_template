@@ -47,7 +47,14 @@ class InMemoryAuditLogRepository(AuditLogRepository):
         self, case_id: uuid.UUID
     ) -> AsyncIterator[AuditEvent]:
         for event in self._events:
-            if event.case_id == case_id or event.org_id == case_id:
+            if event.case_id == case_id:
+                yield event
+
+    async def stream_by_org(  # type: ignore[override]
+        self, org_id: uuid.UUID
+    ) -> AsyncIterator[AuditEvent]:
+        for event in sorted(self._events, key=lambda e: e.sequence_number):
+            if event.org_id == org_id:
                 yield event
 
     @property
