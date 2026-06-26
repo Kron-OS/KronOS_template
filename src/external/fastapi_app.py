@@ -111,4 +111,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 
 # Module-level instance for uvicorn/gunicorn entrypoints.
-app = create_app()
+# Wire Keycloak from environment variables when present.
+import os as _os  # noqa: E402
+
+_keycloak_url = _os.getenv("KEYCLOAK_URL", "")
+_keycloak_realm = _os.getenv("KEYCLOAK_REALM", "kronos")
+_keycloak_issuer = f"{_keycloak_url}/realms/{_keycloak_realm}" if _keycloak_url else None
+_keycloak_jwks = f"{_keycloak_issuer}/protocol/openid-connect/certs" if _keycloak_issuer else None
+
+app = create_app(
+    keycloak_issuer=_keycloak_issuer,
+    keycloak_jwks_url=_keycloak_jwks,
+)
