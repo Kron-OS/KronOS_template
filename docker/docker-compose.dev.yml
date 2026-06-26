@@ -166,6 +166,7 @@ services:
       OPENSEARCH_PASSWORD: admin
       OPENSEARCH_DASHBOARDS_URL: http://opensearch-dashboards:5601
       KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: http://localhost:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}

@@ -114,10 +114,17 @@ def _register_exception_handlers(app: FastAPI) -> None:
 # Wire Keycloak from environment variables when present.
 import os as _os  # noqa: E402
 
-_keycloak_url = _os.getenv("KEYCLOAK_URL", "")
+# KEYCLOAK_PUBLIC_URL is the browser-visible URL (token issuer claim).
+# KEYCLOAK_URL is the Docker-internal URL used to fetch JWKS.
+_keycloak_internal_url = _os.getenv("KEYCLOAK_URL", "")
+_keycloak_public_url = _os.getenv("KEYCLOAK_PUBLIC_URL", _keycloak_internal_url)
 _keycloak_realm = _os.getenv("KEYCLOAK_REALM", "kronos")
-_keycloak_issuer = f"{_keycloak_url}/realms/{_keycloak_realm}" if _keycloak_url else None
-_keycloak_jwks = f"{_keycloak_issuer}/protocol/openid-connect/certs" if _keycloak_issuer else None
+_keycloak_issuer = f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+_keycloak_jwks = (
+    f"{_keycloak_internal_url}/realms/{_keycloak_realm}/protocol/openid-connect/certs"
+    if _keycloak_internal_url
+    else None
+)
 
 app = create_app(
     keycloak_issuer=_keycloak_issuer,
