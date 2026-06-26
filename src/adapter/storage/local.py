@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
+from src.adapter.storage.storage import BucketKind, EvidenceStorage, PresignedUploadResponse
 from src.domain.evidence import Evidence
 from src.exceptions import StorageError
 
@@ -43,12 +43,19 @@ class LocalEvidenceStorage(EvidenceStorage):
             expires_in_seconds=expires_in_seconds,
         )
 
-    async def stream_object(self, object_key: str, chunk_size: int = 65536) -> AsyncIterator[bytes]:
-        path = self._quarantine.get(object_key) or self._evidence.get(object_key)
+    async def stream_object(
+        self,
+        object_key: str,
+        chunk_size: int = 65536,
+        *,
+        bucket: BucketKind = "quarantine",
+    ) -> AsyncIterator[bytes]:
+        store = self._evidence if bucket == "evidence" else self._quarantine
+        path = store.get(object_key)
         if path is None or not path.exists():
             raise StorageError(
                 f"Object not found: {object_key}",
-                context={"object_key": object_key},
+                context={"object_key": object_key, "bucket": bucket},
             )
         return self._file_stream(path, chunk_size)
 
@@ -71,8 +78,9 @@ class LocalEvidenceStorage(EvidenceStorage):
         if path and path.exists():
             path.unlink()
 
-    async def object_exists(self, object_key: str) -> bool:
-        path = self._quarantine.get(object_key) or self._evidence.get(object_key)
+    async def object_exists(self, object_key: str, *, bucket: BucketKind = "quarantine") -> bool:
+        store = self._evidence if bucket == "evidence" else self._quarantine
+        path = store.get(object_key)
         return path is not None and path.exists()
 
     # ------------------------------------------------------------------

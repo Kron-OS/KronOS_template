@@ -13,6 +13,10 @@ export async function initKeycloak(): Promise<boolean> {
     useNonce: true,
     checkLoginIframe: false,
     onLoad: 'check-sso',
+    // The backend requires the `organization` claim. Request the scope
+    // explicitly so the minted token always carries it, independent of the
+    // realm's default-scope configuration.
+    scope: 'openid organization',
     silentCheckSsoRedirectUri: window.location.origin + '/silent-check-sso.html',
   })
 }

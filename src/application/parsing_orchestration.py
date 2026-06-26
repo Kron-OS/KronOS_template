@@ -153,7 +153,7 @@ class ParsingOrchestrationService:
 
         try:
             parser = await self._detect_parser(evidence, evidence_key)
-            stream = await self._storage.stream_object(evidence_key)
+            stream = await self._storage.stream_object(evidence_key, bucket="evidence")
             annotated = _annotate_records(
                 parser.parse(stream, evidence, tenant),
                 evidence_id,
@@ -221,7 +221,7 @@ class ParsingOrchestrationService:
     async def _detect_parser(self, evidence: Evidence, evidence_key: str) -> ForensicParser:
         """Read the first 8 KB and return the matching parser."""
         header = b""
-        async for chunk in await self._storage.stream_object(evidence_key):
+        async for chunk in await self._storage.stream_object(evidence_key, bucket="evidence"):
             header += chunk
             if len(header) >= _HEADER_BYTES:
                 break

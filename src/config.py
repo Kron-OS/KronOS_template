@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     minio_access_key: SecretStr
     minio_secret_key: SecretStr
     minio_use_tls: bool = True
+    # Canonical bucket names (Project_Specifications.md §2): quarantine is
+    # "<prefix>-<org_alias>-quarantine" and evidence is "<prefix>-<org_alias>".
+    # The prefix is "kronos-evidence"; scripts/provision_buckets.sh must match.
     minio_quarantine_bucket_prefix: str = "kronos-evidence"
     minio_evidence_bucket_prefix: str = "kronos-evidence"
     minio_default_retention_days: int = 2555  # 7 years
@@ -58,6 +61,11 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 1_073_741_824  # 1 GB
     presigned_url_expiry_seconds: int = 3600
 
+    # Step-up ticket store: "memory" (single replica only) or "redis" (shared
+    # across workers/replicas). Production with >1 backend replica MUST use
+    # "redis"; otherwise a ticket issued by one replica is unknown to another.
+    step_up_ticket_store: str = "memory"
+
     # OpenSearch Dashboards (iframe embed)
     opensearch_dashboards_url: str | None = Field(
         default=None,
@@ -77,4 +85,6 @@ class Settings(BaseSettings):
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")
-    tls_ca_path: str | None = Field(default=None, description="Path to CA bundle for mTLS verification")
+    tls_ca_path: str | None = Field(
+        default=None, description="Path to CA bundle for mTLS verification"
+    )

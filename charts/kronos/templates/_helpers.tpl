@@ -122,4 +122,8 @@ Common environment variables for backend containers.
       key: minio-endpoint
 - name: MINIO_USE_TLS
   value: {{ .Values.minio.useTls | quote }}
+- name: STEP_UP_TICKET_STORE
+  # Shared (Redis) step-up ticket store is required because the backend runs
+  # multiple replicas (audit M-4).
+  value: {{ .Values.stepUp.ticketStore | default "redis" | quote }}
 {{- end }}

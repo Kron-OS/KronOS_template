@@ -128,6 +128,10 @@ services:
       TSA_URL: http://tsa:318
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
+      # Shared step-up ticket store — required because this service runs 2
+      # replicas (audit M-4). The app bootstrap passes
+      # build_step_up_ticket_store(settings) into create_app().
+      STEP_UP_TICKET_STORE: redis
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

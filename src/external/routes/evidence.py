@@ -208,7 +208,8 @@ async def delete_evidence(
     )
 
     try:
-        await intake.delete_evidence(evidence_id=evidence_id, tenant=tenant)
+        # acr=aal2 asserted above and a one-time step-up ticket was just consumed.
+        await intake.delete_evidence(evidence_id=evidence_id, tenant=tenant, step_up_verified=True)
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AuthorizationError as exc:

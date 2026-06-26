@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from src.domain.evidence import Evidence
+
+# Which logical bucket a read targets.  Quarantine and evidence object keys are
+# byte-for-byte identical, so the key alone cannot disambiguate them; callers
+# must say which bucket they mean.
+BucketKind = Literal["quarantine", "evidence"]
 
 
 class PresignedUploadResponse:
@@ -35,8 +41,14 @@ class EvidenceStorage(ABC):
         """Return a presigned URL for direct client-to-storage upload."""
 
     @abstractmethod
-    async def stream_object(self, object_key: str, chunk_size: int = 65536) -> AsyncIterator[bytes]:
-        """Yield object contents as a stream of byte chunks."""
+    async def stream_object(
+        self,
+        object_key: str,
+        chunk_size: int = 65536,
+        *,
+        bucket: BucketKind = "quarantine",
+    ) -> AsyncIterator[bytes]:
+        """Yield object contents as a stream of byte chunks from *bucket*."""
 
     @abstractmethod
     async def promote_to_evidence_bucket(self, quarantine_key: str, evidence: Evidence) -> str:
@@ -47,5 +59,5 @@ class EvidenceStorage(ABC):
         """Remove an object from the quarantine bucket after promotion or rejection."""
 
     @abstractmethod
-    async def object_exists(self, object_key: str) -> bool:
-        """Return True if the object key exists in any accessible bucket."""
+    async def object_exists(self, object_key: str, *, bucket: BucketKind = "quarantine") -> bool:
+        """Return True if the object key exists in *bucket*."""

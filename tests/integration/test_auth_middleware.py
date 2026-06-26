@@ -48,7 +48,7 @@ class _NoopStorage(EvidenceStorage):
 
         return PresignedUploadResponse("http://fake/upload", "key/test", expires_in_seconds)
 
-    async def stream_object(self, object_key, chunk_size=65536):
+    async def stream_object(self, object_key, chunk_size=65536, *, bucket="quarantine"):
         yield b"\x00" * 16
 
     async def promote_to_evidence_bucket(self, quarantine_key, evidence):
@@ -57,7 +57,7 @@ class _NoopStorage(EvidenceStorage):
     async def delete_from_quarantine(self, quarantine_key):
         pass
 
-    async def object_exists(self, object_key):
+    async def object_exists(self, object_key, *, bucket="quarantine"):
         return True
 
 
@@ -247,9 +247,7 @@ def test_delete_wrong_org_returns_404(app: FastAPI, evidence_repo, step_up) -> N
     tenant = _make_tenant(roles=frozenset({Role.ORG_ADMIN}), acr="aal2", org_id=requester_org)
     app.dependency_overrides[get_tenant_context] = lambda: tenant
 
-    ticket_id = step_up.issue_ticket(
-        tenant.user_id, "evidence.delete", str(evidence.evidence_id)
-    )
+    ticket_id = step_up.issue_ticket(tenant.user_id, "evidence.delete", str(evidence.evidence_id))
     with TestClient(app) as client:
         resp = client.delete(
             f"/api/evidence/{evidence.evidence_id}",
