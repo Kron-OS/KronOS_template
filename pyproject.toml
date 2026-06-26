@@ -44,7 +44,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=80"]
+addopts = ["--cov=src", "--cov=kronos_attest", "--cov-report=term-missing", "--cov-fail-under=80"]
 markers = [
     "integration: requires Docker (Postgres + MinIO containers)",
 ]
@@ -60,6 +60,9 @@ omit = [
     "src/external/middleware/keycloak_auth.py",   # needs live Keycloak JWKS endpoint
     "src/external/middleware/opensearch_isolation.py",  # covered by integration tests
     "src/external/middleware/query_isolation.py",       # covered by integration tests
+    "src/external/parsers/evtx.py",                    # needs evtx binary + real EVTX files
+    "src/external/parsers/plaso.py",                   # needs Plaso installed in Firecracker container
+    "src/external/sandbox/firecracker.py",             # needs subprocess + plaso worker binary
 ]
 
 [tool.mypy]
@@ -90,5 +93,8 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A"]
 line-length = 100
 target-version = ["py311"]
 
+[project.scripts]
+kronos-attest = "kronos_attest.cli:cli"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src", "kronos_attest"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, datetime
 
 from src.domain.audit import AuditEvent
 
@@ -36,6 +36,24 @@ class AuditLogRepository(ABC):
     @abstractmethod
     def stream_by_case(self, case_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
         """Yield audit events for a given case in chronological order."""
+
+    async def list_by_date_range(
+        self, start: datetime, end: datetime
+    ) -> list[AuditEvent]:
+        """Return all events with occurred_at in [start, end).
+
+        Default implementation streams all events; Postgres implementation
+        should override with a WHERE clause.
+        """
+        result: list[AuditEvent] = []
+        all_events: list[AuditEvent] = []
+        # Subclasses that store a flat list can be iterated; generic fallback.
+        if hasattr(self, "_events"):
+            all_events = list(getattr(self, "_events"))  # noqa: B009
+        for ev in all_events:
+            if start <= ev.occurred_at < end:
+                result.append(ev)
+        return result
 
 
 class AnchorRepository(AuditLogRepository):
