@@ -53,8 +53,8 @@
   },
   "clients": [
     {
-      "clientId": "kronos-spa",
-      "name": "KronOS SPA",
+      "clientId": "kronos-frontend",
+      "name": "KronOS Frontend",
       "description": "KronOS frontend single-page application",
       "enabled": true,
       "publicClient": true,
