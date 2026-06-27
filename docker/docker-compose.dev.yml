@@ -88,6 +88,41 @@ services:
       timeout: 10s
       retries: 10
 
+  keycloak-init:
+    image: curlimages/curl:latest
+    depends_on:
+      keycloak: { condition: service_healthy }
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        BASE=http://keycloak:8080
+        REALM=kronos
+        ADMIN_PASS=${KEYCLOAK_ADMIN_PASSWORD:-admin}
+
+        # Authenticate as admin
+        TOKEN=$(curl -sf "$BASE/realms/master/protocol/openid-connect/token" \
+          -d "client_id=admin-cli&grant_type=password&username=admin&password=$ADMIN_PASS" \
+          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+        # Find organization id
+        ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+          "$BASE/admin/realms/$REALM/organizations?search=kronos-dev" \
+          | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+        echo "Organization ID: $ORG_ID"
+
+        # Add each user to the organization
+        for USER_ID in 10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003; do
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$BASE/admin/realms/$REALM/organizations/$ORG_ID/members/$USER_ID" || true)
+          echo "Added user $USER_ID -> HTTP $STATUS"
+        done
+        echo "keycloak-init complete"
+
   clamav:
     image: clamav/clamav:stable
     volumes:

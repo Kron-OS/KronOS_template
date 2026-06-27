@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,23 @@ from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
+    """Wire real database/storage dependencies on startup when env vars are set."""
+    import os  # noqa: PLC0415
+
+    if os.getenv("DATABASE_URL"):
+        try:
+            from src.external.startup import wire_dependencies_async  # noqa: PLC0415
+
+            await wire_dependencies_async()
+        except Exception as exc:  # noqa: BLE001
+            import logging  # noqa: PLC0415
+
+            logging.getLogger(__name__).warning("startup wiring failed: %s", exc)
+    yield
 
 
 def create_app(
@@ -51,6 +69,7 @@ def create_app(
         title="KronOS",
         description="Forensically sound, multi-tenant evidence management platform",
         version="0.1.0",
+        lifespan=_lifespan,
     )
 
     if keycloak_issuer and keycloak_jwks_url:

@@ -27,6 +27,23 @@ celery_app = Celery(
     backend=_settings.celery_result_backend.get_secret_value(),
 )
 
+from celery.signals import worker_init  # noqa: E402
+
+
+@worker_init.connect
+def _on_worker_init(**_kwargs: object) -> None:
+    """Wire real dependencies when a Celery worker process starts."""
+    import os  # noqa: PLC0415
+
+    if os.getenv("DATABASE_URL"):
+        try:
+            from src.external.startup import wire_dependencies_sync  # noqa: PLC0415
+
+            wire_dependencies_sync()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("celery worker startup wiring failed: %s", exc)
+
+
 celery_app.conf.update(
     task_routes={
         "kronos.dispatch_parse": {"queue": "q.index"},
