@@ -15,6 +15,15 @@ ingress:
 keycloak:
   url: http://keycloak:8080
   existingSecret: ""
+  provisionOrg:
+    enabled: true
+    adminSecret: kronos-keycloak-admin
+    org:
+      name: KronOS Dev
+      alias: kronos-dev
+      description: Default development organization
+      domain: kronos.dev
+      memberIds: ""
 
 opensearch:
   url: http://opensearch:9200

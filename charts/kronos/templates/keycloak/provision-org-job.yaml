@@ -1,0 +1,66 @@
+{{- if .Values.keycloak.provisionOrg.enabled }}
+# Post-install/upgrade hook that ensures the KronOS organization exists in
+# Keycloak via the Admin REST API — never via a realm-import organizations
+# block, which Keycloak 26.2 rejects with "Can not update organization group".
+# Assumes the realm already exists. Disabled by default (opt-in).
+# NOTE: egress from this pod to Keycloak must be permitted by your NetworkPolicy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kronos.fullname" . }}-keycloak-org-init
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak-org-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.keycloak.provisionOrg.backoffLimit | default 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kronos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: keycloak-org-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: provision
+          image: {{ .Values.keycloak.provisionOrg.image | quote }}
+          command: ["sh", "/scripts/provision_keycloak_org.sh"]
+          env:
+            - name: KC_BASE
+              value: {{ .Values.keycloak.url | quote }}
+            - name: KC_REALM
+              value: {{ .Values.keycloak.realm | quote }}
+            - name: KC_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.provisionOrg.adminSecret | quote }}
+                  key: admin-user
+            - name: KC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.provisionOrg.adminSecret | quote }}
+                  key: admin-password
+            - name: ORG_NAME
+              value: {{ .Values.keycloak.provisionOrg.org.name | quote }}
+            - name: ORG_ALIAS
+              value: {{ .Values.keycloak.provisionOrg.org.alias | quote }}
+            - name: ORG_DESCRIPTION
+              value: {{ .Values.keycloak.provisionOrg.org.description | quote }}
+            - name: ORG_DOMAIN
+              value: {{ .Values.keycloak.provisionOrg.org.domain | quote }}
+            - name: ORG_MEMBER_IDS
+              value: {{ .Values.keycloak.provisionOrg.org.memberIds | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "kronos.fullname" . }}-keycloak-org-init
+            defaultMode: 0555
+{{- end }}
