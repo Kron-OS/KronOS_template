@@ -65,16 +65,20 @@
       "redirectUris": [
         "http://localhost:5173/*",
         "http://localhost/*",
-        "http://localhost:4173/*"
+        "http://localhost:4173/*",
+        "http://127.0.0.1/*",
+        "http://127.0.0.1:5173/*"
       ],
       "webOrigins": [
         "http://localhost:5173",
         "http://localhost",
-        "http://localhost:4173"
+        "http://localhost:4173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:5173"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost/*"
+        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost/*##http://127.0.0.1/*##http://127.0.0.1:5173/*"
       },
       "protocolMappers": [
         {
