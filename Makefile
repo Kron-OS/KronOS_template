@@ -2,7 +2,7 @@
         test test-integration lint typecheck format \
         frontend-dev frontend-build frontend-lint \
         helm-lint helm-template helm-install-dev helm-install-prod \
-        build push clean
+        build push clean clean-cache
 
 # ── Development ──────────────────────────────────────────────────────────────
 
@@ -126,7 +126,17 @@ attest-verify-case:
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
-clean:
+# Full reset of the dev stack: stop containers, delete the compose named volumes
+# (postgres/minio/opensearch/clamav/step-ca data) and the default network, drop
+# orphan containers, then rebuild all images from scratch. Use this after a
+# schema or realm change that left stale state behind. WARNING: deletes all
+# local dev data in those volumes.
+clean: clean-cache
+	docker compose -f docker/docker-compose.dev.yml down --volumes --remove-orphans
+	docker compose -f docker/docker-compose.dev.yml build --no-cache
+
+# Local build artefacts and Python/tool caches only (no Docker side effects).
+clean-cache:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true

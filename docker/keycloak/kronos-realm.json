@@ -255,7 +255,6 @@
       "requiredActions": []
     }
   ],
-  "_comment_organizations": "The KronOS Dev organization is NOT defined here on purpose. Keycloak 26.1/26.2 cannot import an 'organizations' block via --import-realm: the import writes org metadata onto the backing group outside the organization-context guard and fails with 'Can not update organization group'. The org is instead created through the Admin REST API by the keycloak-init container (see docker-compose.dev.yml), which goes through the supported create path.",
   "passwordPolicy": "length(12) and notUsername and notEmail",
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA1",
