@@ -13,10 +13,14 @@ services:
       # server listens only on the unix socket, so a socket-based pg_isready
       # reports healthy before :5432 accepts connections, and dependents
       # (backend/celery) then fail wiring with "Connect call failed ... 5432".
+      # start_period covers first-init (initdb + bootstrap + restart, ~45s on a
+      # fresh volume) during which the TCP check legitimately fails — without it
+      # the retries are exhausted before the real server is ready.
       test: ["CMD-SHELL", "pg_isready -U kronos -d kronos -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 90s
 
   redis:
     image: redis:7-alpine

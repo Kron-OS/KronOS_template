@@ -42,10 +42,13 @@ services:
     healthcheck:
       # -h 127.0.0.1 forces a TCP check so dependents don't start during the
       # first-time initdb bootstrap (socket-only) before :5432 is listening.
+      # start_period covers first-init, during which the TCP check legitimately
+      # fails — otherwise retries are exhausted before the server is ready.
       test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 90s
 
   redis:
     image: redis:7-alpine
