@@ -34,7 +34,17 @@ ORG_DESCRIPTION="${ORG_DESCRIPTION:-}"
 ORG_DOMAIN="${ORG_DOMAIN:-}"
 ORG_MEMBER_IDS="${ORG_MEMBER_IDS:-}"
 
-extract_first_id() { grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4; }
+# The organizations 'search' param matches org name/domain, NOT alias, so list
+# all orgs and match the alias client-side. `tr '{'` puts each org's leading
+# fields (id..alias) on one line — before the nested domains '{' — so the id and
+# alias of the same org stay together on the matched line.
+find_org_id() {
+  curl -sf -H "Authorization: Bearer $TOKEN" \
+    "$KC_BASE/admin/realms/$KC_REALM/organizations?first=0&max=1000" \
+    | tr '{' '\n' \
+    | grep "\"alias\":\"$ORG_ALIAS\"" \
+    | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4
+}
 
 echo "provision_keycloak_org: realm=$KC_REALM org=$ORG_ALIAS base=$KC_BASE"
 
@@ -65,8 +75,7 @@ if ! curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" "$KC_BASE/admin/rea
   exit 1
 fi
 
-ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-  "$KC_BASE/admin/realms/$KC_REALM/organizations?search=$ORG_ALIAS" | extract_first_id)
+ORG_ID=$(find_org_id || true)
 
 if [ -z "$ORG_ID" ]; then
   echo "Creating organization $ORG_ALIAS"
@@ -75,13 +84,17 @@ if [ -z "$ORG_ID" ]; then
   else
     DOMAINS="[]"
   fi
-  curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  # No -f here: a 409 (org already exists, e.g. created by a prior run on a
+  # still-running Keycloak) must not abort the script — we resolve the id by
+  # alias afterwards either way.
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     "$KC_BASE/admin/realms/$KC_REALM/organizations" \
-    -d "{\"name\":\"$ORG_NAME\",\"alias\":\"$ORG_ALIAS\",\"enabled\":true,\"description\":\"$ORG_DESCRIPTION\",\"domains\":$DOMAINS}"
-  ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-    "$KC_BASE/admin/realms/$KC_REALM/organizations?search=$ORG_ALIAS" | extract_first_id)
+    -d "{\"name\":\"$ORG_NAME\",\"alias\":\"$ORG_ALIAS\",\"enabled\":true,\"description\":\"$ORG_DESCRIPTION\",\"domains\":$DOMAINS}" || true)
+  echo "create organization -> HTTP $HTTP"
+  ORG_ID=$(find_org_id || true)
 else
-  echo "Organization $ORG_ALIAS already exists"
+  echo "Organization $ORG_ALIAS already exists (id=$ORG_ID)"
 fi
 
 if [ -z "$ORG_ID" ]; then
