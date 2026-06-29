@@ -122,11 +122,11 @@
     {
       "clientId": "kronos-attest",
       "name": "KronOS Attest CLI",
-      "description": "Read-only CLI client for offline audit verification",
+      "description": "Read-only CLI client for offline audit verification (verifies exported files; never contacts Keycloak)",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false
     }
   ],
