@@ -83,14 +83,25 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_FEATURES: organization,token-exchange
+      # Expose /health/* on the management port (9000). Without this the health
+      # endpoints return 404 and the healthcheck below never passes.
+      KC_HEALTH_ENABLED: "true"
     volumes:
       - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
     ports: ["8080:8080"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
+      # The Keycloak 26 image ships no curl/wget, and /health lives on the
+      # management port 9000 (not 8080). Use bash's /dev/tcp (bash is present;
+      # kc.sh is a bash script) to probe GET /health/ready and match "200 OK".
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/9000; printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3; grep -q "200 OK" <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
 
   # Creates the kronos-dev organization via the Admin REST API and links the
   # three dev users. The org is NOT in the realm import because Keycloak 26.2
