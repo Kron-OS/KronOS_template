@@ -90,11 +90,15 @@ if [ -z "$ORG_ID" ]; then
 fi
 echo "Organization ID: $ORG_ID"
 
-# Link members (no-op when ORG_MEMBER_IDS is empty). PUT is idempotent.
+# Link members (no-op when ORG_MEMBER_IDS is empty). Keycloak 26 has no
+# PUT .../members/{id}; add via POST .../members with the user id as a quoted
+# JSON string body. 201/204 = added, 409 = already a member (both fine).
+# Members are required for the token's 'organization' claim to be emitted.
 for USER_ID in $ORG_MEMBER_IDS; do
-  STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
-    -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    "$KC_BASE/admin/realms/$KC_REALM/organizations/$ORG_ID/members/$USER_ID" || true)
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    "$KC_BASE/admin/realms/$KC_REALM/organizations/$ORG_ID/members" \
+    --data-raw "\"$USER_ID\"" || true)
   echo "Linked member $USER_ID -> HTTP $STATUS"
 done
 
