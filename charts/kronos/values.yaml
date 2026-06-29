@@ -85,6 +85,22 @@ keycloak:
   clientId: kronos-backend
   existingSecret: kronos-keycloak-secret
   secretKey: client-secret
+  # Ensure the KronOS organization exists via the Admin REST API (post-install
+  # hook Job). Orgs are NEVER created via a realm-import block — Keycloak 26.2
+  # rejects that with "Can not update organization group". Opt-in; the realm
+  # must already exist. The pod needs egress to keycloak.url.
+  provisionOrg:
+    enabled: false
+    image: curlimages/curl:latest
+    backoffLimit: 6
+    # Secret holding master-realm admin creds, keys: admin-user / admin-password
+    adminSecret: kronos-keycloak-admin
+    org:
+      name: KronOS
+      alias: kronos
+      description: KronOS organization
+      domain: ""        # optional; created as a verified org domain when set
+      memberIds: ""     # optional space-separated user UUIDs to link as members
 
 opensearch:
   url: https://opensearch:9200

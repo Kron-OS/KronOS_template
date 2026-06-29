@@ -1,0 +1,19 @@
+{{- if .Values.keycloak.provisionOrg.enabled }}
+# Ships the shared Keycloak org-provisioning script (mirrors
+# scripts/provision_keycloak_org.sh; chart-local copy because Helm .Files.Get
+# cannot reach outside the chart directory).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kronos.fullname" . }}-keycloak-org-init
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  provision_keycloak_org.sh: |
+{{ .Files.Get "files/provision_keycloak_org.sh" | indent 4 }}
+{{- end }}

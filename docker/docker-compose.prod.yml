@@ -73,7 +73,9 @@ services:
       - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
+    # backend's _extract_tenant requires only lands in 26.1+. Keep in sync with dev.
+    image: quay.io/keycloak/keycloak:26.2
     command: start
     environment:
       KC_DB: postgres
@@ -86,6 +88,29 @@ services:
       KC_FEATURES: organization,token-exchange,fgap-v2
     volumes:
       - ./certs:/certs:ro
+
+  # Ensures the KronOS organization exists via the Admin REST API (the same
+  # approach as dev) — never via a realm-import organizations block, which
+  # Keycloak 26.2 rejects with "Can not update organization group".
+  # Assumes the realm is already provisioned. ORG_MEMBER_IDS is empty in prod:
+  # real users join the org through the IdP / org domain, not by seeded ids.
+  keycloak-init:
+    image: curlimages/curl:latest
+    restart: "no"
+    depends_on:
+      - keycloak
+    volumes:
+      - ../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: ${KEYCLOAK_ADMIN:-admin}
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      ORG_NAME: ${KRONOS_ORG_NAME:-KronOS}
+      ORG_ALIAS: ${KRONOS_ORG_ALIAS:-kronos}
+      ORG_DESCRIPTION: KronOS production organization
+      ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
+    entrypoint: ["sh", "/provision_keycloak_org.sh"]
 
   clamav:
     image: clamav/clamav:stable

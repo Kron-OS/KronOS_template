@@ -88,40 +88,28 @@ services:
       timeout: 10s
       retries: 10
 
+  # Creates the kronos-dev organization via the Admin REST API and links the
+  # three dev users. The org is NOT in the realm import because Keycloak 26.2
+  # cannot import an organizations block. Uses the shared provisioning script
+  # (scripts/provision_keycloak_org.sh) so dev/prod/Helm stay in sync.
   keycloak-init:
     image: curlimages/curl:latest
     depends_on:
       keycloak: { condition: service_healthy }
     restart: "no"
-    entrypoint:
-      - sh
-      - -c
-      - |
-        set -e
-        BASE=http://keycloak:8080
-        REALM=kronos
-        ADMIN_PASS=${KEYCLOAK_ADMIN_PASSWORD:-admin}
-
-        # Authenticate as admin
-        TOKEN=$(curl -sf "$BASE/realms/master/protocol/openid-connect/token" \
-          -d "client_id=admin-cli&grant_type=password&username=admin&password=$ADMIN_PASS" \
-          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-
-        # Find organization id
-        ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-          "$BASE/admin/realms/$REALM/organizations?search=kronos-dev" \
-          | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-        echo "Organization ID: $ORG_ID"
-
-        # Add each user to the organization
-        for USER_ID in 10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003; do
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
-            -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-            "$BASE/admin/realms/$REALM/organizations/$ORG_ID/members/$USER_ID" || true)
-          echo "Added user $USER_ID -> HTTP $STATUS"
-        done
-        echo "keycloak-init complete"
+    volumes:
+      - ../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      ORG_NAME: KronOS Dev
+      ORG_ALIAS: kronos-dev
+      ORG_DESCRIPTION: Default development organization
+      ORG_DOMAIN: kronos.dev
+      ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
+    entrypoint: ["sh", "/provision_keycloak_org.sh"]
 
   clamav:
     image: clamav/clamav:stable
@@ -245,10 +233,13 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
+    # Gate on health: worker_init wiring (startup.py) connects to Postgres, so it
+    # must not start while "the database system is starting up", otherwise
+    # configure_dependencies() fails and beat tasks hit an unconfigured repo.
     depends_on:
-      - redis
-      - postgres
-      - minio
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.parse.plaso,q.index -c 4 --loglevel=info
 
   celery-beat:
@@ -275,8 +266,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
     depends_on:
-      - redis
-      - postgres
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   nginx:
