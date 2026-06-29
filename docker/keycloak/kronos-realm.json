@@ -157,6 +157,28 @@
       ]
     },
     {
+      "name": "kronos-sub",
+      "description": "Includes sub (user ID) in all token types including userinfo",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "organization",
       "description": "Organization context for multi-tenancy",
       "protocol": "openid-connect",
@@ -191,6 +213,7 @@
     "web-origins",
     "acr",
     "kronos-roles",
+    "kronos-sub",
     "organization"
   ],
   "defaultOptionalClientScopes": [

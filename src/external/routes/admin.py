@@ -80,7 +80,7 @@ async def list_org_users(
     return OrgUsersResponse(items=users, total=len(users))
 
 
-@router.post("/invite", status_code=status.HTTP_201_CREATED)
+@router.post("/users/invite", status_code=status.HTTP_201_CREATED)
 async def invite_user(
     body: InviteUserIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
@@ -92,7 +92,7 @@ async def invite_user(
         await _keycloak_admin_request(
             tenant,
             "POST",
-            f"/orgs/{tenant.org_id}/members/invite",
+            f"/organizations/{tenant.org_id}/members/invite",
             {"email": body.email, "roles": [body.role]},
         )
     except StorageError as exc:
@@ -120,7 +120,7 @@ async def update_user_role(
         await _keycloak_admin_request(
             tenant,
             "PATCH",
-            f"/orgs/{tenant.org_id}/members/{user_id}/roles",
+            f"/organizations/{tenant.org_id}/members/{user_id}/roles",
             {"roles": [body.role]},
         )
     except StorageError as exc:
@@ -147,7 +147,7 @@ async def remove_user(
         await _keycloak_admin_request(
             tenant,
             "DELETE",
-            f"/orgs/{tenant.org_id}/members/{user_id}",
+            f"/organizations/{tenant.org_id}/members/{user_id}",
             None,
         )
     except StorageError as exc:
@@ -254,7 +254,7 @@ async def _keycloak_admin_request(
             context={"error": str(exc)},
         ) from exc
 
-    admin_url = f"{settings.keycloak_url}/realms/{settings.keycloak_realm}/admin{path}"
+    admin_url = f"{settings.keycloak_url}/admin/realms/{settings.keycloak_realm}{path}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.request(
@@ -269,7 +269,7 @@ async def _keycloak_admin_request(
                     context={"status": resp.status_code},
                 )
             if resp.status_code == 404:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found in org")
+                raise StorageError("Resource not found in Keycloak", context={"status": 404})
             resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise StorageError(
@@ -282,7 +282,7 @@ async def _keycloak_admin_request(
 
 async def _list_keycloak_org_users(tenant: TenantContext) -> list[OrgUserOut]:
     """Fetch org members from Keycloak."""
-    data = await _keycloak_admin_request(tenant, "GET", f"/orgs/{tenant.org_id}/members", None)
+    data = await _keycloak_admin_request(tenant, "GET", f"/organizations/{tenant.org_id}/members", None)
     if not isinstance(data, list):
         return []
     return [

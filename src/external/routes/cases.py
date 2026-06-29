@@ -42,21 +42,25 @@ class CreateCaseIn(BaseModel):
 
 
 class CaseOut(BaseModel):
-    case_id: uuid.UUID
-    org_id: uuid.UUID
+    """API response DTO — field names match the frontend TypeScript Case interface."""
+
+    id: uuid.UUID
+    orgId: uuid.UUID
     title: str
     description: str | None
-    reference_number: str | None
+    reference: str | None
     status: str
-    created_at: str
-    updated_at: str
+    createdAt: str
+    updatedAt: str
+    createdBy: str
+    evidenceCount: int = 0
 
 
 class PaginatedCases(BaseModel):
     items: list[CaseOut]
     total: int
     page: int
-    page_size: int
+    pageSize: int
 
 
 class EvidenceListItem(BaseModel):
@@ -134,7 +138,7 @@ async def list_cases(
         items=[_to_case_out(c) for c in cases],
         total=total,
         page=page,
-        page_size=page_size,
+        pageSize=page_size,
     )
 
 
@@ -259,12 +263,13 @@ async def get_dashboard_url(
 
 def _to_case_out(case: Case) -> CaseOut:
     return CaseOut(
-        case_id=case.case_id,
-        org_id=case.org_id,
+        id=case.case_id,
+        orgId=case.org_id,
         title=case.metadata.title,
         description=case.metadata.description,
-        reference_number=case.metadata.reference_number,
+        reference=case.metadata.reference_number,
         status=case.status.value,
-        created_at=case.created_at.isoformat(),
-        updated_at=case.updated_at.isoformat(),
+        createdAt=case.created_at.isoformat(),
+        updatedAt=case.updated_at.isoformat(),
+        createdBy=str(case.owner_user_id),
     )
