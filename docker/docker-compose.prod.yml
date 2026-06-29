@@ -40,7 +40,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kronos"]
+      # -h 127.0.0.1 forces a TCP check so dependents don't start during the
+      # first-time initdb bootstrap (socket-only) before :5432 is listening.
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
