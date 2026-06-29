@@ -107,10 +107,23 @@ services:
           -d "client_id=admin-cli&grant_type=password&username=admin&password=$ADMIN_PASS" \
           | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
-        # Find organization id
+        # Create the organization via the Admin REST API. It is intentionally NOT
+        # in the realm import: Keycloak 26.1/26.2 cannot import an organizations
+        # block (fails with "Can not update organization group"). The REST create
+        # path below is supported. Idempotent: skip if it already exists.
         ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
           "$BASE/admin/realms/$REALM/organizations?search=kronos-dev" \
           | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+        if [ -z "$ORG_ID" ]; then
+          echo "Creating organization kronos-dev"
+          curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$BASE/admin/realms/$REALM/organizations" \
+            -d '{"name":"KronOS Dev","alias":"kronos-dev","enabled":true,"description":"Default development organization","domains":[{"name":"kronos.dev","verified":true}]}'
+          ORG_ID=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+            "$BASE/admin/realms/$REALM/organizations?search=kronos-dev" \
+            | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        fi
 
         echo "Organization ID: $ORG_ID"
 
@@ -245,10 +258,13 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
+    # Gate on health: worker_init wiring (startup.py) connects to Postgres, so it
+    # must not start while "the database system is starting up", otherwise
+    # configure_dependencies() fails and beat tasks hit an unconfigured repo.
     depends_on:
-      - redis
-      - postgres
-      - minio
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.parse.plaso,q.index -c 4 --loglevel=info
 
   celery-beat:
@@ -275,8 +291,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
     depends_on:
-      - redis
-      - postgres
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   nginx:
