@@ -6,6 +6,11 @@ services:
   vault:
     image: hashicorp/vault:1.17
     cap_add: [IPC_LOCK]
+    # WARNING: -dev mode is in-memory, auto-unsealed and root-token only.
+    # It is NOT suitable for production: the transit 'kronos-evidence' master key
+    # is lost on restart, making previously-encrypted evidence undecryptable.
+    # Production MUST run a sealed Vault server with persistent storage backend.
+    # See docs/access-management-review.md [M-2].
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_TOKEN:-changeme}
       VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
@@ -114,20 +119,36 @@ services:
 
   kronos-backend:
     image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    # NOTE: Every var below maps to a required field in src/config.py (Settings).
+    # Settings() has no defaults for these — a missing/renamed var crashes boot.
+    # SECURITY TODO (see docs/access-management-review.md):
+    #   - MINIO_ACCESS_KEY/SECRET_KEY must be a *scoped service account*, not root.
+    #   - tusd must use a separate put-only service account, not the backend's.
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # MINIO_ENDPOINT is host:port only — startup.py prepends the scheme from MINIO_USE_TLS.
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_TLS: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
       OPENSEARCH_URL: http://opensearch:9200
-      KEYCLOAK_ISSUER: https://${KEYCLOAK_HOSTNAME}/realms/kronos
-      KEYCLOAK_JWKS_URL: https://${KEYCLOAK_HOSTNAME}/realms/kronos/protocol/openid-connect/certs
+      # Non-superuser service account (a superuser bypasses OpenSearch DLS).
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # KEYCLOAK_URL = internal URL used to fetch JWKS; KEYCLOAK_PUBLIC_URL = issuer in the token.
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
       TSA_URL: http://tsa:318
-      VAULT_ADDR: http://vault:8200
+      VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
       # Shared step-up ticket store — required because this service runs 2
       # replicas (audit M-4). The app bootstrap passes
       # build_step_up_ticket_store(settings) into create_app().
@@ -146,13 +167,27 @@ services:
 
   celery-worker:
     image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    # celery_app.py instantiates Settings() at import — the same required
+    # fields as the backend must be present or the worker crashes on boot.
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_TLS: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
       OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
     depends_on:
       - redis
       - postgres
