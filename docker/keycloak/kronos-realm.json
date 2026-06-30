@@ -139,7 +139,7 @@
   "clientScopes": [
     {
       "name": "acr",
-      "description": "OpenID Connect scope for adding acr (authentication context class reference) to the token. Keycloak normally creates this built-in scope automatically, but supplying an explicit clientScopes array in the realm import suppresses the built-in defaults — so it must be defined here for step-up auth (acr=aal2) to emit the claim.",
+      "description": "OIDC scope adding the acr claim. Defined explicitly because an explicit clientScopes array suppresses Keycloak's built-in defaults; required for step-up (acr=aal2).",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "false",
