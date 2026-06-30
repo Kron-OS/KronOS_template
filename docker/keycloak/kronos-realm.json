@@ -295,8 +295,8 @@
     {
       "alias": "browser-stepup loa-2",
       "config": {
-        "level": "2",
-        "max_age": "0"
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
       }
     }
   ],
