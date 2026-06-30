@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import logging
-import uuid
-from typing import Annotated, Literal
+import urllib.parse
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 from src.domain.audit import AuditEventType
 from src.domain.user import Role, TenantContext
 from src.exceptions import StorageError
-from src.external.dependencies import get_audit_log_service, get_tenant_context
+from src.external.dependencies import get_audit_log_service
 from src.external.middleware.rbac import requires_role
-from src.external.middleware.step_up_auth import StepUpAuth
 
 logger = logging.getLogger(__name__)
 
@@ -88,15 +87,18 @@ async def invite_user(
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
     audit_svc=Depends(get_audit_log_service),
 ) -> dict:
-    """Invite a user to the org via Keycloak invitation API."""
+    """Create a user, assign their role, and add them to the caller's org.
+
+    This is a direct-create flow (no email): Keycloak has no SMTP configured
+    in dev, so rather than send an invitation link we provision the user with
+    a temporary password and an UPDATE_PASSWORD required action. The realm
+    role is assigned immediately and the user is linked as an org member.
+    """
     _assert_aal2(tenant)
     try:
-        await _keycloak_admin_request(
-            tenant,
-            "POST",
-            f"/organizations/{tenant.org_id}/members/invite",
-            {"email": body.email, "roles": [body.role]},
-        )
+        user_id = await _create_or_get_user(tenant, body.email)
+        await _assign_realm_role(tenant, user_id, body.role)
+        await _add_org_member(tenant, user_id)
     except StorageError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
@@ -104,9 +106,13 @@ async def invite_user(
         AuditEventType.ORG_USER_INVITED,
         org_id=tenant.org_id,
         actor_user_id=tenant.user_id,
-        details={"invited_email": body.email, "role": body.role},
+        details={"invited_email": body.email, "role": body.role, "user_id": user_id},
     )
-    return {"detail": "Invitation sent"}
+    return {
+        "detail": "User created and added to organization",
+        "user_id": user_id,
+        "temporary_password": _DEV_TEMP_PASSWORD,
+    }
 
 
 @router.patch("/users/{user_id}/role", response_model=OrgUserOut)
@@ -119,12 +125,7 @@ async def update_user_role(
     """Change a user's role within the org."""
     _assert_aal2(tenant)
     try:
-        await _keycloak_admin_request(
-            tenant,
-            "PATCH",
-            f"/organizations/{tenant.org_id}/members/{user_id}/roles",
-            {"roles": [body.role]},
-        )
+        await _set_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
@@ -238,13 +239,29 @@ async def _get_service_account_token(tenant: TenantContext) -> str:
     return resp.json()["access_token"]  # type: ignore[no-any-return]
 
 
+# Dev-only initial credential for users created via the admin page. Keycloak has
+# no SMTP configured in dev, so we cannot email a reset link; the user is forced
+# to change this on first login (UPDATE_PASSWORD). Prod should switch to an
+# email-based invitation flow instead of a shared temporary password.
+_DEV_TEMP_PASSWORD = "ChangeMe#2026!"
+
+# Realm roles the org-admin page is allowed to assign/manage.
+_MANAGED_ROLES = frozenset({"org-admin", "case-lead", "analyst", "read-only"})
+
+
 async def _keycloak_admin_request(
     tenant: TenantContext,
     method: str,
     path: str,
-    body: dict | None,
-) -> dict:
-    """Execute a Keycloak Admin REST API call scoped to the caller's org."""
+    body: Any = None,
+    *,
+    allow: tuple[int, ...] = (),
+) -> httpx.Response:
+    """Execute a Keycloak Admin REST API call and return the raw response.
+
+    Raises :class:`StorageError` on transport failure, any 5xx, or any 4xx whose
+    status is not listed in *allow* (e.g. ``allow=(409,)`` to tolerate conflicts).
+    """
     from src.config import Settings  # noqa: PLC0415
 
     settings = Settings()
@@ -265,26 +282,104 @@ async def _keycloak_admin_request(
                 json=body,
                 headers={"Authorization": f"Bearer {token}"},
             )
-            if resp.status_code >= 500:
-                raise StorageError(
-                    "Keycloak Admin API returned server error",
-                    context={"status": resp.status_code},
-                )
-            if resp.status_code == 404:
-                raise StorageError("Resource not found in Keycloak", context={"status": 404})
-            resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise StorageError(
             "Keycloak Admin API request failed",
             context={"error": str(exc)},
         ) from exc
 
-    return resp.json() if resp.content else {}  # type: ignore[no-any-return]
+    if resp.status_code >= 500:
+        raise StorageError(
+            "Keycloak Admin API returned server error",
+            context={"status": resp.status_code},
+        )
+    if resp.status_code >= 400 and resp.status_code not in allow:
+        raise StorageError(
+            "Keycloak Admin API request failed",
+            context={"status": resp.status_code},
+        )
+    return resp
+
+
+async def _create_or_get_user(tenant: TenantContext, email: str) -> str:
+    """Create a Keycloak user for *email* (idempotent); return their user id."""
+    representation = {
+        "username": email,
+        "email": email,
+        "enabled": True,
+        "emailVerified": True,
+        "requiredActions": ["UPDATE_PASSWORD"],
+        "credentials": [
+            {"type": "password", "value": _DEV_TEMP_PASSWORD, "temporary": True}
+        ],
+    }
+    resp = await _keycloak_admin_request(tenant, "POST", "/users", representation, allow=(409,))
+    if resp.status_code == 201:
+        # 201 Created returns no body; the new id is the last path segment of Location.
+        location = resp.headers.get("location", "")
+        return location.rstrip("/").rsplit("/", 1)[-1]
+
+    # 409 Conflict: a user with this email/username already exists — reuse it.
+    existing = await _find_user_by_email(tenant, email)
+    if existing is None:
+        raise StorageError("User already exists but could not be located", context={"email": email})
+    return str(existing["id"])
+
+
+async def _find_user_by_email(tenant: TenantContext, email: str) -> dict | None:
+    """Return the Keycloak user with an exact email match, or None."""
+    query = urllib.parse.urlencode({"email": email, "exact": "true"})
+    resp = await _keycloak_admin_request(tenant, "GET", f"/users?{query}", None)
+    users = resp.json()
+    return users[0] if isinstance(users, list) and users else None
+
+
+async def _assign_realm_role(tenant: TenantContext, user_id: str, role_name: str) -> None:
+    """Add a single realm role to a user (no-op if already assigned)."""
+    role = (await _keycloak_admin_request(tenant, "GET", f"/roles/{role_name}", None)).json()
+    await _keycloak_admin_request(
+        tenant,
+        "POST",
+        f"/users/{user_id}/role-mappings/realm",
+        [{"id": role["id"], "name": role["name"]}],
+        allow=(409,),
+    )
+
+
+async def _set_realm_role(tenant: TenantContext, user_id: str, role_name: str) -> None:
+    """Make *role_name* the user's sole managed org role (remove the others)."""
+    current = (
+        await _keycloak_admin_request(tenant, "GET", f"/users/{user_id}/role-mappings/realm", None)
+    ).json()
+    stale = [
+        {"id": r["id"], "name": r["name"]}
+        for r in current
+        if r.get("name") in _MANAGED_ROLES and r.get("name") != role_name
+    ]
+    if stale:
+        await _keycloak_admin_request(
+            tenant, "DELETE", f"/users/{user_id}/role-mappings/realm", stale
+        )
+    await _assign_realm_role(tenant, user_id, role_name)
+
+
+async def _add_org_member(tenant: TenantContext, user_id: str) -> None:
+    """Link an existing user to the caller's org (no-op if already a member)."""
+    # Keycloak 26 adds a member via POST .../members with the user id as a
+    # quoted JSON string body; 409 means they are already a member.
+    await _keycloak_admin_request(
+        tenant,
+        "POST",
+        f"/organizations/{tenant.org_id}/members",
+        user_id,
+        allow=(409,),
+    )
 
 
 async def _list_keycloak_org_users(tenant: TenantContext) -> list[OrgUserOut]:
     """Fetch org members from Keycloak."""
-    data = await _keycloak_admin_request(tenant, "GET", f"/organizations/{tenant.org_id}/members", None)
+    path = f"/organizations/{tenant.org_id}/members"
+    data = (await _keycloak_admin_request(tenant, "GET", path, None)).json()
     if not isinstance(data, list):
         return []
     return [

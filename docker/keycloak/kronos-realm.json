@@ -392,6 +392,14 @@
       ],
       "realmRoles": ["case-lead"],
       "requiredActions": []
+    },
+    {
+      "username": "service-account-kronos-backend",
+      "enabled": true,
+      "serviceAccountClientId": "kronos-backend",
+      "clientRoles": {
+        "realm-management": ["realm-admin"]
+      }
     }
   ],
   "passwordPolicy": "length(12) and notUsername and notEmail",
