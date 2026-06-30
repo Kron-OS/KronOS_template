@@ -30,11 +30,13 @@ _ADMIN_ROLES = (Role.ORG_ADMIN,)
 
 
 class OrgUserOut(BaseModel):
-    user_id: str
+    """API response DTO — field names match the frontend TypeScript OrgUser interface."""
+
+    userId: str
     username: str
     email: str
     roles: list[str]
-    joined_at: str | None
+    joinedAt: str | None
 
 
 class OrgUsersResponse(BaseModel):
@@ -132,7 +134,7 @@ async def update_user_role(
         actor_user_id=tenant.user_id,
         details={"target_user_id": user_id, "new_role": body.role},
     )
-    return OrgUserOut(user_id=user_id, username="", email="", roles=[body.role], joined_at=None)
+    return OrgUserOut(userId=user_id, username="", email="", roles=[body.role], joinedAt=None)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -287,11 +289,11 @@ async def _list_keycloak_org_users(tenant: TenantContext) -> list[OrgUserOut]:
         return []
     return [
         OrgUserOut(
-            user_id=u.get("id", ""),
+            userId=u.get("id", ""),
             username=u.get("username", ""),
             email=u.get("email", ""),
             roles=u.get("roles", []),
-            joined_at=u.get("createdTimestamp"),
+            joinedAt=u.get("createdTimestamp"),
         )
         for u in data
     ]

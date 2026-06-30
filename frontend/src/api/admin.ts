@@ -2,8 +2,8 @@ import apiClient from './client'
 import type { OrgUser, OrgSettings, Role } from '../types'
 
 export async function getOrgUsers(): Promise<OrgUser[]> {
-  const res = await apiClient.get<OrgUser[]>('/api/admin/org/users')
-  return res.data
+  const res = await apiClient.get<{ items: OrgUser[]; total: number }>('/api/admin/org/users')
+  return res.data.items
 }
 
 export async function inviteUser(email: string, role: Role): Promise<OrgUser> {
