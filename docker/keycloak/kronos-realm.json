@@ -235,7 +235,7 @@
           "autheticatorFlow": false
         },
         {
-          "requirement": "REQUIRED",
+          "requirement": "ALTERNATIVE",
           "priority": 30,
           "flowAlias": "browser-stepup forms",
           "userSetupAllowed": false,
