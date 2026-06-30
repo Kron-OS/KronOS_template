@@ -138,6 +138,28 @@
   ],
   "clientScopes": [
     {
+      "name": "acr",
+      "description": "OpenID Connect scope for adding acr (authentication context class reference) to the token. Keycloak normally creates this built-in scope automatically, but supplying an explicit clientScopes array in the realm import suppresses the built-in defaults — so it must be defined here for step-up auth (acr=aal2) to emit the claim.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "kronos-roles",
       "description": "Includes realm roles in the token",
       "protocol": "openid-connect",
