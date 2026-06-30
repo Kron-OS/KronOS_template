@@ -24,6 +24,7 @@
     "acr.loa.map": "{\"aal1\":1,\"aal2\":2}"
   },
   "refreshTokenMaxReuse": 0,
+  "browserFlow": "browser-stepup",
   "roles": {
     "realm": [
       {
@@ -211,6 +212,94 @@
       ]
     }
   ],
+  "authenticationFlows": [
+    {
+      "alias": "browser-stepup",
+      "description": "Browser-based authentication with conditional step-up MFA (RFC 9470, acr_values=aal2).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "authenticator": "identity-provider-redirector",
+          "requirement": "ALTERNATIVE",
+          "priority": 25,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "flowAlias": "browser-stepup forms",
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-stepup forms",
+      "description": "Username/password, then conditional MFA depending on the requested ACR level.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "flowAlias": "browser-stepup conditional-mfa",
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-stepup conditional-mfa",
+      "description": "Enforces TOTP when the auth request asks for aal2 (level 2 in acr.loa.map).",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticatorConfig": "browser-stepup loa-2"
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": true,
+          "autheticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "browser-stepup loa-2",
+      "config": {
+        "level": "2",
+        "max_age": "0"
+      }
+    }
+  ],
   "defaultDefaultClientScopes": [
     "roles",
     "profile",
@@ -244,7 +333,7 @@
         }
       ],
       "realmRoles": ["org-admin"],
-      "requiredActions": []
+      "requiredActions": ["CONFIGURE_TOTP"]
     },
     {
       "id": "10000000-0000-4000-8000-000000000002",
