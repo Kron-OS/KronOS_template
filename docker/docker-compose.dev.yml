@@ -80,6 +80,8 @@ services:
       retries: 10
 
   keycloak:
+    # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
+    # backend's _extract_tenant requires only lands in 26.1+. Keep in sync with prod.
     image: quay.io/keycloak/keycloak:26.2
     command: start-dev --import-realm
     environment:

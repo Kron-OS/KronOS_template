@@ -3,6 +3,7 @@
   "displayName": "KronOS",
   "displayNameHtml": "<b>KronOS</b>",
   "enabled": true,
+  "organizationsEnabled": true,
   "registrationAllowed": false,
   "registrationEmailAsUsername": false,
   "loginWithEmailAllowed": true,
