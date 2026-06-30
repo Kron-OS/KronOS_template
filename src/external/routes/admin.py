@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import urllib.parse
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -376,19 +378,55 @@ async def _add_org_member(tenant: TenantContext, user_id: str) -> None:
     )
 
 
+def _iso_from_epoch_millis(value: Any) -> str | None:
+    """Convert a Keycloak epoch-millis timestamp (int or numeric str) to ISO-8601."""
+    if isinstance(value, bool):  # bool is an int subclass; never a timestamp
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
+    if isinstance(value, str) and value.isdigit():
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
+    return value if isinstance(value, str) else None
+
+
+async def _member_managed_roles(tenant: TenantContext, user_id: str) -> list[str]:
+    """Return the member's realm roles filtered to the managed org roles.
+
+    Org member records carry no role data, so realm role-mappings are fetched
+    per user. Resilient: a lookup failure yields an empty list rather than
+    failing the whole listing.
+    """
+    if not user_id:
+        return []
+    try:
+        mappings = (
+            await _keycloak_admin_request(
+                tenant, "GET", f"/users/{user_id}/role-mappings/realm", None
+            )
+        ).json()
+    except StorageError:
+        return []
+    if not isinstance(mappings, list):
+        return []
+    return [r["name"] for r in mappings if r.get("name") in _MANAGED_ROLES]
+
+
 async def _list_keycloak_org_users(tenant: TenantContext) -> list[OrgUserOut]:
-    """Fetch org members from Keycloak."""
+    """Fetch org members from Keycloak, with their managed roles and join date."""
     path = f"/organizations/{tenant.org_id}/members"
     data = (await _keycloak_admin_request(tenant, "GET", path, None)).json()
     if not isinstance(data, list):
         return []
+    roles_per_member = await asyncio.gather(
+        *(_member_managed_roles(tenant, u.get("id", "")) for u in data)
+    )
     return [
         OrgUserOut(
             userId=u.get("id", ""),
             username=u.get("username", ""),
             email=u.get("email", ""),
-            roles=u.get("roles", []),
-            joinedAt=u.get("createdTimestamp"),
+            roles=roles,
+            joinedAt=_iso_from_epoch_millis(u.get("createdTimestamp")),
         )
-        for u in data
+        for u, roles in zip(data, roles_per_member, strict=True)
     ]
