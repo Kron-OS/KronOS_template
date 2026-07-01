@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,7 +13,6 @@ from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.domain.audit import AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
-from src.domain.evidence import EvidenceState
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
 from src.external.dependencies import (
@@ -25,6 +23,7 @@ from src.external.dependencies import (
     get_tenant_context,
 )
 from src.external.middleware.rbac import requires_role
+from src.external.routes.evidence import EvidenceOut, to_evidence_out
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
@@ -63,23 +62,11 @@ class PaginatedCases(BaseModel):
     pageSize: int
 
 
-class EvidenceListItem(BaseModel):
-    evidence_id: uuid.UUID
-    filename: str
-    size_bytes: int
-    sha256: str | None
-    state: EvidenceState
-    error_reason: str | None
-    uploader_user_id: uuid.UUID
-    created_at: str
-    updated_at: str
-
-
 class PaginatedEvidence(BaseModel):
-    items: list[EvidenceListItem]
+    items: list[EvidenceOut]
     total: int
     page: int
-    page_size: int
+    pageSize: int
 
 
 class DashboardUrlOut(BaseModel):
@@ -130,7 +117,7 @@ async def list_cases(
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> PaginatedCases:
     """Return paginated cases for the caller's org."""
     cases, total = await case_repo.list_by_org(tenant.org_id, page=page, page_size=page_size)
@@ -184,7 +171,7 @@ async def list_case_evidence(
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
     evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> PaginatedEvidence:
     """Return paginated evidence for a case."""
     items = []
@@ -196,23 +183,10 @@ async def list_case_evidence(
     page_items = items[start : start + page_size]
 
     return PaginatedEvidence(
-        items=[
-            EvidenceListItem(
-                evidence_id=ev.evidence_id,
-                filename=ev.metadata.original_filename,
-                size_bytes=ev.metadata.size_bytes,
-                sha256=ev.sha256,
-                state=ev.state,
-                error_reason=ev.error_reason,
-                uploader_user_id=ev.metadata.uploader_user_id,
-                created_at=ev.created_at.isoformat(),
-                updated_at=ev.updated_at.isoformat(),
-            )
-            for ev in page_items
-        ],
+        items=[to_evidence_out(ev) for ev in page_items],
         total=total,
         page=page,
-        page_size=page_size,
+        pageSize=page_size,
     )
 
 

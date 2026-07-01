@@ -33,20 +33,26 @@ router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
 
 class UploadRequestIn(BaseModel):
+    """Request DTO — field names match the frontend TypeScript upload call."""
+
     filename: str = Field(min_length=1, max_length=1024)
-    content_type: str
-    size_bytes: int = Field(ge=1)
-    case_id: uuid.UUID
+    contentType: str
+    sizeBytes: int = Field(ge=1)
+    caseId: uuid.UUID
 
 
 class UploadRequestOut(BaseModel):
-    evidence_id: uuid.UUID
-    presigned_url: str
-    object_key: str
-    expires_in_seconds: int
+    """Response DTO — field names match the frontend TypeScript UploadRequest interface."""
+
+    evidenceId: uuid.UUID
+    presignedUrl: str
+    objectKey: str
+    expiresInSeconds: int
 
 
 class FinalizeUploadIn(BaseModel):
+    # Sent as client_sha256 (snake_case) by the frontend already — not a DTO
+    # naming mismatch, so left as-is.
     client_sha256: str = Field(
         min_length=64,
         max_length=64,
@@ -55,13 +61,25 @@ class FinalizeUploadIn(BaseModel):
 
 
 class EvidenceOut(BaseModel):
-    evidence_id: uuid.UUID
-    state: EvidenceState
+    """API response DTO — field names match the frontend TypeScript Evidence interface.
+
+    Shared by both the evidence routes (upload/finalize) and the cases route's
+    per-case evidence listing, so the two stay in sync.
+    """
+
+    id: uuid.UUID
+    caseId: uuid.UUID
+    filename: str
+    contentType: str
+    sizeBytes: int
     sha256: str | None
     md5: str | None
-    original_filename: str
-    size_bytes: int
-    error_reason: str | None
+    state: EvidenceState
+    errorReason: str | None
+    uploadedBy: str
+    uploadedAt: str
+    updatedAt: str
+    rfc3161Token: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +99,7 @@ async def request_upload(
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
 ) -> UploadRequestOut:
     """Create an Evidence record and return a presigned URL for direct upload."""
-    case = await case_repo.get_by_id(body.case_id, tenant.org_id)
+    case = await case_repo.get_by_id(body.caseId, tenant.org_id)
     if case is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -91,9 +109,9 @@ async def request_upload(
     try:
         evidence, presigned = await intake.request_upload(
             filename=body.filename,
-            content_type=body.content_type,
-            size_bytes=body.size_bytes,
-            case_id=body.case_id,
+            content_type=body.contentType,
+            size_bytes=body.sizeBytes,
+            case_id=body.caseId,
             tenant=tenant,
         )
     except ValidationError as exc:
@@ -106,10 +124,10 @@ async def request_upload(
         ) from exc
 
     return UploadRequestOut(
-        evidence_id=evidence.evidence_id,
-        presigned_url=presigned.url,
-        object_key=presigned.object_key,
-        expires_in_seconds=presigned.expires_in_seconds,
+        evidenceId=evidence.evidence_id,
+        presignedUrl=presigned.url,
+        objectKey=presigned.object_key,
+        expiresInSeconds=presigned.expires_in_seconds,
     )
 
 
@@ -139,7 +157,7 @@ async def finalize_upload(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
 
-    return _to_evidence_out(evidence)
+    return to_evidence_out(evidence)
 
 
 @router.post(
@@ -166,7 +184,7 @@ async def start_parsing(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
 
-    return _to_evidence_out(evidence)
+    return to_evidence_out(evidence)
 
 
 @router.delete(
@@ -225,13 +243,27 @@ async def delete_evidence(
 # ---------------------------------------------------------------------------
 
 
-def _to_evidence_out(ev: Evidence) -> EvidenceOut:
+def to_evidence_out(ev: Evidence) -> EvidenceOut:
+    """Serialize an Evidence domain entity to the shared API DTO.
+
+    Shared with ``cases.py``'s per-case evidence listing so both endpoints
+    return an identical shape — the frontend reuses the same evidence object
+    from the list view when opening the detail drawer.
+    """
     return EvidenceOut(
-        evidence_id=ev.evidence_id,
-        state=ev.state,
+        id=ev.evidence_id,
+        caseId=ev.metadata.case_id,
+        filename=ev.metadata.original_filename,
+        contentType=ev.metadata.content_type,
+        sizeBytes=ev.metadata.size_bytes,
         sha256=ev.sha256,
         md5=ev.md5,
-        original_filename=ev.metadata.original_filename,
-        size_bytes=ev.metadata.size_bytes,
-        error_reason=ev.error_reason,
+        state=ev.state,
+        errorReason=ev.error_reason,
+        uploadedBy=str(ev.metadata.uploader_user_id),
+        uploadedAt=ev.created_at.isoformat(),
+        updatedAt=ev.updated_at.isoformat(),
+        # RFC 3161 timestamping is not yet wired into evidence intake;
+        # None renders as "Not anchored yet" in the detail drawer.
+        rfc3161Token=None,
     )
