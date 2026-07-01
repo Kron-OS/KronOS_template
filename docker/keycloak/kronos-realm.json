@@ -138,6 +138,28 @@
   ],
   "clientScopes": [
     {
+      "name": "acr",
+      "description": "OIDC scope adding the acr claim. Defined explicitly because an explicit clientScopes array suppresses Keycloak's built-in defaults; required for step-up (acr=aal2).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "kronos-roles",
       "description": "Includes realm roles in the token",
       "protocol": "openid-connect",
@@ -235,7 +257,7 @@
           "autheticatorFlow": false
         },
         {
-          "requirement": "REQUIRED",
+          "requirement": "ALTERNATIVE",
           "priority": 30,
           "flowAlias": "browser-stepup forms",
           "userSetupAllowed": false,
@@ -295,8 +317,8 @@
     {
       "alias": "browser-stepup loa-2",
       "config": {
-        "level": "2",
-        "max_age": "0"
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
       }
     }
   ],
@@ -370,6 +392,14 @@
       ],
       "realmRoles": ["case-lead"],
       "requiredActions": []
+    },
+    {
+      "username": "service-account-kronos-backend",
+      "enabled": true,
+      "serviceAccountClientId": "kronos-backend",
+      "clientRoles": {
+        "realm-management": ["realm-admin"]
+      }
     }
   ],
   "passwordPolicy": "length(12) and notUsername and notEmail",

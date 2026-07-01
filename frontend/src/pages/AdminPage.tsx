@@ -1,21 +1,73 @@
 import { useState } from 'react'
+import axios from 'axios'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getOrgUsers, inviteUser, updateUserRole, removeUser } from '../api/admin'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-import type { Role, OrgUser } from '../types'
+import type { Role, OrgUser, InviteUserInput } from '../types'
 
 const ROLES: Role[] = ['org-admin', 'case-lead', 'analyst', 'read-only']
 
+const MIN_PASSWORD_LENGTH = 12
+
+// Excludes visually ambiguous characters (0/O, 1/I/l) to keep generated
+// passwords easy to read back when an admin communicates them out of band.
+function generatePassword(length = 16): string {
+  const categories = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789', '!@#%^&*-_=+']
+  const all = categories.join('')
+  const randomIndex = (max: number) => {
+    const buf = new Uint32Array(1)
+    crypto.getRandomValues(buf)
+    return buf[0] % max
+  }
+  const chars = Array.from({ length }, () => all[randomIndex(all.length)])
+  // Guarantee at least one character from each category.
+  categories.forEach((cat, i) => {
+    chars[i] = cat[randomIndex(cat.length)]
+  })
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomIndex(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
+}
+
+// FastAPI's own request validation (e.g. Field(min_length=...) on the
+// InviteUserIn model) returns detail as a list of {msg} objects; our
+// hand-raised HTTPExceptions (e.g. Keycloak password-policy rejection)
+// return detail as a plain string. Handle both.
+function getErrorDetail(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const detail: unknown = error.response?.data?.detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail)) {
+      return detail
+        .map((d) => (d && typeof d === 'object' && 'msg' in d ? String(d.msg) : JSON.stringify(d)))
+        .join('; ')
+    }
+  }
+  return fallback
+}
+
+const EMPTY_INVITE_FORM: InviteUserInput = {
+  email: '',
+  firstName: '',
+  lastName: '',
+  password: '',
+  role: 'analyst',
+}
+
 function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState({ email: '', role: 'analyst' as Role })
+  const [form, setForm] = useState<InviteUserInput>(EMPTY_INVITE_FORM)
+  const [showPassword, setShowPassword] = useState(false)
   const mutation = useMutation({
-    mutationFn: () => inviteUser(form.email, form.role),
+    mutationFn: () => inviteUser(form),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
-      setForm({ email: '', role: 'analyst' })
+      setForm(EMPTY_INVITE_FORM)
+      setShowPassword(false)
       onClose()
     },
   })
@@ -25,7 +77,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-xl">
-        <h2 className="mb-4 text-base font-semibold text-gray-100">Invite User</h2>
+        <h2 className="mb-4 text-base font-semibold text-gray-100">Create User</h2>
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -33,6 +85,36 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
           }}
           className="space-y-4"
         >
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-first-name">
+                First name
+              </label>
+              <input
+                id="invite-first-name"
+                type="text"
+                required
+                autoComplete="given-name"
+                value={form.firstName}
+                onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
+                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-last-name">
+                Last name
+              </label>
+              <input
+                id="invite-last-name"
+                type="text"
+                required
+                autoComplete="family-name"
+                value={form.lastName}
+                onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
+                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+          </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-email">
               Email
@@ -41,10 +123,48 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               id="invite-email"
               type="email"
               required
+              autoComplete="email"
               value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
               className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
             />
+          </div>
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-xs font-medium text-gray-400" htmlFor="invite-password">
+                Initial password
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
+                  className="text-xs text-indigo-400 hover:text-indigo-300"
+                >
+                  Generate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  className="text-xs text-gray-400 hover:text-gray-300"
+                >
+                  {showPassword ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            </div>
+            <input
+              id="invite-password"
+              type={showPassword ? 'text' : 'password'}
+              required
+              minLength={MIN_PASSWORD_LENGTH}
+              autoComplete="new-password"
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              At least {MIN_PASSWORD_LENGTH} characters, and cannot contain the user's email. Share this
+              with the user directly — they must change it on first login.
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-role">
@@ -61,7 +181,9 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               ))}
             </select>
           </div>
-          {mutation.isError && <ErrorBanner message="Failed to invite user." />}
+          {mutation.isError && (
+            <ErrorBanner message={getErrorDetail(mutation.error, 'Failed to create user.')} />
+          )}
           <div className="flex justify-end gap-3">
             <button type="button" onClick={onClose} className="rounded px-4 py-2 text-sm text-gray-400 hover:bg-gray-800">
               Cancel
@@ -72,7 +194,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               className="flex items-center gap-2 rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
             >
               {mutation.isPending && <Spinner size="sm" />}
-              Invite
+              Create User
             </button>
           </div>
         </form>
@@ -160,7 +282,7 @@ export function AdminPage() {
           onClick={() => setShowInvite(true)}
           className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
         >
-          Invite User
+          Create User
         </button>
       </div>
 
