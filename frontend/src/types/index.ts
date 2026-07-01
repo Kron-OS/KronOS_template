@@ -84,6 +84,20 @@ export interface OrgUser {
   joinedAt: string
 }
 
+export interface InviteUserInput {
+  email: string
+  firstName: string
+  lastName: string
+  password: string
+  role: Role
+}
+
+export interface InviteUserResult {
+  detail: string
+  userId: string
+  created: boolean
+}
+
 export interface OrgSettings {
   retentionDays: number
   legalHoldDefault: boolean
