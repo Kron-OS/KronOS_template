@@ -57,13 +57,13 @@ class TestCreateCase:
         assert resp.status_code == 201
         data = resp.json()
         assert data["title"] == "Test Case"
-        assert "case_id" in data
+        assert "id" in data
 
     def test_create_case_persists(self, cases_client):
         client, repo, org_id, _ = cases_client
         resp = client.post("/api/cases", json={"title": "Saved Case", "reference_number": "REF-001"})
         assert resp.status_code == 201
-        case_id = uuid.UUID(resp.json()["case_id"])
+        case_id = uuid.UUID(resp.json()["id"])
         import asyncio
         stored = asyncio.run(repo.get_by_id(case_id, org_id))
         assert stored is not None
@@ -98,7 +98,7 @@ class TestGetCase:
     def test_get_existing_case(self, cases_client):
         client, _, _, _ = cases_client
         created = client.post("/api/cases", json={"title": "Specific"}).json()
-        resp = client.get(f"/api/cases/{created['case_id']}")
+        resp = client.get(f"/api/cases/{created['id']}")
         assert resp.status_code == 200
         assert resp.json()["title"] == "Specific"
 
@@ -112,7 +112,7 @@ class TestDeleteCase:
     def test_delete_archives_case(self, cases_client):
         client, repo, org_id, _ = cases_client
         created = client.post("/api/cases", json={"title": "To Delete"}).json()
-        case_id = created["case_id"]
+        case_id = created["id"]
         resp = client.delete(f"/api/cases/{case_id}")
         assert resp.status_code == 204
 
@@ -126,7 +126,7 @@ class TestListCaseEvidence:
     def test_empty_evidence_list(self, cases_client):
         client, _, _, _ = cases_client
         created = client.post("/api/cases", json={"title": "E-Case"}).json()
-        resp = client.get(f"/api/cases/{created['case_id']}/evidence")
+        resp = client.get(f"/api/cases/{created['id']}/evidence")
         assert resp.status_code == 200
         data = resp.json()
         assert data["items"] == []
@@ -138,6 +138,6 @@ class TestDashboardUrl:
         client, _, _, _ = cases_client
         created = client.post("/api/cases", json={"title": "Timeline Case"}).json()
         # Settings() won't have opensearch_dashboards_url in test env
-        resp = client.get(f"/api/cases/{created['case_id']}/dashboard-url")
+        resp = client.get(f"/api/cases/{created['id']}/dashboard-url")
         # Either 503 (not configured) or 422 (missing required env vars)
         assert resp.status_code in (422, 503)

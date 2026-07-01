@@ -90,15 +90,15 @@ class TestRequestUploadRoute:
             "/api/evidence/upload/request",
             json={
                 "filename": "test.json",
-                "content_type": "application/json",
-                "size_bytes": 100,
-                "case_id": str(case_id),
+                "contentType": "application/json",
+                "sizeBytes": 100,
+                "caseId": str(case_id),
             },
         )
         assert resp.status_code == 201
         body = resp.json()
-        assert "evidence_id" in body
-        assert "presigned_url" in body
+        assert "evidenceId" in body
+        assert "presignedUrl" in body
 
     def test_invalid_payload_returns_422(self, app_client) -> None:
         client, *_ = app_client
@@ -111,9 +111,9 @@ class TestRequestUploadRoute:
             "/api/evidence/upload/request",
             json={
                 "filename": "test.json",
-                "content_type": "application/json",
-                "size_bytes": 100,
-                "case_id": str(uuid.uuid4()),  # not in case_repo
+                "contentType": "application/json",
+                "sizeBytes": 100,
+                "caseId": str(uuid.uuid4()),  # not in case_repo
             },
         )
         assert resp.status_code == 404
@@ -126,14 +126,14 @@ class TestFinalizeUploadRoute:
             "/api/evidence/upload/request",
             json={
                 "filename": "cloudtrail.json",
-                "content_type": "application/json",
-                "size_bytes": len(_JSON_CONTENT),
-                "case_id": str(case_id),
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
             },
         )
         assert req_resp.status_code == 201
-        evidence_id = req_resp.json()["evidence_id"]
-        object_key = req_resp.json()["object_key"]
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
 
         storage.write_quarantine(object_key, _JSON_CONTENT)
 
@@ -152,13 +152,13 @@ class TestFinalizeUploadRoute:
             "/api/evidence/upload/request",
             json={
                 "filename": "cloudtrail.json",
-                "content_type": "application/json",
-                "size_bytes": len(_JSON_CONTENT),
-                "case_id": str(case_id),
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
             },
         )
-        evidence_id = req_resp.json()["evidence_id"]
-        object_key = req_resp.json()["object_key"]
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
         storage.write_quarantine(object_key, _JSON_CONTENT)
 
         fin_resp = client.post(

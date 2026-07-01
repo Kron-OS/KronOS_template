@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from src.domain.user import Role, TenantContext
 from src.exceptions import AuthorizationError, ValidationError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
-from tests.fixtures.factories import make_evidence_metadata
+from tests.fixtures.factories import make_case, make_evidence_metadata
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -882,17 +882,20 @@ def _reset_deps_fixture():
 
 @pytest.fixture
 def _app_with_deps():
+    from src.adapter.repository.case_repository import InMemoryCaseRepository
     from src.external.dependencies import configure_dependencies
     from src.external.fastapi_app import create_app
     from src.external.middleware.step_up_auth import StepUpAuth
 
     audit_repo = InMemoryAuditLogRepository()
     evidence_repo = InMemoryEvidenceRepository()
+    case_repo = InMemoryCaseRepository()
     storage = _NoopStorage()
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
         evidence_storage=storage,
+        case_repository=case_repo,
     )
     app = create_app()
     step_up = StepUpAuth()
@@ -902,35 +905,40 @@ def _app_with_deps():
     tenant = _make_tenant(roles=frozenset({Role.ORG_ADMIN}), acr="aal2")
     app.dependency_overrides[get_tenant_context] = lambda: tenant
     app.dependency_overrides[get_step_up_auth] = lambda: step_up
-    return app, audit_repo, evidence_repo, step_up, tenant
+    return app, audit_repo, evidence_repo, case_repo, step_up, tenant
 
 
 def test_upload_request_returns_presigned_url(_app_with_deps) -> None:
     """POST /api/evidence/upload/request returns 201 with upload URL."""
-    app, _, _, _, _ = _app_with_deps
+    import asyncio
+
+    app, _, _, case_repo, _, tenant = _app_with_deps
+    case = make_case(org_id=tenant.org_id)
+    asyncio.run(case_repo.save(case))
+
     with TestClient(app) as client:
         resp = client.post(
             "/api/evidence/upload/request",
             json={
                 "filename": "test.evtx",
-                "content_type": "application/x-evtx",
-                "size_bytes": 1024,
-                "case_id": str(uuid.uuid4()),
+                "contentType": "application/x-evtx",
+                "sizeBytes": 1024,
+                "caseId": str(case.case_id),
             },
         )
     assert resp.status_code == 201
     data = resp.json()
-    assert "presigned_url" in data
-    assert "evidence_id" in data
+    assert "presignedUrl" in data
+    assert "evidenceId" in data
 
 
 def test_upload_request_missing_fields_returns_422(_app_with_deps) -> None:
     """POST /api/evidence/upload/request returns 422 when required fields are missing."""
-    app, _, _, _, _ = _app_with_deps
+    app, _, _, _, _, _ = _app_with_deps
     with TestClient(app) as client:
         resp = client.post(
             "/api/evidence/upload/request",
-            json={"filename": "test.evtx"},  # missing content_type, size_bytes, case_id
+            json={"filename": "test.evtx"},  # missing contentType, sizeBytes, caseId
         )
     assert resp.status_code == 422
 
@@ -941,7 +949,7 @@ def test_parse_start_422_for_evidence_no_storage_key(_app_with_deps) -> None:
 
     from src.domain.evidence import Evidence, EvidenceState
 
-    app, _, evidence_repo, _, tenant = _app_with_deps
+    app, _, evidence_repo, _, _, tenant = _app_with_deps
 
     ev = Evidence(
         metadata=make_evidence_metadata(org_id=tenant.org_id),
@@ -957,7 +965,7 @@ def test_parse_start_422_for_evidence_no_storage_key(_app_with_deps) -> None:
 
 def test_parse_start_422_for_unknown_evidence(_app_with_deps) -> None:
     """POST /api/evidence/parse/start/{id} returns 422 for unknown evidence (ValidationError)."""
-    app, _, _, _, _ = _app_with_deps
+    app, _, _, _, _, _ = _app_with_deps
     with TestClient(app) as client:
         resp = client.post(f"/api/evidence/parse/start/{uuid.uuid4()}")
     assert resp.status_code == 422
