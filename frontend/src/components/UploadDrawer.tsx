@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { requestUpload, finalizeUploadWithHash } from '../api/evidence'
+import { requestUpload, finalizeUploadWithHash, startParsing } from '../api/evidence'
 import { Spinner } from './Spinner'
 import { ErrorBanner } from './ErrorBanner'
 
@@ -120,6 +120,7 @@ async function uploadFile(
   })
 
   await finalizeUploadWithHash(upload.evidenceId, sha256)
+  await startParsing(upload.evidenceId)
 }
 
 export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
