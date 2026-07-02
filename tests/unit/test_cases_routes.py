@@ -15,6 +15,7 @@ from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
     get_evidence_repository,
+    get_opensearch_dashboards_url,
     get_tenant_context,
 )
 from src.external.fastapi_app import create_app
@@ -142,6 +143,23 @@ class TestDashboardUrl:
         resp = client.get(f"/api/cases/{created['id']}/dashboard-url")
         # Either 503 (not configured) or 422 (missing required env vars)
         assert resp.status_code in (422, 503)
+
+    def test_returns_relative_same_origin_url_when_configured(self, cases_client):
+        # The Docker-internal dashboards_url is only a feature-enabled flag —
+        # it must never leak into the response, since the browser can't
+        # resolve it. The response must be a same-origin relative path so
+        # nginx's /dashboards/ proxy serves it without CSP frame-src changes.
+        client, _, _, _, _ = cases_client
+        client.app.dependency_overrides[get_opensearch_dashboards_url] = (
+            lambda: "http://opensearch-dashboards:5601"
+        )
+        created = client.post("/api/cases", json={"title": "Timeline Case"}).json()
+        resp = client.get(f"/api/cases/{created['id']}/dashboard-url")
+        assert resp.status_code == 200
+        url = resp.json()["url"]
+        assert url.startswith("/dashboards/")
+        assert "opensearch-dashboards" not in url
+        assert "5601" not in url
 
 
 class TestListCaseAuditEvents:

@@ -56,7 +56,15 @@ services:
       retries: 5
 
   opensearch:
-    image: opensearchproject/opensearch:2.13.0
+    # Pinned to 2.11.1 (not 2.13.0) for dev: DISABLE_SECURITY_PLUGIN=true is
+    # broken upstream from 2.12.0 onward (opensearch-project/security#4062 /
+    # opensearch-build#4599) — the security plugin stays partially active
+    # despite the flag, so unauthenticated calls (including Dashboards'
+    # /_plugins/_security/api/account probe) get rejected with 400 instead of
+    # the plugin being fully bypassed. 2.11.1 predates the regression and is
+    # the last version where a fully-disabled security plugin works as
+    # documented. Keep in sync with opensearch-dashboards below.
+    image: opensearchproject/opensearch:2.11.1
     environment:
       - discovery.type=single-node
       - DISABLE_SECURITY_PLUGIN=true
@@ -73,7 +81,9 @@ services:
       retries: 10
 
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:2.13.0
+    # See version note on the opensearch service above — must stay matched
+    # to the OpenSearch server version.
+    image: opensearchproject/opensearch-dashboards:2.11.1
     environment:
       - OPENSEARCH_HOSTS=["http://opensearch:9200"]
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
@@ -226,6 +236,12 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
+      # Only used server-side as a feature-enabled flag (GET
+      # /api/cases/{id}/dashboard-url returns 503 when unset) — the value
+      # itself is never sent to the browser, since it's a Docker-internal
+      # hostname the browser can't resolve. The actual embed URL the browser
+      # loads is the same-origin relative path /dashboards/..., proxied by
+      # nginx's /dashboards/ location to this container.
       OPENSEARCH_DASHBOARDS_URL: http://opensearch-dashboards:5601
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_PUBLIC_URL: http://localhost:8080

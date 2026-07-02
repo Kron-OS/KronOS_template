@@ -248,8 +248,13 @@ async def get_dashboard_url(
             "_g": ks_filter,
         }
     )
-    base = dashboards_url.rstrip("/")
-    url = f"{base}/app/data-explorer/discover?{params}"
+    # Relative, same-origin path — nginx's /dashboards/ location proxies this
+    # to the Dashboards container. dashboards_url (a Docker-internal hostname
+    # like http://opensearch-dashboards:5601) is only used above as a
+    # feature-enabled flag, never sent to the browser: the browser cannot
+    # resolve that hostname, and a same-origin path also keeps this inside
+    # the CSP frame-src 'self' allowance without adding extra origins.
+    url = f"/dashboards/app/data-explorer/discover?{params}"
     return DashboardUrlOut(url=url)
 
 
