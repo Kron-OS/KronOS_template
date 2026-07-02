@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     minio_access_key: SecretStr
     minio_secret_key: SecretStr
     minio_use_tls: bool = True
+    # Browser-facing endpoint used ONLY to sign presigned upload/download URLs.
+    # SigV4 signs the Host header, so a URL signed against the internal
+    # Docker hostname (minio_endpoint) is cryptographically invalid once a
+    # browser — which cannot resolve that hostname — sends the request to a
+    # different Host. Falls back to minio_endpoint when unset (single-
+    # hostname deployments where the app and clients share a network).
+    minio_public_endpoint: str | None = Field(
+        default=None,
+        description="Browser-facing MinIO endpoint for presigned URLs, e.g. localhost:9000",
+    )
     # Canonical bucket names (Project_Specifications.md §2): quarantine is
     # "<prefix>-<org_alias>-quarantine" and evidence is "<prefix>-<org_alias>".
     # The prefix is "kronos-evidence"; scripts/provision_buckets.sh must match.

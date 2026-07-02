@@ -159,6 +159,13 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       # MINIO_ENDPOINT is host:port only — startup.py prepends the scheme from MINIO_USE_TLS.
       MINIO_ENDPOINT: minio:9000
+      # MinIO is not published outside the compose network here, so evidence
+      # upload/finalize is not usable from a real browser until this is set
+      # to a host the browser can reach (e.g. an MinIO ingress/LB hostname) —
+      # presigned URLs are signed against this host (SigV4 signs Host), so it
+      # cannot just be swapped after the fact. See MINIO_PUBLIC_ENDPOINT in
+      # src/config.py / src/adapter/storage/s3.py.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-minio:9000}
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}

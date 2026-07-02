@@ -47,9 +47,13 @@ async def wire_dependencies_async() -> None:
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
 
+    _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
-        endpoint_url=(
-            f"{'https' if settings.minio_use_tls else 'http'}://{settings.minio_endpoint}"
+        endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
+        presign_endpoint_url=(
+            f"{_minio_scheme}://{settings.minio_public_endpoint}"
+            if settings.minio_public_endpoint
+            else None
         ),
         access_key=settings.minio_access_key.get_secret_value(),
         secret_key=settings.minio_secret_key.get_secret_value(),

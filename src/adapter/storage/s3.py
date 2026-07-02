@@ -40,18 +40,33 @@ class S3EvidenceStorage(EvidenceStorage):
         evidence_bucket_prefix: str,
         retention_days: int = 2555,
         use_tls: bool = True,
+        presign_endpoint_url: str | None = None,
     ) -> None:
+        client_config = Config(
+            signature_version="s3v4",
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"max_attempts": 3},
+        )
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            config=Config(
-                signature_version="s3v4",
-                connect_timeout=10,
-                read_timeout=60,
-                retries={"max_attempts": 3},
-            ),
+            config=client_config,
+        )
+        # Dedicated client used only to build+sign presigned URLs, never to
+        # actually connect anywhere. SigV4 presigning signs the target Host,
+        # so it must be built against the URL the *client* (browser) will
+        # hit — which may differ from the internal endpoint the backend uses
+        # to reach MinIO directly (e.g. "minio:9000" inside Docker vs.
+        # "localhost:9000" from the host running the browser).
+        self._presign_client = boto3.client(
+            "s3",
+            endpoint_url=presign_endpoint_url or endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=client_config,
         )
         self._quarantine_prefix = quarantine_bucket_prefix
         self._evidence_prefix = evidence_bucket_prefix
@@ -68,7 +83,7 @@ class S3EvidenceStorage(EvidenceStorage):
         bucket = self._quarantine_bucket(evidence.metadata.org_alias)
         key = self._object_key(evidence)
         url = await self._run(
-            self._client.generate_presigned_url,
+            self._presign_client.generate_presigned_url,
             "put_object",
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=expires_in_seconds,
