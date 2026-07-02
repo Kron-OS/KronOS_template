@@ -82,6 +82,11 @@ class S3EvidenceStorage(EvidenceStorage):
     ) -> PresignedUploadResponse:
         bucket = self._quarantine_bucket(evidence.metadata.org_alias)
         key = self._object_key(evidence)
+        # Buckets are per-org and orgs are created dynamically (via Keycloak),
+        # so there is no fixed set to provision at process startup — ensure
+        # the bucket lazily, on first use, instead. Idempotent: a no-op once
+        # the bucket exists (single head_bucket call).
+        await self.ensure_quarantine_bucket(evidence.metadata.org_alias)
         url = await self._run(
             self._presign_client.generate_presigned_url,
             "put_object",
@@ -111,6 +116,7 @@ class S3EvidenceStorage(EvidenceStorage):
         ev_bucket = self._evidence_bucket(evidence.metadata.org_alias)
         ev_key = self._object_key(evidence)
 
+        await self.ensure_evidence_bucket(evidence.metadata.org_alias)
         try:
             await self._run(
                 self._client.copy_object,
@@ -157,7 +163,8 @@ class S3EvidenceStorage(EvidenceStorage):
             ) from exc
 
     # ------------------------------------------------------------------
-    # Bucket management helpers (called at startup)
+    # Bucket management helpers (called lazily, on first use per org — see
+    # request_presigned_upload / promote_to_evidence_bucket)
     # ------------------------------------------------------------------
 
     async def ensure_quarantine_bucket(self, org_alias: str) -> None:
@@ -213,6 +220,26 @@ class S3EvidenceStorage(EvidenceStorage):
                 kwargs["ObjectLockEnabledForBucket"] = True
             await self._run(self._client.create_bucket, **kwargs)
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
+            if object_lock:
+                # WORM enforcement (Project_Specifications.md §2/§5): without a
+                # default retention rule, Object Lock is merely *available* on
+                # the bucket but nothing actually blocks deletion/overwrite.
+                # SSE-KMS encryption is layered on separately via KES/Vault
+                # (scripts/provision_buckets.sh) where that infrastructure is
+                # deployed; this only guarantees the WORM property.
+                await self._run(
+                    self._client.put_object_lock_configuration,
+                    Bucket=bucket,
+                    ObjectLockConfiguration={
+                        "ObjectLockEnabled": "Enabled",
+                        "Rule": {
+                            "DefaultRetention": {
+                                "Mode": "COMPLIANCE",
+                                "Days": self._retention_days,
+                            }
+                        },
+                    },
+                )
 
     async def _s3_stream(self, bucket: str, key: str, chunk_size: int) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()
