@@ -148,8 +148,20 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # Browser-facing origin for each service's CSP allowance, rendered into
+    # the CSP header by nginx's envsubst templating (see
+    # docker/nginx/nginx.conf.template and the matching note on
+    # kronos-backend's OPENSEARCH_DASHBOARDS_URL above). Set these to real
+    # public hostnames for this deployment — BACKEND_PUBLIC_URL/
+    # MINIO_PUBLIC_URL default empty (omitted from the CSP) since this
+    # compose file doesn't publish those ports directly to the browser.
+    environment:
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-}
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - kronos-backend
@@ -190,6 +202,13 @@ services:
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      # Browser-facing OpenSearch Dashboards origin (e.g.
+      # https://os.kronos.example) for the Timeline tab's iframe embed.
+      # No OpenSearch Dashboards service is deployed by this compose file —
+      # leave unset to disable the feature (503), or point it at wherever
+      # Dashboards is actually reachable from the browser. Must match the
+      # nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below.
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
       TSA_URL: http://tsa:318

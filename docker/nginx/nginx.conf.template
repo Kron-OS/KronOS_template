@@ -5,11 +5,6 @@ upstream backend {
     keepalive 32;
 }
 
-upstream opensearch_dashboards {
-    server opensearch-dashboards:5601;
-    keepalive 8;
-}
-
 # Rate limiting zones — applied per IP address
 limit_req_zone $binary_remote_addr zone=api:10m    rate=30r/s;
 limit_req_zone $binary_remote_addr zone=upload:10m rate=5r/s;
@@ -25,21 +20,31 @@ server {
     # -----------------------------------------------------------------------
     # Security headers — applied globally, overridden where needed
     # -----------------------------------------------------------------------
+    # This file is processed by nginx's docker-entrypoint envsubst step
+    # (it lives at /etc/nginx/templates/*.template in the image), which
+    # substitutes the ${...} placeholders below from container environment
+    # variables before nginx starts. Each placeholder is a *browser-facing*
+    # origin for a service that differs between dev (localhost:<port>) and
+    # prod (its own subdomain) — see KEYCLOAK_PUBLIC_URL/BACKEND_PUBLIC_URL/
+    # MINIO_PUBLIC_URL/OPENSEARCH_DASHBOARDS_URL in docker-compose.*.yml and
+    # src/config.py. An unset var substitutes to empty string, which is safe
+    # here (collapses to a harmless extra space in the header value).
+    #
     # script-src deliberately omits 'unsafe-inline' (a Vite production build emits
     # no inline scripts); 'unsafe-inline' is kept only for style-src, which
     # Tailwind/runtime theming still requires.
-    # connect-src includes http://localhost:9000 (MinIO) because evidence
-    # uploads PUT directly from the browser to a presigned MinIO URL — without
-    # it the browser silently blocks the request client-side (status 0, no
-    # network activity at all) before it's ever sent. If MinIO's public
-    # endpoint changes (e.g. in prod, see MINIO_PUBLIC_ENDPOINT), this must be
-    # updated to match or uploads will fail the same way.
+    # connect-src includes MINIO_PUBLIC_URL because evidence uploads PUT
+    # directly from the browser to a presigned MinIO URL — without it the
+    # browser silently blocks the request client-side (status 0, no network
+    # activity at all) before it's ever sent.
+    # frame-src includes OPENSEARCH_DASHBOARDS_URL because the Timeline tab
+    # embeds OpenSearch Dashboards directly from its own public origin (not
+    # proxied through this nginx — Dashboards' own absolute asset URLs
+    # (/ui/*, /bootstrap.js) only resolve correctly when it's loaded from its
+    # own root, not from a subpath like /dashboards/).
     add_header Content-Security-Policy
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' http://localhost:8080; frame-ancestors 'self'; connect-src 'self' http://localhost:8080 http://localhost:8000 http://localhost:9000; object-src 'none'"
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
         always;
-    # NOTE: the /dashboards/ location below overrides this header with its own
-    # CSP (frame-ancestors only) for that path, since the Dashboards iframe is
-    # embedded same-origin via that proxy — it does not need frame-src here.
     add_header X-Content-Type-Options        "nosniff"                            always;
     add_header X-Frame-Options               "SAMEORIGIN"                         always;
     add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
@@ -133,26 +138,6 @@ server {
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         chunked_transfer_encoding on;
-    }
-
-    # -----------------------------------------------------------------------
-    # OpenSearch Dashboards iframe embed (Timeline tab)
-    # -----------------------------------------------------------------------
-    location /dashboards/ {
-        proxy_pass         http://opensearch_dashboards/;
-        proxy_set_header   Host              $host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_http_version 1.1;
-        proxy_set_header   Connection        "";
-
-        # Allow framing from same origin only (overrides global CSP frame-ancestors)
-        add_header Content-Security-Policy "frame-ancestors 'self'" always;
-        proxy_hide_header  X-Frame-Options;
-
-        # Do NOT rewrite cookies from OpenSearch Dashboards — rewriting to
-        # SameSite=None removes CSRF protection.  Dashboards should set its own
-        # cookie attributes.  The iframe is same-origin via the /dashboards/ proxy.
     }
 
     # -----------------------------------------------------------------------

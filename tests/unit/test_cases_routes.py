@@ -144,22 +144,20 @@ class TestDashboardUrl:
         # Either 503 (not configured) or 422 (missing required env vars)
         assert resp.status_code in (422, 503)
 
-    def test_returns_relative_same_origin_url_when_configured(self, cases_client):
-        # The Docker-internal dashboards_url is only a feature-enabled flag —
-        # it must never leak into the response, since the browser can't
-        # resolve it. The response must be a same-origin relative path so
-        # nginx's /dashboards/ proxy serves it without CSP frame-src changes.
+    def test_returns_absolute_url_rooted_at_configured_origin(self, cases_client):
+        # dashboards_url is browser-facing (see src/config.py) — the response
+        # must load Dashboards from its own origin directly, not proxy it
+        # under a subpath (Dashboards' absolute asset URLs like /ui/* and
+        # /bootstrap.js only resolve when served from its own root).
         client, _, _, _, _ = cases_client
         client.app.dependency_overrides[get_opensearch_dashboards_url] = (
-            lambda: "http://opensearch-dashboards:5601"
+            lambda: "http://localhost:5601"
         )
         created = client.post("/api/cases", json={"title": "Timeline Case"}).json()
         resp = client.get(f"/api/cases/{created['id']}/dashboard-url")
         assert resp.status_code == 200
         url = resp.json()["url"]
-        assert url.startswith("/dashboards/")
-        assert "opensearch-dashboards" not in url
-        assert "5601" not in url
+        assert url.startswith("http://localhost:5601/app/data-explorer/discover?")
 
 
 class TestListCaseAuditEvents:

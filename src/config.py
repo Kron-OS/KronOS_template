@@ -76,10 +76,14 @@ class Settings(BaseSettings):
     # "redis"; otherwise a ticket issued by one replica is unknown to another.
     step_up_ticket_store: str = "memory"
 
-    # OpenSearch Dashboards (iframe embed)
+    # OpenSearch Dashboards (iframe embed). Browser-facing, like
+    # KEYCLOAK_PUBLIC_URL — the frontend loads this directly as the iframe
+    # src, so it must be a host the browser can resolve (e.g.
+    # http://localhost:5601 in dev, https://os.example.com in prod), not a
+    # Docker-internal hostname such as opensearch-dashboards:5601.
     opensearch_dashboards_url: str | None = Field(
         default=None,
-        description="OS Dashboards base URL for timeline iframe embed, e.g. http://opensearch-dashboards:5601",
+        description="Browser-facing OS Dashboards base URL for timeline iframe embed, e.g. http://localhost:5601",
     )
 
     # RFC 3161 TSA

@@ -236,13 +236,12 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
-      # Only used server-side as a feature-enabled flag (GET
-      # /api/cases/{id}/dashboard-url returns 503 when unset) — the value
-      # itself is never sent to the browser, since it's a Docker-internal
-      # hostname the browser can't resolve. The actual embed URL the browser
-      # loads is the same-origin relative path /dashboards/..., proxied by
-      # nginx's /dashboards/ location to this container.
-      OPENSEARCH_DASHBOARDS_URL: http://opensearch-dashboards:5601
+      # Browser-facing (like KEYCLOAK_PUBLIC_URL below): the backend embeds
+      # this directly as the Timeline tab's iframe src, so it must be a host
+      # the browser — not just other containers — can resolve. Must match
+      # the nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below,
+      # and opensearch-dashboards' published port.
+      OPENSEARCH_DASHBOARDS_URL: http://localhost:5601
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_PUBLIC_URL: http://localhost:8080
       KEYCLOAK_REALM: kronos
@@ -329,6 +328,17 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
+    # Browser-facing origin for each service's CSP allowance — rendered into
+    # the CSP header by nginx's envsubst templating (see
+    # docker/nginx/nginx.conf.template). These are Docker-host-published
+    # ports, reachable from the browser on the host machine; contrast with
+    # the Docker-internal hostnames (e.g. opensearch-dashboards:5601) used
+    # elsewhere in this file for container-to-container traffic.
+    environment:
+      KEYCLOAK_PUBLIC_URL: http://localhost:8080
+      BACKEND_PUBLIC_URL: http://localhost:8000
+      MINIO_PUBLIC_URL: http://localhost:9000
+      OPENSEARCH_DASHBOARDS_URL: http://localhost:5601
     ports: ["80:80"]
     depends_on:
       - kronos-backend
