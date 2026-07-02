@@ -49,24 +49,24 @@ class TestCreateSSETicket:
     def test_creates_ticket(self, sse_client):
         client, org_id, _ = sse_client
         case_id = uuid.uuid4()
-        resp = client.post(f"/api/sse/ticket?case_id={case_id}")
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
         assert resp.status_code == 201
         data = resp.json()
         assert "ticket" in data
-        assert data["expires_in"] == 60
+        assert data["expiresIn"] == 60
         assert data["ticket"] in sse_module._tickets
 
     def test_ticket_is_scoped_to_case(self, sse_client):
         client, org_id, _ = sse_client
         case_id = uuid.uuid4()
-        resp = client.post(f"/api/sse/ticket?case_id={case_id}")
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
         ticket = resp.json()["ticket"]
         assert sse_module._tickets[ticket]["case_id"] == str(case_id)
 
     def test_ticket_is_scoped_to_org(self, sse_client):
         client, org_id, _ = sse_client
         case_id = uuid.uuid4()
-        resp = client.post(f"/api/sse/ticket?case_id={case_id}")
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
         ticket = resp.json()["ticket"]
         assert sse_module._tickets[ticket]["org_id"] == str(org_id)
 

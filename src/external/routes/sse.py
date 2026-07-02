@@ -26,24 +26,32 @@ _POLL_INTERVAL_SECONDS = 5
 _MAX_STREAM_SECONDS = 300  # 5-minute ceiling per connection
 
 
+class SSETicketIn(BaseModel):
+    """Request DTO — field name matches the frontend TypeScript call."""
+
+    caseId: uuid.UUID
+
+
 class SSETicketResponse(BaseModel):
+    """API response DTO — field names match the frontend TypeScript SSETicket interface."""
+
     ticket: str
-    expires_in: int
+    expiresIn: int
 
 
 @router.post("/ticket", response_model=SSETicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_sse_ticket(
-    case_id: uuid.UUID,
+    body: SSETicketIn,
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
 ) -> SSETicketResponse:
     """Issue a one-shot 60-second SSE ticket scoped to a case."""
     ticket = str(uuid.uuid4())
     _tickets[ticket] = {
-        "case_id": str(case_id),
+        "case_id": str(body.caseId),
         "org_id": str(tenant.org_id),
         "expires": time.time() + 60,
     }
-    return SSETicketResponse(ticket=ticket, expires_in=60)
+    return SSETicketResponse(ticket=ticket, expiresIn=60)
 
 
 @router.get("/cases/{case_id}/evidence")

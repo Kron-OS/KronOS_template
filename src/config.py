@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     app_name: str = "kronos"
     debug: bool = False
     log_level: str = "INFO"
+    # Comma-separated origins allowed to call the API (CORSMiddleware) *and*
+    # to PUT directly to MinIO presigned URLs (bucket CORS) — the browser
+    # enforces CORS on both independently. Read from the same CORS_ALLOWED_
+    # ORIGINS env var that src/external/fastapi_app.py reads directly via
+    # os.getenv (it avoids constructing Settings() at import time so the
+    # module stays importable without a full env in tests); keep both in
+    # sync if you change the default here.
+    cors_allowed_origins: str = "http://localhost,http://localhost:5173,http://localhost:4173"
 
     # Database
     database_url: SecretStr = Field(description="Postgres DSN, e.g. postgresql+asyncpg://...")
@@ -98,3 +106,7 @@ class Settings(BaseSettings):
     tls_ca_path: str | None = Field(
         default=None, description="Path to CA bundle for mTLS verification"
     )
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]

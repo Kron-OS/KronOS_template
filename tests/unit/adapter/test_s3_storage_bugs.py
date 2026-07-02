@@ -18,7 +18,11 @@ from src.adapter.storage.s3 import S3EvidenceStorage
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
 
 
-def _make_storage(quarantine_prefix: str, evidence_prefix: str) -> S3EvidenceStorage:
+def _make_storage(
+    quarantine_prefix: str,
+    evidence_prefix: str,
+    cors_allowed_origins: list[str] | None = None,
+) -> S3EvidenceStorage:
     # boto3 client construction performs no network I/O, so this is a safe,
     # deterministic unit-level fixture.
     return S3EvidenceStorage(
@@ -27,6 +31,7 @@ def _make_storage(quarantine_prefix: str, evidence_prefix: str) -> S3EvidenceSto
         secret_key="secret",
         quarantine_bucket_prefix=quarantine_prefix,
         evidence_bucket_prefix=evidence_prefix,
+        cors_allowed_origins=cors_allowed_origins,
     )
 
 
@@ -159,3 +164,55 @@ async def test_promote_creates_missing_evidence_bucket_with_worm_retention() -> 
     assert kwargs["Bucket"] == "kronos-evidence-acme"
     assert kwargs["ObjectLockConfiguration"]["Rule"]["DefaultRetention"]["Mode"] == "COMPLIANCE"
     mock_client.copy_object.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Bucket CORS: presigned PUT URLs are sent by the browser directly to MinIO,
+# which is cross-origin whenever the app and MinIO are on different ports
+# (e.g. http://localhost vs http://localhost:9000 in dev) — the browser
+# blocks the request unless the bucket has a matching CORS rule. Nothing
+# ever configured this, so uploads silently never reached finalize.
+# ---------------------------------------------------------------------------
+
+
+async def test_request_presigned_upload_applies_cors_when_configured() -> None:
+    storage = _make_storage(
+        "kronos-evidence", "kronos-evidence", cors_allowed_origins=["http://localhost"]
+    )
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.put_bucket_cors.assert_called_once()
+    _, kwargs = mock_client.put_bucket_cors.call_args
+    assert kwargs["Bucket"] == "kronos-evidence-acme-quarantine"
+    rule = kwargs["CORSConfiguration"]["CORSRules"][0]
+    assert rule["AllowedOrigins"] == ["http://localhost"]
+    assert "PUT" in rule["AllowedMethods"]
+
+
+async def test_cors_applied_even_when_bucket_already_exists() -> None:
+    # A bucket created before CORS support existed (like a live deployment's
+    # already-provisioned bucket) must get fixed up on the next request, not
+    # only at creation time.
+    storage = _make_storage(
+        "kronos-evidence", "kronos-evidence", cors_allowed_origins=["http://localhost"]
+    )
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.create_bucket.assert_not_called()
+    mock_client.put_bucket_cors.assert_called_once()
+
+
+async def test_no_cors_call_when_not_configured() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")  # cors_allowed_origins=None
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.put_bucket_cors.assert_not_called()

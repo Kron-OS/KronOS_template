@@ -41,6 +41,7 @@ class S3EvidenceStorage(EvidenceStorage):
         retention_days: int = 2555,
         use_tls: bool = True,
         presign_endpoint_url: str | None = None,
+        cors_allowed_origins: list[str] | None = None,
     ) -> None:
         client_config = Config(
             signature_version="s3v4",
@@ -72,6 +73,7 @@ class S3EvidenceStorage(EvidenceStorage):
         self._evidence_prefix = evidence_bucket_prefix
         self._retention_days = retention_days
         self._use_tls = use_tls
+        self._cors_allowed_origins = cors_allowed_origins
 
     # ------------------------------------------------------------------
     # EvidenceStorage interface
@@ -240,6 +242,29 @@ class S3EvidenceStorage(EvidenceStorage):
                         },
                     },
                 )
+        if self._cors_allowed_origins:
+            # Applied unconditionally (not just on creation) so a bucket
+            # created before CORS was configured — e.g. by an earlier
+            # deployment — gets fixed up on the very next request, rather
+            # than requiring a manual bucket recreation. Idempotent: setting
+            # the same rule repeatedly is a no-op. Uploads are the only
+            # direct browser-to-MinIO operation today (PUT); GET/HEAD are
+            # included for forward compatibility (e.g. presigned downloads).
+            await self._run(
+                self._client.put_bucket_cors,
+                Bucket=bucket,
+                CORSConfiguration={
+                    "CORSRules": [
+                        {
+                            "AllowedOrigins": self._cors_allowed_origins,
+                            "AllowedMethods": ["GET", "PUT", "HEAD"],
+                            "AllowedHeaders": ["*"],
+                            "ExposeHeaders": ["ETag"],
+                            "MaxAgeSeconds": 3600,
+                        }
+                    ]
+                },
+            )
 
     async def _s3_stream(self, bucket: str, key: str, chunk_size: int) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()

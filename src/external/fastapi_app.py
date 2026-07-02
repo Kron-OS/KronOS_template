@@ -42,11 +42,15 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
     yield
 
 
+_DEFAULT_CORS_ORIGINS = ["http://localhost", "http://localhost:5173", "http://localhost:4173"]
+
+
 def create_app(
     keycloak_issuer: str | None = None,
     keycloak_audience: str = "kronos-backend",
     keycloak_jwks_url: str | None = None,
     step_up_ticket_store: Any | None = None,
+    cors_allowed_origins: list[str] | None = None,
 ) -> FastAPI:
     """Construct and configure the KronOS FastAPI application.
 
@@ -83,7 +87,7 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost", "http://localhost:5173", "http://localhost:4173"],
+        allow_origins=cors_allowed_origins or _DEFAULT_CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -145,7 +149,17 @@ _keycloak_jwks = (
     else None
 )
 
+# Same env var as Settings.cors_allowed_origins (src/config.py) — read directly
+# here rather than via Settings() so this module stays importable without a
+# full env (tests construct create_app() directly and override as needed).
+_cors_allowed_origins = [
+    origin.strip()
+    for origin in _os.getenv("CORS_ALLOWED_ORIGINS", ",".join(_DEFAULT_CORS_ORIGINS)).split(",")
+    if origin.strip()
+]
+
 app = create_app(
     keycloak_issuer=_keycloak_issuer,
     keycloak_jwks_url=_keycloak_jwks,
+    cors_allowed_origins=_cors_allowed_origins,
 )
