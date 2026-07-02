@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import date, datetime
 
 from src.domain.audit import AuditEvent
+
+# Builds the final AuditEvent from the (prev_row_hash, latest_sequence_number)
+# observed under the per-org lock — used by append_atomic so hash-chain
+# computation stays in the Application layer, not the repository.
+EventBuilder = Callable[[str | None, int], AuditEvent]
 
 
 class AuditLogRepository(ABC):
@@ -28,6 +33,19 @@ class AuditLogRepository(ABC):
     @abstractmethod
     async def get_latest_sequence(self, org_id: uuid.UUID) -> int:
         """Return the sequence number of the most-recently appended event for this org."""
+
+    @abstractmethod
+    async def append_atomic(self, org_id: uuid.UUID, build_event: EventBuilder) -> AuditEvent:
+        """Atomically read the org's chain tip, build, and persist the next event.
+
+        Serializes concurrent writers for the same *org_id* so that no two
+        callers ever observe the same (prev_hash, sequence_number) tip —
+        implementations must hold an org-scoped lock across the read of the
+        current tip, the call to *build_event(prev_hash, latest_sequence)*,
+        and the insert, releasing it only once the event is durably persisted
+        (or the operation fails). This is what prevents the hash-chain and
+        ``sequence_number`` from ever forking under concurrent writes.
+        """
 
     @abstractmethod
     def stream_by_evidence(self, evidence_id: uuid.UUID) -> AsyncIterator[AuditEvent]:

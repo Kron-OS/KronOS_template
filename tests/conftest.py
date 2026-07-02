@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections import defaultdict
 from collections.abc import AsyncIterator
 
 import pytest
 
-from src.adapter.repository.audit_log import AuditLogRepository
+from src.adapter.repository.audit_log import AuditLogRepository, EventBuilder
 from src.adapter.repository.evidence import EvidenceRepository
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEvent
@@ -19,6 +21,10 @@ class InMemoryAuditLogRepository(AuditLogRepository):
 
     def __init__(self) -> None:
         self._events: list[AuditEvent] = []
+        # Per-org locks mirror the per-org pg_advisory_xact_lock serialization
+        # in PostgresAuditLogRepository, so concurrency tests exercise the
+        # same "read tip, build, insert" atomicity guarantee in-process.
+        self._org_locks: dict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def append(self, event: AuditEvent) -> AuditEvent:
         self._events.append(event)
@@ -35,6 +41,14 @@ class InMemoryAuditLogRepository(AuditLogRepository):
             if event.org_id == org_id:
                 return event.sequence_number
         return 0
+
+    async def append_atomic(self, org_id: uuid.UUID, build_event: EventBuilder) -> AuditEvent:
+        async with self._org_locks[org_id]:
+            prev_hash = await self.get_latest_hash(org_id)
+            latest_seq = await self.get_latest_sequence(org_id)
+            event = build_event(prev_hash, latest_seq)
+            self._events.append(event)
+            return event
 
     async def stream_by_evidence(  # type: ignore[override]
         self, evidence_id: uuid.UUID

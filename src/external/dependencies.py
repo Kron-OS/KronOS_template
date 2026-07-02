@@ -288,11 +288,13 @@ def configure_dependencies(
     case_repository: CaseRepository | None = None,
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
+    opensearch_dashboards_url: str | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
     global _scanner, _task_queue, _parser_registry, _opensearch_client
     global _max_upload_bytes, _presigned_expiry, _case_repository
+    global _opensearch_dashboards_url
     _audit_log_repository = audit_log_repository
     _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
@@ -308,13 +310,14 @@ def configure_dependencies(
         _case_repository = case_repository
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
+    _opensearch_dashboards_url = opensearch_dashboards_url
 
 
 def reset_dependencies() -> None:
     """Reset all dependency bindings — used only in tests."""
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
-    global _case_repository, _step_up_auth
+    global _case_repository, _step_up_auth, _opensearch_dashboards_url
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -326,3 +329,4 @@ def reset_dependencies() -> None:
     _opensearch_client = InMemoryOpenSearchClient()
     _max_upload_bytes = 1_073_741_824
     _presigned_expiry = 3600
+    _opensearch_dashboards_url = None

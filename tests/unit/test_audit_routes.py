@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.application.audit_log import AuditLogService
-from src.domain.audit import AuditEvent, AuditEventType
+from src.domain.audit import AuditEventType
 from src.domain.user import Role, TenantContext
 from src.external.dependencies import get_audit_log_service, get_tenant_context
 from src.external.fastapi_app import create_app
@@ -39,57 +38,6 @@ def audit_client():
     app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
 
     return TestClient(app), audit_repo, fixed_org, fixed_case
-
-
-class TestListAuditEvents:
-    def test_empty_returns_empty(self, audit_client):
-        client, _, _, case_id = audit_client
-        resp = client.get(f"/api/audit/cases/{case_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["items"] == []
-        assert data["total"] == 0
-
-    def test_returns_events_for_case(self, audit_client):
-        client, repo, org_id, case_id = audit_client
-        import asyncio
-
-        async def _add():
-            svc = AuditLogService(repo)
-            await svc.log(
-                AuditEventType.EVIDENCE_UPLOAD_FINALIZED,
-                org_id=org_id,
-                case_id=case_id,
-                details={"filename": "test.evtx"},
-            )
-
-        asyncio.run(_add())
-        resp = client.get(f"/api/audit/cases/{case_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 1
-        assert data["items"][0]["event_type"] == AuditEventType.EVIDENCE_UPLOAD_FINALIZED.value
-
-    def test_pagination(self, audit_client):
-        client, repo, org_id, case_id = audit_client
-        import asyncio
-
-        async def _add_many():
-            svc = AuditLogService(repo)
-            for _ in range(5):
-                await svc.log(
-                    AuditEventType.SYSTEM_ERROR,
-                    org_id=org_id,
-                    case_id=case_id,
-                    details={},
-                )
-
-        asyncio.run(_add_many())
-        resp = client.get(f"/api/audit/cases/{case_id}?page=1&page_size=3")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["items"]) == 3
-        assert data["total"] == 5
 
 
 class TestVerifyChain:

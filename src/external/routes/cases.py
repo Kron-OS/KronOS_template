@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
-from src.domain.audit import AuditEventType
+from src.application.audit_log import AuditLogService
+from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
@@ -71,6 +72,28 @@ class PaginatedEvidence(BaseModel):
 
 class DashboardUrlOut(BaseModel):
     url: str
+
+
+class AuditEventOut(BaseModel):
+    """API response DTO — field names match the frontend TypeScript AuditEvent interface."""
+
+    id: uuid.UUID
+    eventType: str
+    evidenceId: uuid.UUID | None
+    caseId: uuid.UUID | None
+    orgId: uuid.UUID | None
+    userId: str
+    occurredAt: str
+    details: dict
+    rowHash: str | None
+    sequenceNumber: int
+
+
+class PaginatedAuditLog(BaseModel):
+    items: list[AuditEventOut]
+    total: int
+    page: int
+    pageSize: int
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +253,33 @@ async def get_dashboard_url(
     return DashboardUrlOut(url=url)
 
 
+@router.get("/{case_id}/audit", response_model=PaginatedAuditLog)
+async def list_case_audit_events(
+    case_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500, alias="pageSize"),
+) -> PaginatedAuditLog:
+    """Return paginated audit events for a case (tenant-scoped)."""
+    events: list[AuditEvent] = []
+    async for ev in audit_svc._repository.stream_by_case(case_id):
+        if ev.org_id != tenant.org_id:
+            continue
+        events.append(ev)
+
+    total = len(events)
+    start = (page - 1) * page_size
+    page_events = events[start : start + page_size]
+
+    return PaginatedAuditLog(
+        items=[_to_audit_out(e) for e in page_events],
+        total=total,
+        page=page,
+        pageSize=page_size,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
@@ -246,4 +296,19 @@ def _to_case_out(case: Case) -> CaseOut:
         createdAt=case.created_at.isoformat(),
         updatedAt=case.updated_at.isoformat(),
         createdBy=str(case.owner_user_id),
+    )
+
+
+def _to_audit_out(ev: AuditEvent) -> AuditEventOut:
+    return AuditEventOut(
+        id=ev.event_id,
+        eventType=ev.event_type.value,
+        evidenceId=ev.evidence_id,
+        caseId=ev.case_id,
+        orgId=ev.org_id,
+        userId=str(ev.actor_user_id) if ev.actor_user_id else (ev.actor_username or ""),
+        occurredAt=ev.occurred_at.isoformat(),
+        details=ev.details,
+        rowHash=ev.row_hash,
+        sequenceNumber=ev.sequence_number,
     )

@@ -10,7 +10,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from src.adapter.repository.audit_log import AuditLogRepository
+from src.adapter.repository.audit_log import AuditLogRepository, EventBuilder
 from src.domain.audit import AuditEvent, AuditEventType
 from src.exceptions import AuditLogError
 
@@ -79,6 +79,44 @@ class PostgresAuditLogRepository(AuditLogRepository):
                 )
             ).one_or_none()
         return row[0] if (row and row[0] is not None) else 0
+
+    async def append_atomic(self, org_id: uuid.UUID, build_event: EventBuilder) -> AuditEvent:
+        """Serialize per-org writers with a Postgres session-level advisory lock.
+
+        ``pg_advisory_xact_lock`` blocks other transactions taking the same
+        key until this transaction commits or rolls back — including on
+        connections from other backend replicas, unlike an in-process lock.
+        The tip read, event build, and insert all happen inside the same
+        transaction that holds the lock, so no other writer can observe or
+        extend the chain until this append is fully durable.
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(sa.select(sa.func.pg_advisory_xact_lock(_org_lock_key(org_id))))
+
+            row = (
+                await conn.execute(
+                    sa.select(
+                        audit_log_table.c.row_hash,
+                        audit_log_table.c.sequence_number,
+                    )
+                    .where(audit_log_table.c.org_id == org_id)
+                    .order_by(audit_log_table.c.sequence_number.desc())
+                    .limit(1)
+                )
+            ).one_or_none()
+            prev_hash = row[0] if row else None
+            latest_seq = row[1] if row else 0
+
+            event = build_event(prev_hash, latest_seq)
+
+            try:
+                await conn.execute(audit_log_table.insert().values(**self._to_row(event)))
+            except Exception as exc:
+                raise AuditLogError(
+                    "Failed to persist audit event",
+                    context={"event_id": str(event.event_id), "error": str(exc)},
+                ) from exc
+        return event
 
     async def stream_by_evidence(
         self, evidence_id: uuid.UUID
@@ -155,3 +193,14 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
+
+
+def _org_lock_key(org_id: uuid.UUID) -> int:
+    """Map an org_id to a signed 64-bit key for pg_advisory_xact_lock(bigint).
+
+    Truncating to the UUID's first 8 bytes is fine here: the lock only needs
+    to serialize writers for the *same* org_id, and any accidental collision
+    with a different org merely causes extra (harmless) lock contention, not
+    a correctness issue.
+    """
+    return int.from_bytes(org_id.bytes[:8], byteorder="big", signed=True)

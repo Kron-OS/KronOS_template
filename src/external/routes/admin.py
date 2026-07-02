@@ -87,12 +87,14 @@ class UpdateRoleIn(BaseModel):
 
 
 class OrgSettingsOut(BaseModel):
-    retention_days: int
-    legal_hold_default: bool
+    """API response DTO — field names match the frontend TypeScript OrgSettings interface."""
+
+    retentionDays: int
+    legalHoldDefault: bool
 
 
 class UpdateSettingsIn(BaseModel):
-    retention_days: int = Field(ge=1, le=3650)
+    retentionDays: int = Field(ge=1, le=3650)
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +221,8 @@ async def get_org_settings(
 
     settings = Settings()
     return OrgSettingsOut(
-        retention_days=settings.minio_default_retention_days,
-        legal_hold_default=False,
+        retentionDays=settings.minio_default_retention_days,
+        legalHoldDefault=False,
     )
 
 
@@ -236,9 +238,9 @@ async def update_org_settings(
         AuditEventType.ORG_SETTINGS_UPDATED,
         org_id=tenant.org_id,
         actor_user_id=tenant.user_id,
-        details={"retention_days": body.retention_days},
+        details={"retention_days": body.retentionDays},
     )
-    return OrgSettingsOut(retention_days=body.retention_days, legal_hold_default=False)
+    return OrgSettingsOut(retentionDays=body.retentionDays, legalHoldDefault=False)
 
 
 # ---------------------------------------------------------------------------

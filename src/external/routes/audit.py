@@ -6,7 +6,7 @@ import hashlib
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from src.application.audit_log import AuditLogService
@@ -22,25 +22,11 @@ router = APIRouter(prefix="/api/audit", tags=["audit"])
 # ---------------------------------------------------------------------------
 # Response DTOs
 # ---------------------------------------------------------------------------
-
-
-class AuditEventOut(BaseModel):
-    event_id: uuid.UUID
-    event_type: str
-    actor_username: str | None
-    case_id: uuid.UUID | None
-    evidence_id: uuid.UUID | None
-    occurred_at: str
-    details: dict
-    row_hash: str | None
-    sequence_number: int
-
-
-class PaginatedAuditLog(BaseModel):
-    items: list[AuditEventOut]
-    total: int
-    page: int
-    page_size: int
+#
+# The paginated event-listing route lives in routes/cases.py as
+# GET /api/cases/{case_id}/audit (matching the frontend's existing call and
+# its other per-case list routes); this module keeps the chain-integrity
+# endpoints, which the frontend does not yet call.
 
 
 class MerkleProofStep(BaseModel):
@@ -63,33 +49,6 @@ class ChainVerifyResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
-
-@router.get("/cases/{case_id}", response_model=PaginatedAuditLog)
-async def list_audit_events(
-    case_id: uuid.UUID,
-    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
-    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
-) -> PaginatedAuditLog:
-    """Return paginated audit events for a case (tenant-scoped)."""
-    events: list[AuditEvent] = []
-    async for ev in audit_svc._repository.stream_by_case(case_id):
-        if ev.org_id != tenant.org_id:
-            continue
-        events.append(ev)
-
-    total = len(events)
-    start = (page - 1) * page_size
-    page_events = events[start : start + page_size]
-
-    return PaginatedAuditLog(
-        items=[_to_out(e) for e in page_events],
-        total=total,
-        page=page,
-        page_size=page_size,
-    )
 
 
 @router.get("/cases/{case_id}/verify", response_model=ChainVerifyResponse)
@@ -170,17 +129,3 @@ def _build_proof(leaves: list[bytes], target_idx: int) -> list[MerkleProofStep]:
         idx //= 2
 
     return steps
-
-
-def _to_out(ev: AuditEvent) -> AuditEventOut:
-    return AuditEventOut(
-        event_id=ev.event_id,
-        event_type=ev.event_type.value,
-        actor_username=ev.actor_username,
-        case_id=ev.case_id,
-        evidence_id=ev.evidence_id,
-        occurred_at=ev.occurred_at.isoformat(),
-        details=ev.details,
-        row_hash=ev.row_hash,
-        sequence_number=ev.sequence_number,
-    )

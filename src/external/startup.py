@@ -89,6 +89,7 @@ async def wire_dependencies_async() -> None:
         opensearch_client=opensearch,
         max_upload_bytes=settings.max_upload_bytes,
         presigned_expiry_seconds=settings.presigned_url_expiry_seconds,
+        opensearch_dashboards_url=settings.opensearch_dashboards_url,
     )
     configure_clamav_from_settings()
 

@@ -78,34 +78,41 @@ class AuditLogService:
         if org_id is None and actor_user_id is None:
             raise AuditLogError("org_id or actor_user_id must be provided for audit tracing")
 
-        prev_hash: str
-        seq: int
-        if org_id is not None:
-            latest_hash = await self._repository.get_latest_hash(org_id)
-            latest_seq = await self._repository.get_latest_sequence(org_id)
-            prev_hash = latest_hash if latest_hash else _GENESIS_HASH
+        def _build(prev_hash: str | None, latest_seq: int) -> AuditEvent:
+            resolved_prev_hash = prev_hash if prev_hash else _GENESIS_HASH
             seq = latest_seq + 1
-        else:
-            prev_hash = _GENESIS_HASH
-            seq = 1
-
-        partial = AuditEvent(
-            event_type=event_type,
-            actor_user_id=actor_user_id,
-            actor_username=actor_username,
-            org_id=org_id,
-            case_id=case_id,
-            evidence_id=evidence_id,
-            details=details or {},
-            occurred_at=occurred_at or datetime.now(UTC),
-            sequence_number=seq,
-            prev_row_hash=prev_hash,
-        )
-        row_hash = compute_row_hash(prev_hash, partial)
-        event = partial.model_copy(update={"row_hash": row_hash})
+            partial = AuditEvent(
+                event_type=event_type,
+                actor_user_id=actor_user_id,
+                actor_username=actor_username,
+                org_id=org_id,
+                case_id=case_id,
+                evidence_id=evidence_id,
+                details=details or {},
+                occurred_at=occurred_at or datetime.now(UTC),
+                sequence_number=seq,
+                prev_row_hash=resolved_prev_hash,
+            )
+            row_hash = compute_row_hash(resolved_prev_hash, partial)
+            finalized: AuditEvent = partial.model_copy(update={"row_hash": row_hash})
+            return finalized
 
         try:
-            persisted = await self._repository.append(event)
+            if org_id is not None:
+                # append_atomic holds a per-org lock across the tip read,
+                # event build, and insert — this is what prevents two
+                # concurrent callers from ever computing the same
+                # (prev_hash, sequence_number) pair for one org (see A.2/A.6
+                # in CLAUDE.md: the audit log is a compliance guarantee, not
+                # best-effort logging).
+                persisted = await self._repository.append_atomic(org_id, _build)
+            else:
+                # No org_id means this event isn't part of any org's chain
+                # (e.g. system-level events keyed only by actor_user_id), so
+                # there is no shared tip to serialize against.
+                persisted = await self._repository.append(_build(None, 0))
+        except AuditLogError:
+            raise
         except Exception as exc:
             raise AuditLogError(
                 "Failed to persist audit event",
@@ -117,7 +124,7 @@ class AuditLogService:
             extra={
                 "event_id": str(persisted.event_id),
                 "event_type": event_type.value,
-                "seq": seq,
+                "seq": persisted.sequence_number,
             },
         )
         return persisted
