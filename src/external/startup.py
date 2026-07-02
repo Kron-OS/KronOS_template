@@ -60,7 +60,6 @@ async def wire_dependencies_async() -> None:
         quarantine_bucket_prefix=settings.minio_quarantine_bucket_prefix,
         evidence_bucket_prefix=settings.minio_evidence_bucket_prefix,
         use_tls=settings.minio_use_tls,
-        cors_allowed_origins=settings.cors_allowed_origins_list,
     )
 
     from urllib.parse import urlparse  # noqa: PLC0415

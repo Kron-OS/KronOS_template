@@ -63,6 +63,13 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme}
       MINIO_KMS_SECRET_KEY: ${MINIO_KMS_KEY:-}
+      # Browsers PUT evidence directly to MinIO via presigned URLs; this is
+      # cross-origin CORS, enforced server-side (MinIO's bucket-level
+      # PutBucketCors API isn't implemented — this env var is the actual
+      # supported mechanism). Must match kronos-backend's CORS_ALLOWED_
+      # ORIGINS below. MinIO isn't published externally in this compose
+      # file yet (see MINIO_PUBLIC_ENDPOINT), so this is a no-op until it is.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-https://${KEYCLOAK_HOSTNAME}}
     volumes:
       - minio_data:/data
 
@@ -169,6 +176,10 @@ services:
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. Defaults to the
+      # Keycloak hostname as a best-guess prod domain — override with the
+      # real frontend origin(s) if they differ (comma-separated).
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${KEYCLOAK_HOSTNAME}}
       OPENSEARCH_URL: http://opensearch:9200
       # Non-superuser service account (a superuser bypasses OpenSearch DLS).
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}

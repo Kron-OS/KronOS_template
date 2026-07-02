@@ -37,6 +37,13 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      # Browsers PUT evidence directly to MinIO (presigned URLs), which is
+      # cross-origin whenever the app and MinIO are on different ports (e.g.
+      # http://localhost vs http://localhost:9000 in dev). MinIO's S3-style
+      # PutBucketCors bucket API returns "NotImplemented" on this image —
+      # CORS here is a server-level setting instead. Must match the origins
+      # in CORS_ALLOWED_ORIGINS on kronos-backend below.
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost,http://localhost:5173,http://localhost:4173"
     volumes:
       - minio_dev_data:/data
     ports:
@@ -212,6 +219,10 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above — same origins,
+      # enforced independently by each server (backend API vs. presigned
+      # MinIO uploads).
+      CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:4173"
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin

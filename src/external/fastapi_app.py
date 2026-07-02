@@ -149,9 +149,11 @@ _keycloak_jwks = (
     else None
 )
 
-# Same env var as Settings.cors_allowed_origins (src/config.py) — read directly
-# here rather than via Settings() so this module stays importable without a
-# full env (tests construct create_app() directly and override as needed).
+# Read directly via os.getenv (not Settings()) so this module stays
+# importable without a full env — tests construct create_app() directly
+# and override as needed. Must match MINIO_API_CORS_ALLOW_ORIGIN on the
+# MinIO server (docker-compose*.yml) — same origins, enforced
+# independently by each server.
 _cors_allowed_origins = [
     origin.strip()
     for origin in _os.getenv("CORS_ALLOWED_ORIGINS", ",".join(_DEFAULT_CORS_ORIGINS)).split(",")
