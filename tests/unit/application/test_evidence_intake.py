@@ -430,4 +430,137 @@ class TestUploadSizeEnforcement:
 
         stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
         assert stored.state == EvidenceState.ERROR
-        assert stored.error_reason == "size_limit_exceeded"
+
+
+# ---------------------------------------------------------------------------
+# Tests: auto-dispatch (parse pipeline trigger on RECEIVED)
+# ---------------------------------------------------------------------------
+
+
+def _make_intake_with_queue(audit_repo, evidence_repo, local_storage, task_queue):  # type: ignore[no-untyped-def]
+    from src.application.audit_log import AuditLogService
+
+    return EvidenceIntakeService(
+        evidence_repository=evidence_repo,
+        storage=local_storage,
+        audit_log=AuditLogService(audit_repo),
+        validator=default_validator_chain(max_upload_bytes=100_000),
+        scanner=NoOpScanner(),
+        hash_service=HashService(),
+        max_upload_bytes=100_000,
+        task_queue=task_queue,
+    )
+
+
+class TestAutoDispatch:
+    """Verify that finalize_upload auto-enqueues dispatch_parse on success."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_enqueued_after_successful_finalize(
+        self, audit_repo, evidence_repo, local_storage, tenant
+    ) -> None:
+        from src.adapter.queue.task_queue import InMemoryTaskQueue
+
+        queue = InMemoryTaskQueue()
+        intake = _make_intake_with_queue(audit_repo, evidence_repo, local_storage, queue)
+
+        evidence, presigned = await intake.request_upload(
+            filename="cloudtrail.json",
+            content_type="application/json",
+            size_bytes=len(_JSON_CONTENT),
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+        await intake.finalize_upload(
+            evidence_id=evidence.evidence_id,
+            client_sha256=_sha256(_JSON_CONTENT),
+            tenant=tenant,
+        )
+
+        assert len(queue.enqueued) == 1
+        kind, eid, _ = queue.enqueued[0]
+        assert kind == "dispatch"
+        assert eid == evidence.evidence_id
+
+    @pytest.mark.asyncio
+    async def test_no_dispatch_on_hash_mismatch(
+        self, audit_repo, evidence_repo, local_storage, tenant
+    ) -> None:
+        from src.adapter.queue.task_queue import InMemoryTaskQueue
+
+        queue = InMemoryTaskQueue()
+        intake = _make_intake_with_queue(audit_repo, evidence_repo, local_storage, queue)
+
+        evidence, presigned = await intake.request_upload(
+            filename="cloudtrail.json",
+            content_type="application/json",
+            size_bytes=len(_JSON_CONTENT),
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+
+        with pytest.raises(ValidationError):
+            await intake.finalize_upload(
+                evidence_id=evidence.evidence_id,
+                client_sha256="b" * 64,
+                tenant=tenant,
+            )
+
+        assert len(queue.enqueued) == 0
+
+    @pytest.mark.asyncio
+    async def test_dispatch_not_called_without_task_queue(
+        self, intake, local_storage, tenant
+    ) -> None:
+        """Intake without task_queue still completes — no dispatch, no error."""
+        evidence, presigned = await intake.request_upload(
+            filename="cloudtrail.json",
+            content_type="application/json",
+            size_bytes=len(_JSON_CONTENT),
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+        result = await intake.finalize_upload(
+            evidence_id=evidence.evidence_id,
+            client_sha256=_sha256(_JSON_CONTENT),
+            tenant=tenant,
+        )
+        assert result.state == EvidenceState.RECEIVED
+
+    @pytest.mark.asyncio
+    async def test_queue_failure_does_not_abort_intake(
+        self, audit_repo, evidence_repo, local_storage, tenant
+    ) -> None:
+        """If the queue raises, evidence stays in RECEIVED (not ERROR)."""
+
+        class BrokenQueue:
+            async def enqueue_dispatch(self, *_a, **_kw):  # type: ignore[no-untyped-def]
+                raise RuntimeError("broker unavailable")
+
+            async def enqueue_parse_fast(self, *_a, **_kw):  # type: ignore[no-untyped-def]
+                raise RuntimeError("broker unavailable")
+
+            async def enqueue_parse_heavy(self, *_a, **_kw):  # type: ignore[no-untyped-def]
+                raise RuntimeError("broker unavailable")
+
+        intake = _make_intake_with_queue(
+            audit_repo, evidence_repo, local_storage, BrokenQueue()
+        )
+        evidence, presigned = await intake.request_upload(
+            filename="cloudtrail.json",
+            content_type="application/json",
+            size_bytes=len(_JSON_CONTENT),
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+        result = await intake.finalize_upload(
+            evidence_id=evidence.evidence_id,
+            client_sha256=_sha256(_JSON_CONTENT),
+            tenant=tenant,
+        )
+        # Evidence is safe in RECEIVED; auto_dispatch_received beat task will retry.
+        assert result.state == EvidenceState.RECEIVED

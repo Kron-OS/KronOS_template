@@ -1,4 +1,4 @@
-"""EvidenceIntakeService: orchestrates upload → validate → scan → hash → RECEIVED."""
+"""EvidenceIntakeService: orchestrates upload → validate → scan → hash → RECEIVED → parse."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 
+from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
 from src.application.audit_log import AuditLogService
@@ -46,10 +47,15 @@ async def _cap_stream(
 class EvidenceIntakeService:
     """Orchestrates the full evidence intake workflow.
 
-    Flow:
+    Flow (fully autonomous after the client PUT to MinIO):
         request_upload  → Evidence(UPLOADING) + presigned URL
         [client uploads file directly to MinIO]
         finalize_upload → validate → scan → hash → promote → Evidence(RECEIVED)
+                       → auto-enqueues dispatch_parse (Celery)
+        [Celery] dispatch_parse → start_parsing → Evidence(PARSING)
+        [Celery] parse_artefact_* → execute_parse → Evidence(COMPLETE)
+
+    The client never needs to call parse/start — the pipeline is self-driving.
     """
 
     def __init__(
@@ -62,6 +68,7 @@ class EvidenceIntakeService:
         hash_service: HashService,
         max_upload_bytes: int,
         presigned_url_expiry_seconds: int = 3600,
+        task_queue: TaskQueue | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -71,6 +78,7 @@ class EvidenceIntakeService:
         self._hasher = hash_service
         self._max_upload_bytes = max_upload_bytes
         self._presigned_expiry = presigned_url_expiry_seconds
+        self._task_queue = task_queue
 
     async def request_upload(
         self,
@@ -386,4 +394,21 @@ class EvidenceIntakeService:
             "evidence_received",
             extra={"evidence_id": str(evidence.evidence_id), "sha256": evidence.sha256},
         )
+
+        # Auto-trigger the parsing pipeline.  If the queue is unavailable the
+        # evidence remains safely in RECEIVED state; the auto_dispatch_received
+        # beat task (runs every hour) will pick it up for retry.
+        if self._task_queue is not None:
+            try:
+                task_id = await self._task_queue.enqueue_dispatch(evidence.evidence_id, tenant)
+                logger.info(
+                    "parse_dispatch_enqueued",
+                    extra={"evidence_id": str(evidence.evidence_id), "task_id": task_id},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "parse_dispatch_failed",
+                    extra={"evidence_id": str(evidence.evidence_id), "error": str(exc)},
+                )
+
         return evidence

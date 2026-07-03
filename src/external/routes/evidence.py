@@ -167,12 +167,17 @@ async def finalize_upload(
 )
 async def start_parsing(
     evidence_id: uuid.UUID,
-    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN))],
     orchestrator: Annotated[
         ParsingOrchestrationService, Depends(get_parsing_orchestration_service)
     ],
 ) -> EvidenceOut:
-    """Transition RECEIVED evidence to PARSING and enqueue the parse task."""
+    """Admin-only: manually re-trigger parsing for RECEIVED evidence.
+
+    Under normal operation the pipeline is fully autonomous — this endpoint
+    exists solely for operational recovery when auto-dispatch failed and an
+    org-admin needs to unblock stuck evidence.  Requires ORG_ADMIN role.
+    """
     try:
         evidence = await orchestrator.start_parsing(evidence_id, tenant)
     except (ValidationError, ParsingError) as exc:

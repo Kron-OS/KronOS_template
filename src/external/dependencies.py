@@ -168,6 +168,7 @@ def get_intake_service(
         hash_service=HashService(),
         max_upload_bytes=_max_upload_bytes,
         presigned_url_expiry_seconds=_presigned_expiry,
+        task_queue=_task_queue,
     )
 
 

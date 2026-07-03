@@ -51,6 +51,7 @@ celery_app.conf.update(
         "kronos.parse_artefact_heavy": {"queue": "q.parse.plaso"},
         "kronos.finalize_evidence": {"queue": "q.index"},
         "kronos.abort_orphan_uploads": {"queue": "q.index"},
+        "kronos.auto_dispatch_received": {"queue": "q.index"},
         "kronos.abort_orphan_parses": {"queue": "q.index"},
         "kronos.anchor_audit_log": {"queue": "q.index"},
         # Legacy aliases — also routed to correct queues.
@@ -65,7 +66,11 @@ celery_app.conf.update(
     beat_schedule={
         "abort-orphan-uploads": {
             "task": "kronos.abort_orphan_uploads",
-            "schedule": crontab(minute=0),  # every hour
+            "schedule": crontab(minute=0),  # every hour at :00
+        },
+        "auto-dispatch-received": {
+            "task": "kronos.auto_dispatch_received",
+            "schedule": crontab(minute=15),  # every hour at :15 — re-enqueues stuck RECEIVED
         },
         "abort-orphan-parses": {
             "task": "kronos.abort_orphan_parses",
@@ -271,18 +276,13 @@ def abort_orphan_uploads(self: object) -> int:
 
     cutoff = datetime.now(UTC) - timedelta(hours=2)
 
-    # Cross-org scanning requires a Postgres query (not available in unit tests).
-    # In production the PostgresEvidenceRepository implements stream_all_by_state.
     try:
         repo = get_evidence_repository()
         audit = get_audit_log_service(get_audit_log_repository())
 
         async def _run() -> int:
             count = 0
-            if not hasattr(repo, "stream_all_by_state"):
-                logger.warning("abort_orphan_uploads: repo lacks stream_all_by_state; skipping")
-                return 0
-            async for ev in repo.stream_all_by_state(EvidenceState.UPLOADING):  # type: ignore[attr-defined]
+            async for ev in repo.stream_all_by_state(EvidenceState.UPLOADING):
                 if ev.created_at < cutoff:
                     aborted = ev.with_error("upload_timeout")
                     await repo.update(aborted)
@@ -333,10 +333,7 @@ def abort_orphan_parses(self: object) -> int:
 
         async def _run() -> int:
             count = 0
-            if not hasattr(repo, "stream_all_by_state"):
-                logger.warning("abort_orphan_parses: repo lacks stream_all_by_state; skipping")
-                return 0
-            async for ev in repo.stream_all_by_state(EvidenceState.PARSING):  # type: ignore[attr-defined]
+            async for ev in repo.stream_all_by_state(EvidenceState.PARSING):
                 if ev.updated_at < cutoff:
                     aborted = ev.with_error("parse_timeout")
                     await repo.update(aborted)
@@ -354,6 +351,61 @@ def abort_orphan_parses(self: object) -> int:
         count = 0
         logger.warning("abort_orphan_parses: repository not configured; skipping")
     logger.info("abort_orphan_parses_done", extra={"aborted": count})
+    return count
+
+
+# ---------------------------------------------------------------------------
+# auto_dispatch_received: hourly re-enqueue of evidence stuck in RECEIVED
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.auto_dispatch_received", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+def auto_dispatch_received(self: object) -> int:
+    """Re-enqueue dispatch_parse for evidence stuck in RECEIVED longer than 5 min.
+
+    Safety net for cases where the initial auto-dispatch in EvidenceIntakeService
+    failed (e.g., broker unreachable at upload time).  Runs every hour at :15.
+    Returns count of re-dispatched items.
+    """
+    import asyncio  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from src.domain.evidence import EvidenceState  # noqa: PLC0415
+    from src.external.dependencies import (  # noqa: PLC0415
+        get_evidence_repository,
+    )
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=5)
+
+    try:
+        repo = get_evidence_repository()
+        queue = CeleryTaskQueue()
+
+        async def _run() -> int:
+            count = 0
+            async for ev in repo.stream_all_by_state(EvidenceState.RECEIVED):
+                if ev.updated_at < cutoff:
+                    tenant = _tenant(str(ev.metadata.org_id), str(ev.metadata.uploader_user_id))
+                    try:
+                        await queue.enqueue_dispatch(ev.evidence_id, tenant)
+                        count += 1
+                        logger.info(
+                            "auto_dispatch_reenqueued",
+                            extra={"evidence_id": str(ev.evidence_id)},
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "auto_dispatch_enqueue_failed",
+                            extra={"evidence_id": str(ev.evidence_id), "error": str(exc)},
+                        )
+            return count
+
+        count = asyncio.run(_run())
+    except RuntimeError:
+        count = 0
+        logger.warning("auto_dispatch_received: repository not configured; skipping")
+    logger.info("auto_dispatch_received_done", extra={"dispatched": count})
     return count
 
 

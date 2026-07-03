@@ -9,31 +9,8 @@
 
 ## 🚀 Quick Start for All Agents
 
-### For Backend Tasks (Phase 1–5 — ✅ COMPLETE)
-This document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
+### For TasksThis document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
 Warning : Never deploy docker containers or break system. You can use ~/venv/ python env for running tests. Commit your modifications on current branch, push them, but no pull request.
-
-### For All Other Tasks (Frontend, Infra, Security, etc.)
-⭐ **Go to [`roadmap.md`](./roadmap.md)** — it contains:
-- 9 main implementation sections (Frontend SPA, Advanced Parsing, Chain of Custody, Security, Observability, Infrastructure, CI/CD, v2 features)
-- Self-contained **agent prompts** for each step (one per section, sometimes multiple per substep)
-- All prompts reference `Project_Specifications.md` and `reviews/Part_*.md` — no prior conversation assumed
-- Progress checklist per section
-
-**Workflow:**
-1. Find your section in `roadmap.md` (e.g., "2. Frontend SPA")
-2. Read the agent prompt(s) for that section
-3. Execute the prompt as a new agent task
-4. Check off completion in the progress tracking (see below)
-5. Next agent starts immediately on the next unchecked step
-
----
-
-## Progress Tracking
-
-See [`PROGRESS.md`](./PROGRESS.md) for a live checklist of all roadmap items. Update it after each section completes.
-
----
 
 ## Project Context
 
@@ -306,416 +283,69 @@ Before pushing, verify:
 
 ---
 
-## PHASE 1: Domain Models, DI, Audit Abstractions (Weeks 1–2)
+## E. Ingestion Pipeline Rules (Non-Negotiable)
 
-**Duration:** 2 weeks  
-**Deliverables:** Core abstractions, DI container, unit test suite  
-**Key Output:** Domain models (Evidence, AuditEvent, TimelineRecord), audit service with hash chain, exception hierarchy
+> Full specification: [`docs/ingestion-pipeline.md`](./docs/ingestion-pipeline.md)
 
-### Context
-Phase 1 builds the **immutable backbone** that all downstream subsystems depend on:
-- Domain models (Evidence, AuditEvent, TimelineRecord, User, Case) — pure Pydantic
-- Dependency injection container (FastAPI + manual DI)
-- Audit service abstraction (immutable, append-only, tamper-detected with hash chain)
-- Storage & repository abstractions (pluggable backends)
-- Exception hierarchy (custom, domain-specific)
+### E.1 The Pipeline Is Fully Autonomous After Upload
 
-**No FastAPI routes yet. No Celery tasks. Pure domain + DI.**
+Once the client sends `POST /api/evidence/upload/finalize/{id}`, **every subsequent step is triggered by the server**, never by the client.  This rule exists because:
 
-### Objectives
+- Parsing must be deterministic and reproducible without client cooperation.
+- Every FSM transition is a legally binding audit event; only the server may write them.
+- Client-triggered transitions create TOCTOU vulnerabilities and allow users to skip security gates.
 
-1. **Domain models** (`src/domain/`)
-   - `evidence.py`: `Evidence`, `EvidenceMetadata`, `EvidenceState` FSM
-   - `timeline.py`: `TimelineRecord` with ECS schema + kronos.* provenance
-   - `audit.py`: `AuditEvent`, `AuditEventType` enum
-   - `case.py`, `user.py`: Other domain models
+The correct autonomous sequence is:
 
-2. **Exception hierarchy** (`src/exceptions.py`)
-   - `KronOSException`, `ValidationError`, `StorageError`, `ParsingError`, `AuditLogError`, `AuthenticationError`
-
-3. **Repository abstractions** (`src/adapter/repository/`)
-   - `audit_log.py`: `AuditLogRepository(ABC)` — append-only interface
-   - `evidence.py`: `EvidenceRepository(ABC)` — evidence metadata CRUD
-
-4. **Storage abstractions** (`src/adapter/storage/`)
-   - `storage.py`: `EvidenceStorage(ABC)` — presigned URLs, streaming, promotion
-
-5. **Audit service** (`src/application/audit_log.py`)
-   - `AuditLogService` with hash chain + context manager
-
-6. **DI container** (`src/external/dependencies.py`)
-   - Dependency overrides for testing
-
-7. **Unit tests** (`tests/unit/`)
-   - ≥20 tests covering FSM, hash chain, exception handling
-   - Coverage ≥80% for domain logic
-
-### Testing Checklist
-- [ ] All Pydantic models validate (frozen, required fields)
-- [ ] Audit hash chain verified (event2.row_hash ≠ event1.row_hash)
-- [ ] `audit_context` succeeds on normal flow, logs error on exception
-- [ ] Evidence FSM prevents invalid transitions
-- [ ] DI container can override repositories for testing
-- [ ] Unit tests run in <5s total
-- [ ] mypy: zero type errors
-- [ ] Black: code formatted
-- [ ] Ruff: zero linting warnings
-
-### Notes
-- Do not create FastAPI app yet. That's Phase 2.
-- Do not implement concrete repositories (Postgres) yet. Just ABCs.
-- Do not add Celery yet. Pure domain + sync/async services.
-- Every file in `src/domain/` must be framework-independent.
-
----
-
-## PHASE 2: Evidence Intake, Validation, Scanning, Hashing (Weeks 3–4)
-
-**Duration:** 2 weeks  
-**Deliverables:** Intake workflow, validators, scanning integration, hash service  
-**Prerequisites:** Phase 1 merged  
-**Key Output:** Evidence upload workflow (UPLOADING → SCANNING → HASHING → RECEIVED), FastAPI routes
-
-### Context
-Building on Phase 1, Phase 2 implements the **evidence upload workflow**:
-1. User requests presigned URL → S3 multipart setup
-2. Client uploads file → MinIO quarantine bucket
-3. ClamAV scans → log result → promote to evidence bucket if clean
-4. SHA-256 hash computed → immutable metadata stored
-5. State FSM: UPLOADING → SCANNING → HASHING → RECEIVED
-
-**No parsing yet. No timeline ingestion. Pure intake + validation.**
-
-### Objectives
-
-1. **Validators** (`src/application/validation.py`)
-   - `EvidenceValidator(ABC)`, `MagicByteValidator`, `FileSizeValidator`, `ValidatorChain`
-
-2. **Scanning service** (`src/application/scanning.py`)
-   - `ClamAVScanner` with streaming file feed to clamd
-
-3. **Hash service** (`src/application/hashing.py`)
-   - `HashService` with SHA-256 + MD5 computation
-
-4. **Evidence intake service** (`src/application/evidence_intake.py`)
-   - `EvidenceIntakeService` orchestrating full workflow (presigned URL → scanning → hashing → RECEIVED)
-
-5. **Storage implementation** (`src/adapter/storage/s3.py`)
-   - `S3EvidenceStorage` with MinIO-compatible API
-
-6. **Repository implementation** (`src/adapter/repository/postgres_evidence.py`)
-   - `PostgresEvidenceRepository` for evidence metadata
-
-7. **FastAPI routes** (`src/external/routes/evidence.py`)
-   - `POST /api/evidence/upload/request` — presigned URL
-   - `POST /api/evidence/upload/finalize/{evidence_id}` — validate → scan → hash
-
-8. **Integration tests** (`tests/integration/`)
-   - ≥10 test cases covering full flow, error cases, state transitions
-
-### Testing Checklist
-- [ ] `request_upload` creates UPLOADING evidence, returns presigned URL
-- [ ] `finalize_upload` validates, scans, hashes in correct order
-- [ ] Audit log shows every step (5+ events per upload)
-- [ ] Invalid magic bytes → rejected before scanning
-- [ ] Infected file → ERROR state, audit logged
-- [ ] Hash computed correctly (SHA-256 matches external tool)
-- [ ] Promote succeeds; evidence bucket is WORM-locked
-- [ ] Concurrent uploads to same case don't collide
-- [ ] Integration tests with testcontainers (Postgres, MinIO)
-- [ ] All tests run in <30s
-
-### Notes
-- Assume Phase 1 is merged and available. Import domain models freely.
-- Storage backend is still abstract. Implement S3 + local test version.
-- ClamAV is optional for now. Mock it or use a test clamd container.
-- FastAPI app created in Phase 2. Don't add Celery or complex routes yet.
-- Audit on every step. The audit log is your contract: if it's not logged, it didn't happen.
-
----
-
-## PHASE 3: Parser Framework & Implementations (Weeks 5–6)
-
-**Duration:** 2 weeks  
-**Deliverables:** Parser registry, EVTX/CloudTrail/Nginx parsers, sandbox task wrappers  
-**Prerequisites:** Phase 1 + Phase 2 merged  
-**Key Output:** Extensible parser architecture, 3 reference implementations, Celery task framework
-
-### Context
-Phase 3 builds the **extensible parser framework** allowing new forensic formats without core refactoring:
-- Abstract `ForensicParser(ABC)` base class
-- `ParserRegistry` for runtime discovery
-- Three reference implementations: EVTX (fast), CloudTrail (JSON), Nginx (text)
-- Celery task wrapper for sandbox execution (gVisor for fast, Firecracker for heavy)
-- Deterministic OpenSearch `_id` for idempotent retries
-
-### Objectives
-
-1. **Abstract parser base** (`src/application/parsing.py`)
-   - `ForensicParser(ABC)` with `validate()`, `parse()`, `supports()` methods
-   - `ParserType` enum (FAST, HEAVY)
-
-2. **Parser registry** (`src/application/parser_registry.py`)
-   - `ParserRegistry` with registration, lookup, factory pattern
-   - No hardcoded if/elif chains
-
-3. **Reference parsers** (`src/external/parsers/`)
-   - `evtx.py`: `FastEvtxParser` (evtx-rs binding)
-   - `cloudtrail.py`: `CloudTrailParser` (JSON logs)
-   - `nginx.py`: `NginxParser` (access logs)
-   - Each yields `TimelineRecord` with kronos.* provenance
-
-4. **Parsing orchestration** (`src/application/parsing_orchestration.py`)
-   - `ParsingOrchestrationService` coordinating parser selection, task queueing, audit logging
-
-5. **Celery tasks** (`src/external/celery_tasks.py`)
-   - `parse_evidence_fast()` for gVisor execution
-   - `parse_evidence_heavy()` for Firecracker execution
-
-6. **Unit + integration tests** (`tests/`)
-   - ≥15 unit tests (registry, parser detection)
-   - ≥5 integration tests (real sample files)
-
-### Testing Checklist
-- [ ] Registry registers and retrieves parsers by name
-- [ ] `Parser.supports()` correctly identifies EVTX/CloudTrail/Nginx files
-- [ ] EVTX parser yields ≥1000 records from sample file
-- [ ] CloudTrail parser handles multi-record JSON files
-- [ ] Nginx parser parses access log format
-- [ ] Each record has kronos.* provenance (evidence_id, parser, record_index)
-- [ ] `ParsingOrchestrationService` queues correct task (fast vs. heavy)
-- [ ] Celery task injects dependencies correctly
-- [ ] Concurrent parse tasks don't interfere
-- [ ] All parser tests run in <10s
-
-### Notes
-- Parser discovery must be automatic. No hardcoded if/elif chains.
-- Streaming is mandatory. Parsers yield records one-at-a-time, not arrays.
-- Sandbox integration is stubbed out. Phase 3 focuses on parser architecture; sandbox invocation is Phase 4.
-- Audit on success and error. Every parse session logged, success + record count.
-- Sample files required. Include real EVTX, CloudTrail JSON, Nginx logs in test fixtures.
-
----
-
-## PHASE 4: Timeline Ingestion & OpenSearch Integration (Weeks 7–8)
-
-**Duration:** 2 weeks  
-**Deliverables:** Timeline normalization, OpenSearch index templates, bulk ingestion, DLS security  
-**Prerequisites:** Phase 1 + Phase 2 + Phase 3 merged  
-**Key Output:** Complete evidence lifecycle (UPLOADING → COMPLETE), timeline queryable in OpenSearch
-
-### Context
-Phase 4 ingests parsed timeline records into OpenSearch with:
-- ECS schema normalization
-- `kronos.*` provenance block
-- Per-tenant, per-case index naming: `kronos-{org_alias}-case-{case_id}-{yyyymm}`
-- Document-Level Security (DLS) on `tenant_id`
-- Deterministic `_id = SHA1(evidence_id : parser : record_index)` for idempotent retries
-- ISM (Index State Management) policy: rollover at 30 GB or 30 days
-
-**No search/UI yet. Pure ingestion, schema, and security.**
-
-### Objectives
-
-1. **Timeline normalization** (`src/application/timeline_normalization.py`)
-   - `ECSNormalizer` converting `TimelineRecord` to OpenSearch document (ECS + kronos.*)
-
-2. **Timeline ingestion service** (`src/application/timeline_ingest.py`)
-   - `TimelineIngestionService` with batch + flush, deterministic _id
-
-3. **OpenSearch client** (`src/adapter/opensearch/client.py`)
-   - Async OpenSearch client with bulk API, template management, DLS role creation
-
-4. **Index template** (`src/adapter/opensearch/index_template.json`)
-   - ECS schema + kronos.* provenance block, per-tenant multi-tenancy
-
-5. **ISM policy** (`src/adapter/opensearch/ism_policy.json`)
-   - Rollover at 30 GB or 30 days
-
-6. **Integration** of parsing → timeline workflow
-   - `ParsingOrchestrationService` calls timeline service on parse success
-   - Evidence state transitions to COMPLETE after ingestion
-
-7. **Integration tests** (`tests/integration/`)
-   - ≥10 test cases (deterministic IDs, batching, index naming)
-
-### Testing Checklist
-- [ ] ECS normalization preserves all record fields
-- [ ] _id is deterministic (SHA1 collision test)
-- [ ] Index naming matches pattern: `kronos-{org}-case-{case}-{yyyymm}`
-- [ ] Batch ingestion works (1000+ records in single bulk call)
-- [ ] Auto-flush on batch size
-- [ ] ISM policy applies correctly (rollover triggers at 30 GB or 30 days)
-- [ ] OpenSearch DLS role created per org
-- [ ] Full workflow: evidence.COMPLETE after ingest
-- [ ] All audit events logged (parse.start, parse.success, ingest.success)
-- [ ] Concurrent ingestion to different orgs/cases doesn't cross boundaries
-
-### Notes
-- OpenSearch schema is foundational. Get ECS + kronos.* right first.
-- Deterministic _id is critical. It prevents duplicates on retry.
-- DLS is security, not just convenience. Enforce at role level.
-- Testcontainers required. Integration tests need real OpenSearch.
-- Phase 4 + Phase 3 complete the evidence lifecycle: UPLOADING → COMPLETE.
-
----
-
-## PHASE 5: Multi-Tenancy & Keycloak Integration (Weeks 9–10)
-
-**Duration:** 2 weeks  
-**Deliverables:** Keycloak JWT parsing, tenant context, RBAC middleware, query isolation  
-**Prerequisites:** All prior phases merged  
-**Key Output:** Complete secure backend, production-ready
-
-### Context
-Phase 5 wires up **multi-tenant isolation** and **role-based access control** across all subsystems:
-- Keycloak JWT parsing (extract `organization` scope + user roles)
-- Per-request TenantContext (org_id, user_id, roles)
-- RBAC middleware (decorators like `@requires_role("case_lead")`)
-- Query filters (all queries scoped to org_id + case_id)
-- Evidence deletion requires step-up auth (RFC 9470)
-
-**This is the final phase. Integrates auth into all prior subsystems.**
-
-### Objectives
-
-1. **Keycloak JWT validation** (`src/external/middleware/keycloak_auth.py`)
-   - `KeycloakTokenValidator` parsing and verifying JWT
-
-2. **Tenant context** (`src/external/middleware/tenant_context.py`)
-   - `TenantContext` extracted from JWT (org_id, user_id, roles)
-   - `get_tenant_context()` FastAPI dependency
-
-3. **RBAC decorator** (`src/external/middleware/rbac.py`)
-   - `@requires_role("case_lead")` decorator enforcing access
-
-4. **Query isolation middleware** (`src/external/middleware/query_isolation.py`)
-   - Enforce that every query is scoped to org_id from TenantContext
-
-5. **Step-up authentication** (`src/external/middleware/step_up_auth.py`)
-   - `StepUpAuth` for MFA on sensitive operations (evidence delete)
-
-6. **OpenSearch query builder** (`src/external/middleware/opensearch_isolation.py`)
-   - `OpenSearchQueryBuilder` adding tenant_id filter to every query
-
-7. **Evidence deletion with step-up** (update `src/application/evidence_intake.py`)
-   - `delete_evidence()` requiring step-up ticket + MFA
-
-8. **FastAPI app integration** (update `src/external/fastapi_app.py`)
-   - Middleware, exception handlers, DI overrides
-
-9. **Integration tests** (`tests/integration/`)
-   - ≥15 test cases (RBAC, query isolation, step-up)
-
-### Testing Checklist
-- [ ] JWT validation succeeds with valid Keycloak token
-- [ ] JWT validation fails with expired/invalid signature
-- [ ] `TenantContext` extracts org_id + roles correctly
-- [ ] `@requires_role` enforces access (403 if role missing)
-- [ ] Query isolation: org1 cannot list org2's evidence
-- [ ] Step-up auth required for delete
-- [ ] Step-up ticket is one-time use
-- [ ] OpenSearch queries include tenant_id filter
-- [ ] Concurrent requests from different orgs don't interfere
-- [ ] Audit log includes step-up verification status
-- [ ] All endpoints require Bearer token
-- [ ] Middleware runs before all routes
-
-### Notes
-- Query isolation is non-negotiable. EVERY query to Postgres/OpenSearch must include org_id filter.
-- Step-up auth is for sensitive operations only. Delete + promote require MFA.
-- RBAC is layered. Backend + OpenSearch roles work together (defense in depth).
-- Test with real Keycloak container. Testcontainers + docker-compose for integration tests.
-- This is the final phase. After Phase 5, the backbone is complete and extensible.
-
----
-
-## Design Review Documents
-
-All architectural decisions are documented and reviewed:
-- **Project_Specifications.md** — 6-section narrative (548 lines)
-- **reviews/Part_1_Review.md** — Users, Teams, Access Control (2026-04-20)
-- **reviews/Part_2_Review.md** — Evidence Intake & CoC (2026-06-16)
-- **reviews/Part_3_Review.md** — Parsing & Timeline (2026-06-16)
-- **reviews/Part_4_Review.md** — Workflows & UX (2026-06-16)
-- **reviews/Part_5_Review.md** — Security & Compliance (2026-06-16)
-- **reviews/Part_6_Review.md** — Identity, Auth, SSO (2026-06-16)
-
-Read these before implementing; they contain rationale for every decision.
-
----
-
-## Git Workflow
-
-```bash
-# All work happens on the designated branch:
-git checkout claude/focused-wozniak-pz1rqh
-
-# Phase N agent:
-1. Create feature branch: git checkout -b phase-N-feature
-2. Implement phase (see phase prompt above)
-3. Run tests, linting, type checking
-4. Commit with clear message
-5. Push: git push -u origin phase-N-feature
-6. Create draft PR (auto-created by harness)
-7. Merge to main when ready
-
-# Next phase agent starts immediately on main
+```
+finalize_upload (FastAPI)
+  └─► _promote() → enqueue dispatch_parse (Celery q.index)
+        └─► dispatch_parse → start_parsing()  → PARSING
+              └─► parse_artefact_fast|heavy → execute_parse() → COMPLETE
+                    └─► finalize_evidence → INGEST_COMPLETED audit event
 ```
 
----
+### E.2 Never Trigger Pipeline Steps from the Frontend
 
-## Quick Commands
+- **Do NOT call `POST /api/evidence/parse/start/{id}` from frontend code.**  
+  That endpoint is `ORG_ADMIN`-only and exists only for manual operational recovery.
+- **Do NOT add any client-side "wait and then call" patterns** that poll or
+  sequence server-side transitions.
+- **The frontend's only responsibility** after finalize is to subscribe to SSE
+  (`GET /api/sse/cases/{id}/evidence`) for state-change notifications.
 
-```bash
-# Unit tests (fast)
-pytest tests/unit/ -v
+### E.3 State Transitions Are Server-Side Only
 
-# Integration tests (requires testcontainers)
-pytest tests/integration/ -v
+- All FSM transitions are enforced by `EvidenceState.transition_to()` in
+  `src/domain/evidence.py`.
+- The only code that may call `evidence.with_state(...)` is application-layer
+  services (`EvidenceIntakeService`, `ParsingOrchestrationService`) invoked
+  from Celery tasks or the `finalize_upload` route.
+- **No route handler may directly set evidence state** except via the designated
+  service methods.
 
-# Type checking
-mypy src/
+### E.4 Auto-Dispatch Is the Contract, Not the API
 
-# Linting
-ruff check src/ tests/
+`EvidenceIntakeService._promote()` calls `task_queue.enqueue_dispatch()` as
+the last step of finalization.  If the broker is temporarily unavailable the
+warning is logged and the `auto_dispatch_received` Celery beat task (runs
+hourly at :15) provides automatic recovery — no human intervention required.
 
-# Formatting
-black src/ tests/
+**Do NOT** add fallback logic that makes a direct HTTP call to `parse/start`
+as a "retry" when the queue fails.  The beat task is the correct recovery
+mechanism.
 
-# All checks
-mypy src/ && ruff check src/ tests/ && black --check src/ tests/ && pytest tests/unit/
-```
+### E.5 `stream_all_by_state` Is for System Tasks Only
 
----
+`EvidenceRepository.stream_all_by_state()` crosses org boundaries.  It may
+only be called from Celery beat tasks (`abort_orphan_uploads`,
+`auto_dispatch_received`, `abort_orphan_parses`).  **Never** call it from a
+FastAPI route or any code reachable from a user request.
 
-## Success Criteria
+### E.6 Parse/Start Endpoint Is Admin-Only Recovery
 
-Each phase is **complete** when:
-1. ✅ **All deliverables** listed in phase prompt are implemented
-2. ✅ **Tests pass** (unit <5s, integration <30s per phase)
-3. ✅ **Coverage ≥80%** for domain logic
-4. ✅ **Linting clean** (mypy, ruff, black)
-5. ✅ **Audit checklist** completed (type hints, docstrings, no hardcodes, etc.)
-6. ✅ **PR reviewed** and merged to main
-
-After Phase 5:
-- ✅ Full evidence workflow: upload → validate → scan → hash → parse → ingest → query
-- ✅ Multi-tenant isolation verified
-- ✅ Performance baselines hit
-- ✅ Security audit passed (OWASP, secrets scanning, SBOM)
-- ✅ Ready for frontend integration + deployment
-
----
-
-## Contact & Support
-
-- **Branch:** `claude/focused-wozniak-pz1rqh`
-- **Implementation Plan:** `/root/.claude/plans/read-the-repo-we-polished-willow.md`
-- **Design Specs:** `Project_Specifications.md` + `reviews/Part_*.md`
-- **Questions:** Refer to design reviews; all decisions documented with rationale
+`POST /api/evidence/parse/start/{id}` requires `Role.ORG_ADMIN`.  It exists
+so an operator can manually unblock evidence stuck in RECEIVED state after a
+broker outage.  It must never be called as part of normal upload flow.
 
 ---
-
-**Last Updated:** 2026-06-24  
-**Status:** Ready for Phase 1 agent

@@ -33,5 +33,14 @@ class EvidenceRepository(ABC):
         """Yield all evidence in a given state for an org (used by recovery tasks)."""
 
     @abstractmethod
+    def stream_all_by_state(self, state: EvidenceState) -> AsyncIterator[Evidence]:
+        """Yield all evidence in a given state across ALL orgs.
+
+        Used exclusively by Celery orphan-cleanup beat tasks which need to
+        identify stuck evidence platform-wide.  Never call from a request
+        handler — use the org-scoped stream_by_state instead.
+        """
+
+    @abstractmethod
     async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
         """Delete evidence metadata. Returns True if the record existed, False otherwise."""

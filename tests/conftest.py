@@ -110,6 +110,13 @@ class InMemoryEvidenceRepository(EvidenceRepository):
             if ev.state == state and ev.metadata.org_id == org_id:
                 yield ev
 
+    async def stream_all_by_state(  # type: ignore[override]
+        self, state: EvidenceState
+    ) -> AsyncIterator[Evidence]:
+        for ev in self._store.values():
+            if ev.state == state:
+                yield ev
+
     async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
         ev = self._store.get(evidence_id)
         if ev and ev.metadata.org_id == org_id:

@@ -278,4 +278,185 @@ factory-boy into the runtime image — needless size and attack surface.
 
 All are green (`xfail` for open defects, `pass` for locked-in current behaviour),
 so CI remains green; an `xpass` signals a fix has landed and the marker should be
+
+---
+
+## Ingestion Pipeline Security Review — 2026-07-03
+
+**Branch:** `fix/evidence-upload-camelcase`  
+**Scope:** Review of the ingestion pipeline after commit `dd876ae` introduced a
+client-triggered parsing bypass.  All findings below are relative to the code in
+this branch after the corrective commits.
+
+### Summary table
+
+| ID   | Severity | Area | Finding | Status |
+|------|----------|------|---------|--------|
+| P-1  | Critical | Pipeline | Frontend calling `parse/start` after finalize — client-controlled FSM transition | ✅ Fixed |
+| P-2  | High | Routes | `POST /parse/start/{id}` unrestricted — any org member could trigger parsing | ✅ Fixed |
+| P-3  | High | Queue | Wrong Celery queue names in `CeleryTaskQueue` (`parse.fast` / `parse.heavy` vs `q.parse.fast` / `q.parse.plaso`) | ✅ Fixed |
+| P-4  | High | Queue | Legacy task aliases called via `apply()` (blocking, synchronous) instead of correct async tasks | ✅ Fixed |
+| P-5  | High | Orphan cleanup | `stream_all_by_state` missing — orphan tasks silently skipped with `hasattr()` fallback | ✅ Fixed |
+| P-6  | Medium | Queue | No recovery for evidence stuck in RECEIVED if broker is unavailable at finalize time | ✅ Fixed (auto_dispatch_received beat task) |
+| P-7  | Medium | Sandbox | Plaso subprocess uses `subprocess.Popen(cmd_list)` — not shell-expanded | ✅ Safe (confirmed) |
+| P-8  | Medium | AV | `configure_clamav_from_settings()` silently falls back to `NoOpScanner` on misconfiguration | ⚠️ Pre-existing — should fail loudly in production |
+| P-9  | Low | SSE | SSE ticket store is process-local — multi-worker SSE tickets unreliable | ⚠️ Pre-existing (M-4 fix covers step-up; SSE needs same treatment) |
+| P-10 | Low | Audit | `anchor_audit_log` logs with no `org_id` and sentinel user `00000000-0000-0000-0000-000000000001` | ⚠️ Pre-existing — correct for cross-org system task |
+
+---
+
+### P-1 — Critical: Frontend bypassed the autonomous ingestion pipeline
+
+**Commit:** `dd876ae`  
+**File:** `frontend/src/components/UploadDrawer.tsx`
+
+The previous commit added a direct call to `POST /api/evidence/parse/start/{id}`
+from `uploadFile()` immediately after `finalizeUploadWithHash()`.
+
+**Problems this introduced:**
+
+1. **Client controls a server-side FSM transition.** The RECEIVED → PARSING
+   transition is a chain-of-custody event. Allowing any authenticated client to
+   trigger it means the audit trail reflects user intent, not server enforcement.
+   An attacker who intercepts the upload flow and does not call `parse/start` would
+   leave evidence in RECEIVED state indefinitely — or could call `parse/start`
+   multiple times on other users' evidence within the org.
+
+2. **TOCTOU window.** `finalize_upload` and `parse/start` are two separate HTTP
+   requests. Between them the evidence is in RECEIVED state, visible to other org
+   members. A concurrent admin DELETE during this window would then receive a
+   `parse/start` call on a deleted record.
+
+3. **No retry guarantee.** If the second call fails (network error, 500 from the
+   server), the evidence stays in RECEIVED permanently with no recovery path.
+
+**Fix applied:**
+
+- `EvidenceIntakeService._promote()` calls `task_queue.enqueue_dispatch()` as the
+  final step — the Celery `dispatch_parse` task handles RECEIVED → PARSING.
+- Frontend `UploadDrawer.tsx` no longer calls `startParsing()`.
+- `auto_dispatch_received` beat task (hourly :15) provides broker-failure recovery.
+- `POST /parse/start/{id}` restricted to `ORG_ADMIN` for manual recovery only.
+
+---
+
+### P-2 — High: `parse/start` was accessible to any org member
+
+**File:** `src/external/routes/evidence.py`
+
+The `POST /api/evidence/parse/start/{evidence_id}` endpoint had no role
+restriction (`Depends(get_tenant_context)` only, no `requires_role()`).
+
+Any authenticated member of the org could:
+- Trigger parsing on any evidence in their org (not just their own uploads).
+- Re-trigger parsing on evidence already in PARSING state (FSM guard prevents
+  double-transition, but the request would still consume resources).
+
+**Fix applied:** `Depends(requires_role(Role.ORG_ADMIN))` added to the endpoint.
+
+---
+
+### P-3 — High: Celery queue names were wrong in `CeleryTaskQueue`
+
+**File:** `src/adapter/queue/celery_queue.py`
+
+`enqueue_parse_fast` sent tasks to queue `"parse.fast"` and `enqueue_parse_heavy`
+to `"parse.heavy"`.  The configured worker queues (per `celery_app.conf.task_routes`)
+are `"q.parse.fast"` and `"q.parse.plaso"`.
+
+Since the explicitly-passed `queue=` parameter overrides `task_routes` in Celery,
+all parse tasks were sent to non-existent queues.  Workers consuming `q.parse.fast`
+never received them.  Evidence would sit in PARSING state until orphan-parse
+cleanup timed it out as an error.
+
+**Fix applied:** Corrected to `q.parse.fast`, `q.parse.plaso`, `q.index`.
+
+---
+
+### P-4 — High: Legacy task aliases called `apply()` synchronously (blocking worker)
+
+**File:** `src/adapter/queue/celery_queue.py`
+
+`enqueue_parse_fast` dispatched `parse_evidence_fast` (legacy alias), which calls
+`parse_artefact_fast.apply(...)`.  `apply()` executes the task **in the current
+process**, blocking the calling thread until complete.  In a Celery worker this
+blocks the worker slot for the full parse duration.
+
+**Fix applied:** `CeleryTaskQueue` now dispatches `parse_artefact_fast`,
+`parse_artefact_heavy`, and `dispatch_parse` directly via `apply_async()`.
+
+---
+
+### P-5 — High: Orphan cleanup tasks never ran (missing `stream_all_by_state`)
+
+**Files:** `src/external/celery_app.py`, `src/adapter/repository/evidence.py`
+
+`abort_orphan_uploads` and `abort_orphan_parses` both guarded execution with:
+
+```python
+if not hasattr(repo, "stream_all_by_state"):
+    logger.warning("... skipping")
+    return 0
+```
+
+`PostgresEvidenceRepository` did not implement `stream_all_by_state`, so both
+tasks always returned 0 and logged a warning.  Evidence stuck in UPLOADING or
+PARSING states was never cleaned up.
+
+**Impact:** Evidence that fails mid-finalize can persist in SCANNING or HASHING
+state indefinitely; evidence whose worker crashes stays in PARSING until manual
+DB intervention.
+
+**Fix applied:**
+- `stream_all_by_state(state)` added to `EvidenceRepository` ABC.
+- `PostgresEvidenceRepository.stream_all_by_state()` implemented (cross-org query).
+- `InMemoryEvidenceRepository` (tests) also implements it.
+- The `hasattr` guard removed; orphan tasks now actually run.
+
+---
+
+### P-7 — Medium: Subprocess security in `FirecrackerLauncher` (confirmed safe)
+
+**File:** `src/external/sandbox/firecracker.py`
+
+`subprocess.Popen(cmd)` where `cmd` is a Python list with `shell=False` (default).
+Arguments are never shell-expanded.  The values passed — `evidence_path` (a
+MinIO object key), UUIDs, and SHA-256 hashes — are all derived from our own
+verified database records, not from raw user input.
+
+**Verdict:** No injection risk.  The `# noqa: S603` comment on the `Popen` call
+is appropriate (bandit false positive for shell=False subprocess).
+
+---
+
+### P-8 — Medium: ClamAV fallback to NoOpScanner on misconfiguration (pre-existing)
+
+**File:** `src/external/dependencies.py` (`configure_clamav_from_settings`)
+
+```python
+except Exception:
+    pass  # keep NoOpScanner in test/dev environments without ClamAV
+```
+
+If `clamd_host`/`clamd_port` are misconfigured, the service silently accepts
+all files without AV scanning.  This is intentional for development, but
+dangerous if it occurs in production.
+
+**Recommended fix (not in this branch):** Differentiate dev/prod via a
+`KRONOS_ENV=production` setting; raise `RuntimeError` in production mode if
+ClamAV is unreachable at startup rather than falling back silently.
+
+---
+
+### P-9 — Low: SSE ticket store is process-local (pre-existing)
+
+**File:** `src/external/routes/sse.py`
+
+The `_tickets` dict is module-level and process-local.  In a multi-worker
+(multi-uvicorn-process) deployment, a ticket issued by worker A cannot be
+consumed by worker B.
+
+**Recommended fix:** Apply the same `RedisTicketStore` pattern used for
+step-up auth tickets (M-4 fix).  The SSE ticket is a simpler one-shot
+token that would fit the same atomic `GETDEL` Redis pattern.
 removed.

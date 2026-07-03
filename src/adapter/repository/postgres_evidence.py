@@ -130,6 +130,17 @@ class PostgresEvidenceRepository(EvidenceRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
+    async def stream_all_by_state(self, state: EvidenceState) -> AsyncIterator[Evidence]:
+        """Yield evidence in the given state across all orgs — for orphan cleanup tasks only."""
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                evidence_table.select()
+                .where(evidence_table.c.state == state.value)
+                .order_by(evidence_table.c.created_at)
+            )
+            for row in result:
+                yield self._from_row(row._asdict())
+
     async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
         """Delete evidence metadata scoped to org_id. Returns True if a row was deleted."""
         async with self._engine.begin() as conn:
