@@ -1,39 +1,18 @@
 import Keycloak from 'keycloak-js'
+import { useAuthStore } from './store/auth'
+import { parseTenantContext } from './utils/parseTenantContext'
+import { decodeJwtPayload } from './utils/jwt'
 
-const TOKEN_STORAGE_KEY = 'kronos:kc-tokens'
+// AUTH-002/FE-1/FE-2: tokens are never persisted to sessionStorage or
+// localStorage — both are fully readable by any XSS. The access token lives
+// only in the in-memory auth store (store/auth.ts, a plain zustand store
+// with no persist middleware); the refresh token lives only in an
+// HttpOnly + Secure + SameSite=Strict cookie set by the backend's
+// POST /auth/refresh proxy (src/external/routes/auth.py). This module never
+// reads that cookie's value — it just calls the endpoint with
+// `credentials: 'include'` and lets the browser attach/store it.
 
-interface StoredTokens {
-  token: string
-  refreshToken: string
-  idToken: string
-}
-
-function loadStoredTokens(): StoredTokens | null {
-  try {
-    const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredTokens>
-    if (!parsed.token || !parsed.refreshToken || !parsed.idToken) return null
-    return { token: parsed.token, refreshToken: parsed.refreshToken, idToken: parsed.idToken }
-  } catch {
-    return null
-  }
-}
-
-function persistTokens(): void {
-  if (keycloak.token && keycloak.refreshToken && keycloak.idToken) {
-    const tokens: StoredTokens = {
-      token: keycloak.token,
-      refreshToken: keycloak.refreshToken,
-      idToken: keycloak.idToken,
-    }
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens))
-  }
-}
-
-function clearStoredTokens(): void {
-  sessionStorage.removeItem(TOKEN_STORAGE_KEY)
-}
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
 export const keycloak = new Keycloak({
   url: import.meta.env.VITE_KEYCLOAK_URL as string,
@@ -41,26 +20,99 @@ export const keycloak = new Keycloak({
   clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID as string,
 })
 
-// Keep the sessionStorage copy in sync with the live session so the next
-// full page reload (initKeycloak below) can restore it directly.
-keycloak.onAuthSuccess = persistTokens
-keycloak.onAuthRefreshSuccess = persistTokens
-keycloak.onAuthLogout = clearStoredTokens
-keycloak.onAuthRefreshError = clearStoredTokens
+keycloak.onAuthLogout = () => useAuthStore.getState().clearAuth()
 
-export async function initKeycloak(): Promise<boolean> {
-  // onLoad: 'check-sso' alone silently fails to detect an existing Keycloak
-  // session on every reload once the browser blocks third-party cookies
-  // (default in current Chrome/Edge/Firefox): silent-check-sso.html runs in
-  // a hidden iframe on the Keycloak origin, and that iframe can no longer
-  // read the Keycloak session cookie from within our page's context —
-  // without this, every refresh looked like a brand-new, logged-out visit.
-  // Restoring the last known token/refreshToken lets keycloak-js validate
-  // the session directly (a same-origin fetch to Keycloak's token endpoint)
-  // instead, which doesn't depend on third-party cookies at all.
-  const stored = loadStoredTokens()
+interface RefreshResponse {
+  access_token: string
+}
+
+/**
+ * Call the backend's HttpOnly-cookie refresh proxy.
+ *
+ * With no argument, relies solely on the browser sending the HttpOnly
+ * `refresh_token` cookie (the steady-state path, and how a page reload
+ * resumes a session). Passing `bootstrapRefreshToken` is only for the
+ * one-time handoff right after a fresh keycloak-js login, before the
+ * backend has ever had a chance to set that cookie.
+ */
+async function callRefreshEndpoint(bootstrapRefreshToken?: string): Promise<RefreshResponse | null> {
   try {
-    const authenticated = await keycloak.init({
+    const res = await fetch(`${API_URL}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: bootstrapRefreshToken ? { 'Content-Type': 'application/json' } : {},
+      body: bootstrapRefreshToken ? JSON.stringify({ refresh_token: bootstrapRefreshToken }) : undefined,
+    })
+    if (!res.ok) return null
+    return (await res.json()) as RefreshResponse
+  } catch {
+    return null
+  }
+}
+
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Silent refresh (exp - now - 60s) ahead of expiry, per spec §6 SPA OIDC wiring. */
+function scheduleSilentRefresh(accessToken: string): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  const { exp } = decodeJwtPayload(accessToken) as { exp?: number }
+  if (!exp) return
+  const msUntilRefresh = Math.max((exp - Date.now() / 1000 - 60) * 1000, 0)
+  refreshTimer = setTimeout(() => {
+    void refreshAccessToken()
+  }, msUntilRefresh)
+}
+
+function adoptAccessToken(accessToken: string): void {
+  useAuthStore.getState().setAuth(accessToken, parseTenantContext(accessToken))
+  scheduleSilentRefresh(accessToken)
+}
+
+/**
+ * Refresh the access token via the backend's HttpOnly-cookie proxy.
+ *
+ * Deliberately never calls `keycloak.updateToken()` — that depends on
+ * keycloak-js's own in-memory refresh token, which this module only uses
+ * once (see `initKeycloak`) to hand off into the backend-owned cookie. On
+ * failure (cookie missing/expired/revoked), falls back to a full Keycloak
+ * login, preserving the current location as the post-login redirect target.
+ */
+export async function refreshAccessToken(): Promise<boolean> {
+  const result = await callRefreshEndpoint()
+  if (!result) {
+    useAuthStore.getState().clearAuth()
+    if (refreshTimer) clearTimeout(refreshTimer)
+    keycloak.login({ redirectUri: window.location.href })
+    return false
+  }
+  adoptAccessToken(result.access_token)
+  return true
+}
+
+/**
+ * Establish (or resume) the SPA session without ever touching Web Storage.
+ *
+ * 1. Try resuming purely from the backend's HttpOnly refresh-token cookie —
+ *    this is what survives a page reload, since no token is ever persisted
+ *    client-side.
+ * 2. If that fails (first visit, or the cookie is absent/expired), fall
+ *    back to keycloak-js's own silent-SSO check (a hidden iframe against
+ *    Keycloak's session cookie — blocked by third-party-cookie restrictions
+ *    in some browsers, in which case the user just sees the login page). On
+ *    success, hand its refresh token to the backend exactly once so the
+ *    HttpOnly cookie is established, then this module never reads
+ *    keycloak-js's copy again.
+ */
+export async function initKeycloak(): Promise<boolean> {
+  const resumed = await callRefreshEndpoint()
+  if (resumed) {
+    adoptAccessToken(resumed.access_token)
+    return true
+  }
+
+  let authenticated = false
+  try {
+    authenticated = await keycloak.init({
       pkceMethod: 'S256',
       responseMode: 'fragment',
       useNonce: true,
@@ -71,29 +123,14 @@ export async function initKeycloak(): Promise<boolean> {
       // realm's default-scope configuration.
       scope: 'openid organization',
       silentCheckSsoRedirectUri: window.location.origin + '/silent-check-sso.html',
-      ...stored,
     })
-    if (!authenticated) clearStoredTokens()
-    return authenticated
   } catch {
-    // The stored refresh token was rejected outright (e.g. expired, or the
-    // dev Keycloak was restarted since it was issued) — fall back to a
-    // normal logged-out state; the user signs in again via the login page.
-    clearStoredTokens()
-    return false
+    authenticated = false
   }
-}
 
-export function scheduleTokenRefresh(): void {
-  setInterval(
-    async () => {
-      try {
-        await keycloak.updateToken(60)
-      } catch {
-        clearStoredTokens()
-        keycloak.login()
-      }
-    },
-    5 * 60 * 1000,
-  )
+  if (authenticated && keycloak.token && keycloak.refreshToken) {
+    await callRefreshEndpoint(keycloak.refreshToken)
+    adoptAccessToken(keycloak.token)
+  }
+  return authenticated
 }
