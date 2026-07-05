@@ -11,7 +11,10 @@ services:
     hostname: wazuh-manager
     environment:
       WAZUH_API_USER: wazuh-wui
-      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-MyS3cretP4ssw0rd!}
+      # No hardcoded fallback (INFRA-015) — a well-known default password is
+      # worse than a loud startup failure. Set WAZUH_API_PASSWORD in a local
+      # .env file (see docker/.env.example) to keep this usable for dev.
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in your .env file}
     volumes:
       - wazuh_api_configuration:/var/ossec/api/configuration
       - wazuh_etc:/var/ossec/etc
@@ -44,7 +47,10 @@ services:
       WAZUH_API_URL: https://wazuh-manager
       WAZUH_API_PORT: 55000
       WAZUH_API_USER: wazuh-wui
-      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-MyS3cretP4ssw0rd!}
+      # No hardcoded fallback (INFRA-015) — a well-known default password is
+      # worse than a loud startup failure. Set WAZUH_API_PASSWORD in a local
+      # .env file (see docker/.env.example) to keep this usable for dev.
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in your .env file}
     ports:
       - "5602:5601"   # Separate port from main OpenSearch Dashboards
     depends_on:
