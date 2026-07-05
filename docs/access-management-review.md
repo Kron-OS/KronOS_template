@@ -153,4 +153,23 @@ Low-risk, statically-verifiable configuration corrections (the larger infra item
 - C-1 / C-2: enable OpenSearch + Dashboards security plugin, add `docker/opensearch/opensearch.yml`, OIDC authc domain, DLS `rolesmapping`, non-superuser backend account.
 - H-2: scoped MinIO service accounts for `tusd` and the backend.
 - M-2: sealed production Vault server.
+
+---
+
+## 5. AUTH-001 remediation (2026-07-05) — `kronos-backend` service account de-scoped from realm-admin
+
+**Finding (static compliance/pentest review, `reviews/Static_Compliance_Pentest_Review.md` AUTH-001):** the `service-account-kronos-backend` user was granted `realm-management: realm-admin` — full realm-wide administrative power (create/delete any client, any user, any role, read every realm setting) — for a service account that only ever needs to invite users, assign the four `org-admin`/`case-lead`/`analyst`/`read-only` realm roles, and add/remove Organization members.
+
+**What changed in `docker/keycloak/kronos-realm.json`:**
+- `service-account-kronos-backend`'s `realm-management` client roles are now exactly `["manage-users", "view-users"]` — no `manage-realm`, `manage-clients`, `manage-authorization`, `manage-events`, `impersonation`, `create-client`, `view-realm`, `view-clients`, `view-events`, or `query-*`. This is the standard Keycloak least-privilege reduction for "an integration that only manages users": `manage-users` is what `POST /users`, `PUT/DELETE /users/{id}/role-mappings/realm`, and the Organization member endpoints require; `view-users` is what `GET /users`, `GET /users?email=` and role-mapping reads require.
+- `kronos-backend`'s client now sets `authorizationServicesEnabled: true`, which is the prerequisite Keycloak flag for attaching Fine-Grained Admin Permissions (FGAP) once the deployment adopts Keycloak 26.7+. No `authorizationSettings` (resources/policies/permissions) block is populated in this static export — see "why this is a partial mitigation" below.
+
+**Why this is only a partial mitigation (and what full remediation requires):**
+Per `Project_Specifications.md` §6 and `reviews/Part_6_Review.md` §3.5/§5.7, the *complete* fix is Keycloak 26.7+'s FGAP V2 support for **Organizations as a resource type**, which lets a permission grant `manage` scope on *one specific Organization* to the service account — i.e. Keycloak itself refuses an Admin API call against a user in a different org. That requires:
+1. Pinning Keycloak ≥ 26.7 (this realm currently targets the 26.6 interim, per `Part_6_Review.md` §3.5), and
+2. A live Admin Console/API session to create the Organization-scoped permission, because FGAP resource/policy objects are assigned server-generated IDs at creation time — they cannot be hand-authored into a static realm-export JSON and re-imported deterministically (this is also why `AUTH-001`'s recommendation calls this "inherently a partial mitigation without live FGAP-on-Organizations").
+
+Until then, the realm-level control is **coarse-grained least-privilege** (user administration only, not full realm admin) rather than **org-scoped** least-privilege. The org-scoping itself — rejecting an Admin API call whose target user is not a member of the caller's Organization — is enforced in the **application layer** instead: see `AUTH-003` remediation in `src/external/routes/admin.py` (`_assert_target_in_org` / the org-membership check added to `_assign_realm_role`, `_set_realm_role`, and `_find_user_by_email`). That check is the actual security boundary today; the Keycloak-side de-scoping from `realm-admin` to `manage-users`/`view-users` is defense-in-depth that shrinks the blast radius if the backend's own service credentials (or a bug in the application-layer check) are ever compromised — a compromised backend can no longer create/delete Keycloak clients, rewrite realm settings, or impersonate arbitrary users, but it can still (as before the org-scoping fix in `admin.py`) call `manage-users` endpoints; the app-layer check is what stops that from crossing org boundaries.
+
+**Follow-up tracked:** re-visit when the project pins Keycloak 26.7+ — replace the `manage-users`/`view-users` client-role grant with an Organization-scoped FGAP V2 `manage` permission per `Part_6_Review.md` §5.7, provisioned via the Admin API (e.g. `charts/kronos/files/provision_keycloak_org.sh` or an equivalent bootstrap script) rather than the static realm export.
 </content>
