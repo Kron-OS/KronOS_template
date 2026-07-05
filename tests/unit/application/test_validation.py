@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 import pytest
 
 from src.application.validation import (
@@ -10,6 +13,7 @@ from src.application.validation import (
     FileSizeValidator,
     MagicByteValidator,
     ValidatorChain,
+    ZipJarDisguiseValidator,
     default_validator_chain,
 )
 from src.exceptions import ValidationError
@@ -108,6 +112,57 @@ class TestMagicByteValidator:
     def test_rejects_empty_binary(self) -> None:
         with pytest.raises(ValidationError, match="empty"):
             self.validator.validate("empty.evtx", "application/octet-stream", 0, b"")
+
+
+def _build_zip_fixture(entries: dict[str, bytes]) -> bytes:
+    """Build a minimal real ZIP file (in memory) with the given entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+class TestZipJarDisguiseValidator:
+    validator = ZipJarDisguiseValidator()
+
+    def test_rejects_jar_renamed_to_zip(self) -> None:
+        """EVID-5: a minimal crafted JAR-like zip fixture (has the mandatory
+        META-INF/MANIFEST.MF entry every JAR carries) must be rejected even
+        though its declared extension is .zip and its magic bytes are the
+        same PK\\x03\\x04 signature as a generic ZIP."""
+        jar_bytes = _build_zip_fixture(
+            {
+                "META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\nMain-Class: Evil\n",
+                "Evil.class": b"\xca\xfe\xba\xbe" + b"\x00" * 32,
+            }
+        )
+        with pytest.raises(ValidationError, match="Java archive"):
+            self.validator.validate(
+                "totally-a-zip.zip", "application/zip", len(jar_bytes), jar_bytes
+            )
+
+    def test_rejects_jar_disguised_with_arbitrary_extension(self) -> None:
+        jar_bytes = _build_zip_fixture({"META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\n"})
+        with pytest.raises(ValidationError, match="Java archive"):
+            self.validator.validate(
+                "evidence.log", "application/octet-stream", len(jar_bytes), jar_bytes
+            )
+
+    def test_accepts_genuine_zip_without_manifest(self) -> None:
+        zip_bytes = _build_zip_fixture({"logs/access.log": b"1.2.3.4 - - [x]\n"})
+        self.validator.validate("archive.zip", "application/zip", len(zip_bytes), zip_bytes)
+
+    def test_ignores_non_zip_files(self) -> None:
+        self.validator.validate("sys.evtx", "application/octet-stream", 1024, EVTX_HEADER)
+
+    def test_best_effort_passes_truncated_zip_buffer(self) -> None:
+        """A ZIP whose central directory doesn't fit in the supplied buffer
+        (simulating a large file where only the header was read) can't be
+        inspected this way — must pass through, not raise or crash."""
+        zip_bytes = _build_zip_fixture({"META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\n"})
+        truncated = zip_bytes[:10]  # keeps the PK\x03\x04 signature, drops the rest
+        self.validator.validate("archive.zip", "application/zip", len(zip_bytes), truncated)
 
 
 class TestValidatorChain:

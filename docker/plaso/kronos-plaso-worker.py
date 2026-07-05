@@ -52,7 +52,11 @@ def _run_plaso(evidence_path: str) -> list[dict]:
         import tempfile
         import os
 
-        storage_path = tempfile.mktemp(suffix=".plaso")  # noqa: S306
+        # mkstemp (not mktemp): the returned path is created atomically, so
+        # no other process/thread can race to create a file at the same path
+        # between name-generation and first use (EVID-11).
+        fd, storage_path = tempfile.mkstemp(suffix=".plaso")
+        os.close(fd)
         try:
             tool = log2timeline_tool.Log2TimelineTool()
             tool.ParseOptions(argparse.Namespace(

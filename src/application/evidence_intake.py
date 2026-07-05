@@ -23,7 +23,11 @@ from src.exceptions import AuthorizationError, EvidenceStateError, StorageError,
 logger = logging.getLogger(__name__)
 
 # How many bytes to read from the quarantine object for magic-byte validation.
-_HEADER_BYTES = 8192
+# Large enough to also let ZipJarDisguiseValidator (EVID-5) fully parse the
+# ZIP central directory of small archives — most disguised-JAR droppers are
+# well under this size; a ZIP whose central directory doesn't fit is passed
+# through to that validator's best-effort/defence-in-depth path.
+_HEADER_BYTES = 65536
 
 # Spec-authoritative default (Project_Specifications.md §2 "Retention Period"):
 # 365 days, configurable per case/org via `default_retention_days`.
