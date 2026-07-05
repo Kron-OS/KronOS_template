@@ -15,7 +15,10 @@ async def wire_dependencies_async() -> None:
     """Async variant — used by FastAPI lifespan (already in async context)."""
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
-    from src.adapter.opensearch.client import OpenSearchClient as OpenSearchTimelineIndex  # noqa: PLC0415
+    from src.adapter.opensearch.client import (
+        OpenSearchClient as OpenSearchTimelineIndex,  # noqa: PLC0415
+    )
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
     from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
         PostgresAuditLogRepository,
     )
@@ -23,12 +26,11 @@ async def wire_dependencies_async() -> None:
         PostgresEvidenceRepository,
     )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
-    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
+        build_step_up_ticket_store,
         configure_clamav_from_settings,
         configure_dependencies,
-        build_step_up_ticket_store,
         configure_step_up_auth,
     )
 

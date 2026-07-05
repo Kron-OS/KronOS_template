@@ -277,7 +277,9 @@ async def set_legal_hold(
     Restricted to org-admin / case-lead (Project_Specifications.md §2).
     """
     try:
-        evidence = await intake.set_legal_hold(evidence_id=evidence_id, hold=body.hold, tenant=tenant)
+        evidence = await intake.set_legal_hold(
+            evidence_id=evidence_id, hold=body.hold, tenant=tenant
+        )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AuthorizationError as exc:

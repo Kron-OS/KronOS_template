@@ -106,7 +106,8 @@ async def merkle_proof(
     day_events = [
         e
         for e in events
-        if e.occurred_at.date() == scoped_day and e.event_type != AuditEventType.AUDIT_MERKLE_ANCHORED
+        if e.occurred_at.date() == scoped_day
+        and e.event_type != AuditEventType.AUDIT_MERKLE_ANCHORED
     ]
     if target.event_id not in {e.event_id for e in day_events}:
         raise HTTPException(
