@@ -73,7 +73,7 @@ class EvidenceIntakeService:
         scanner: AntivirusScanner,
         hash_service: HashService,
         max_upload_bytes: int,
-        presigned_url_expiry_seconds: int = 3600,
+        presigned_url_expiry_seconds: int = 900,
         task_queue: TaskQueue | None = None,
         timestamp_service: RFC3161TimestampService | None = None,
         default_retention_days: int = _DEFAULT_RETENTION_DAYS,
@@ -200,8 +200,9 @@ class EvidenceIntakeService:
     async def _run_validation(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.SCANNING)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=prior_state)
         await self._audit.log(
             AuditEventType.EVIDENCE_SCAN_STARTED,
             org_id=tenant.org_id,
@@ -227,7 +228,7 @@ class EvidenceIntakeService:
             )
         except ValidationError:
             evidence = evidence.with_error("validation_failed")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_ERROR,
                 org_id=tenant.org_id,
@@ -249,7 +250,7 @@ class EvidenceIntakeService:
             scan_result = await self._scanner.scan_stream(stream)
         except ValidationError:
             evidence = evidence.with_error("size_limit_exceeded")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_ERROR,
                 org_id=tenant.org_id,
@@ -261,7 +262,7 @@ class EvidenceIntakeService:
 
         if not scan_result.is_clean:
             evidence = evidence.with_error(f"infected:{scan_result.threat_name}")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_SCAN_FAILED,
                 org_id=tenant.org_id,
@@ -292,15 +293,16 @@ class EvidenceIntakeService:
         client_sha256: str,
         tenant: TenantContext,
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.HASHING)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=prior_state)
 
         stream = await self._storage.stream_object(quarantine_key)
         hash_result = await self._hasher.compute_from_stream(stream)
 
         if hash_result.sha256 != client_sha256.lower():
             evidence = evidence.with_error("hash_mismatch")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_HASH_MISMATCH,
                 org_id=tenant.org_id,
@@ -318,7 +320,7 @@ class EvidenceIntakeService:
             )
 
         evidence = evidence.with_hashes(sha256=hash_result.sha256, md5=hash_result.md5)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
         await self._audit.log(
             AuditEventType.EVIDENCE_HASH_COMPUTED,
             org_id=tenant.org_id,
@@ -351,7 +353,7 @@ class EvidenceIntakeService:
             return evidence
 
         evidence = evidence.with_rfc3161_token(token)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
         await self._audit.log(
             AuditEventType.EVIDENCE_TSA_ANCHORED,
             org_id=tenant.org_id,
@@ -448,7 +450,7 @@ class EvidenceIntakeService:
             )
 
         purged = evidence.with_purge()
-        await self._repo.update(purged)
+        await self._repo.update(purged, expected_state=evidence.state)
 
         await self._audit.log(
             AuditEventType.EVIDENCE_DELETED,
@@ -502,7 +504,7 @@ class EvidenceIntakeService:
         await self._storage.set_legal_hold(evidence.minio_evidence_key, hold, bucket="evidence")
 
         updated = evidence.with_legal_hold(hold)
-        await self._repo.update(updated)
+        await self._repo.update(updated, expected_state=evidence.state)
 
         event_type = (
             AuditEventType.EVIDENCE_LEGAL_HOLD_SET
@@ -535,6 +537,7 @@ class EvidenceIntakeService:
     async def _promote(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.RECEIVED)
         evidence_key = await self._storage.promote_to_evidence_bucket(quarantine_key, evidence)
         await self._storage.delete_from_quarantine(quarantine_key)
@@ -545,7 +548,7 @@ class EvidenceIntakeService:
         retain_until = datetime.now(UTC) + timedelta(days=self._default_retention_days)
         evidence = evidence.with_keys(quarantine_key=None, evidence_key=evidence_key)
         evidence = evidence.with_object_lock_until(retain_until)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=prior_state)
         await self._audit.log(
             AuditEventType.EVIDENCE_PROMOTED,
             org_id=tenant.org_id,

@@ -14,6 +14,7 @@ from src.adapter.repository.evidence import EvidenceRepository
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEvent
 from src.domain.evidence import Evidence, EvidenceState
+from src.exceptions import StorageError
 
 
 class InMemoryAuditLogRepository(AuditLogRepository):
@@ -86,7 +87,19 @@ class InMemoryEvidenceRepository(EvidenceRepository):
         self._store[evidence.evidence_id] = evidence
         return evidence
 
-    async def update(self, evidence: Evidence) -> Evidence:
+    async def update(
+        self, evidence: Evidence, *, expected_state: EvidenceState | None = None
+    ) -> Evidence:
+        if expected_state is not None:
+            current = self._store.get(evidence.evidence_id)
+            if current is None or current.state != expected_state:
+                raise StorageError(
+                    "Evidence not found for update, or its state changed concurrently",
+                    context={
+                        "evidence_id": str(evidence.evidence_id),
+                        "expected_state": expected_state.value,
+                    },
+                )
         self._store[evidence.evidence_id] = evidence
         return evidence
 
