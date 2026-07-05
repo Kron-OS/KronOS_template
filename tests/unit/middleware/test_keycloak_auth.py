@@ -49,13 +49,15 @@ def _make_claims(**overrides: Any) -> dict[str, Any]:
     now = int(time.time())
     org_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    # Keycloak 26+ puts realm roles at realm_access.roles, NOT at the top level.
+    # AUTH-006: the "kronos-roles" client scope mapper flattens realm roles to
+    # a top-level "roles" claim — NOT Keycloak's default nested
+    # realm_access.roles (OpenSearch Security's roles_key can't walk that).
     claims: dict[str, Any] = {
         "iss": _ISSUER,
         "aud": _AUDIENCE,
         "sub": user_id,
         "preferred_username": "alice@acme.example",
-        "realm_access": {"roles": ["analyst"]},
+        "roles": ["analyst"],
         "organization": {"acme": {"id": org_id}},
         "acr": "aal1",
         "jti": str(uuid.uuid4()),
@@ -140,7 +142,7 @@ def test_extract_tenant_happy_path() -> None:
     claims = _make_claims(
         sub=str(user_id),
         organization={"acme": {"id": str(org_id)}},
-        realm_access={"roles": ["case-lead", "analyst"]},
+        roles=["case-lead", "analyst"],
         acr="aal2",
     )
     tenant = _extract_tenant(claims)
@@ -171,6 +173,26 @@ def test_extract_tenant_missing_sub() -> None:
     org_id = uuid.uuid4()
     with pytest.raises(AuthenticationError, match="sub"):
         _extract_tenant({"organization": {"acme": {"id": str(org_id)}}})
+
+
+def test_extract_tenant_reads_flat_roles_claim_not_nested_realm_access() -> None:
+    """AUTH-006 regression: roles must come from the flat top-level 'roles'
+    claim (what the 'kronos-roles' mapper actually emits), never from
+    Keycloak's default nested realm_access.roles — OpenSearch Security's
+    roles_key cannot walk that nested path. A token carrying a stale/decoy
+    realm_access.roles alongside the correct flat claim must be resolved
+    from the flat claim only.
+    """
+    org_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    claims = _make_claims(
+        sub=str(user_id),
+        organization={"acme": {"id": str(org_id)}},
+        roles=["org-admin"],
+        realm_access={"roles": ["read-only"]},  # decoy nested path — must be ignored
+    )
+    tenant = _extract_tenant(claims)
+    assert tenant.roles == frozenset({Role.ORG_ADMIN})
 
 
 # ---------------------------------------------------------------------------

@@ -165,7 +165,7 @@
     },
     {
       "name": "kronos-roles",
-      "description": "Includes realm roles in the token",
+      "description": "Flattens realm roles to a top-level 'roles' claim (AUTH-006). Mandatory because OpenSearch Security's roles_key cannot walk the default nested realm_access.roles path (Project_Specifications.md §1/§6).",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "true",
@@ -178,7 +178,7 @@
           "protocolMapper": "oidc-usermodel-realm-role-mapper",
           "consentRequired": false,
           "config": {
-            "claim.name": "realm_access.roles",
+            "claim.name": "roles",
             "multivalued": "true",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",

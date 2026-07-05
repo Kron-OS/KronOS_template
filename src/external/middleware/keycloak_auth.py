@@ -158,10 +158,12 @@ def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
     except (KeyError, ValueError) as exc:
         raise AuthenticationError(f"Invalid or missing 'sub' claim: {exc}") from exc
 
-    # Keycloak maps realm roles to realm_access.roles (standard Keycloak claim structure).
-    # The kronos-realm.json mapper uses claim.name "realm_access.roles".
-    realm_access: dict = claims.get("realm_access", {})
-    roles = _map_roles(realm_access.get("roles", []))
+    # AUTH-006: roles must be read from the flat top-level "roles" claim, not
+    # Keycloak's default nested realm_access.roles — OpenSearch Security's
+    # roles_key cannot walk nested paths (Project_Specifications.md §1/§6).
+    # The kronos-realm.json "kronos-roles" client scope mapper emits exactly
+    # this shape (claim.name = "roles").
+    roles = _map_roles(claims.get("roles", []))
     jti: str = claims.get("jti") or str(uuid.uuid4())
     acr: str = claims.get("acr", "aal1")
 
