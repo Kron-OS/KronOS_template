@@ -15,14 +15,19 @@ from src.exceptions import EvidenceStateError
 # ---------------------------------------------------------------------------
 
 # Maps each state to the set of valid next states.
+# PURGED is reachable from every other state: an org-admin may delete
+# evidence at any point in its lifecycle (Project_Specifications.md §2 —
+# the retention/legal-hold purge soft-deletes the row rather than removing
+# it, so the custodial record survives indefinitely).
 _VALID_TRANSITIONS: dict[str, set[str]] = {
-    "UPLOADING": {"SCANNING"},
-    "SCANNING": {"HASHING", "ERROR"},
-    "HASHING": {"RECEIVED", "ERROR"},
-    "RECEIVED": {"PARSING", "ERROR"},
-    "PARSING": {"COMPLETE", "ERROR"},
-    "COMPLETE": set(),
-    "ERROR": set(),
+    "UPLOADING": {"SCANNING", "PURGED"},
+    "SCANNING": {"HASHING", "ERROR", "PURGED"},
+    "HASHING": {"RECEIVED", "ERROR", "PURGED"},
+    "RECEIVED": {"PARSING", "ERROR", "PURGED"},
+    "PARSING": {"COMPLETE", "ERROR", "PURGED"},
+    "COMPLETE": {"PURGED"},
+    "ERROR": {"PURGED"},
+    "PURGED": set(),
 }
 
 
@@ -36,6 +41,7 @@ class EvidenceState(StrEnum):
     PARSING = "PARSING"
     COMPLETE = "COMPLETE"
     ERROR = "ERROR"
+    PURGED = "PURGED"
 
     def can_transition_to(self, target: EvidenceState) -> bool:
         return target.value in _VALID_TRANSITIONS.get(self.value, set())
@@ -76,6 +82,11 @@ class Evidence(BaseModel):
     minio_quarantine_key: str | None = None
     minio_evidence_key: str | None = None
     error_reason: str | None = None
+    # Legal hold + WORM retention (Project_Specifications.md §2 "evidence" schema).
+    legal_hold: bool = False
+    object_lock_until: datetime | None = None
+    # RFC 3161 TSA-signed timestamp of `sha256`, stored as raw DER TimeStampToken bytes.
+    rfc3161_token: bytes | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -113,3 +124,29 @@ class Evidence(BaseModel):
                 "updated_at": datetime.now(UTC),
             }
         )
+
+    def with_legal_hold(self, hold: bool) -> Evidence:
+        """Return a copy with the legal-hold flag set/cleared.
+
+        A legal hold blocks purge/delete regardless of retention expiry
+        (SEC 17a-4(f) / ISO A.5.33); it does not itself change FSM state.
+        """
+        return self.model_copy(update={"legal_hold": hold, "updated_at": datetime.now(UTC)})
+
+    def with_object_lock_until(self, retain_until: datetime) -> Evidence:
+        """Return a copy recording the MinIO Object Lock retain-until date."""
+        return self.model_copy(
+            update={"object_lock_until": retain_until, "updated_at": datetime.now(UTC)}
+        )
+
+    def with_rfc3161_token(self, token: bytes) -> Evidence:
+        """Return a copy with the RFC 3161 TSA timestamp token attached."""
+        return self.model_copy(update={"rfc3161_token": token, "updated_at": datetime.now(UTC)})
+
+    def with_purge(self) -> Evidence:
+        """Transition to PURGED — the terminal soft-delete state.
+
+        The row is never removed (Project_Specifications.md §2): only the
+        FSM state changes, so the custodial record survives indefinitely.
+        """
+        return self.with_state(EvidenceState.PURGED)

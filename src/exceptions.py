@@ -35,3 +35,12 @@ class AuthorizationError(KronOSException):
 
 class EvidenceStateError(KronOSException):
     """Raised when an invalid FSM transition is attempted on evidence."""
+
+
+class TimestampingError(KronOSException):
+    """Raised when RFC 3161 timestamp acquisition or verification fails closed.
+
+    Deliberately distinct from StorageError: a TSA failure must never be
+    mistaken for a transient storage hiccup and silently retried into a
+    fabricated success — see AUDIT-06 / COMP-3.
+    """
