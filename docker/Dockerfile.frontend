@@ -1,4 +1,7 @@
-FROM node:20-alpine AS builder
+# Builder stage rebased onto Chainguard/Wolfi (INFRA-005). "-dev" variant has
+# the shell + npm needed to build; mirrors docker/plaso/Dockerfile, this
+# project's reference pattern for Chainguard images.
+FROM cgr.dev/chainguard/node:latest-dev AS builder
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -16,6 +19,19 @@ ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
 
+# Runtime stage intentionally NOT rebased onto cgr.dev/chainguard/nginx here
+# (unlike the builder stage above): that image (a) defaults to listening on
+# 8080, not 80, and (b) only ships the docker-entrypoint envsubst-on-templates
+# behaviour this image depends on (see the COPY below) in its "-dev" variant,
+# not the minimal runtime one. Making the swap correctly requires updating the
+# listen directive in docker/nginx/nginx.conf.template and the host port
+# mapping in docker-compose.dev.yml — both owned by a different, parallel
+# workstream in this multi-agent effort (frontend/auth), not this one
+# (INFRA/CI). Changing only the base image here would silently break the CSP
+# templating and/or the dev stack's networking, i.e. regress a security
+# control instead of fixing one — flagged for the orchestrator to coordinate
+# across worktrees rather than guessed at here. USER below still fixes
+# INFRA-018 (previously no USER directive at all — nginx master ran as root).
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 # .template here (not conf.d/default.conf directly) so nginx's own
@@ -29,3 +45,9 @@ ENV BACKEND_PUBLIC_URL=http://localhost:8000
 ENV MINIO_PUBLIC_URL=http://localhost:9000
 ENV OPENSEARCH_DASHBOARDS_URL=http://localhost:5601
 EXPOSE 80
+# Non-root: docker/docker-compose default capability set includes
+# NET_BIND_SERVICE, so uid 101 ("nginx", built into this image) can still
+# bind port 80. nginx's own docker-entrypoint.sh already special-cases
+# non-root startup (skips the chown/setuid steps it only needs when
+# launched as root), so no other changes are required.
+USER nginx

@@ -17,12 +17,20 @@ from src.exceptions import (
     StorageError,
     ValidationError,
 )
+from src.external.logging_config import configure_logging
 from src.external.routes import admin as admin_routes
 from src.external.routes import audit as audit_routes
 from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
+
+# Configure structured JSON logging as early as possible (module import time)
+# so every log emitted during app startup — not just requests — is rendered
+# as JSON (COMP-8). Safe to call at import time: configure_logging() only
+# reads env vars and mutates the stdlib logging root logger/structlog global
+# config, it does not depend on FastAPI or any request-scoped state.
+configure_logging()
 
 
 @asynccontextmanager

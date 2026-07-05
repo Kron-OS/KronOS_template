@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicies.enabled }}
+# INFRA-008: fast/plaso parser pods previously shared the `zone: app` label
+# with the backend/celery-index/celery-beat workloads, which meant they
+# inherited deny-app-egress.yaml's "App zone -> entire Data zone" allowance
+# (Postgres, Redis, OpenSearch, Vault, KES, Keycloak) even though parsers
+# only ever need to read/write evidence objects in MinIO. Per
+# Project_Specifications.md §5.4, parser sandboxes should have minimal
+# network reachability as defense-in-depth on top of the sandbox itself
+# running with network=none internally.
+#
+# celery/deployment-fast.yaml and celery/deployment-plaso.yaml now label
+# their pods `app.kubernetes.io/zone: app-parser` instead, so they no longer
+# match deny-app-egress.yaml's `zone: app` selector, and this policy becomes
+# their only source of egress: DNS (see the kube-dns note in
+# deny-app-egress.yaml for the INFRA-009 convention) plus MinIO.
+#
+# NOTE: MinIO is not deployed by this chart (see values.yaml `minio.endpoint`,
+# an external/pre-existing service) so there is no chart-controlled label to
+# select it precisely. `app.kubernetes.io/name: minio` matches the selector
+# labels the official/Bitnami MinIO charts use — verify this against
+# whatever manifest actually deploys MinIO in your cluster and adjust if it
+# differs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kronos.fullname" . }}-parser-egress
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: app-parser
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution — scoped to kube-dns only, not "anywhere" (INFRA-009).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # MinIO only — parser pods stream evidence in/out and do nothing else.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+{{- end }}
