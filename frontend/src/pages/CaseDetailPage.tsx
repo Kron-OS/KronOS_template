@@ -11,6 +11,7 @@ import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
+import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
 import type { Evidence, AuditEvent, SSEStatusEvent, SSEErrorEvent } from '../types'
 
 function formatBytes(bytes: number): string {
@@ -179,6 +180,12 @@ function TimelineTab({ caseId }: { caseId: string }) {
           Upload and process evidence to view the forensic timeline.
         </p>
       </div>
+    )
+  }
+
+  if (!isTrustedDashboardsUrl(data.url)) {
+    return (
+      <ErrorBanner message="Timeline analysis is unavailable: the Dashboards URL returned by the server did not match the expected origin." />
     )
   }
 

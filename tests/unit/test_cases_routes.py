@@ -161,15 +161,13 @@ class TestDashboardUrl:
 
 
 class TestListCaseAuditEvents:
-    def test_empty_returns_empty(self, cases_client):
+    def test_nonexistent_case_returns_404(self, cases_client):
+        # Regression guard for AUTH-004: the route now loads the case first
+        # (to check case-lead ownership), so an unknown case_id 404s instead
+        # of silently returning an empty audit page.
         client, _, _, _, _ = cases_client
-        # A case with no case_id filter match — create_case itself logs a
-        # CASE_CREATED event, so use a random unassociated case_id instead.
         resp = client.get(f"/api/cases/{uuid.uuid4()}/audit")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["items"] == []
-        assert data["total"] == 0
+        assert resp.status_code == 404
 
     def test_returns_events_for_case(self, cases_client):
         client, _, org_id, _, audit_repo = cases_client
@@ -219,3 +217,120 @@ class TestListCaseAuditEvents:
         assert len(data["items"]) == 3
         # create_case logs CASE_CREATED, plus the 5 SYSTEM_ERROR events added above.
         assert data["total"] == 6
+
+
+def _tenant(org_id: uuid.UUID, user_id: uuid.UUID, roles: frozenset[Role], acr: str = "aal2") -> TenantContext:
+    return TenantContext(
+        org_id=org_id,
+        org_alias="testorg",
+        user_id=user_id,
+        username="user",
+        roles=roles,
+        correlation_id=str(uuid.uuid4()),
+        acr=acr,
+    )
+
+
+class TestCaseAccessScoping:
+    """AUTH-007: case-lead/analyst/read-only access is scoped to case ownership/membership."""
+
+    def test_analyst_not_a_case_member_gets_403_on_get_case(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Scoped Case"}).json()
+
+        outsider_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, outsider_id, frozenset({Role.ANALYST})
+        )
+        resp = client.get(f"/api/cases/{created['id']}")
+        assert resp.status_code == 403
+
+    def test_analyst_who_is_a_member_can_get_case(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Member Case"}).json()
+        case_id = created["id"]
+
+        member_id = uuid.uuid4()
+        # Admin (still the active tenant override) assigns the analyst as a member.
+        resp = client.post(f"/api/cases/{case_id}/members", json={"userId": str(member_id)})
+        assert resp.status_code == 200
+
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, member_id, frozenset({Role.ANALYST})
+        )
+        resp = client.get(f"/api/cases/{case_id}")
+        assert resp.status_code == 200
+
+    def test_case_lead_who_does_not_own_case_cannot_delete(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Admin-owned"}).json()
+
+        other_lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, other_lead_id, frozenset({Role.CASE_LEAD})
+        )
+        resp = client.delete(f"/api/cases/{created['id']}")
+        assert resp.status_code == 403
+
+    def test_case_lead_who_owns_case_can_delete(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, lead_id, frozenset({Role.CASE_LEAD})
+        )
+        created = client.post("/api/cases", json={"title": "Lead-owned"}).json()
+        resp = client.delete(f"/api/cases/{created['id']}")
+        assert resp.status_code == 204
+
+    def test_add_member_by_non_owning_case_lead_returns_403(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Admin-owned 2"}).json()
+
+        other_lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, other_lead_id, frozenset({Role.CASE_LEAD})
+        )
+        resp = client.post(
+            f"/api/cases/{created['id']}/members", json={"userId": str(uuid.uuid4())}
+        )
+        assert resp.status_code == 403
+
+    def test_analyst_cannot_view_case_audit_log(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Audit-scoped"}).json()
+
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, uuid.uuid4(), frozenset({Role.ANALYST})
+        )
+        resp = client.get(f"/api/cases/{created['id']}/audit")
+        assert resp.status_code == 403
+
+    def test_read_only_cannot_view_case_audit_log(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Audit-scoped 2"}).json()
+
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, uuid.uuid4(), frozenset({Role.READ_ONLY})
+        )
+        resp = client.get(f"/api/cases/{created['id']}/audit")
+        assert resp.status_code == 403
+
+    def test_case_lead_who_does_not_own_case_cannot_view_audit_log(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Audit-scoped 3"}).json()
+
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, uuid.uuid4(), frozenset({Role.CASE_LEAD})
+        )
+        resp = client.get(f"/api/cases/{created['id']}/audit")
+        assert resp.status_code == 403
+
+    def test_case_lead_who_owns_case_can_view_audit_log(self, cases_client):
+        client, _, org_id, admin_id, _ = cases_client
+        lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, lead_id, frozenset({Role.CASE_LEAD})
+        )
+        created = client.post("/api/cases", json={"title": "Own audit log"}).json()
+        resp = client.get(f"/api/cases/{created['id']}/audit")
+        assert resp.status_code == 200
