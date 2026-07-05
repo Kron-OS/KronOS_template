@@ -109,6 +109,14 @@ class KeycloakTokenValidator:
         except JWTError as exc:
             raise AuthenticationError(f"JWT signature validation failed: {exc}") from exc
 
+        # AUTH-008: explicitly verify typ=="Bearer" (spec §6 JWT validation
+        # pipeline step 3) rather than relying on the incidental fact that
+        # the frontend's audience mapper never stamps `aud` onto ID tokens —
+        # a Keycloak ID token otherwise passes every other check above.
+        typ = claims.get("typ")
+        if typ != "Bearer":
+            raise AuthenticationError(f"JWT typ claim must be 'Bearer', got '{typ!r}'")
+
         return _extract_tenant(claims)
 
     async def _resolve_key(self, kid: str) -> dict[str, Any]:

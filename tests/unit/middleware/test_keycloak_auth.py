@@ -61,6 +61,7 @@ def _make_claims(**overrides: Any) -> dict[str, Any]:
         "organization": {"acme": {"id": org_id}},
         "acr": "aal1",
         "jti": str(uuid.uuid4()),
+        "typ": "Bearer",
         "exp": now + 3600,
         "nbf": now - 5,
         "iat": now,
@@ -277,3 +278,21 @@ async def test_validator_refreshes_on_unknown_kid(validator: KeycloakTokenValida
 async def test_validator_raises_on_bad_token(validator: KeycloakTokenValidator) -> None:
     with pytest.raises(AuthenticationError):
         await validator.validate_and_extract("not.a.jwt")
+
+
+@pytest.mark.asyncio
+async def test_validator_rejects_id_token_typ(validator: KeycloakTokenValidator) -> None:
+    """AUTH-008: an ID token (typ='ID') must never be accepted as a Bearer token."""
+    claims = _make_claims(typ="ID")
+    token = _sign_token(claims)
+    with pytest.raises(AuthenticationError, match="typ"):
+        await validator.validate_and_extract(token)
+
+
+@pytest.mark.asyncio
+async def test_validator_rejects_missing_typ(validator: KeycloakTokenValidator) -> None:
+    claims = _make_claims()
+    del claims["typ"]
+    token = _sign_token(claims)
+    with pytest.raises(AuthenticationError, match="typ"):
+        await validator.validate_and_extract(token)
