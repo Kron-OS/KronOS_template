@@ -86,6 +86,8 @@ class EvidenceOut(BaseModel):
     uploadedAt: str
     updatedAt: str
     rfc3161Token: str | None = None
+    legalHold: bool = False
+    objectLockUntil: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -316,4 +318,6 @@ def to_evidence_out(ev: Evidence) -> EvidenceOut:
         # None renders as "Not anchored yet" in the detail drawer until the
         # evidence.hash.verified transition anchors a real TSA token.
         rfc3161Token=ev.rfc3161_token.hex() if ev.rfc3161_token else None,
+        legalHold=ev.legal_hold,
+        objectLockUntil=ev.object_lock_until.isoformat() if ev.object_lock_until else None,
     )

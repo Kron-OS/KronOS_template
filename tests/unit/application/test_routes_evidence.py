@@ -174,3 +174,120 @@ class TestFinalizeUploadRoute:
             json={"client_sha256": "a" * 64},
         )
         assert fin_resp.status_code == 422
+
+
+def _override_tenant_role(client: TestClient, org_id: uuid.UUID, roles: set[Role]) -> None:
+    """Swap the fixed tenant's roles for a single test (EVID-2 route RBAC)."""
+
+    def _tenant() -> TenantContext:
+        return TenantContext(
+            org_id=org_id,
+            org_alias="testorg",
+            user_id=uuid.uuid4(),
+            username="admin",
+            roles=frozenset(roles),
+            correlation_id=str(uuid.uuid4()),
+        )
+
+    client.app.dependency_overrides[get_tenant_context] = _tenant  # type: ignore[attr-defined]
+
+
+class TestLegalHoldRoute:
+    def _finalize_evidence(self, client, storage, case_id) -> str:  # type: ignore[no-untyped-def]
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "cloudtrail.json",
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, _JSON_CONTENT)
+        client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(_JSON_CONTENT)},
+        )
+        return evidence_id
+
+    def test_org_admin_can_set_hold(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_evidence(client, storage, case_id)
+        _override_tenant_role(client, org_id, {Role.ORG_ADMIN})
+
+        resp = client.put(f"/api/evidence/{evidence_id}/legal-hold", json={"hold": True})
+        assert resp.status_code == 200
+        assert resp.json()["legalHold"] is True
+
+    def test_analyst_forbidden(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_evidence(client, storage, case_id)
+        _override_tenant_role(client, org_id, {Role.ANALYST})
+
+        resp = client.put(f"/api/evidence/{evidence_id}/legal-hold", json={"hold": True})
+        assert resp.status_code == 403
+
+    def test_unknown_evidence_returns_404(self, app_client) -> None:
+        client, _, _, org_id, _ = app_client
+        _override_tenant_role(client, org_id, {Role.ORG_ADMIN})
+
+        resp = client.put(f"/api/evidence/{uuid.uuid4()}/legal-hold", json={"hold": True})
+        assert resp.status_code == 404
+
+
+class TestDeleteEvidenceRetentionGate:
+    """EVID-1: DELETE /evidence/{id} maps the retention gate to 409, end-to-end
+    through a real step-up ticket (not just the service-layer unit tests)."""
+
+    def _finalize_evidence(self, client, storage, case_id) -> str:  # type: ignore[no-untyped-def]
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "cloudtrail.json",
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, _JSON_CONTENT)
+        client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(_JSON_CONTENT)},
+        )
+        return evidence_id
+
+    def test_active_retention_returns_409(self, app_client) -> None:
+        from src.external.dependencies import get_step_up_auth
+        from src.external.middleware.step_up_auth import StepUpAuth
+
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_evidence(client, storage, case_id)
+
+        user_id = uuid.uuid4()
+        step_up = StepUpAuth()
+        ticket_id = step_up.issue_ticket(user_id, "evidence.delete", evidence_id)
+
+        def _admin_tenant() -> TenantContext:
+            return TenantContext(
+                org_id=org_id,
+                org_alias="testorg",
+                user_id=user_id,
+                username="admin",
+                roles=frozenset({Role.ORG_ADMIN}),
+                correlation_id=str(uuid.uuid4()),
+                acr="aal2",
+            )
+
+        client.app.dependency_overrides[get_tenant_context] = _admin_tenant  # type: ignore[attr-defined]
+        client.app.dependency_overrides[get_step_up_auth] = lambda: step_up  # type: ignore[attr-defined]
+
+        resp = client.request(
+            "DELETE",
+            f"/api/evidence/{evidence_id}",
+            headers={"X-Step-Up-Ticket": str(ticket_id)},
+        )
+        assert resp.status_code == 409
