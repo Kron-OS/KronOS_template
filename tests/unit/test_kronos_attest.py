@@ -87,8 +87,10 @@ class TestBuildMerkleRoot:
     def test_single_element(self):
         hashes = ["abc"]
         root = build_merkle_root(hashes)
-        # Single element: layer = [sha256("abc".encode).digest()], no iterations
-        assert root == hashlib.sha256(b"abc").hexdigest()
+        # Single element: layer = [leaf_hash("abc")], no iterations.
+        # Domain-separated (0x00 prefix, AUDIT-04) — not a bare sha256("abc").
+        assert root == hashlib.sha256(b"\x00" + b"abc").hexdigest()
+        assert root != hashlib.sha256(b"abc").hexdigest()
 
     def test_power_of_two(self):
         hashes = ["a", "b", "c", "d"]
@@ -209,7 +211,11 @@ class TestAttestationReport:
         # Each event has different evidence_id (ev-0, ev-1, ev-2, ev-3)
         assert len(report.evidence_ids) == 4
 
-    def test_tsa_anchor_detected(self):
+    def test_anchor_event_without_tsa_token_is_not_reported_anchored(self):
+        """AUDIT-07: a same-shaped anchor event with no real TSA token must
+        NOT be reported as tsa_anchored — the old behavior string-matched
+        event_type/details.day alone, which any tampered export could fake.
+        """
         events = _chain(2)
         anchor = {
             "event_id": "anchor-uuid",
@@ -224,8 +230,8 @@ class TestAttestationReport:
         }
         events.append(anchor)
         report = AttestationReport().day_report(events, "2026-06-25")
-        assert report.tsa_anchored
-        assert report.tsa_gen_time is not None
+        assert report.tsa_anchored is False
+        assert report.tsa_gen_time is None
 
 
 # ---------------------------------------------------------------------------
