@@ -162,6 +162,30 @@ class S3EvidenceStorage(EvidenceStorage):
                 context={"object_key": object_key, "error": str(exc)},
             ) from exc
 
+    def bucket_for(self, object_key: str, *, bucket: BucketKind = "evidence") -> str:
+        return self._bucket_for(object_key, bucket)
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: BucketKind = "evidence"
+    ) -> None:
+        bucket_name = self._bucket_for(object_key, bucket)
+        try:
+            await self._run(
+                self._client.put_object_legal_hold,
+                Bucket=bucket_name,
+                Key=object_key,
+                LegalHold={"Status": "ON" if hold else "OFF"},
+            )
+        except ClientError as exc:
+            raise StorageError(
+                "Failed to set legal hold",
+                context={"object_key": object_key, "hold": hold, "error": str(exc)},
+            ) from exc
+        logger.info(
+            "legal_hold_updated",
+            extra={"object_key": object_key, "bucket": bucket_name, "hold": hold},
+        )
+
     # ------------------------------------------------------------------
     # Bucket management helpers (called lazily, on first use per org — see
     # request_presigned_upload / promote_to_evidence_bucket)

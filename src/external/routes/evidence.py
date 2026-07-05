@@ -13,7 +13,13 @@ from src.application.evidence_intake import EvidenceIntakeService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.user import Role, TenantContext
-from src.exceptions import AuthorizationError, KronOSException, ParsingError, ValidationError
+from src.exceptions import (
+    AuthorizationError,
+    EvidenceStateError,
+    KronOSException,
+    ParsingError,
+    ValidationError,
+)
 from src.external.dependencies import (
     get_case_repository,
     get_intake_service,
@@ -237,10 +243,49 @@ async def delete_evidence(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except EvidenceStateError as exc:
+        # Retention period still active — a state conflict, not an auth failure.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except KronOSException as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
+
+
+class LegalHoldIn(BaseModel):
+    """Request body for PUT /evidence/{id}/legal-hold."""
+
+    hold: bool = Field(description="True to set the legal hold, False to clear it")
+
+
+@router.put(
+    "/{evidence_id}/legal-hold",
+    response_model=EvidenceOut,
+)
+async def set_legal_hold(
+    evidence_id: uuid.UUID,
+    body: LegalHoldIn,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))
+    ],
+    intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+) -> EvidenceOut:
+    """Set or clear a legal hold, blocking purge regardless of retention expiry.
+
+    Restricted to org-admin / case-lead (Project_Specifications.md §2).
+    """
+    try:
+        evidence = await intake.set_legal_hold(evidence_id=evidence_id, hold=body.hold, tenant=tenant)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return to_evidence_out(evidence)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +313,7 @@ def to_evidence_out(ev: Evidence) -> EvidenceOut:
         uploadedBy=str(ev.metadata.uploader_user_id),
         uploadedAt=ev.created_at.isoformat(),
         updatedAt=ev.updated_at.isoformat(),
-        # RFC 3161 timestamping is not yet wired into evidence intake;
-        # None renders as "Not anchored yet" in the detail drawer.
-        rfc3161Token=None,
+        # None renders as "Not anchored yet" in the detail drawer until the
+        # evidence.hash.verified transition anchors a real TSA token.
+        rfc3161Token=ev.rfc3161_token.hex() if ev.rfc3161_token else None,
     )
