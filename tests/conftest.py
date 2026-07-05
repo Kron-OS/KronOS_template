@@ -6,10 +6,11 @@ import asyncio
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator
+from datetime import date
 
 import pytest
 
-from src.adapter.repository.audit_log import AuditLogRepository, EventBuilder
+from src.adapter.repository.audit_log import AnchorRepository, EventBuilder
 from src.adapter.repository.evidence import EvidenceRepository
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEvent
@@ -17,8 +18,13 @@ from src.domain.evidence import Evidence, EvidenceState
 from src.exceptions import StorageError
 
 
-class InMemoryAuditLogRepository(AuditLogRepository):
-    """In-memory audit log for unit tests — no external dependencies."""
+class InMemoryAuditLogRepository(AnchorRepository):
+    """In-memory audit log for unit tests — no external dependencies.
+
+    Implements AnchorRepository (not just AuditLogRepository) so tests can
+    exercise AuditLogService.anchor_day() and the day-scoped merkle-proof
+    route end-to-end without a real Postgres instance.
+    """
 
     def __init__(self) -> None:
         self._events: list[AuditEvent] = []
@@ -26,6 +32,7 @@ class InMemoryAuditLogRepository(AuditLogRepository):
         # in PostgresAuditLogRepository, so concurrency tests exercise the
         # same "read tip, build, insert" atomicity guarantee in-process.
         self._org_locks: dict[uuid.UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._anchors: dict[tuple[uuid.UUID | None, date], tuple[str, bytes | None]] = {}
 
     async def append(self, event: AuditEvent) -> AuditEvent:
         self._events.append(event)
@@ -75,6 +82,22 @@ class InMemoryAuditLogRepository(AuditLogRepository):
     @property
     def events(self) -> list[AuditEvent]:
         return list(self._events)
+
+    async def save_anchor(
+        self,
+        anchor_date: date,
+        root_hash: str,
+        tsa_token: bytes | None,
+        *,
+        org_id: uuid.UUID | None = None,
+        event_count: int = 0,
+    ) -> None:
+        self._anchors[(org_id, anchor_date)] = (root_hash, tsa_token)
+
+    async def get_anchor(
+        self, anchor_date: date, *, org_id: uuid.UUID | None = None
+    ) -> tuple[str, bytes | None] | None:
+        return self._anchors.get((org_id, anchor_date))
 
 
 class InMemoryEvidenceRepository(EvidenceRepository):

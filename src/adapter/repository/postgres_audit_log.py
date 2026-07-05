@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from src.adapter.repository.audit_log import AuditLogRepository, EventBuilder
+from src.adapter.repository.audit_log import AnchorRepository, EventBuilder
 from src.domain.audit import AuditEvent, AuditEventType
 from src.exceptions import AuditLogError
 
@@ -34,9 +35,29 @@ audit_log_table = sa.Table(
     sa.UniqueConstraint("org_id", "sequence_number", name="uq_audit_log_org_seq"),
 )
 
+# Daily Merkle-root anchors (AUDIT-01/02/03). org_id is nullable to allow a
+# genuine system-level/cross-org anchor row; in practice the daily beat task
+# anchors one row per org that had activity that day (see
+# AuditLogService.anchor_day — the hash chain's sequence_number is per-org,
+# so a "day" root only makes sense computed over one org's events at a time).
+audit_anchor_table = sa.Table(
+    "audit_anchor",
+    _metadata,
+    sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    sa.Column("org_id", sa.UUID(as_uuid=True), nullable=True, index=True),
+    sa.Column("anchor_date", sa.Date, nullable=False, index=True),
+    sa.Column("root_hash", sa.String(64), nullable=False),
+    sa.Column("tsa_token", sa.LargeBinary),
+    sa.Column("event_count", sa.Integer, nullable=False, default=0),
+    sa.Column(
+        "created_at", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+    sa.UniqueConstraint("org_id", "anchor_date", name="uq_audit_anchor_org_date"),
+)
 
-class PostgresAuditLogRepository(AuditLogRepository):
-    """Append-only audit log stored in PostgreSQL."""
+
+class PostgresAuditLogRepository(AnchorRepository):
+    """Append-only audit log stored in PostgreSQL, with daily Merkle anchoring."""
 
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
@@ -153,6 +174,78 @@ class PostgresAuditLogRepository(AuditLogRepository):
             )
             for row in result:
                 yield self._from_row(row._asdict())
+
+    async def list_by_date_range(self, start: datetime, end: datetime) -> list[AuditEvent]:
+        """Real ``WHERE occurred_at BETWEEN`` query (AUDIT-01).
+
+        Crosses org boundaries by design — used by the daily anchor beat task
+        to discover which orgs had activity on a given day (CLAUDE.md §E.5's
+        "system-task only" rule applies the same way here: never call this
+        from a request handler).
+        """
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                audit_log_table.select()
+                .where(
+                    audit_log_table.c.occurred_at >= start,
+                    audit_log_table.c.occurred_at < end,
+                )
+                .order_by(audit_log_table.c.org_id, audit_log_table.c.sequence_number)
+            )
+            return [self._from_row(row._asdict()) for row in result]
+
+    async def save_anchor(
+        self,
+        anchor_date: date,
+        root_hash: str,
+        tsa_token: bytes | None,
+        *,
+        org_id: uuid.UUID | None = None,
+        event_count: int = 0,
+    ) -> None:
+        """Upsert the (org_id, anchor_date) anchor row — idempotent on re-run."""
+        async with self._engine.begin() as conn:
+            stmt = pg_insert(audit_anchor_table).values(
+                org_id=org_id,
+                anchor_date=anchor_date,
+                root_hash=root_hash,
+                tsa_token=tsa_token,
+                event_count=event_count,
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_audit_anchor_org_date",
+                set_={
+                    "root_hash": stmt.excluded.root_hash,
+                    "tsa_token": stmt.excluded.tsa_token,
+                    "event_count": stmt.excluded.event_count,
+                },
+            )
+            try:
+                await conn.execute(stmt)
+            except Exception as exc:
+                raise AuditLogError(
+                    "Failed to persist Merkle anchor",
+                    context={"anchor_date": anchor_date.isoformat(), "error": str(exc)},
+                ) from exc
+
+    async def get_anchor(
+        self, anchor_date: date, *, org_id: uuid.UUID | None = None
+    ) -> tuple[str, bytes | None] | None:
+        async with self._engine.connect() as conn:
+            conditions = [audit_anchor_table.c.anchor_date == anchor_date]
+            conditions.append(
+                audit_anchor_table.c.org_id == org_id
+                if org_id is not None
+                else audit_anchor_table.c.org_id.is_(None)
+            )
+            row = (
+                await conn.execute(
+                    sa.select(
+                        audit_anchor_table.c.root_hash, audit_anchor_table.c.tsa_token
+                    ).where(*conditions)
+                )
+            ).one_or_none()
+        return (row[0], row[1]) if row else None
 
     @staticmethod
     def _to_row(event: AuditEvent) -> dict[str, Any]:

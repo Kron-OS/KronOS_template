@@ -56,7 +56,9 @@ class TestMerkleProof:
         resp = client.get(f"/api/audit/merkle-proof/{missing}")
         assert resp.status_code == 404
 
-    def test_single_event_proof(self, audit_client):
+    def test_unanchored_day_returns_404(self, audit_client):
+        """AUDIT-05: a proof for a day that hasn't been anchored yet must 404,
+        not silently return an un-validated root."""
         client, repo, org_id, case_id = audit_client
         import asyncio
 
@@ -76,9 +78,65 @@ class TestMerkleProof:
         asyncio.run(_add())
 
         resp = client.get(f"/api/audit/merkle-proof/{target_id}")
+        assert resp.status_code == 404
+        assert "anchored" in resp.json()["detail"]
+
+    def test_single_event_proof_after_anchoring(self, audit_client):
+        client, repo, org_id, case_id = audit_client
+        import asyncio
+        from datetime import date
+
+        target_id = None
+        today = date.today()
+
+        async def _add_and_anchor():
+            nonlocal target_id
+            svc = AuditLogService(repo)
+            ev = await svc.log(
+                AuditEventType.EVIDENCE_UPLOAD_FINALIZED,
+                org_id=org_id,
+                case_id=case_id,
+                details={},
+            )
+            target_id = ev.event_id
+            await svc.anchor_day(today, org_id)
+
+        asyncio.run(_add_and_anchor())
+
+        resp = client.get(f"/api/audit/merkle-proof/{target_id}")
         assert resp.status_code == 200
         data = resp.json()
         assert data["event_id"] == str(target_id)
+        assert data["anchored"] is True
         assert "leaf_hash" in data
         assert "root_hash" in data
         assert isinstance(data["proof"], list)
+
+    def test_tampered_root_after_anchoring_returns_409(self, audit_client):
+        """A row_hash mutated after anchoring must fail proof validation."""
+        client, repo, org_id, case_id = audit_client
+        import asyncio
+        from datetime import date
+
+        target_id = None
+        today = date.today()
+
+        async def _add_and_anchor():
+            nonlocal target_id
+            svc = AuditLogService(repo)
+            ev = await svc.log(
+                AuditEventType.EVIDENCE_UPLOAD_FINALIZED,
+                org_id=org_id,
+                case_id=case_id,
+                details={},
+            )
+            target_id = ev.event_id
+            await svc.anchor_day(today, org_id)
+            # Tamper the stored row after the anchor was computed.
+            tampered = repo._events[0].model_copy(update={"row_hash": "f" * 64})
+            repo._events[0] = tampered
+
+        asyncio.run(_add_and_anchor())
+
+        resp = client.get(f"/api/audit/merkle-proof/{target_id}")
+        assert resp.status_code == 409
