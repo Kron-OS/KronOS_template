@@ -13,6 +13,7 @@ from typing import Any
 
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.domain.audit import AuditEvent, AuditEventType
+from src.domain.merkle import build_merkle_root as _build_merkle_root_over_hashes
 from src.exceptions import AuditLogError
 
 logger = logging.getLogger(__name__)
@@ -206,13 +207,23 @@ class AuditLogService:
         optionally calls the RFC 3161 TSA, then persists the anchor and emits
         AUDIT_MERKLE_ANCHORED.
 
+        ``AUDIT_MERKLE_ANCHORED`` events themselves are excluded from the leaf
+        set: the anchor event is *about* the day's events, not a member of
+        them — including it would make the root self-referential (its own
+        row_hash would need to already be known before it could be computed),
+        and would also make a same-day re-anchor produce a different root
+        each time purely from its own bookkeeping event accumulating.
+
         Returns the hex Merkle root hash.
         """
         from src.adapter.repository.audit_log import AnchorRepository  # noqa: PLC0415
 
         events: list[AuditEvent] = []
         async for event in self._repository.stream_by_org(org_id):
-            if event.occurred_at.date() == anchor_date:
+            if (
+                event.occurred_at.date() == anchor_date
+                and event.event_type != AuditEventType.AUDIT_MERKLE_ANCHORED
+            ):
                 events.append(event)
 
         root_hash = build_merkle_root(events)
@@ -225,40 +236,31 @@ class AuditLogService:
                 logger.warning("tsa_anchor_failed", extra={"error": str(exc)})
 
         if isinstance(self._repository, AnchorRepository):
-            await self._repository.save_anchor(anchor_date, root_hash, tsa_token)
+            await self._repository.save_anchor(anchor_date, root_hash, tsa_token, org_id=org_id)
 
         await self.log(
             AuditEventType.AUDIT_MERKLE_ANCHORED,
             org_id=org_id,
-            details={"date": anchor_date.isoformat(), "root_hash": root_hash, "event_count": len(events)},
+            details={
+                "date": anchor_date.isoformat(),
+                "root_hash": root_hash,
+                "event_count": len(events),
+                # Embedded so an offline JSON export (kronos-attest) can verify
+                # the TSA signature without live DB/anchor-table access.
+                "tsa_token": tsa_token.hex() if tsa_token else None,
+            },
         )
         logger.info("audit_merkle_anchored", extra={"date": str(anchor_date), "root_hash": root_hash})
         return root_hash
 
 
 def build_merkle_root(events: list[AuditEvent]) -> str:
-    """Build SHA-256 Merkle root over events sorted by sequence_number.
+    """Build the canonical Merkle root over events sorted by sequence_number.
 
-    Leaf i = sha256(events[i].row_hash.encode()).
-    Parent = sha256(left_child_bytes || right_child_bytes).
-    Odd number of nodes: last node is duplicated.
-    Empty list returns sha256(b"empty").
+    Delegates to ``src.domain.merkle.build_merkle_root`` (RFC 6962-style
+    domain separation + promotion of unpaired nodes — AUDIT-04) so there is
+    exactly one Merkle algorithm across the backend.
     """
-    if not events:
-        return hashlib.sha256(b"empty").hexdigest()
-
     sorted_events = sorted(events, key=lambda e: e.sequence_number)
-    layer: list[bytes] = [
-        hashlib.sha256((e.row_hash or "").encode()).digest() for e in sorted_events
-    ]
-
-    while len(layer) > 1:
-        if len(layer) % 2 == 1:
-            layer.append(layer[-1])  # duplicate last node for odd count
-        next_layer: list[bytes] = []
-        for i in range(0, len(layer), 2):
-            combined = hashlib.sha256(layer[i] + layer[i + 1]).digest()
-            next_layer.append(combined)
-        layer = next_layer
-
-    return layer[0].hex()
+    row_hashes = [e.row_hash or "" for e in sorted_events]
+    return _build_merkle_root_over_hashes(row_hashes)

@@ -7,6 +7,7 @@ bindings via FastAPI's ``app.dependency_overrides`` or by calling
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -24,6 +25,7 @@ from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.timeline_ingest import TimelineIngestionService
+from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator, default_validator_chain
 from src.domain.user import Role, TenantContext
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
@@ -33,6 +35,8 @@ from src.external.middleware.step_up_store import (
     TicketStore,
 )
 from src.external.middleware.tenant_context import get_tenant_context as get_tenant_context
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Singleton configuration store — only one instance, set at startup.
@@ -47,8 +51,10 @@ _task_queue: TaskQueue = InMemoryTaskQueue()
 _parser_registry: ParserRegistry | None = None
 _opensearch_client: AbstractTimelineIndex = InMemoryOpenSearchClient()
 _max_upload_bytes: int = 1_073_741_824
-_presigned_expiry: int = 3600
+_presigned_expiry: int = 900
 _opensearch_dashboards_url: str | None = None
+_timestamp_service: RFC3161TimestampService | None = None
+_default_retention_days: int = 365
 
 
 # ---------------------------------------------------------------------------
@@ -98,23 +104,66 @@ def get_scanner() -> AntivirusScanner:
 def configure_clamav_from_settings() -> None:
     """Wire ClamAVScanner using CLAMD_HOST / CLAMD_PORT from Settings.
 
-    Call at application startup after configure_dependencies() if ClamAV
-    is available.  Falls back to the existing NoOpScanner if Settings
-    cannot be instantiated (e.g., in unit tests).
+    Call at application startup after configure_dependencies().  Falls back
+    to the existing NoOpScanner if Settings cannot be instantiated (e.g., in
+    unit tests, which never call this at all).
+
+    In production (``settings.environment == "production"``), an unreachable
+    clamd is a hard startup failure — EVID-6: a misconfigured AV scanner must
+    never silently downgrade to the permissive NoOpScanner in a deployment
+    that is supposed to be malware-scanning every upload.  Dev/test keep the
+    previous permissive fallback so a local clamd-less setup still boots.
     """
     global _scanner
-    try:
-        from src.application.scanning import ClamAVScanner  # noqa: PLC0415
-        from src.config import Settings  # noqa: PLC0415
+    import socket  # noqa: PLC0415
 
+    from src.application.scanning import ClamAVScanner  # noqa: PLC0415
+    from src.config import Settings  # noqa: PLC0415
+    from src.exceptions import StorageError  # noqa: PLC0415
+
+    try:
         s = Settings()
-        _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
     except Exception:
-        pass  # keep NoOpScanner in test/dev environments without ClamAV
+        return  # keep NoOpScanner in test/dev environments without full Settings
+
+    try:
+        with socket.create_connection((s.clamd_host, s.clamd_port), timeout=3):
+            pass
+    except OSError as exc:
+        if s.environment == "production":
+            raise StorageError(
+                "ClamAV is unreachable at startup; refusing to start in production "
+                "with malware scanning silently disabled",
+                context={
+                    "clamd_host": s.clamd_host,
+                    "clamd_port": s.clamd_port,
+                    "error": str(exc),
+                },
+            ) from exc
+        logger.warning(
+            "clamav_unreachable_dev_fallback",
+            extra={
+                "clamd_host": s.clamd_host,
+                "clamd_port": s.clamd_port,
+                "environment": s.environment,
+            },
+        )
+        return  # keep NoOpScanner in dev/test
+
+    _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
 
 
 def get_task_queue() -> TaskQueue:
     return _task_queue
+
+
+def get_timestamp_service() -> RFC3161TimestampService | None:
+    """Return the configured RFC 3161 TSA client, or None if no tsa_url is set.
+
+    None is a valid, honest configuration (dev/test without a TSA); callers
+    must treat it as "timestamping disabled", never substitute a fake result.
+    """
+    return _timestamp_service
 
 
 def get_parser_registry() -> ParserRegistry:
@@ -169,6 +218,8 @@ def get_intake_service(
         max_upload_bytes=_max_upload_bytes,
         presigned_url_expiry_seconds=_presigned_expiry,
         task_queue=_task_queue,
+        timestamp_service=_timestamp_service,
+        default_retention_days=_default_retention_days,
     )
 
 
@@ -290,12 +341,14 @@ def configure_dependencies(
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
     opensearch_dashboards_url: str | None = None,
+    timestamp_service: RFC3161TimestampService | None = None,
+    default_retention_days: int = 365,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
     global _scanner, _task_queue, _parser_registry, _opensearch_client
     global _max_upload_bytes, _presigned_expiry, _case_repository
-    global _opensearch_dashboards_url
+    global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
     _audit_log_repository = audit_log_repository
     _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
@@ -312,6 +365,8 @@ def configure_dependencies(
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
     _opensearch_dashboards_url = opensearch_dashboards_url
+    _timestamp_service = timestamp_service
+    _default_retention_days = default_retention_days
 
 
 def reset_dependencies() -> None:
@@ -319,6 +374,7 @@ def reset_dependencies() -> None:
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
+    global _timestamp_service, _default_retention_days
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -329,5 +385,7 @@ def reset_dependencies() -> None:
     _parser_registry = None
     _opensearch_client = InMemoryOpenSearchClient()
     _max_upload_bytes = 1_073_741_824
-    _presigned_expiry = 3600
+    _presigned_expiry = 900
     _opensearch_dashboards_url = None
+    _timestamp_service = None
+    _default_retention_days = 365

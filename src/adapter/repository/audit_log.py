@@ -83,14 +83,31 @@ class AuditLogRepository(ABC):
 
 
 class AnchorRepository(AuditLogRepository):
-    """Extended audit log repository that also supports Merkle root anchoring."""
+    """Extended audit log repository that also supports Merkle root anchoring.
+
+    Anchors are scoped per (org_id, date): the hash chain and its
+    sequence_number are per-org (see append_atomic), so a "day" Merkle root
+    only makes sense computed over one org's events at a time — the
+    Merkle-proof endpoint (AUDIT-05) validates a specific org's event against
+    its own day's anchor.  ``org_id`` is nullable to allow a genuine
+    cross-org/system-level anchor row if one is ever needed, but the daily
+    beat task anchors one row per org that had activity that day.
+    """
 
     @abstractmethod
     async def save_anchor(
-        self, anchor_date: date, root_hash: str, tsa_token: bytes | None
+        self,
+        anchor_date: date,
+        root_hash: str,
+        tsa_token: bytes | None,
+        *,
+        org_id: uuid.UUID | None = None,
+        event_count: int = 0,
     ) -> None:
-        """Persist a daily Merkle root anchor."""
+        """Persist a daily Merkle root anchor for *org_id* (or a system anchor if None)."""
 
     @abstractmethod
-    async def get_anchor(self, anchor_date: date) -> tuple[str, bytes | None] | None:
-        """Return (root_hash, tsa_token) for the given date, or None if absent."""
+    async def get_anchor(
+        self, anchor_date: date, *, org_id: uuid.UUID | None = None
+    ) -> tuple[str, bytes | None] | None:
+        """Return (root_hash, tsa_token) for (*org_id*, anchor_date), or None if absent."""

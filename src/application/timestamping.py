@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from src.exceptions import StorageError
+from src.exceptions import StorageError, TimestampingError
 
 logger = logging.getLogger(__name__)
 
@@ -78,25 +78,43 @@ class RFC3161TimestampService:
             ) from exc
 
     async def verify(self, token: bytes, digest: bytes) -> datetime:
-        """Parse the TimeStampToken and verify the digest.
+        """Parse the TimeStampToken and verify it was issued over *digest*.
 
-        Returns genTime from the token. Raises StorageError on mismatch.
-        Note: full ASN.1 parsing requires rfc3161ng; this is a lightweight stub
-        that returns the current time when the library is unavailable.
+        Returns the token's genTime on success.  Fails closed: any problem
+        parsing the token, a missing ``rfc3161ng`` dependency, or a digest
+        mismatch raises ``TimestampingError`` rather than fabricating a
+        timestamp — a forensic timestamp control must never silently invent
+        success (see AUDIT-06 / COMP-3).
         """
         try:
             import rfc3161ng  # type: ignore[import-untyped]  # noqa: PLC0415
+        except ImportError as exc:
+            logger.error("rfc3161ng_not_installed", extra={"digest": digest.hex()})
+            raise TimestampingError(
+                "rfc3161ng is required to verify RFC 3161 timestamp tokens; "
+                "refusing to fabricate a verification result",
+                context={"digest": digest.hex()},
+            ) from exc
 
+        try:
             ts_response = rfc3161ng.decode_timestamp_response(token)
             tst = ts_response.time_stamp_token
             gen_time = tst["tst_info"]["gen_time"].native
             embedded_digest = tst["tst_info"]["message_imprint"]["hashed_message"].native
-            if embedded_digest != digest:
-                raise StorageError(
-                    "TSA token digest mismatch",
-                    context={"expected": digest.hex(), "got": embedded_digest.hex()},
-                )
-            return gen_time if isinstance(gen_time, datetime) else datetime.now(UTC)
-        except ImportError:
-            logger.warning("rfc3161ng not installed; returning current time as stub verify")
-            return datetime.now(UTC)
+        except Exception as exc:
+            raise TimestampingError(
+                "Failed to parse RFC 3161 TimeStampToken",
+                context={"error": str(exc)},
+            ) from exc
+
+        if embedded_digest != digest:
+            raise TimestampingError(
+                "TSA token digest mismatch",
+                context={"expected": digest.hex(), "got": embedded_digest.hex()},
+            )
+        if not isinstance(gen_time, datetime):
+            raise TimestampingError(
+                "TSA token genTime is not a valid timestamp",
+                context={"gen_time": repr(gen_time)},
+            )
+        return gen_time

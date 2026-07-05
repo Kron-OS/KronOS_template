@@ -23,7 +23,10 @@ class AuditEventType(StrEnum):
     EVIDENCE_HASH_MISMATCH = "evidence.hash_mismatch"
     EVIDENCE_PROMOTED = "evidence.promoted"
     EVIDENCE_DELETED = "evidence.deleted"
+    EVIDENCE_DELETE_DENIED = "evidence.delete_denied"
     EVIDENCE_ERROR = "evidence.error"
+    EVIDENCE_LEGAL_HOLD_SET = "evidence.legal_hold_set"
+    EVIDENCE_LEGAL_HOLD_CLEARED = "evidence.legal_hold_cleared"
 
     # Parsing
     PARSE_STARTED = "parse.started"

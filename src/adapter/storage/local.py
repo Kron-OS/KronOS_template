@@ -24,6 +24,7 @@ class LocalEvidenceStorage(EvidenceStorage):
         self._base.mkdir(parents=True, exist_ok=True)
         self._quarantine: dict[str, Path] = {}
         self._evidence: dict[str, Path] = {}
+        self._legal_holds: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # EvidenceStorage interface
@@ -82,6 +83,19 @@ class LocalEvidenceStorage(EvidenceStorage):
         store = self._evidence if bucket == "evidence" else self._quarantine
         path = store.get(object_key)
         return path is not None and path.exists()
+
+    def bucket_for(self, object_key: str, *, bucket: BucketKind = "evidence") -> str:
+        org_alias = object_key.split("/")[0] if object_key else "unknown"
+        return f"local-{bucket}-{org_alias}"
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: BucketKind = "evidence"
+    ) -> None:
+        self._legal_holds[object_key] = hold
+
+    def is_legal_hold_set(self, object_key: str) -> bool:
+        """Test helper: return the in-memory legal-hold flag for *object_key*."""
+        return self._legal_holds.get(object_key, False)
 
     # ------------------------------------------------------------------
     # Test helpers
