@@ -23,7 +23,7 @@ from src.external.dependencies import (
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
-from src.external.middleware.rbac import requires_role
+from src.external.middleware.rbac import assert_case_access, assert_case_lead_or_admin, requires_role
 from src.external.routes.evidence import EvidenceOut, to_evidence_out
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
@@ -168,7 +168,7 @@ async def get_case(
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_access(tenant, case)
+    assert_case_access(tenant, case)
     return _to_case_out(case)
 
 
@@ -184,12 +184,12 @@ async def add_case_member(
 
     Per the §1 permission matrix ("Assign members": org-admin all, case-lead
     of case only), a case-lead may only assign members to a case they lead —
-    enforced via ``_assert_case_lead_or_admin``.
+    enforced via ``assert_case_lead_or_admin``.
     """
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_lead_or_admin(tenant, case)
+    assert_case_lead_or_admin(tenant, case)
 
     updated = await case_repo.update(case.with_member(body.userId))
     await audit_svc.log(
@@ -213,13 +213,13 @@ async def delete_case(
 
     AUTH-009: the permission matrix grants this to case-lead as well as
     org-admin, but only for a case the case-lead actually leads
-    (``_assert_case_lead_or_admin``) — previously this was org-admin-only,
+    (``assert_case_lead_or_admin``) — previously this was org-admin-only,
     stricter than the documented matrix.
     """
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_lead_or_admin(tenant, case)
+    assert_case_lead_or_admin(tenant, case)
 
     archived = case.with_status(CaseStatus.ARCHIVED)
     await case_repo.update(archived)
@@ -245,7 +245,7 @@ async def list_case_evidence(
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_access(tenant, case)
+    assert_case_access(tenant, case)
 
     items = []
     async for ev in evidence_repo.stream_by_case(case_id, tenant.org_id):
@@ -280,7 +280,7 @@ async def get_dashboard_url(
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_access(tenant, case)
+    assert_case_access(tenant, case)
 
     index_pattern = f"kronos-{case.org_alias}-case-{case_id}-*"
     ks_filter = (
@@ -331,7 +331,7 @@ async def list_case_audit_events(
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    _assert_case_lead_or_admin(tenant, case)
+    assert_case_lead_or_admin(tenant, case)
 
     events: list[AuditEvent] = []
     async for ev in audit_svc._repository.stream_by_case(case_id):
@@ -354,39 +354,6 @@ async def list_case_audit_events(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-
-def _assert_case_access(tenant: TenantContext, case: Case) -> None:
-    """Enforce the §1 matrix's case-scoping qualifier (AUTH-007).
-
-    org-admin has org-wide access. Everyone else (case-lead, analyst,
-    read-only) must either own/lead the case or be listed in
-    ``member_user_ids`` — `org_id` equality alone is not sufficient, that
-    just proves the case belongs to the caller's tenant, not that the caller
-    is entitled to see it.
-    """
-    if Role.ORG_ADMIN in tenant.roles:
-        return
-    if tenant.user_id == case.owner_user_id or tenant.user_id in case.member_user_ids:
-        return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this case")
-
-
-def _assert_case_lead_or_admin(tenant: TenantContext, case: Case) -> None:
-    """Enforce the matrix's "(of case)"/"(own)" qualifier for case-lead-gated actions.
-
-    Stricter than :func:`_assert_case_access`: a case-lead must own/lead this
-    specific case, not merely be a member of it (used for delete, assigning
-    members, and reading the audit log — all case-lead "of case"/"own" rows).
-    """
-    if Role.ORG_ADMIN in tenant.roles:
-        return
-    if tenant.user_id == case.owner_user_id:
-        return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Only this case's lead or an org-admin may perform this action",
-    )
 
 
 def _to_case_out(case: Case) -> CaseOut:

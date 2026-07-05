@@ -392,14 +392,17 @@ class EvidenceIntakeService:
 
         Raises:
             ValidationError: if evidence is not found for this org.
-            AuthorizationError: if the tenant lacks the ORG_ADMIN role, or the
+            AuthorizationError: if the tenant lacks org-admin/case-lead, or the
                 evidence is under legal hold.
             EvidenceStateError: if the Object Lock retention period has not
                 yet expired.
         """
-        if Role.ORG_ADMIN not in tenant.roles:
+        # AUTH-009: the §1 matrix also grants delete to case-lead "of case" —
+        # the route enforces the case-ownership qualifier before calling this
+        # method, so here we only need the role-level check.
+        if not tenant.roles.intersection({Role.ORG_ADMIN, Role.CASE_LEAD}):
             raise AuthorizationError(
-                "Only org-admin may delete evidence",
+                "Only org-admin or case-lead may delete evidence",
                 context={"user_id": str(tenant.user_id), "org_id": str(tenant.org_id)},
             )
 

@@ -17,6 +17,13 @@ from celery import Celery
 from celery.schedules import crontab
 
 from src.config import Settings
+from src.external.logging_config import configure_logging
+
+# Configure structured JSON logging as early as possible (module import
+# time), mirroring fastapi_app.py, so Celery worker/beat logs reach the same
+# JSON pipeline the app server does (COMP-8) — Celery's own logging setup
+# would otherwise override the root logger with its default formatter.
+configure_logging()
 
 _settings = Settings()
 logger = logging.getLogger(__name__)
