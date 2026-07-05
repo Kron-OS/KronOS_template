@@ -71,13 +71,6 @@ export async function getDashboardUrl(caseId: string): Promise<{ url: string }> 
   return res.data
 }
 
-export async function startParsing(evidenceId: string): Promise<Evidence> {
-  const res = await apiClient.post<Evidence>(
-    `/api/evidence/parse/start/${evidenceId}`,
-  )
-  return res.data
-}
-
 export async function deleteEvidence(id: string): Promise<void> {
   await apiClient.delete(`/api/evidence/${id}`)
 }
