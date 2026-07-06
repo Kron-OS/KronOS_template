@@ -5,6 +5,13 @@
 # project's reference pattern for Chainguard images (INFRA-005).
 FROM cgr.dev/chainguard/python:latest-dev AS builder
 
+# Chainguard images run as the built-in "nonroot" user by default — even the
+# "-dev" variants — so /opt (and any other root-owned path) isn't writable
+# without this. Safe here: this is a discarded builder stage in a
+# multi-stage build: root privileges never reach the runtime image below,
+# which still explicitly runs as USER nonroot.
+USER root
+
 WORKDIR /app
 COPY pyproject.toml .
 COPY src/ ./src/
