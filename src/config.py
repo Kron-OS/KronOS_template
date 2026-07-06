@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +21,9 @@ class Settings(BaseSettings):
     app_name: str = "kronos"
     debug: bool = False
     log_level: str = "INFO"
+    # Gates fail-open vs. fail-closed behaviour (e.g. ClamAV misconfiguration,
+    # EVID-6) — "production" must never silently downgrade a security control.
+    environment: Literal["development", "test", "production"] = "development"
 
     # Database
     database_url: SecretStr = Field(description="Postgres DSN, e.g. postgresql+asyncpg://...")
@@ -46,7 +51,10 @@ class Settings(BaseSettings):
     # The prefix is "kronos-evidence"; scripts/provision_buckets.sh must match.
     minio_quarantine_bucket_prefix: str = "kronos-evidence"
     minio_evidence_bucket_prefix: str = "kronos-evidence"
-    minio_default_retention_days: int = 2555  # 7 years
+    # Project_Specifications.md §2 "Retention Period": 365 days is the
+    # spec-authoritative default, configurable per case/org (COMP-5 — this
+    # previously disagreed with scripts/provision_buckets.sh's 365d default).
+    minio_default_retention_days: int = 365
 
     # OpenSearch
     opensearch_url: str = Field(description="OpenSearch endpoint, e.g. https://opensearch:9200")
@@ -69,7 +77,8 @@ class Settings(BaseSettings):
 
     # Upload limits
     max_upload_bytes: int = 1_073_741_824  # 1 GB
-    presigned_url_expiry_seconds: int = 3600
+    # 15 min per Project_Specifications.md §2 "Security Measures for Intake" (EVID-8).
+    presigned_url_expiry_seconds: int = 900
 
     # Step-up ticket store: "memory" (single replica only) or "redis" (shared
     # across workers/replicas). Production with >1 backend replica MUST use

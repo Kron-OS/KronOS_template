@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      FE-7: CSP fallback for non-proxied dev environments (e.g. `vite preview`
+      on :4173, run without NGINX in front of it). This is NOT the real
+      policy — NGINX sets the authoritative header (docker/nginx/nginx.conf.template)
+      with deployment-specific origins substituted in and `frame-ancestors`
+      (which a <meta> tag cannot set at all). These are the dev-compose
+      default origins from frontend/.env.example; adjust if your local ports
+      differ. Kept permissive enough not to break the Keycloak redirect flow,
+      evidence uploads to MinIO, or the OpenSearch Dashboards iframe embed.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' http://localhost:8080 http://localhost:5601; connect-src 'self' http://localhost:8080 http://localhost:8000 http://localhost:9000; object-src 'none'"
+    />
     <title>frontend</title>
   </head>
   <body>

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime
 
-from src.domain.case import Case, CaseMetadata, CaseStatus
+from src.domain.case import Case
 
 
 class CaseRepository(ABC):

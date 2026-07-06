@@ -17,6 +17,13 @@ from celery import Celery
 from celery.schedules import crontab
 
 from src.config import Settings
+from src.external.logging_config import configure_logging
+
+# Configure structured JSON logging as early as possible (module import
+# time), mirroring fastapi_app.py, so Celery worker/beat logs reach the same
+# JSON pipeline the app server does (COMP-8) — Celery's own logging setup
+# would otherwise override the root logger with its default formatter.
+configure_logging()
 
 _settings = Settings()
 logger = logging.getLogger(__name__)
@@ -54,9 +61,6 @@ celery_app.conf.update(
         "kronos.auto_dispatch_received": {"queue": "q.index"},
         "kronos.abort_orphan_parses": {"queue": "q.index"},
         "kronos.anchor_audit_log": {"queue": "q.index"},
-        # Legacy aliases — also routed to correct queues.
-        "kronos.parse_fast": {"queue": "q.parse.fast"},
-        "kronos.parse_heavy": {"queue": "q.parse.plaso"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -133,7 +137,9 @@ def dispatch_parse(
     orch, _ = _deps()
 
     asyncio.run(orch.start_parsing(uuid.UUID(evidence_id), tenant))
-    logger.info("dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type})
+    logger.info(
+        "dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type}
+    )
     return evidence_id
 
 
@@ -246,9 +252,13 @@ def finalize_evidence(
                 details={"evidence_id": evidence_id, "record_count": record_count},
             )
         )
-        logger.info("finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count})
+        logger.info(
+            "finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count}
+        )
     except Exception as exc:
-        logger.error("finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
+        logger.error(
+            "finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)}
+        )
         raise self.retry(exc=exc)  # type: ignore[attr-defined]
 
 
@@ -370,11 +380,11 @@ def auto_dispatch_received(self: object) -> int:
     import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         get_evidence_repository,
     )
-    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(minutes=5)
 
@@ -415,83 +425,53 @@ def auto_dispatch_received(self: object) -> int:
 
 
 @celery_app.task(name="kronos.anchor_audit_log", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def anchor_audit_log(self: object) -> str:
-    """Compute daily Merkle root of all audit events and anchor via TSA.
+def anchor_audit_log(self: object) -> dict[str, str]:
+    """Anchor yesterday's audit log: one Merkle root + TSA anchor per active org.
 
-    Returns hex Merkle root.
+    The hash chain (and its sequence_number) is per-org (see
+    ``AuditLogRepository.append_atomic``), so a "day" Merkle root only makes
+    sense computed over one org's events at a time.  This task:
+
+      1. Uses ``list_by_date_range`` (AUDIT-01) — the one legitimate
+         cross-org query, restricted to this system beat task per
+         CLAUDE.md §E.5 — to discover which orgs had activity yesterday.
+      2. Calls ``AuditLogService.anchor_day()`` (AUDIT-03) once per org —
+         the single code path that builds the canonical Merkle root, calls
+         the RFC 3161 TSA, and persists the anchor — instead of
+         reimplementing Merkle-building inline and never calling the TSA.
+
+    Returns ``{org_id: root_hash}`` for every org anchored.
     """
     import asyncio  # noqa: PLC0415
-    import hashlib  # noqa: PLC0415
     from datetime import UTC, date, datetime, timedelta  # noqa: PLC0415
 
-    from src.domain.audit import AuditEventType  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         get_audit_log_repository,
         get_audit_log_service,
+        get_timestamp_service,
     )
 
-    async def _run() -> str:
+    async def _run() -> dict[str, str]:
         repo = get_audit_log_repository()
         audit_svc = get_audit_log_service(repo)
+        timestamp_service = get_timestamp_service()
 
         yesterday = date.today() - timedelta(days=1)
         day_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=UTC)
         day_end = day_start + timedelta(days=1)
 
         events = await repo.list_by_date_range(day_start, day_end)
-        if not events:
-            root = hashlib.sha256(b"empty").hexdigest()
-        else:
-            layer: list[bytes] = [
-                hashlib.sha256((e.row_hash or "").encode()).digest() for e in events
-            ]
-            while len(layer) > 1:
-                if len(layer) % 2 == 1:
-                    layer.append(layer[-1])
-                layer = [
-                    hashlib.sha256(layer[i] + layer[i + 1]).digest()
-                    for i in range(0, len(layer), 2)
-                ]
-            root = layer[0].hex()
+        org_ids = sorted({e.org_id for e in events if e.org_id is not None}, key=str)
 
-        import uuid as _uuid  # noqa: PLC0415
-        # System actor sentinel — no real user, no org scope for cross-org anchor.
-        _SYSTEM_ACTOR = _uuid.UUID("00000000-0000-0000-0000-000000000001")
-        await audit_svc.log(
-            AuditEventType.AUDIT_MERKLE_ANCHORED,
-            actor_user_id=_SYSTEM_ACTOR,
-            details={
-                "merkle_root": root,
-                "event_count": len(events),
-                "day": yesterday.isoformat(),
-            },
+        roots: dict[str, str] = {}
+        for org_id in org_ids:
+            root = await audit_svc.anchor_day(yesterday, org_id, timestamp_service)
+            roots[str(org_id)] = root
+
+        logger.info(
+            "audit_log_anchored",
+            extra={"day": yesterday.isoformat(), "orgs_anchored": len(roots)},
         )
-        logger.info("audit_log_anchored", extra={"merkle_root": root, "events": len(events)})
-        return root
+        return roots
 
     return asyncio.run(_run())
-
-
-# ---------------------------------------------------------------------------
-# Legacy aliases (for backward compat with tasks queued before this refactor)
-# ---------------------------------------------------------------------------
-
-
-@celery_app.task(name="kronos.parse_fast", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def parse_evidence_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias — re-dispatches via Celery (does not call directly)."""
-    result = parse_artefact_fast.apply(
-        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
-    )
-    data = result.get() if hasattr(result, "get") else {}
-    return data.get("record_count", 0) if isinstance(data, dict) else 0
-
-
-@celery_app.task(name="kronos.parse_heavy", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def parse_evidence_heavy(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias — re-dispatches via Celery (does not call directly)."""
-    result = parse_artefact_heavy.apply(
-        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
-    )
-    data = result.get() if hasattr(result, "get") else {}
-    return data.get("record_count", 0) if isinstance(data, dict) else 0

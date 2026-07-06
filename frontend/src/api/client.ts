@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
-import { keycloak } from '../keycloak'
+import { keycloak, refreshAccessToken } from '../keycloak'
 import { useAuthStore } from '../store/auth'
 
 const API_URL = import.meta.env.VITE_API_URL ?? ''
@@ -35,16 +35,15 @@ apiClient.interceptors.response.use(
       if (!isRefreshing) {
         isRefreshing = true
         try {
-          const refreshed = await keycloak.updateToken(-1)
-          if (refreshed && keycloak.token) {
-            useAuthStore.getState().updateToken(keycloak.token)
+          // AUTH-002/FE-2: refresh via the backend's HttpOnly-cookie proxy,
+          // never keycloak.updateToken() (which would depend on
+          // keycloak-js's own in-memory refresh token). refreshAccessToken
+          // already handles failure (clears auth + redirects to login).
+          const refreshed = await refreshAccessToken()
+          if (refreshed) {
             pendingRequests.forEach((cb) => cb())
             pendingRequests = []
           }
-        } catch {
-          useAuthStore.getState().clearAuth()
-          keycloak.login()
-          return Promise.reject(error)
         } finally {
           isRefreshing = false
         }
@@ -52,7 +51,7 @@ apiClient.interceptors.response.use(
 
       return new Promise((resolve) => {
         pendingRequests.push(() => {
-          originalRequest.headers.Authorization = `Bearer ${keycloak.token}`
+          originalRequest.headers.Authorization = `Bearer ${useAuthStore.getState().accessToken}`
           resolve(apiClient(originalRequest))
         })
       })

@@ -17,12 +17,20 @@ from src.exceptions import (
     StorageError,
     ValidationError,
 )
+from src.external.logging_config import configure_logging
 from src.external.routes import admin as admin_routes
 from src.external.routes import audit as audit_routes
 from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
+
+# Configure structured JSON logging as early as possible (module import time)
+# so every log emitted during app startup — not just requests — is rendered
+# as JSON (COMP-8). Safe to call at import time: configure_logging() only
+# reads env vars and mutates the stdlib logging root logger/structlog global
+# config, it does not depend on FastAPI or any request-scoped state.
+configure_logging()
 
 
 @asynccontextmanager
@@ -142,7 +150,9 @@ import os as _os  # noqa: E402
 _keycloak_internal_url = _os.getenv("KEYCLOAK_URL", "")
 _keycloak_public_url = _os.getenv("KEYCLOAK_PUBLIC_URL", _keycloak_internal_url)
 _keycloak_realm = _os.getenv("KEYCLOAK_REALM", "kronos")
-_keycloak_issuer = f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+_keycloak_issuer = (
+    f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+)
 _keycloak_jwks = (
     f"{_keycloak_internal_url}/realms/{_keycloak_realm}/protocol/openid-connect/certs"
     if _keycloak_internal_url

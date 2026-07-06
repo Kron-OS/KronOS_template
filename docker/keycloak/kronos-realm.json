@@ -19,11 +19,15 @@
   "quickLoginCheckMilliSeconds": 1000,
   "maxDeltaTimeSeconds": 43200,
   "failureFactor": 5,
-  "accessTokenLifespan": 300,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 7200,
+  "ssoSessionMaxLifespan": 86400,
+  "offlineSessionIdleTimeout": 7200,
   "attributes": {
     "acr.loa.map": "{\"aal1\":1,\"aal2\":2}"
   },
   "refreshTokenMaxReuse": 0,
+  "revokeRefreshToken": true,
   "browserFlow": "browser-stepup",
   "roles": {
     "realm": [
@@ -99,14 +103,14 @@
     {
       "clientId": "kronos-backend",
       "name": "KronOS Backend",
-      "description": "KronOS FastAPI backend service account",
+      "description": "KronOS FastAPI backend service account. AUTH-001: scoped to manage-users/view-users only (see docs/access-management-review.md AUTH-001 section); never grant realm-admin.",
       "enabled": true,
       "publicClient": false,
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "secret": "kronos-backend-secret",
-      "authorizationServicesEnabled": false
+      "authorizationServicesEnabled": true
     },
     {
       "clientId": "opensearch-dashboards",
@@ -161,7 +165,7 @@
     },
     {
       "name": "kronos-roles",
-      "description": "Includes realm roles in the token",
+      "description": "Flattens realm roles to a top-level 'roles' claim (AUTH-006). Mandatory because OpenSearch Security's roles_key cannot walk the default nested realm_access.roles path (Project_Specifications.md §1/§6).",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "true",
@@ -174,7 +178,7 @@
           "protocolMapper": "oidc-usermodel-realm-role-mapper",
           "consentRequired": false,
           "config": {
-            "claim.name": "realm_access.roles",
+            "claim.name": "roles",
             "multivalued": "true",
             "userinfo.token.claim": "true",
             "id.token.claim": "true",
@@ -398,7 +402,7 @@
       "enabled": true,
       "serviceAccountClientId": "kronos-backend",
       "clientRoles": {
-        "realm-management": ["realm-admin"]
+        "realm-management": ["manage-users", "view-users"]
       }
     }
   ],

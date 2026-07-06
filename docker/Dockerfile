@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
-# Build stage — install runtime dependencies into a self-contained venv
-FROM python:3.11-slim AS builder
+# Build stage — install runtime dependencies into a self-contained venv.
+# cgr.dev/chainguard/python:latest-dev is the Wolfi-based dev variant (has a
+# shell, pip, and a package manager) — mirrors docker/plaso/Dockerfile, this
+# project's reference pattern for Chainguard images (INFRA-005).
+FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 WORKDIR /app
 COPY pyproject.toml .
@@ -14,26 +17,29 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir .
 
-# Runtime stage — minimal image
-FROM python:3.11-slim
+# Runtime stage — minimal image. cgr.dev/chainguard/python:latest is the
+# non-dev, distroless-style variant: no shell, no package manager, so there is
+# no `useradd` here — it ships only python3/libs plus a built-in "nonroot"
+# user (uid/gid 65532), the same convention docker/plaso/Dockerfile already
+# uses. Non-root COPY --chown + USER nonroot below replaces the old
+# `useradd kronos` step (H-2/M-5 fixes from docs/SECURITY_AUDIT.md are
+# preserved: self-contained venv, runtime-only deps, non-root execution).
+FROM cgr.dev/chainguard/python:latest
 
 WORKDIR /app
 
-# Non-root user for security
-RUN useradd -r -m -d /home/kronos kronos
-
 # Copy the venv (owned by the runtime user) and the application source
-COPY --from=builder --chown=kronos:kronos /opt/venv /opt/venv
-COPY --chown=kronos:kronos src/ ./src/
-COPY --chown=kronos:kronos kronos_attest/ ./kronos_attest/
-COPY --chown=kronos:kronos pyproject.toml .
+COPY --from=builder --chown=nonroot:nonroot /opt/venv /opt/venv
+COPY --chown=nonroot:nonroot src/ ./src/
+COPY --chown=nonroot:nonroot kronos_attest/ ./kronos_attest/
+COPY --chown=nonroot:nonroot pyproject.toml .
 
 ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-USER kronos
+USER nonroot
 
 EXPOSE 8000
 

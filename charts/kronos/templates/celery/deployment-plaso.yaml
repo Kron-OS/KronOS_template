@@ -18,7 +18,11 @@ spec:
         app.kubernetes.io/name: {{ include "kronos.name" . }}-celery-plaso
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: celery-plaso
-        app.kubernetes.io/zone: app
+        # Distinct zone from the rest of the App tier (INFRA-008): parser
+        # pods must not inherit deny-app-egress.yaml's broad "app -> entire
+        # Data zone" allowance. See networkpolicies/parser-egress.yaml for
+        # the dedicated MinIO-only policy that selects this label instead.
+        app.kubernetes.io/zone: app-parser
       annotations:
         {{- include "kronos.vaultAnnotations" . | nindent 8 }}
     spec:

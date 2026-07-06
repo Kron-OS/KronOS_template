@@ -546,9 +546,7 @@ class TestAutoDispatch:
             async def enqueue_parse_heavy(self, *_a, **_kw):  # type: ignore[no-untyped-def]
                 raise RuntimeError("broker unavailable")
 
-        intake = _make_intake_with_queue(
-            audit_repo, evidence_repo, local_storage, BrokenQueue()
-        )
+        intake = _make_intake_with_queue(audit_repo, evidence_repo, local_storage, BrokenQueue())
         evidence, presigned = await intake.request_upload(
             filename="cloudtrail.json",
             content_type="application/json",

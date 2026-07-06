@@ -215,8 +215,15 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - ../src:/app/src:ro
+      # Shared with fluent-bit (docker/fluent-bit/docker-compose.fluent-bit.yml)
+      # so the JSON logs configure_logging() writes actually reach the
+      # SIEM pipeline (COMP-8) instead of only going to stdout, which
+      # nothing was tailing.
+      - kronos_app_logs:/var/log/kronos
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      # fluent-bit.conf tails this exact path (kronos.backend input).
+      KRONOS_LOG_FILE: /var/log/kronos/app.log
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       # MINIO_ENDPOINT is used for the backend's own connection to MinIO
@@ -268,6 +275,15 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - ../src:/app/src:ro
+      # Same shared log volume as kronos-backend — fluent-bit.conf tails
+      # /var/log/kronos/celery.log as the "kronos.celery" input (COMP-8).
+      # NOTE: KRONOS_LOG_FILE below is only consumed once
+      # src/external/celery_app.py calls configure_logging() at worker init,
+      # matching the one-line call already wired into fastapi_app.py — that
+      # part is tracked separately (celery_app.py is owned by a different
+      # workstream in this multi-agent effort); this volume/env var is the
+      # infra half of COMP-8 so the pipeline is ready the moment it lands.
+      - kronos_app_logs:/var/log/kronos
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
@@ -287,6 +303,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
+      KRONOS_LOG_FILE: /var/log/kronos/celery.log
     # Gate on health: worker_init wiring (startup.py) connects to Postgres, so it
     # must not start while "the database system is starting up", otherwise
     # configure_dependencies() fails and beat tasks hit an unconfigured repo.
@@ -349,3 +366,9 @@ volumes:
   opensearch_dev_data:
   clamav_dev_data:
   step_ca_data:
+  # Shared with docker/fluent-bit/docker-compose.fluent-bit.yml (mounted
+  # read-only there as `kronos_app_logs: external: true`) — declared here as
+  # the canonical, non-external definition, matching the same pattern
+  # docker/falco/docker-compose.falco.yml already uses for falco_logs
+  # (COMP-8).
+  kronos_app_logs:

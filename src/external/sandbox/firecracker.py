@@ -60,12 +60,18 @@ class FirecrackerLauncher:
         cmd = [
             self._python_bin,
             str(self._worker_path),
-            "--evidence-path", evidence_path,
-            "--evidence-id", evidence_id,
-            "--case-id", case_id,
-            "--org-id", org_id,
-            "--org-alias", org_alias,
-            "--sha256", sha256,
+            "--evidence-path",
+            evidence_path,
+            "--evidence-id",
+            evidence_id,
+            "--case-id",
+            case_id,
+            "--org-id",
+            org_id,
+            "--org-alias",
+            org_alias,
+            "--sha256",
+            sha256,
         ]
 
         logger.info(
@@ -140,9 +146,11 @@ class FirecrackerLauncher:
                     message=raw.get("message") or raw.get("description"),
                     event_original=raw.get("message") or raw.get("description"),
                     extra={
-                    k: v for k, v in raw.items()
-                    if k not in {"datetime", "@timestamp", "timestamp", "message", "description"}
-                },
+                        k: v
+                        for k, v in raw.items()
+                        if k
+                        not in {"datetime", "@timestamp", "timestamp", "message", "description"}
+                    },
                     kronos=KronosProvenance(
                         evidence_id=_uuid.UUID(evidence_id),
                         case_id=_uuid.UUID(case_id),

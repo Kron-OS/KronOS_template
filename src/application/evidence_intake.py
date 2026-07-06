@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
@@ -12,16 +13,25 @@ from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
 from src.application.audit_log import AuditLogService
 from src.application.hashing import HashService
 from src.application.scanning import AntivirusScanner
+from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
 from src.domain.user import Role, TenantContext
-from src.exceptions import AuthorizationError, ValidationError
+from src.exceptions import AuthorizationError, EvidenceStateError, StorageError, ValidationError
 
 logger = logging.getLogger(__name__)
 
 # How many bytes to read from the quarantine object for magic-byte validation.
-_HEADER_BYTES = 8192
+# Large enough to also let ZipJarDisguiseValidator (EVID-5) fully parse the
+# ZIP central directory of small archives — most disguised-JAR droppers are
+# well under this size; a ZIP whose central directory doesn't fit is passed
+# through to that validator's best-effort/defence-in-depth path.
+_HEADER_BYTES = 65536
+
+# Spec-authoritative default (Project_Specifications.md §2 "Retention Period"):
+# 365 days, configurable per case/org via `default_retention_days`.
+_DEFAULT_RETENTION_DAYS = 365
 
 
 async def _cap_stream(
@@ -67,8 +77,10 @@ class EvidenceIntakeService:
         scanner: AntivirusScanner,
         hash_service: HashService,
         max_upload_bytes: int,
-        presigned_url_expiry_seconds: int = 3600,
+        presigned_url_expiry_seconds: int = 900,
         task_queue: TaskQueue | None = None,
+        timestamp_service: RFC3161TimestampService | None = None,
+        default_retention_days: int = _DEFAULT_RETENTION_DAYS,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -79,6 +91,8 @@ class EvidenceIntakeService:
         self._max_upload_bytes = max_upload_bytes
         self._presigned_expiry = presigned_url_expiry_seconds
         self._task_queue = task_queue
+        self._timestamp_service = timestamp_service
+        self._default_retention_days = default_retention_days
 
     async def request_upload(
         self,
@@ -190,8 +204,9 @@ class EvidenceIntakeService:
     async def _run_validation(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.SCANNING)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=prior_state)
         await self._audit.log(
             AuditEventType.EVIDENCE_SCAN_STARTED,
             org_id=tenant.org_id,
@@ -217,7 +232,7 @@ class EvidenceIntakeService:
             )
         except ValidationError:
             evidence = evidence.with_error("validation_failed")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_ERROR,
                 org_id=tenant.org_id,
@@ -239,7 +254,7 @@ class EvidenceIntakeService:
             scan_result = await self._scanner.scan_stream(stream)
         except ValidationError:
             evidence = evidence.with_error("size_limit_exceeded")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_ERROR,
                 org_id=tenant.org_id,
@@ -251,7 +266,7 @@ class EvidenceIntakeService:
 
         if not scan_result.is_clean:
             evidence = evidence.with_error(f"infected:{scan_result.threat_name}")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.SCANNING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_SCAN_FAILED,
                 org_id=tenant.org_id,
@@ -282,15 +297,16 @@ class EvidenceIntakeService:
         client_sha256: str,
         tenant: TenantContext,
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.HASHING)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=prior_state)
 
         stream = await self._storage.stream_object(quarantine_key)
         hash_result = await self._hasher.compute_from_stream(stream)
 
         if hash_result.sha256 != client_sha256.lower():
             evidence = evidence.with_error("hash_mismatch")
-            await self._repo.update(evidence)
+            await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
             await self._audit.log(
                 AuditEventType.EVIDENCE_HASH_MISMATCH,
                 org_id=tenant.org_id,
@@ -308,13 +324,46 @@ class EvidenceIntakeService:
             )
 
         evidence = evidence.with_hashes(sha256=hash_result.sha256, md5=hash_result.md5)
-        await self._repo.update(evidence)
+        await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
         await self._audit.log(
             AuditEventType.EVIDENCE_HASH_COMPUTED,
             org_id=tenant.org_id,
             actor_user_id=tenant.user_id,
             evidence_id=evidence.evidence_id,
             details={"sha256": hash_result.sha256},
+        )
+
+        # RFC 3161 trusted timestamping on the evidence.hash.verified transition
+        # (Project_Specifications.md §2) — non-repudiable proof of acquisition
+        # time.  A TSA outage must not block intake (the file is already
+        # hashed and verified); it is logged and left for operational retry,
+        # never silently fabricated (see AUDIT-06's fix in timestamping.py).
+        if self._timestamp_service is not None:
+            evidence = await self._anchor_timestamp(evidence, tenant)
+
+        return evidence
+
+    async def _anchor_timestamp(self, evidence: Evidence, tenant: TenantContext) -> Evidence:
+        """Timestamp `evidence.sha256` via the RFC 3161 TSA and persist the token."""
+        assert self._timestamp_service is not None  # noqa: S101 — guarded by caller
+        try:
+            digest = bytes.fromhex(evidence.sha256 or "")
+            token = await self._timestamp_service.timestamp(digest)
+        except (StorageError, ValueError) as exc:
+            logger.warning(
+                "tsa_timestamp_failed",
+                extra={"evidence_id": str(evidence.evidence_id), "error": str(exc)},
+            )
+            return evidence
+
+        evidence = evidence.with_rfc3161_token(token)
+        await self._repo.update(evidence, expected_state=EvidenceState.HASHING)
+        await self._audit.log(
+            AuditEventType.EVIDENCE_TSA_ANCHORED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            evidence_id=evidence.evidence_id,
+            details={"sha256": evidence.sha256},
         )
         return evidence
 
@@ -325,10 +374,15 @@ class EvidenceIntakeService:
         *,
         step_up_verified: bool = False,
     ) -> None:
-        """Delete evidence metadata after verifying org scope and org-admin role.
+        """Soft-delete evidence after verifying org scope, role, retention, and hold.
 
-        The WORM-locked object in MinIO cannot be removed before its retention
-        period expires; only the platform metadata record is deleted here.
+        Aligns with Project_Specifications.md §2's retention model: Object Lock
+        retain-until is set at promotion time, and an object may only be purged
+        once that date has passed *and* legal_hold is false.  Even then, the
+        platform metadata row is never destroyed — it transitions to the
+        terminal ``PURGED`` state so the custodial record survives indefinitely.
+        The underlying MinIO object itself is immutable until the same
+        conditions hold (WORM enforced at the storage layer regardless).
 
         Step-up (MFA) is verified by the caller (the route consumes a one-time
         ticket); the caller passes the *actual* outcome via ``step_up_verified``
@@ -338,11 +392,17 @@ class EvidenceIntakeService:
 
         Raises:
             ValidationError: if evidence is not found for this org.
-            AuthorizationError: if the tenant lacks the ORG_ADMIN role.
+            AuthorizationError: if the tenant lacks org-admin/case-lead, or the
+                evidence is under legal hold.
+            EvidenceStateError: if the Object Lock retention period has not
+                yet expired.
         """
-        if Role.ORG_ADMIN not in tenant.roles:
+        # AUTH-009: the §1 matrix also grants delete to case-lead "of case" —
+        # the route enforces the case-ownership qualifier before calling this
+        # method, so here we only need the role-level check.
+        if not tenant.roles.intersection({Role.ORG_ADMIN, Role.CASE_LEAD}):
             raise AuthorizationError(
-                "Only org-admin may delete evidence",
+                "Only org-admin or case-lead may delete evidence",
                 context={"user_id": str(tenant.user_id), "org_id": str(tenant.org_id)},
             )
 
@@ -353,42 +413,155 @@ class EvidenceIntakeService:
                 context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
             )
 
+        custody_details = {
+            "step_up_verified": step_up_verified,
+            "sha256": evidence.sha256,
+            "bucket": self._bucket_for_audit(evidence),
+            "object_key": evidence.minio_evidence_key,
+        }
+
+        if evidence.legal_hold:
+            await self._audit.log(
+                AuditEventType.EVIDENCE_DELETE_DENIED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                evidence_id=evidence_id,
+                details={**custody_details, "reason": "legal_hold"},
+            )
+            raise AuthorizationError(
+                "Evidence is under legal hold and cannot be deleted",
+                context={"evidence_id": str(evidence_id)},
+            )
+
+        now = datetime.now(UTC)
+        if evidence.object_lock_until is not None and evidence.object_lock_until > now:
+            await self._audit.log(
+                AuditEventType.EVIDENCE_DELETE_DENIED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                evidence_id=evidence_id,
+                details={
+                    **custody_details,
+                    "reason": "retention_period_active",
+                    "object_lock_until": evidence.object_lock_until.isoformat(),
+                },
+            )
+            raise EvidenceStateError(
+                "Evidence retention period has not expired",
+                context={
+                    "evidence_id": str(evidence_id),
+                    "object_lock_until": evidence.object_lock_until.isoformat(),
+                },
+            )
+
+        purged = evidence.with_purge()
+        await self._repo.update(purged, expected_state=evidence.state)
+
         await self._audit.log(
             AuditEventType.EVIDENCE_DELETED,
             org_id=tenant.org_id,
             actor_user_id=tenant.user_id,
             actor_username=tenant.username,
             evidence_id=evidence_id,
-            details={"step_up_verified": step_up_verified},
+            details=custody_details,
         )
-
-        deleted = await self._repo.delete_by_id(evidence_id, tenant.org_id)
-        if not deleted:
-            logger.warning(
-                "evidence_delete_not_found_in_repo",
-                extra={"evidence_id": str(evidence_id)},
-            )
 
         logger.info(
-            "evidence_deleted",
+            "evidence_purged",
             extra={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
         )
+
+    async def set_legal_hold(
+        self,
+        evidence_id: uuid.UUID,
+        hold: bool,
+        tenant: TenantContext,
+    ) -> Evidence:
+        """Set or clear a legal hold, mirrored onto the WORM object in storage.
+
+        Restricted to org-admin / case-lead (Project_Specifications.md §2).
+        A held object cannot be purged by ``delete_evidence`` regardless of
+        Object Lock retention expiry.
+
+        Raises:
+            AuthorizationError: if the tenant lacks org-admin/case-lead.
+            ValidationError: if evidence is not found, or has not yet been
+                promoted to the WORM evidence bucket.
+        """
+        if not tenant.roles.intersection({Role.ORG_ADMIN, Role.CASE_LEAD}):
+            raise AuthorizationError(
+                "Only org-admin or case-lead may set legal hold",
+                context={"user_id": str(tenant.user_id), "org_id": str(tenant.org_id)},
+            )
+
+        evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
+        if evidence is None:
+            raise ValidationError(
+                "Evidence not found",
+                context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+        if evidence.minio_evidence_key is None:
+            raise ValidationError(
+                "Legal hold can only be set on evidence promoted to the WORM bucket",
+                context={"evidence_id": str(evidence_id), "state": evidence.state.value},
+            )
+
+        await self._storage.set_legal_hold(evidence.minio_evidence_key, hold, bucket="evidence")
+
+        updated = evidence.with_legal_hold(hold)
+        await self._repo.update(updated, expected_state=evidence.state)
+
+        event_type = (
+            AuditEventType.EVIDENCE_LEGAL_HOLD_SET
+            if hold
+            else AuditEventType.EVIDENCE_LEGAL_HOLD_CLEARED
+        )
+        await self._audit.log(
+            event_type,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            actor_username=tenant.username,
+            evidence_id=evidence_id,
+            details={"hold": hold, "object_key": evidence.minio_evidence_key},
+        )
+        logger.info(
+            "legal_hold_updated",
+            extra={"evidence_id": str(evidence_id), "hold": hold},
+        )
+        return updated
+
+    def _bucket_for_audit(self, evidence: Evidence) -> str | None:
+        """Best-effort bucket name for a custody audit entry; never raises."""
+        if evidence.minio_evidence_key is None:
+            return None
+        try:
+            return self._storage.bucket_for(evidence.minio_evidence_key, bucket="evidence")
+        except Exception:  # noqa: BLE001 — audit trail must never block on this
+            return None
 
     async def _promote(
         self, evidence: Evidence, quarantine_key: str, tenant: TenantContext
     ) -> Evidence:
+        prior_state = evidence.state
         evidence = evidence.with_state(EvidenceState.RECEIVED)
         evidence_key = await self._storage.promote_to_evidence_bucket(quarantine_key, evidence)
         await self._storage.delete_from_quarantine(quarantine_key)
 
+        # Object Lock retain-until is set at promotion time (Project_Specifications.md
+        # §2 "Retention Period"); mirrored on the domain row so delete_evidence can
+        # enforce it without a round-trip to MinIO.
+        retain_until = datetime.now(UTC) + timedelta(days=self._default_retention_days)
         evidence = evidence.with_keys(quarantine_key=None, evidence_key=evidence_key)
-        await self._repo.update(evidence)
+        evidence = evidence.with_object_lock_until(retain_until)
+        await self._repo.update(evidence, expected_state=prior_state)
         await self._audit.log(
             AuditEventType.EVIDENCE_PROMOTED,
             org_id=tenant.org_id,
             actor_user_id=tenant.user_id,
             evidence_id=evidence.evidence_id,
-            details={"evidence_key": evidence_key},
+            details={"evidence_key": evidence_key, "object_lock_until": retain_until.isoformat()},
         )
         logger.info(
             "evidence_received",

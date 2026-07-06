@@ -9,19 +9,26 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from src.adapter.repository.case_repository import CaseRepository
+from src.adapter.repository.evidence import EvidenceRepository
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.user import Role, TenantContext
-from src.exceptions import AuthorizationError, KronOSException, ParsingError, ValidationError
+from src.exceptions import (
+    AuthorizationError,
+    EvidenceStateError,
+    KronOSException,
+    ParsingError,
+    ValidationError,
+)
 from src.external.dependencies import (
     get_case_repository,
+    get_evidence_repository,
     get_intake_service,
     get_parsing_orchestration_service,
     get_step_up_auth,
-    get_tenant_context,
 )
-from src.external.middleware.rbac import requires_role
+from src.external.middleware.rbac import assert_case_lead_or_admin, requires_role
 from src.external.middleware.step_up_auth import StepUpAuth
 
 router = APIRouter(prefix="/api/evidence", tags=["evidence"])
@@ -80,6 +87,8 @@ class EvidenceOut(BaseModel):
     uploadedAt: str
     updatedAt: str
     rfc3161Token: str | None = None
+    legalHold: bool = False
+    objectLockUntil: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +103,17 @@ class EvidenceOut(BaseModel):
 )
 async def request_upload(
     body: UploadRequestIn,
-    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
 ) -> UploadRequestOut:
-    """Create an Evidence record and return a presigned URL for direct upload."""
+    """Create an Evidence record and return a presigned URL for direct upload.
+
+    AUTH-005: the §1 permission matrix excludes read-only members from
+    uploading evidence; this route previously had no role check at all.
+    """
     case = await case_repo.get_by_id(body.caseId, tenant.org_id)
     if case is None:
         raise HTTPException(
@@ -138,10 +153,16 @@ async def request_upload(
 async def finalize_upload(
     evidence_id: uuid.UUID,
     body: FinalizeUploadIn,
-    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
 ) -> EvidenceOut:
-    """Validate, scan, hash, and promote the uploaded file to RECEIVED state."""
+    """Validate, scan, hash, and promote the uploaded file to RECEIVED state.
+
+    AUTH-005: same role gate as ``request_upload`` — finalize is the second
+    half of the same upload action and must not be reachable by read-only.
+    """
     try:
         evidence = await intake.finalize_upload(
             evidence_id=evidence_id,
@@ -198,12 +219,19 @@ async def start_parsing(
 )
 async def delete_evidence(
     evidence_id: uuid.UUID,
-    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN))],
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     step_up_auth: Annotated[StepUpAuth, Depends(get_step_up_auth)],
     x_step_up_ticket: Annotated[str, Header(description="One-time step-up ticket UUID")] = "",
 ) -> None:
-    """Delete evidence metadata. Requires org-admin role + aal2 step-up ticket.
+    """Delete evidence metadata. Requires org-admin, or case-lead of the case, + aal2 step-up.
+
+    AUTH-009: the §1 permission matrix grants delete to case-lead "of case" as
+    well as org-admin; this was previously org-admin-only, stricter than the
+    documented matrix. ``_assert_case_ownership_for_evidence`` enforces the
+    "of the case" qualifier (mirrors ``cases.py``'s ``assert_case_lead_or_admin``).
 
     The underlying WORM object is retained in MinIO until its retention period
     expires (per regulatory requirements).  Only the platform metadata record
@@ -212,6 +240,7 @@ async def delete_evidence(
     Clients must first obtain a step-up ticket via ``POST /api/step-up/ticket``
     (requires aal2 JWT) and pass it in the ``X-Step-Up-Ticket`` header.
     """
+    await _assert_case_ownership_for_evidence(evidence_id, tenant, evidence_repo, case_repo)
     step_up_auth.assert_acr(tenant)
 
     try:
@@ -237,15 +266,84 @@ async def delete_evidence(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except EvidenceStateError as exc:
+        # Retention period still active — a state conflict, not an auth failure.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except KronOSException as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
 
 
+class LegalHoldIn(BaseModel):
+    """Request body for PUT /evidence/{id}/legal-hold."""
+
+    hold: bool = Field(description="True to set the legal hold, False to clear it")
+
+
+@router.put(
+    "/{evidence_id}/legal-hold",
+    response_model=EvidenceOut,
+)
+async def set_legal_hold(
+    evidence_id: uuid.UUID,
+    body: LegalHoldIn,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+) -> EvidenceOut:
+    """Set or clear a legal hold, blocking purge regardless of retention expiry.
+
+    Restricted to org-admin / case-lead **of the case** (Project_Specifications.md
+    §2) — ``_assert_case_ownership_for_evidence`` enforces the "of the case"
+    qualifier so a case-lead cannot hold/unhold evidence in a case they don't
+    lead, consistent with the same rule applied to delete (AUTH-009).
+    """
+    await _assert_case_ownership_for_evidence(evidence_id, tenant, evidence_repo, case_repo)
+    try:
+        evidence = await intake.set_legal_hold(
+            evidence_id=evidence_id, hold=body.hold, tenant=tenant
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return to_evidence_out(evidence)
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+async def _assert_case_ownership_for_evidence(
+    evidence_id: uuid.UUID,
+    tenant: TenantContext,
+    evidence_repo: EvidenceRepository,
+    case_repo: CaseRepository,
+) -> None:
+    """Resolve the case owning ``evidence_id`` and enforce case-lead/admin ownership.
+
+    Evidence-level actions restricted to "org-admin / case-lead of the case"
+    (legal hold, delete — AUTH-009) need the owning case, not just the
+    evidence's org_id, to enforce the matrix's "(of case)" qualifier the same
+    way ``cases.py`` does via ``assert_case_lead_or_admin``.
+    """
+    if Role.ORG_ADMIN in tenant.roles:
+        return
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    case = await case_repo.get_by_id(evidence.metadata.case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
 
 
 def to_evidence_out(ev: Evidence) -> EvidenceOut:
@@ -268,7 +366,9 @@ def to_evidence_out(ev: Evidence) -> EvidenceOut:
         uploadedBy=str(ev.metadata.uploader_user_id),
         uploadedAt=ev.created_at.isoformat(),
         updatedAt=ev.updated_at.isoformat(),
-        # RFC 3161 timestamping is not yet wired into evidence intake;
-        # None renders as "Not anchored yet" in the detail drawer.
-        rfc3161Token=None,
+        # None renders as "Not anchored yet" in the detail drawer until the
+        # evidence.hash.verified transition anchors a real TSA token.
+        rfc3161Token=ev.rfc3161_token.hex() if ev.rfc3161_token else None,
+        legalHold=ev.legal_hold,
+        objectLockUntil=ev.object_lock_until.isoformat() if ev.object_lock_until else None,
     )

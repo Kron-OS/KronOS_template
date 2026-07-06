@@ -1,4 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  SOURCE OF TRUTH: every `event_type` match string below MUST equal the
+  string value of an `AuditEventType` member in src/domain/audit.py — that
+  enum, not this file, is authoritative. Before adding or editing a rule,
+  open src/domain/audit.py and copy the literal value (e.g.
+  `EVIDENCE_SCAN_FAILED = "evidence.scan_failed"`); do not guess at a
+  dot/underscore convention or reuse wording from a design doc.
+
+  This file drifted from the enum once already (COMP-7/COMP-16, static
+  compliance/pentest review 2026-07-05): several rules matched plausible-
+  looking strings — "evidence.scan.failed", "auth.rbac.denied" — that were
+  never emitted by the app, silently disabling every malware/tamper/RBAC
+  alert this file claims to provide. Re-verify against the live enum any
+  time src/domain/audit.py changes, and note in this comment block when a
+  rule's event isn't actually emitted anywhere in src/ yet (grep for
+  `AuditEventType\.<NAME>` in src/ to check) so the gap is visible instead
+  of silent.
+-->
 <group name="kronos,">
 
   <!-- ===================================================================
@@ -13,50 +31,85 @@
     <group>kronos,audit,</group>
   </rule>
 
-  <!-- Rule 100101: Evidence upload initiated -->
+  <!-- Rule 100101: Evidence upload initiated.
+       AuditEventType.EVIDENCE_UPLOAD_REQUESTED = "evidence.upload_requested"
+       (underscore, not "evidence.upload.requested") — emitted by
+       EvidenceIntakeService.request_upload(). -->
   <rule id="100101" level="3" frequency="1" timeframe="60">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">evidence.upload.requested</field>
+    <field name="event_type">evidence.upload_requested</field>
     <description>KronOS: Evidence upload requested by $(user_id)</description>
     <group>kronos,evidence,upload,</group>
   </rule>
 
-  <!-- Rule 100102: Evidence hashing complete — forensic baseline recorded -->
+  <!-- Rule 100102: Evidence hashing complete — forensic baseline recorded.
+       AuditEventType.EVIDENCE_HASH_COMPUTED = "evidence.hash_computed"
+       (there is no "evidence.upload_finalized" member in the enum at all —
+       the closest real, already-emitted event for "hash recorded" is this
+       one, from EvidenceIntakeService._run_hash()). -->
   <rule id="100102" level="4">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">evidence.upload.finalized</field>
+    <field name="event_type">evidence.hash_computed</field>
     <description>KronOS: Evidence hash recorded — $(evidence_id)</description>
     <group>kronos,evidence,intake,</group>
   </rule>
 
-  <!-- Rule 100103: Virus detected in evidence upload -->
+  <!-- Rule 100103: Virus detected in evidence upload.
+       AuditEventType.EVIDENCE_SCAN_FAILED = "evidence.scan_failed"
+       (underscore, not "evidence.scan.failed") — emitted by
+       EvidenceIntakeService._run_scan() when scan_result.is_clean is False. -->
   <rule id="100103" level="12">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">evidence.scan.failed</field>
+    <field name="event_type">evidence.scan_failed</field>
     <description>KronOS: Malware detected in upload — $(evidence_id) (user=$(user_id))</description>
     <group>kronos,evidence,malware,</group>
   </rule>
 
-  <!-- Rule 100104: Audit hash-chain verification failure — tamper event -->
+  <!-- Rule 100104: Audit hash-chain verification failure — tamper event.
+       AuditEventType.AUDIT_HASH_CHAIN_TAMPERED = "audit.hash_chain_tampered"
+       (not "audit.chain.verify.failed", which matches no enum member at
+       all). NOTE (AUDIT-04/COMP-8 gap): AuditLogService.verify_chain()
+       currently reports a break via a plain `logger.warning("audit_chain_
+       tampered", ...)` call, not via AuditEventType/audit_event_logged — so
+       even with the literal fixed here, this rule cannot fire until that
+       code path is wired to emit AUDIT_HASH_CHAIN_TAMPERED through the
+       audit log (tracked separately; not a Wazuh-file change). -->
   <rule id="100104" level="15">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">audit.chain.verify.failed</field>
+    <field name="event_type">audit.hash_chain_tampered</field>
     <description>KronOS: Audit log chain BROKEN — possible tampering</description>
     <group>kronos,audit,integrity,tamper,pci_dss_10.5.2,</group>
   </rule>
 
-  <!-- Rule 100105: Step-up MFA bypass attempt (403 on delete without MFA ticket) -->
+  <!-- Rule 100105: Step-up MFA bypass attempt (401 on delete without a valid
+       step-up ticket). AuditEventType.AUTH_STEP_UP = "auth.step_up" is the
+       only step-up-related member in the enum — there is no dedicated
+       "denied"/"bypass" sub-type, so this rule matches the general step-up
+       bucket rather than "auth.step_up.denied" (which matches nothing).
+       NOTE: StepUpAuth.assert_acr()/consume_ticket() in
+       src/external/middleware/step_up_auth.py currently raise a plain
+       HTTPException on failure and never log an AuditEventType at all
+       (issuance/consumption only log plain "step_up_ticket_issued"/
+       "step_up_ticket_consumed" messages) — this rule is forward-looking
+       until that gap is closed and will not fire on today's code. -->
   <rule id="100105" level="10">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">auth.step_up.denied</field>
-    <description>KronOS: Step-up auth denied for $(user_id) — possible bypass attempt</description>
+    <field name="event_type">auth.step_up</field>
+    <description>KronOS: Step-up auth event for $(user_id) — verify this was a legitimate MFA challenge, not a bypass attempt</description>
     <group>kronos,auth,step_up,</group>
   </rule>
 
-  <!-- Rule 100106: RBAC violation — user accessed restricted endpoint -->
+  <!-- Rule 100106: RBAC/authorization violation — user accessed a
+       restricted endpoint. AuditEventType.AUTHZ_DENIED = "authz.denied"
+       (not "auth.rbac.denied", which matches no enum member). NOTE: no
+       route/middleware currently calls audit_log.log(AuditEventType.
+       AUTHZ_DENIED, ...) anywhere in src/ yet — RBAC denials raise
+       AuthorizationError, which the FastAPI exception handler turns into a
+       403 response but does not (yet) audit-log. This rule is forward-
+       looking for when that wiring lands. -->
   <rule id="100106" level="8">
     <if_matched_sid>100100</if_matched_sid>
-    <field name="event_type">auth.rbac.denied</field>
+    <field name="event_type">authz.denied</field>
     <description>KronOS: RBAC violation — $(user_id) denied on $(endpoint)</description>
     <group>kronos,auth,rbac,</group>
   </rule>

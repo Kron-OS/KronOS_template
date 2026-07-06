@@ -23,7 +23,11 @@ from src.external.dependencies import (
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
-from src.external.middleware.rbac import requires_role
+from src.external.middleware.rbac import (
+    assert_case_access,
+    assert_case_lead_or_admin,
+    requires_role,
+)
 from src.external.routes.evidence import EvidenceOut, to_evidence_out
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
@@ -72,6 +76,12 @@ class PaginatedEvidence(BaseModel):
 
 class DashboardUrlOut(BaseModel):
     url: str
+
+
+class AddCaseMemberIn(BaseModel):
+    """Assign an existing org user as a member of a case (AUTH-007)."""
+
+    userId: uuid.UUID
 
 
 class AuditEventOut(BaseModel):
@@ -123,7 +133,9 @@ async def create_case(
     try:
         case = await case_repo.save(case)
     except KronOSException as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
 
     await audit_svc.log(
         AuditEventType.CASE_CREATED,
@@ -158,24 +170,62 @@ async def get_case(
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
 ) -> CaseOut:
-    """Return a single case by ID, scoped to the caller's org."""
+    """Return a single case by ID, scoped to the caller's org and case membership."""
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
     return _to_case_out(case)
+
+
+@router.post("/{case_id}/members", response_model=CaseOut)
+async def add_case_member(
+    case_id: uuid.UUID,
+    body: AddCaseMemberIn,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    audit_svc=Depends(get_audit_log_service),
+) -> CaseOut:
+    """Assign a user as a member of a case (AUTH-007).
+
+    Per the §1 permission matrix ("Assign members": org-admin all, case-lead
+    of case only), a case-lead may only assign members to a case they lead —
+    enforced via ``assert_case_lead_or_admin``.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
+
+    updated = await case_repo.update(case.with_member(body.userId))
+    await audit_svc.log(
+        AuditEventType.CASE_UPDATED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        actor_user_id=tenant.user_id,
+        details={"action": "case.member_added", "member_user_id": str(body.userId)},
+    )
+    return _to_case_out(updated)
 
 
 @router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_case(
     case_id: uuid.UUID,
-    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN))],
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     audit_svc=Depends(get_audit_log_service),
 ) -> None:
-    """Archive a case (org-admin only)."""
+    """Archive a case.
+
+    AUTH-009: the permission matrix grants this to case-lead as well as
+    org-admin, but only for a case the case-lead actually leads
+    (``assert_case_lead_or_admin``) — previously this was org-admin-only,
+    stricter than the documented matrix.
+    """
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
 
     archived = case.with_status(CaseStatus.ARCHIVED)
     await case_repo.update(archived)
@@ -192,11 +242,17 @@ async def delete_case(
 async def list_case_evidence(
     case_id: uuid.UUID,
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> PaginatedEvidence:
-    """Return paginated evidence for a case."""
+    """Return paginated evidence for a case, scoped to org and case membership."""
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
     items = []
     async for ev in evidence_repo.stream_by_case(case_id, tenant.org_id):
         items.append(ev)
@@ -230,6 +286,7 @@ async def get_dashboard_url(
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
 
     index_pattern = f"kronos-{case.org_alias}-case-{case_id}-*"
     ks_filter = (
@@ -263,12 +320,25 @@ async def get_dashboard_url(
 @router.get("/{case_id}/audit", response_model=PaginatedAuditLog)
 async def list_case_audit_events(
     case_id: uuid.UUID,
-    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500, alias="pageSize"),
 ) -> PaginatedAuditLog:
-    """Return paginated audit events for a case (tenant-scoped)."""
+    """Return paginated audit events for a case, org- and role-scoped.
+
+    AUTH-004: previously any authenticated org member (including analyst and
+    read-only) could read a case's full custody trail. Per the §1 permission
+    matrix ("View audit log": org-admin all, case-lead own case only,
+    analyst/read-only none), this now requires org-admin or case-lead, and a
+    case-lead must actually lead *this* case (AUTH-007's ownership check).
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
+
     events: list[AuditEvent] = []
     async for ev in audit_svc._repository.stream_by_case(case_id):
         if ev.org_id != tenant.org_id:
