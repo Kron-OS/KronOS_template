@@ -63,15 +63,22 @@ EXPOSE 80
 # uid 101 ("nginx", built into this image) can still bind port 80 without
 # any of this — that's a separate Linux capability (NET_BIND_SERVICE, in
 # Docker's default capability set), unaffected by file ownership.
+#
+# /var/run isn't writable by uid 101 either, so the stock nginx.conf's
+# `pid /var/run/nginx.pid;` directive would fail once the master process
+# tries to write it. This used to be "fixed" by passing `-g "pid
+# /tmp/nginx.pid;"` on the CMD line, but that doesn't work: nginx.conf
+# already declares a `pid` directive, and a `-g` value is injected as an
+# *additional* top-level directive rather than replacing the one already in
+# the file, so the parser rejects the merged config with `"pid" directive
+# is duplicate`. Patch the stock file in place instead, so there is exactly
+# one `pid` directive, pointing at a path uid 101 can write to. The sed
+# pattern tolerates whitespace variation in case upstream reformats the line.
 RUN mkdir -p /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp \
         /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp \
-    && chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d /var/log/nginx
+    && chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d /var/log/nginx \
+    && sed -i -E 's#^\s*pid\s+/var/run/nginx\.pid\s*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf
 
 USER nginx
 
-# /var/run isn't writable by uid 101 either, so the default
-# `pid /var/run/nginx.pid;` in the stock nginx.conf would fail the same way
-# once the master process actually tries to write it — override via `-g`
-# rather than editing the upstream config file, which is more resilient to
-# upstream formatting/comment changes than a sed-based patch would be.
-CMD ["nginx", "-g", "daemon off; pid /tmp/nginx.pid;"]
+CMD ["nginx", "-g", "daemon off;"]
