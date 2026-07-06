@@ -50,6 +50,17 @@ USER nonroot
 
 EXPOSE 8000
 
+# cgr.dev/chainguard/python images bake in ENTRYPOINT ["/usr/bin/python"], so
+# any CMD (or a docker-compose `command:` override — e.g. celery-worker /
+# celery-beat / kronos-backend in docker-compose.dev.yml) is otherwise
+# appended as ARGUMENTS to that python interpreter, i.e. it actually runs
+# `python uvicorn src.external.fastapi_app:app ...`, and python tries to open
+# "uvicorn" as a script path relative to WORKDIR /app — hence "can't open
+# file '/app/uvicorn'" (same failure for "celery"). Clearing the entrypoint
+# here restores normal exec-form CMD/command semantics for every service
+# built from this image.
+ENTRYPOINT []
+
 # NOTE: step-up tickets and the JWKS cache are per-process (audit M-4). Running
 # multiple workers/pods requires a shared store; until then run a single worker
 # and scale via additional replicas behind the load balancer only once step-up
