@@ -30,11 +30,13 @@ class _FakeSettings:
 class _FakeAsyncClient:
     """Stand-in for httpx.AsyncClient used by refresh_token."""
 
-    def __init__(self, response: httpx.Response | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self, response: httpx.Response | None = None, error: Exception | None = None
+    ) -> None:
         self._response = response
         self._error = error
 
-    async def __aenter__(self) -> "_FakeAsyncClient":
+    async def __aenter__(self) -> _FakeAsyncClient:
         return self
 
     async def __aexit__(self, *_exc: object) -> bool:
@@ -58,7 +60,11 @@ def _app(monkeypatch: pytest.MonkeyPatch, fake_client: _FakeAsyncClient) -> Fast
 def _keycloak_success_response() -> httpx.Response:
     return httpx.Response(
         200,
-        json={"access_token": "new-access-token", "refresh_token": "new-refresh-token", "refresh_expires_in": 1800},
+        json={
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "refresh_expires_in": 1800,
+        },
         request=httpx.Request("POST", "https://idp.test/token"),
     )
 
@@ -96,12 +102,16 @@ def test_refresh_returns_401_with_no_cookie_and_no_body(monkeypatch: pytest.Monk
     assert resp.status_code == 401
 
 
-def test_refresh_returns_401_with_malformed_body_and_no_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refresh_returns_401_with_malformed_body_and_no_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake_client = _FakeAsyncClient(response=_keycloak_success_response())
     app = _app(monkeypatch, fake_client)
     client = TestClient(app)
 
-    resp = client.post("/auth/refresh", content=b"not-json", headers={"Content-Type": "application/json"})
+    resp = client.post(
+        "/auth/refresh", content=b"not-json", headers={"Content-Type": "application/json"}
+    )
     assert resp.status_code == 401
 
 
@@ -130,7 +140,11 @@ def test_cookie_takes_precedence_over_body(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_refresh_returns_401_when_keycloak_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_client = _FakeAsyncClient(
-        response=httpx.Response(400, json={"error": "invalid_grant"}, request=httpx.Request("POST", "https://idp.test/token"))
+        response=httpx.Response(
+            400,
+            json={"error": "invalid_grant"},
+            request=httpx.Request("POST", "https://idp.test/token"),
+        )
     )
     app = _app(monkeypatch, fake_client)
     client = TestClient(app)

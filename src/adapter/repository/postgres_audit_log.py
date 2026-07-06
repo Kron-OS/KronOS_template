@@ -139,9 +139,7 @@ class PostgresAuditLogRepository(AnchorRepository):
                 ) from exc
         return event
 
-    async def stream_by_evidence(
-        self, evidence_id: uuid.UUID
-    ) -> AsyncIterator[AuditEvent]:
+    async def stream_by_evidence(self, evidence_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 audit_log_table.select()
@@ -151,9 +149,7 @@ class PostgresAuditLogRepository(AnchorRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_case(
-        self, case_id: uuid.UUID
-    ) -> AsyncIterator[AuditEvent]:
+    async def stream_by_case(self, case_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 audit_log_table.select()
@@ -163,9 +159,7 @@ class PostgresAuditLogRepository(AnchorRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_org(
-        self, org_id: uuid.UUID
-    ) -> AsyncIterator[AuditEvent]:
+    async def stream_by_org(self, org_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 audit_log_table.select()
@@ -240,9 +234,9 @@ class PostgresAuditLogRepository(AnchorRepository):
             )
             row = (
                 await conn.execute(
-                    sa.select(
-                        audit_anchor_table.c.root_hash, audit_anchor_table.c.tsa_token
-                    ).where(*conditions)
+                    sa.select(audit_anchor_table.c.root_hash, audit_anchor_table.c.tsa_token).where(
+                        *conditions
+                    )
                 )
             ).one_or_none()
         return (row[0], row[1]) if row else None

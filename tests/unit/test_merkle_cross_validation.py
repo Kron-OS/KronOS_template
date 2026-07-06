@@ -25,17 +25,17 @@ def _hashes(n: int) -> list[str]:
 def test_roots_match_for_empty_and_various_sizes() -> None:
     for n in range(0, 10):
         hashes = _hashes(n)
-        assert attest_build_merkle_root(hashes) == domain_build_merkle_root(hashes), (
-            f"root mismatch at n={n}"
-        )
+        assert attest_build_merkle_root(hashes) == domain_build_merkle_root(
+            hashes
+        ), f"root mismatch at n={n}"
 
 
 def test_roots_match_for_odd_and_even_sizes() -> None:
     for n in (1, 2, 3, 4, 5, 7, 8, 15, 16, 17):
         hashes = _hashes(n)
-        assert attest_build_merkle_root(hashes) == domain_build_merkle_root(hashes), (
-            f"root mismatch at n={n}"
-        )
+        assert attest_build_merkle_root(hashes) == domain_build_merkle_root(
+            hashes
+        ), f"root mismatch at n={n}"
 
 
 def test_proof_steps_match_for_every_index() -> None:

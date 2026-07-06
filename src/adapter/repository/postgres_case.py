@@ -82,9 +82,9 @@ class PostgresCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         async with self._engine.connect() as conn:
             count_row = await conn.execute(
-                sa.select(sa.func.count()).select_from(cases_table).where(
-                    cases_table.c.org_id == org_id
-                )
+                sa.select(sa.func.count())
+                .select_from(cases_table)
+                .where(cases_table.c.org_id == org_id)
             )
             total: int = count_row.scalar_one()
 

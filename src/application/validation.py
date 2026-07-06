@@ -147,7 +147,9 @@ class ZipJarDisguiseValidator(EvidenceValidator):
         size_bytes: int,
         header_bytes: bytes,
     ) -> None:
-        if not header_bytes.startswith(b"PK\x03\x04") and not header_bytes.startswith(b"PK\x05\x06"):
+        if not header_bytes.startswith(b"PK\x03\x04") and not header_bytes.startswith(
+            b"PK\x05\x06"
+        ):
             return  # not a zip-signature file
 
         try:

@@ -65,7 +65,9 @@ async def verify_chain(
     try:
         valid, detail = await audit_svc.verify_chain(tenant.org_id)
     except KronOSException as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
     return ChainVerifyResponse(valid=valid, detail=detail)
 
 

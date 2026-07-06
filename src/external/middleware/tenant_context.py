@@ -19,9 +19,7 @@ _bearer = HTTPBearer(auto_error=True)
 def _get_validator(request: Request) -> Any:
     validator = getattr(request.app.state, "keycloak_validator", None)
     if validator is None:
-        raise RuntimeError(
-            "KeycloakTokenValidator not registered in app.state.keycloak_validator"
-        )
+        raise RuntimeError("KeycloakTokenValidator not registered in app.state.keycloak_validator")
     return validator
 
 

@@ -16,7 +16,9 @@ class _RoleChecker:
     def __init__(self, *required_roles: Role) -> None:
         self._required_roles = frozenset(required_roles)
 
-    async def __call__(self, tenant: TenantContext = Depends(get_tenant_context)) -> TenantContext:  # noqa: B008
+    async def __call__(
+        self, tenant: TenantContext = Depends(get_tenant_context)
+    ) -> TenantContext:  # noqa: B008
         if not tenant.roles.intersection(self._required_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -56,7 +58,9 @@ def assert_case_access(tenant: TenantContext, case: Case) -> None:
         return
     if tenant.user_id == case.owner_user_id or tenant.user_id in case.member_user_ids:
         return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this case")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this case"
+    )
 
 
 def assert_case_lead_or_admin(tenant: TenantContext, case: Case) -> None:

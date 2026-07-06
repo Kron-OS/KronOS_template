@@ -3,25 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
-from datetime import UTC, datetime
 from typing import Any
-
-import pytest
 
 from kronos_attest.report import AttestationReport
 from kronos_attest.verifier import (
     GENESIS_HASH,
-    ChainBreak,
-    ChainVerificationResult,
     ChainVerifier,
     MerkleVerifier,
     build_merkle_root,
     compute_row_hash,
     merkle_proof,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

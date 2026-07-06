@@ -63,9 +63,7 @@ class AuditLogRepository(ABC):
         not filtered by case_id.
         """
 
-    async def list_by_date_range(
-        self, start: datetime, end: datetime
-    ) -> list[AuditEvent]:
+    async def list_by_date_range(self, start: datetime, end: datetime) -> list[AuditEvent]:
         """Return all events with occurred_at in [start, end).
 
         Default implementation streams all events; Postgres implementation

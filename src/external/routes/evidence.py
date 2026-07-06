@@ -27,7 +27,6 @@ from src.external.dependencies import (
     get_intake_service,
     get_parsing_orchestration_service,
     get_step_up_auth,
-    get_tenant_context,
 )
 from src.external.middleware.rbac import assert_case_lead_or_admin, requires_role
 from src.external.middleware.step_up_auth import StepUpAuth
@@ -289,9 +288,7 @@ class LegalHoldIn(BaseModel):
 async def set_legal_hold(
     evidence_id: uuid.UUID,
     body: LegalHoldIn,
-    tenant: Annotated[
-        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))
-    ],
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
     evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],

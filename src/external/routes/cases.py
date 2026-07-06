@@ -23,7 +23,11 @@ from src.external.dependencies import (
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
-from src.external.middleware.rbac import assert_case_access, assert_case_lead_or_admin, requires_role
+from src.external.middleware.rbac import (
+    assert_case_access,
+    assert_case_lead_or_admin,
+    requires_role,
+)
 from src.external.routes.evidence import EvidenceOut, to_evidence_out
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
@@ -129,7 +133,9 @@ async def create_case(
     try:
         case = await case_repo.save(case)
     except KronOSException as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
 
     await audit_svc.log(
         AuditEventType.CASE_CREATED,

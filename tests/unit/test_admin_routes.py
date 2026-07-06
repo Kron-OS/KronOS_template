@@ -169,7 +169,9 @@ def test_to_http_error_maps_conflict_to_409_without_confirming_other_org() -> No
 # ---------------------------------------------------------------------------
 
 
-async def test_is_org_member_true_when_keycloak_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_is_org_member_true_when_keycloak_returns_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tenant = make_tenant_context()
 
     async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
@@ -179,7 +181,9 @@ async def test_is_org_member_true_when_keycloak_returns_200(monkeypatch: pytest.
     assert await _is_org_member(tenant, "user-1") is True
 
 
-async def test_is_org_member_false_when_keycloak_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_is_org_member_false_when_keycloak_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tenant = make_tenant_context()
 
     async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
@@ -222,9 +226,13 @@ async def test_find_user_by_email_returns_none_for_user_in_another_org(
     tenant = make_tenant_context()
     other_org_user_id = str(uuid.uuid4())
 
-    async def fake_request(_tenant: object, method: str, path: str, *_a: object, **_kw: object) -> _FakeResponse:
+    async def fake_request(
+        _tenant: object, method: str, path: str, *_a: object, **_kw: object
+    ) -> _FakeResponse:
         if path.startswith("/users?"):
-            return _FakeResponse(200, [{"id": other_org_user_id, "email": "someone@other-org.example"}])
+            return _FakeResponse(
+                200, [{"id": other_org_user_id, "email": "someone@other-org.example"}]
+            )
         # org-membership check
         return _FakeResponse(404, None)
 
@@ -239,9 +247,13 @@ async def test_find_user_by_email_returns_candidate_when_member_of_caller_org(
     tenant = make_tenant_context()
     member_user_id = str(uuid.uuid4())
 
-    async def fake_request(_tenant: object, method: str, path: str, *_a: object, **_kw: object) -> _FakeResponse:
+    async def fake_request(
+        _tenant: object, method: str, path: str, *_a: object, **_kw: object
+    ) -> _FakeResponse:
         if path.startswith("/users?"):
-            return _FakeResponse(200, [{"id": member_user_id, "email": "teammate@caller-org.example"}])
+            return _FakeResponse(
+                200, [{"id": member_user_id, "email": "teammate@caller-org.example"}]
+            )
         return _FakeResponse(200, {"id": member_user_id})
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)

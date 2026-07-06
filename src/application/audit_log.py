@@ -187,8 +187,7 @@ class AuditLogService:
             expected = compute_row_hash(prev_hash, event)
             if event.row_hash != expected:
                 detail = (
-                    f"Hash mismatch at seq={event.sequence_number} "
-                    f"event_id={event.event_id}"
+                    f"Hash mismatch at seq={event.sequence_number} " f"event_id={event.event_id}"
                 )
                 logger.warning("audit_chain_tampered", extra={"detail": detail})
                 return False, detail
@@ -250,7 +249,9 @@ class AuditLogService:
                 "tsa_token": tsa_token.hex() if tsa_token else None,
             },
         )
-        logger.info("audit_merkle_anchored", extra={"date": str(anchor_date), "root_hash": root_hash})
+        logger.info(
+            "audit_merkle_anchored", extra={"date": str(anchor_date), "root_hash": root_hash}
+        )
         return root_hash
 
 

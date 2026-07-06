@@ -88,9 +88,7 @@ async def wire_dependencies_async() -> None:
     # which honestly disables timestamping rather than fabricating tokens.
     from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
 
-    timestamp_service = (
-        RFC3161TimestampService(settings.tsa_url) if settings.tsa_url else None
-    )
+    timestamp_service = RFC3161TimestampService(settings.tsa_url) if settings.tsa_url else None
 
     configure_dependencies(
         audit_log_repository=audit_repo,

@@ -150,7 +150,9 @@ import os as _os  # noqa: E402
 _keycloak_internal_url = _os.getenv("KEYCLOAK_URL", "")
 _keycloak_public_url = _os.getenv("KEYCLOAK_PUBLIC_URL", _keycloak_internal_url)
 _keycloak_realm = _os.getenv("KEYCLOAK_REALM", "kronos")
-_keycloak_issuer = f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+_keycloak_issuer = (
+    f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+)
 _keycloak_jwks = (
     f"{_keycloak_internal_url}/realms/{_keycloak_realm}/protocol/openid-connect/certs"
     if _keycloak_internal_url

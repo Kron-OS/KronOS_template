@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from src.application.timestamping import RFC3161TimestampService, _build_timestamp_request, _der_length
+from src.application.timestamping import (
+    RFC3161TimestampService,
+    _build_timestamp_request,
+    _der_length,
+)
 from src.exceptions import StorageError, TimestampingError
 
 
@@ -70,9 +74,7 @@ class TestRFC3161TimestampService:
     @pytest.mark.asyncio
     async def test_timestamp_raises_storage_error_on_http_error(self, svc):
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(
-            side_effect=httpx.ConnectError("Connection refused")
-        )
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -84,9 +86,7 @@ class TestRFC3161TimestampService:
     async def test_timestamp_raises_on_http_status_error(self, svc):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock(
-            side_effect=httpx.HTTPStatusError(
-                "400", request=MagicMock(), response=MagicMock()
-            )
+            side_effect=httpx.HTTPStatusError("400", request=MagicMock(), response=MagicMock())
         )
 
         mock_client = AsyncMock()
@@ -126,7 +126,9 @@ class TestRFC3161TimestampService:
         mock_ts_resp = MagicMock()
         mock_tst = {
             "tst_info": {
-                "gen_time": MagicMock(native=__import__("datetime").datetime.now(__import__("datetime").UTC)),
+                "gen_time": MagicMock(
+                    native=__import__("datetime").datetime.now(__import__("datetime").UTC)
+                ),
                 "message_imprint": {"hashed_message": MagicMock(native=b"\xff" * 32)},
             }
         }
@@ -134,6 +136,7 @@ class TestRFC3161TimestampService:
         mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
 
         import sys
+
         sys.modules["rfc3161ng"] = mock_rfc3161ng
         try:
             with pytest.raises(TimestampingError, match="digest mismatch"):
@@ -144,7 +147,7 @@ class TestRFC3161TimestampService:
     @pytest.mark.asyncio
     async def test_verify_with_rfc3161ng(self, svc):
         """When rfc3161ng IS available, use it to parse the token."""
-        from datetime import datetime, UTC
+        from datetime import UTC, datetime
 
         expected_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         digest = b"\xaa" * 32
@@ -161,6 +164,7 @@ class TestRFC3161TimestampService:
         mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
 
         import sys
+
         sys.modules["rfc3161ng"] = mock_rfc3161ng
         try:
             result = await svc.verify(b"\x30\x01\x00", digest)

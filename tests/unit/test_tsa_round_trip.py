@@ -24,6 +24,7 @@ import pytest
 from kronos_attest.report import AttestationReport
 from kronos_attest.tsa import TSAVerifier, verify_merkle_anchor
 
+
 def _openssl_ts_available() -> bool:
     result = subprocess.run(  # noqa: S603
         ["openssl", "ts", "-help"], capture_output=True, text=True
@@ -52,24 +53,55 @@ def tsa_fixture(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
         assert result.returncode == 0, result.stderr
 
     _run(
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", str(ca_key), "-out", str(ca_pem),
-        "-days", "2", "-nodes", "-subj", "/CN=Test CA",
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        str(ca_key),
+        "-out",
+        str(ca_pem),
+        "-days",
+        "2",
+        "-nodes",
+        "-subj",
+        "/CN=Test CA",
     )
     _run(
-        "openssl", "req", "-newkey", "rsa:2048",
-        "-keyout", str(tsa_key), "-out", str(tsa_csr),
-        "-nodes", "-subj", "/CN=Test TSA",
+        "openssl",
+        "req",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        str(tsa_key),
+        "-out",
+        str(tsa_csr),
+        "-nodes",
+        "-subj",
+        "/CN=Test TSA",
     )
     _run(
-        "openssl", "x509", "-req", "-in", str(tsa_csr),
-        "-CA", str(ca_pem), "-CAkey", str(ca_key), "-CAcreateserial",
-        "-out", str(tsa_pem), "-days", "2", "-extfile", str(ext_cnf),
+        "openssl",
+        "x509",
+        "-req",
+        "-in",
+        str(tsa_csr),
+        "-CA",
+        str(ca_pem),
+        "-CAkey",
+        str(ca_key),
+        "-CAcreateserial",
+        "-out",
+        str(tsa_pem),
+        "-days",
+        "2",
+        "-extfile",
+        str(ext_cnf),
     )
 
     tsa_cnf = d / "tsa.cnf"
-    tsa_cnf.write_text(
-        f"""\
+    tsa_cnf.write_text(f"""\
 [tsa]
 default_tsa = tsa_config1
 
@@ -89,8 +121,7 @@ clock_precision_digits = 0
 ordering = yes
 tsa_name = yes
 ess_cert_id_chain = no
-"""
-    )
+""")
     return {"ca_pem": ca_pem, "tsa_cnf": tsa_cnf, "dir": d}
 
 
@@ -102,19 +133,30 @@ def _issue_timestamp(tsa_fixture: dict[str, Path], digest_hex: str) -> bytes:
 
     subprocess.run(  # noqa: S603
         [
-            "openssl", "ts", "-query",
-            "-digest", digest_hex, "-sha256", "-cert",
-            "-out", str(req_path),
+            "openssl",
+            "ts",
+            "-query",
+            "-digest",
+            digest_hex,
+            "-sha256",
+            "-cert",
+            "-out",
+            str(req_path),
         ],
         check=True,
         capture_output=True,
     )
     subprocess.run(  # noqa: S603
         [
-            "openssl", "ts", "-reply",
-            "-config", str(tsa_fixture["tsa_cnf"]),
-            "-queryfile", str(req_path),
-            "-out", str(resp_path),
+            "openssl",
+            "ts",
+            "-reply",
+            "-config",
+            str(tsa_fixture["tsa_cnf"]),
+            "-queryfile",
+            str(req_path),
+            "-out",
+            str(resp_path),
         ],
         check=True,
         capture_output=True,

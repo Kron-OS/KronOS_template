@@ -63,10 +63,13 @@ class TestCreateCase:
 
     def test_create_case_persists(self, cases_client):
         client, repo, org_id, _, _ = cases_client
-        resp = client.post("/api/cases", json={"title": "Saved Case", "reference_number": "REF-001"})
+        resp = client.post(
+            "/api/cases", json={"title": "Saved Case", "reference_number": "REF-001"}
+        )
         assert resp.status_code == 201
         case_id = uuid.UUID(resp.json()["id"])
         import asyncio
+
         stored = asyncio.run(repo.get_by_id(case_id, org_id))
         assert stored is not None
         assert stored.metadata.title == "Saved Case"
@@ -219,7 +222,9 @@ class TestListCaseAuditEvents:
         assert data["total"] == 6
 
 
-def _tenant(org_id: uuid.UUID, user_id: uuid.UUID, roles: frozenset[Role], acr: str = "aal2") -> TenantContext:
+def _tenant(
+    org_id: uuid.UUID, user_id: uuid.UUID, roles: frozenset[Role], acr: str = "aal2"
+) -> TenantContext:
     return TenantContext(
         org_id=org_id,
         org_alias="testorg",

@@ -137,7 +137,9 @@ def dispatch_parse(
     orch, _ = _deps()
 
     asyncio.run(orch.start_parsing(uuid.UUID(evidence_id), tenant))
-    logger.info("dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type})
+    logger.info(
+        "dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type}
+    )
     return evidence_id
 
 
@@ -250,9 +252,13 @@ def finalize_evidence(
                 details={"evidence_id": evidence_id, "record_count": record_count},
             )
         )
-        logger.info("finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count})
+        logger.info(
+            "finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count}
+        )
     except Exception as exc:
-        logger.error("finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
+        logger.error(
+            "finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)}
+        )
         raise self.retry(exc=exc)  # type: ignore[attr-defined]
 
 
@@ -374,11 +380,11 @@ def auto_dispatch_received(self: object) -> int:
     import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         get_evidence_repository,
     )
-    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(minutes=5)
 

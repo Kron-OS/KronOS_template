@@ -161,9 +161,7 @@ class TestObjectLockAtPromotion:
     async def test_promotion_sets_object_lock_until(
         self, audit_repo, evidence_repo, local_storage
     ) -> None:
-        intake = _make_intake(
-            audit_repo, evidence_repo, local_storage, default_retention_days=30
-        )
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, default_retention_days=30)
         tenant = make_tenant_context()
         before = datetime.now(UTC)
 
@@ -249,9 +247,7 @@ class TestSetLegalHold:
 
 class TestDeleteEvidenceRetentionGate:
     @pytest.mark.asyncio
-    async def test_legal_hold_blocks_delete(
-        self, audit_repo, evidence_repo, local_storage
-    ) -> None:
+    async def test_legal_hold_blocks_delete(self, audit_repo, evidence_repo, local_storage) -> None:
         intake = _make_intake(audit_repo, evidence_repo, local_storage)
         tenant = make_tenant_context(roles={Role.ORG_ADMIN})
         evidence = await _upload_and_finalize(intake, local_storage, tenant)
@@ -267,9 +263,7 @@ class TestDeleteEvidenceRetentionGate:
     async def test_active_retention_blocks_delete(
         self, audit_repo, evidence_repo, local_storage
     ) -> None:
-        intake = _make_intake(
-            audit_repo, evidence_repo, local_storage, default_retention_days=365
-        )
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, default_retention_days=365)
         tenant = make_tenant_context(roles={Role.ORG_ADMIN})
         evidence = await _upload_and_finalize(intake, local_storage, tenant)
 
@@ -294,7 +288,9 @@ class TestDeleteEvidenceRetentionGate:
         assert stored is not None
         assert stored.state == EvidenceState.PURGED  # row survives — soft delete
 
-        deleted_events = [e for e in audit_repo.events if e.event_type == AuditEventType.EVIDENCE_DELETED]
+        deleted_events = [
+            e for e in audit_repo.events if e.event_type == AuditEventType.EVIDENCE_DELETED
+        ]
         assert len(deleted_events) == 1
         details = deleted_events[0].details
         assert details["sha256"] == evidence.sha256
@@ -313,6 +309,8 @@ class TestDeleteEvidenceRetentionGate:
         with pytest.raises(EvidenceStateError):
             await intake.delete_evidence(evidence.evidence_id, tenant)
 
-        denied = [e for e in audit_repo.events if e.event_type == AuditEventType.EVIDENCE_DELETE_DENIED]
+        denied = [
+            e for e in audit_repo.events if e.event_type == AuditEventType.EVIDENCE_DELETE_DENIED
+        ]
         assert len(denied) == 1
         assert denied[0].details["reason"] == "retention_period_active"

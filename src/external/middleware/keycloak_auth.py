@@ -142,9 +142,7 @@ class KeycloakTokenValidator:
         except AuthenticationError:
             raise
         except Exception as exc:
-            raise AuthenticationError(
-                f"Failed to fetch JWKS from {self._jwks_url}: {exc}"
-            ) from exc
+            raise AuthenticationError(f"Failed to fetch JWKS from {self._jwks_url}: {exc}") from exc
 
 
 def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
@@ -157,9 +155,7 @@ def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
     try:
         org_id = uuid.UUID(org_info["id"])
     except (KeyError, ValueError, TypeError) as exc:
-        raise AuthenticationError(
-            f"Invalid org_id in JWT organization claim: {exc}"
-        ) from exc
+        raise AuthenticationError(f"Invalid org_id in JWT organization claim: {exc}") from exc
 
     try:
         user_id = uuid.UUID(claims["sub"])
