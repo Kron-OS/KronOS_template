@@ -112,6 +112,13 @@ services:
       # Expose /health/* on the management port (9000). Without this the health
       # endpoints return 404 and the healthcheck below never passes.
       KC_HEALTH_ENABLED: "true"
+      # Pin Keycloak's canonical issuer/frontend URL so it's stable regardless
+      # of which Host a request arrives on (browser via localhost:8080, backend
+      # /auth/refresh + keycloak-init via internal keycloak:8080). Without it,
+      # start-dev derives the issuer per-request, so a browser-minted refresh
+      # token (iss=localhost:8080) is rejected when the backend redeems it via
+      # keycloak:8080 -> 401 invalid_token on /auth/refresh.
+      KC_HOSTNAME: http://localhost:8080
     volumes:
       - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
     ports: ["8080:8080"]

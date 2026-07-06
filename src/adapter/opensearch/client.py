@@ -34,6 +34,10 @@ class AbstractTimelineIndex(ABC):
     async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
         """Create or update the per-tenant DLS security role."""
 
+    @abstractmethod
+    async def close(self) -> None:
+        """Release any network resources (aiohttp session, etc.)."""
+
 
 class OpenSearchClient(AbstractTimelineIndex):
     """Async OpenSearch client backed by opensearch-py AsyncOpenSearch."""
@@ -109,6 +113,9 @@ class OpenSearchClient(AbstractTimelineIndex):
             body=role_body,
         )
 
+    async def close(self) -> None:
+        await self._client.close()
+
 
 class InMemoryOpenSearchClient(AbstractTimelineIndex):
     """In-memory OpenSearch stand-in for unit and integration tests."""
@@ -134,6 +141,9 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
 
     async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
         self.roles_created[org_id] = {"org_alias": org_alias}
+
+    async def close(self) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # Test-inspection helpers

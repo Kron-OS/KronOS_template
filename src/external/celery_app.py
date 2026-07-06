@@ -90,21 +90,8 @@ celery_app.conf.update(
 
 
 # ---------------------------------------------------------------------------
-# Helper: build dependencies without FastAPI context
+# Helper: build tenant context
 # ---------------------------------------------------------------------------
-
-
-def _deps():  # type: ignore[return]
-    """Return (orchestration_svc, audit_svc) for use in Celery workers."""
-    from src.external.dependencies import (  # noqa: PLC0415
-        _build_orchestration_service,
-        get_audit_log_repository,
-        get_audit_log_service,
-    )
-
-    audit = get_audit_log_service(get_audit_log_repository())
-    orch = _build_orchestration_service()
-    return orch, audit
 
 
 def _tenant(org_id: str, user_id: str):  # type: ignore[return]
@@ -131,12 +118,14 @@ def dispatch_parse(
 
     Returns the evidence_id so downstream tasks can look it up.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
 
-    asyncio.run(orch.start_parsing(uuid.UUID(evidence_id), tenant))
+    async def _work(resources):  # type: ignore[no-untyped-def]
+        await resources.orchestration_service.start_parsing(uuid.UUID(evidence_id), tenant)
+
+    run_evidence_coro(_work)
     logger.info(
         "dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type}
     )
@@ -160,12 +149,15 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
 
     Returns {evidence_id, record_count} for finalize_evidence.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
+
+    async def _work(resources):  # type: ignore[no-untyped-def]
+        return await resources.orchestration_service.execute_parse(uuid.UUID(evidence_id), tenant)
+
     try:
-        count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
+        count = run_evidence_coro(_work)
         result = {"evidence_id": evidence_id, "record_count": count}
         finalize_evidence.apply_async(
             kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
@@ -196,12 +188,15 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
 
     Returns {evidence_id, record_count} for finalize_evidence.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
+
+    async def _work(resources):  # type: ignore[no-untyped-def]
+        return await resources.orchestration_service.execute_parse(uuid.UUID(evidence_id), tenant)
+
     try:
-        count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
+        count = run_evidence_coro(_work)
         result = {"evidence_id": evidence_id, "record_count": count}
         finalize_evidence.apply_async(
             kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
@@ -230,28 +225,24 @@ def finalize_evidence(
 
     Chained after parse_artefact_* so it runs only on success.
     """
-    import asyncio  # noqa: PLC0415
-
     from src.domain.audit import AuditEventType  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     evidence_id = parse_result.get("evidence_id", "")
     record_count = parse_result.get("record_count", 0)
 
-    try:
-        audit = get_audit_log_service(get_audit_log_repository())
-        tenant = _tenant(org_id, user_id)
-        asyncio.run(
-            audit.log(
-                AuditEventType.INGEST_COMPLETED,
-                org_id=tenant.org_id,
-                actor_user_id=tenant.user_id,
-                details={"evidence_id": evidence_id, "record_count": record_count},
-            )
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources):  # type: ignore[no-untyped-def]
+        await resources.audit_log_service.log(
+            AuditEventType.INGEST_COMPLETED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            details={"evidence_id": evidence_id, "record_count": record_count},
         )
+
+    try:
+        run_evidence_coro(_work)
         logger.info(
             "finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count}
         )
@@ -273,30 +264,27 @@ def abort_orphan_uploads(self: object) -> int:
 
     Returns count of aborted items.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
 
     from src.domain.audit import AuditEventType  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-        get_evidence_repository,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(hours=2)
 
     try:
-        repo = get_evidence_repository()
-        audit = get_audit_log_service(get_audit_log_repository())
 
-        async def _run() -> int:
+        async def _work(resources):  # type: ignore[no-untyped-def]
             count = 0
-            async for ev in repo.stream_all_by_state(EvidenceState.UPLOADING):
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.UPLOADING
+            ):
                 if ev.created_at < cutoff:
                     aborted = ev.with_error("upload_timeout")
-                    await repo.update(aborted)
-                    await audit.log(
+                    await resources.evidence_repository.update(aborted)
+                    await resources.audit_log_service.log(
                         AuditEventType.EVIDENCE_ERROR,
                         org_id=ev.metadata.org_id,
                         evidence_id=ev.evidence_id,
@@ -305,8 +293,8 @@ def abort_orphan_uploads(self: object) -> int:
                     count += 1
             return count
 
-        count = asyncio.run(_run())
-    except RuntimeError:
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
         count = 0
         logger.warning("abort_orphan_uploads: repository not configured; skipping")
     logger.info("abort_orphan_uploads_done", extra={"aborted": count})
@@ -324,30 +312,27 @@ def abort_orphan_parses(self: object) -> int:
 
     Returns count of aborted items.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
 
     from src.domain.audit import AuditEventType  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-        get_evidence_repository,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(hours=3)
 
     try:
-        repo = get_evidence_repository()
-        audit = get_audit_log_service(get_audit_log_repository())
 
-        async def _run() -> int:
+        async def _work(resources):  # type: ignore[no-untyped-def]
             count = 0
-            async for ev in repo.stream_all_by_state(EvidenceState.PARSING):
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.PARSING
+            ):
                 if ev.updated_at < cutoff:
                     aborted = ev.with_error("parse_timeout")
-                    await repo.update(aborted)
-                    await audit.log(
+                    await resources.evidence_repository.update(aborted)
+                    await resources.audit_log_service.log(
                         AuditEventType.PARSE_FAILED,
                         org_id=ev.metadata.org_id,
                         evidence_id=ev.evidence_id,
@@ -356,8 +341,8 @@ def abort_orphan_parses(self: object) -> int:
                     count += 1
             return count
 
-        count = asyncio.run(_run())
-    except RuntimeError:
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
         count = 0
         logger.warning("abort_orphan_parses: repository not configured; skipping")
     logger.info("abort_orphan_parses_done", extra={"aborted": count})
@@ -377,24 +362,24 @@ def auto_dispatch_received(self: object) -> int:
     failed (e.g., broker unreachable at upload time).  Runs every hour at :15.
     Returns count of re-dispatched items.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
 
     from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_evidence_repository,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(minutes=5)
 
     try:
-        repo = get_evidence_repository()
         queue = CeleryTaskQueue()
 
-        async def _run() -> int:
+        async def _work(resources):  # type: ignore[no-untyped-def]
             count = 0
-            async for ev in repo.stream_all_by_state(EvidenceState.RECEIVED):
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.RECEIVED
+            ):
                 if ev.updated_at < cutoff:
                     tenant = _tenant(str(ev.metadata.org_id), str(ev.metadata.uploader_user_id))
                     try:
@@ -411,8 +396,8 @@ def auto_dispatch_received(self: object) -> int:
                         )
             return count
 
-        count = asyncio.run(_run())
-    except RuntimeError:
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
         count = 0
         logger.warning("auto_dispatch_received: repository not configured; skipping")
     logger.info("auto_dispatch_received_done", extra={"dispatched": count})
@@ -442,30 +427,26 @@ def anchor_audit_log(self: object) -> dict[str, str]:
 
     Returns ``{org_id: root_hash}`` for every org anchored.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, date, datetime, timedelta  # noqa: PLC0415
 
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-        get_timestamp_service,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+    from src.external.dependencies import get_timestamp_service  # noqa: PLC0415
 
-    async def _run() -> dict[str, str]:
-        repo = get_audit_log_repository()
-        audit_svc = get_audit_log_service(repo)
+    async def _work(resources):  # type: ignore[no-untyped-def]
         timestamp_service = get_timestamp_service()
 
         yesterday = date.today() - timedelta(days=1)
         day_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=UTC)
         day_end = day_start + timedelta(days=1)
 
-        events = await repo.list_by_date_range(day_start, day_end)
+        events = await resources.audit_log_repository.list_by_date_range(day_start, day_end)
         org_ids = sorted({e.org_id for e in events if e.org_id is not None}, key=str)
 
         roots: dict[str, str] = {}
         for org_id in org_ids:
-            root = await audit_svc.anchor_day(yesterday, org_id, timestamp_service)
+            root = await resources.audit_log_service.anchor_day(
+                yesterday, org_id, timestamp_service
+            )
             roots[str(org_id)] = root
 
         logger.info(
@@ -474,4 +455,4 @@ def anchor_audit_log(self: object) -> dict[str, str]:
         )
         return roots
 
-    return asyncio.run(_run())
+    return run_evidence_coro(_work)

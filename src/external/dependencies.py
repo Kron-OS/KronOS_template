@@ -267,21 +267,11 @@ def _build_tenant_from_task(org_id: str, user_id: str) -> TenantContext:
     )
 
 
-def _build_orchestration_service() -> ParsingOrchestrationService:
-    """Build ParsingOrchestrationService for Celery workers (no FastAPI context)."""
-    audit_log = get_audit_log_service(get_audit_log_repository())
-    timeline_ingest = TimelineIngestionService(
-        opensearch=_opensearch_client,
-        audit_log=audit_log,
-    )
-    return ParsingOrchestrationService(
-        evidence_repository=get_evidence_repository(),
-        storage=get_evidence_storage(),
-        audit_log=audit_log,
-        parser_registry=get_parser_registry(),
-        task_queue=get_task_queue(),
-        timeline_ingest=timeline_ingest,
-    )
+# NOTE: the former _build_orchestration_service() (which assembled the parsing
+# orchestration service from the process-wide singletons) was removed: Celery
+# workers must NOT reuse the loop-bound singleton engine/OpenSearch client
+# across their per-task asyncio.run() loops. Per-task, loop-scoped construction
+# now lives in src/external/celery_runtime.py::run_evidence_coro instead.
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +320,8 @@ def build_step_up_ticket_store(settings: Any) -> TicketStore:
 
 
 def configure_dependencies(
-    audit_log_repository: AuditLogRepository,
-    evidence_repository: EvidenceRepository,
+    audit_log_repository: AuditLogRepository | None,
+    evidence_repository: EvidenceRepository | None,
     evidence_storage: EvidenceStorage,
     scanner: AntivirusScanner | None = None,
     task_queue: TaskQueue | None = None,
@@ -349,8 +339,10 @@ def configure_dependencies(
     global _scanner, _task_queue, _parser_registry, _opensearch_client
     global _max_upload_bytes, _presigned_expiry, _case_repository
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
-    _audit_log_repository = audit_log_repository
-    _evidence_repository = evidence_repository
+    if audit_log_repository is not None:
+        _audit_log_repository = audit_log_repository
+    if evidence_repository is not None:
+        _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
     if scanner is not None:
         _scanner = scanner
