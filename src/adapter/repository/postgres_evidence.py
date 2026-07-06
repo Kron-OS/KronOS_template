@@ -59,7 +59,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
     async def create_tables(cls, engine: AsyncEngine) -> None:
         """Create tables if they do not already exist.  Call once at startup."""
         async with engine.begin() as conn:
-            await conn.run_sync(_metadata.create_all)
+            await conn.run_sync(lambda sync_conn: _metadata.create_all(bind=sync_conn, checkfirst=True))
 
     # ------------------------------------------------------------------
     # EvidenceRepository interface

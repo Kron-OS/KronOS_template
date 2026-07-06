@@ -50,7 +50,7 @@ class PostgresCaseRepository(CaseRepository):
     @classmethod
     async def create_tables(cls, engine: AsyncEngine) -> None:
         async with engine.begin() as conn:
-            await conn.run_sync(_metadata.create_all)
+            await conn.run_sync(lambda sync_conn: _metadata.create_all(bind=sync_conn, checkfirst=True))
 
     async def save(self, case: Case) -> Case:
         async with self._engine.begin() as conn:
