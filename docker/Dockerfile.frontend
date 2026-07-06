@@ -64,20 +64,27 @@ EXPOSE 80
 # any of this — that's a separate Linux capability (NET_BIND_SERVICE, in
 # Docker's default capability set), unaffected by file ownership.
 #
-# /var/run isn't writable by uid 101 either, so the stock nginx.conf's
-# `pid /var/run/nginx.pid;` directive would fail once the master process
-# tries to write it. This used to be "fixed" by passing `-g "pid
-# /tmp/nginx.pid;"` on the CMD line, but that doesn't work: nginx.conf
-# already declares a `pid` directive, and a `-g` value is injected as an
-# *additional* top-level directive rather than replacing the one already in
-# the file, so the parser rejects the merged config with `"pid" directive
-# is duplicate`. Patch the stock file in place instead, so there is exactly
-# one `pid` directive, pointing at a path uid 101 can write to. The sed
-# pattern tolerates whitespace variation in case upstream reformats the line.
+# /run (== /var/run) isn't writable by uid 101 either, so the stock
+# nginx.conf's `pid /var/run/nginx.pid;` directive fails once the master
+# process tries to write it. Two earlier attempts to fix this both failed:
+#   1. `-g "pid /tmp/nginx.pid;"` on the CMD line — rejected as a *duplicate*
+#      pid directive, because -g injects an ADDITIONAL top-level directive
+#      rather than replacing the one already in nginx.conf.
+#   2. `sed -i -E 's#...\s...#...#'` to rewrite the directive in place — this
+#      image is Alpine, whose sed is BusyBox sed, which does NOT support the
+#      GNU `\s` extension (only POSIX classes like [[:space:]]). The pattern
+#      matched nothing, sed exited 0 without changing anything, and nginx kept
+#      the root-owned default path — the `open() "/run/nginx.pid" failed
+#      (13: Permission denied)` error.
+# Correct fix: a BusyBox-compatible, path-agnostic sed (matches any `pid`
+# directive regardless of /run vs /var/run), followed by a `grep` guard so
+# that if the substitution ever silently fails to match again, the *build*
+# fails loudly here instead of the container failing at runtime.
 RUN mkdir -p /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp \
         /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp \
     && chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d /var/log/nginx \
-    && sed -i -E 's#^\s*pid\s+/var/run/nginx\.pid\s*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf
+    && sed -i 's#^[[:space:]]*pid[[:space:]].*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
+    && grep -qx 'pid /tmp/nginx.pid;' /etc/nginx/nginx.conf
 
 USER nginx
 

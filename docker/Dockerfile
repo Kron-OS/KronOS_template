@@ -24,6 +24,19 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir .
 
+# Pre-create the log directory that docker-compose mounts the `kronos_app_logs`
+# named volume onto (KRONOS_LOG_FILE=/var/log/kronos/{app,celery}.log). The
+# runtime stage runs as the non-root "nonroot" user (uid 65532) but a fresh
+# named volume is otherwise created root-owned, so opening the log file there
+# fails with EACCES — which, because configure_logging() runs at
+# src/external/celery_app.py *import* time, surfaces as celery's cryptic
+# "module 'src.external' has no attribute 'celery_app'" rather than the real
+# PermissionError. Docker seeds an empty named volume from the ownership of the
+# image directory it mounts over, so creating this dir owned by nonroot here
+# makes the volume writable by the app. The .keep file guarantees the dir is
+# non-empty so the volume-seeding copy (and its ownership) always triggers.
+RUN mkdir -p /var/log/kronos && touch /var/log/kronos/.keep
+
 # Runtime stage — minimal image. cgr.dev/chainguard/python:latest is the
 # non-dev, distroless-style variant: no shell, no package manager, so there is
 # no `useradd` here — it ships only python3/libs plus a built-in "nonroot"
@@ -40,6 +53,11 @@ COPY --from=builder --chown=nonroot:nonroot /opt/venv /opt/venv
 COPY --chown=nonroot:nonroot src/ ./src/
 COPY --chown=nonroot:nonroot kronos_attest/ ./kronos_attest/
 COPY --chown=nonroot:nonroot pyproject.toml .
+
+# nonroot-owned log dir (see builder stage) so the mounted kronos_app_logs
+# volume is writable by uid 65532. The runtime image has no shell, so this
+# must be carried over from the builder rather than created with RUN mkdir.
+COPY --from=builder --chown=nonroot:nonroot /var/log/kronos /var/log/kronos
 
 ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONPATH=/app

@@ -103,8 +103,11 @@ services:
     command: start-dev --import-realm
     environment:
       KC_DB: dev-mem
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # KC_BOOTSTRAP_ADMIN_* (not the deprecated KEYCLOAK_ADMIN* names, which
+      # Keycloak 26 warns on and a future major will remove). Same bootstrap
+      # admin, current variable names.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_FEATURES: organization,token-exchange
       # Expose /health/* on the management port (9000). Without this the health
       # endpoints return 404 and the healthcheck below never passes.
