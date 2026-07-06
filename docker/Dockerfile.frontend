@@ -2,6 +2,11 @@
 # the shell + npm needed to build; mirrors docker/plaso/Dockerfile, this
 # project's reference pattern for Chainguard images.
 FROM cgr.dev/chainguard/node:latest-dev AS builder
+# Chainguard images run as the built-in "nonroot" user by default — even the
+# "-dev" variants — so WORKDIR/npm ci below would fail writing under
+# root-owned /app without this. Safe here: this is a discarded builder stage
+# in a multi-stage build; the runtime stage below still runs as USER nginx.
+USER root
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
