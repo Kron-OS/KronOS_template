@@ -36,6 +36,7 @@ class TimelineIngestionService:
         audit_log: AuditLogService,
         *,
         batch_size: int = _DEFAULT_BATCH_SIZE,
+        security_enabled: bool = False,
     ) -> None:
         self._opensearch = opensearch
         self._audit = audit_log
@@ -43,6 +44,8 @@ class TimelineIngestionService:
         self._normalizer = ECSNormalizer()
         self._ism_applied = False
         self._provisioned_orgs: set[str] = set()
+        self._security_enabled = security_enabled
+        self._security_warned = False
 
     async def ingest_records(
         self,
@@ -64,7 +67,14 @@ class TimelineIngestionService:
 
         org_key = str(tenant.org_id)
         if org_key not in self._provisioned_orgs:
-            await self._opensearch.ensure_tenant_role(str(tenant.org_id), tenant.org_alias)
+            if self._security_enabled:
+                await self._opensearch.ensure_tenant_role(str(tenant.org_id), tenant.org_alias)
+            elif not self._security_warned:
+                logger.warning(
+                    "opensearch_security_disabled_skipping_tenant_role",
+                    extra={"org_id": org_key},
+                )
+                self._security_warned = True
             self._provisioned_orgs.add(org_key)
 
         await self._audit.log(

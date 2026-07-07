@@ -101,6 +101,7 @@ async def wire_dependencies_async() -> None:
         opensearch_dashboards_url=settings.opensearch_dashboards_url,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
+        opensearch_security_enabled=settings.opensearch_security_enabled,
     )
     configure_clamav_from_settings()
 
@@ -191,6 +192,7 @@ def wire_dependencies_sync() -> None:
         opensearch_dashboards_url=settings.opensearch_dashboards_url,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
+        opensearch_security_enabled=settings.opensearch_security_enabled,
     )
     configure_clamav_from_settings()
 

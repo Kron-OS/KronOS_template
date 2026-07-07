@@ -103,7 +103,11 @@ class PlasoParser(ForensicParser):
             extra={"evidence_id": str(evidence.evidence_id), "path": tmp_path},
         )
 
-        launcher = FirecrackerLauncher()
+        from src.config import Settings  # noqa: PLC0415
+
+        settings = Settings()
+        worker_path = Path(settings.plaso_worker_path) if settings.plaso_worker_path else None
+        launcher = FirecrackerLauncher(worker_path=worker_path)
         records = await launcher.run(
             evidence_path=tmp_path,
             evidence_id=str(evidence.evidence_id),

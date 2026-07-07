@@ -60,12 +60,28 @@ class Settings(BaseSettings):
     opensearch_url: str = Field(description="OpenSearch endpoint, e.g. https://opensearch:9200")
     opensearch_username: SecretStr
     opensearch_password: SecretStr
+    # Dev OpenSearch runs with DISABLE_SECURITY_PLUGIN=true (docker-compose.dev.yml)
+    # — the Security plugin's REST API (roles, DLS) doesn't exist there, so
+    # TimelineIngestionService must skip ensure_tenant_role() in that mode. ISM
+    # (index rollover) is a separate, always-present plugin — unaffected, never gated.
+    # Production Keycloak+OpenSearch-Security deployments must set this true.
+    opensearch_security_enabled: bool = Field(
+        default=False,
+        description="True only when the OpenSearch Security plugin is enabled (prod)",
+    )
 
     # Keycloak
     keycloak_url: str = Field(description="Keycloak base URL, e.g. https://auth.example.com")
     keycloak_realm: str = "kronos"
     keycloak_client_id: str = "kronos-backend"
     keycloak_client_secret: SecretStr
+    # The SPA's public Keycloak client (keycloak-js in frontend/src/keycloak.ts,
+    # VITE_KEYCLOAK_CLIENT_ID=kronos-frontend by default). A refresh token is
+    # bound to the client it was issued to — /auth/refresh must redeem it as
+    # THIS client, never as keycloak_client_id (kronos-backend, confidential,
+    # a different client) or Keycloak rejects it: "Token client and authorized
+    # client don't match".
+    keycloak_spa_client_id: str = "kronos-frontend"
 
     # Vault
     vault_url: str = Field(description="HashiCorp Vault URL, e.g. https://vault:8200")
@@ -104,6 +120,18 @@ class Settings(BaseSettings):
     # ClamAV antivirus
     clamd_host: str = Field(default="localhost", description="clamd TCP host")
     clamd_port: int = Field(default=3310, description="clamd TCP port")
+
+    # Plaso heavy parser
+    # Path to kronos-plaso-worker.py inside the container that runs
+    # FirecrackerLauncher (the q.parse.plaso Celery consumer). Defaults to
+    # today's computed source-tree-relative path for backward compat; the new
+    # celery-worker-plaso service in docker-compose.dev.yml sets this
+    # explicitly so it doesn't depend on __file__ directory-depth matching
+    # between the container and the source tree.
+    plaso_worker_path: str | None = Field(
+        default=None,
+        description="Absolute path to kronos-plaso-worker.py; None uses computed default",
+    )
 
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")

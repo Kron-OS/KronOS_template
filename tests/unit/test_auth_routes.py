@@ -25,6 +25,7 @@ class _FakeSettings:
     keycloak_realm = "kronos"
     keycloak_client_id = "kronos-backend"
     keycloak_client_secret = _FakeSecret("backend-secret")
+    keycloak_spa_client_id = "kronos-frontend"
 
 
 class _FakeAsyncClient:

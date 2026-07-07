@@ -18,7 +18,12 @@ from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import ParsingError, StorageError, ValidationError
+from src.exceptions import (
+    EvidenceStateConflictError,
+    ParsingError,
+    StorageError,
+    ValidationError,
+)
 
 if TYPE_CHECKING:
     from src.application.timeline_ingest import TimelineIngestionService
@@ -77,7 +82,7 @@ class ParsingOrchestrationService:
                 context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
             )
         if evidence.state != EvidenceState.RECEIVED:
-            raise ValidationError(
+            raise EvidenceStateConflictError(
                 f"Evidence is in state {evidence.state.value}, expected RECEIVED",
                 context={"evidence_id": str(evidence_id), "state": evidence.state.value},
             )
@@ -139,7 +144,7 @@ class ParsingOrchestrationService:
                 context={"evidence_id": str(evidence_id)},
             )
         if evidence.state != EvidenceState.PARSING:
-            raise ParsingError(
+            raise EvidenceStateConflictError(
                 f"Evidence is in state {evidence.state.value}, expected PARSING",
                 context={"evidence_id": str(evidence_id), "state": evidence.state.value},
             )

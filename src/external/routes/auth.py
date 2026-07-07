@@ -59,8 +59,7 @@ async def refresh_token(request: Request) -> JSONResponse:
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_tok,
-                    "client_id": settings.keycloak_client_id,
-                    "client_secret": settings.keycloak_client_secret.get_secret_value(),
+                    "client_id": settings.keycloak_spa_client_id,
                 },
             )
     except httpx.HTTPError as exc:

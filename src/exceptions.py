@@ -21,6 +21,15 @@ class ParsingError(KronOSException):
     """Raised when a forensic parser cannot process evidence."""
 
 
+class EvidenceStateConflictError(ParsingError):
+    """Raised when evidence is not in the FSM state a parse-pipeline step requires.
+
+    Distinct from a generic ParsingError so Celery tasks can recognize "this
+    evidence will never become parseable again by retrying" and skip retry —
+    see src/external/celery_app.py's except-clause ordering.
+    """
+
+
 class AuditLogError(KronOSException):
     """Raised when the audit log cannot be written or read."""
 

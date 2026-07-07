@@ -19,7 +19,7 @@ from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import ParsingError, ValidationError
+from src.exceptions import EvidenceStateConflictError, ParsingError, ValidationError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
 from tests.fixtures.factories import make_evidence_metadata, make_tenant_context
 
@@ -239,7 +239,7 @@ class TestStartParsing:
         orchestrator = _make_orchestrator(
             evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
         )
-        with pytest.raises(ValidationError, match="expected RECEIVED"):
+        with pytest.raises(EvidenceStateConflictError, match="expected RECEIVED"):
             await orchestrator.start_parsing(evidence.evidence_id, tenant)
 
 

@@ -253,6 +253,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "false"
       # Browser-facing (like KEYCLOAK_PUBLIC_URL below): the backend embeds
       # this directly as the Timeline tab's iframe src, so it must be a host
       # the browser — not just other containers — can resolve. Must match
@@ -264,6 +265,10 @@ services:
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      # The SPA's public client (frontend/.env.example VITE_KEYCLOAK_CLIENT_ID)
+      # — /auth/refresh must redeem its refresh tokens as this client, not as
+      # KEYCLOAK_CLIENT_ID above (a different, confidential client).
+      KEYCLOAK_SPA_CLIENT_ID: kronos-frontend
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-root}
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -304,6 +309,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "false"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
@@ -321,7 +327,42 @@ services:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
-    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.parse.plaso,q.index -c 4 --loglevel=info
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4 --loglevel=info
+
+  celery-worker-plaso:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.plaso-worker
+    volumes:
+      - ../src:/app/src:ro
+      - kronos_app_logs:/var/log/kronos
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      MINIO_USE_TLS: "false"
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "false"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TSA_URL: http://tsa:318/api/v1/timestamp
+      KRONOS_LOG_FILE: /var/log/kronos/celery-plaso.log
+      PLASO_WORKER_PATH: /app/plaso-worker/kronos-plaso-worker.py
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
 
   celery-beat:
     build:
@@ -337,6 +378,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "false"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend

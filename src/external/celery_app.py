@@ -17,6 +17,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from src.config import Settings
+from src.exceptions import EvidenceStateConflictError
 from src.external.logging_config import configure_logging
 
 # Configure structured JSON logging as early as possible (module import
@@ -164,6 +165,12 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
             queue="q.index",
         )
         return result
+    except EvidenceStateConflictError as exc:
+        logger.error(
+            "parse_state_conflict",
+            extra={"evidence_id": evidence_id, "error": str(exc)},
+        )
+        raise
     except Exception as exc:
         logger.error("parse_fast_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
         raise self.retry(exc=exc)  # type: ignore[attr-defined]
@@ -203,6 +210,12 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
             queue="q.index",
         )
         return result
+    except EvidenceStateConflictError as exc:
+        logger.error(
+            "parse_state_conflict",
+            extra={"evidence_id": evidence_id, "error": str(exc)},
+        )
+        raise
     except Exception as exc:
         logger.error("parse_heavy_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
         raise self.retry(exc=exc)  # type: ignore[attr-defined]

@@ -70,7 +70,11 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         verify_certs=False,
     )
 
-    timeline_ingest = TimelineIngestionService(opensearch=opensearch, audit_log=audit_service)
+    timeline_ingest = TimelineIngestionService(
+        opensearch=opensearch,
+        audit_log=audit_service,
+        security_enabled=settings.opensearch_security_enabled,
+    )
     orchestration = ParsingOrchestrationService(
         evidence_repository=evidence_repo,
         storage=get_evidence_storage(),

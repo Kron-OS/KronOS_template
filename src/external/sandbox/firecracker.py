@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ class FirecrackerLauncher:
     def __init__(
         self,
         worker_path: Path | None = None,
-        python_bin: str = "python3",
+        python_bin: str = sys.executable,
         timeout_seconds: int = 600,
     ) -> None:
         self._worker_path = worker_path or _PLASO_WORKER_PATH
