@@ -69,7 +69,8 @@ class ParsingOrchestrationService:
         Steps:
           1. Load evidence; assert state == RECEIVED.
           2. Read first 8 KB from storage for parser detection.
-          3. Identify parser via registry; raise ParsingError if none found.
+          3. Identify parser via registry; on failure (including "no parser
+             found"), transition evidence -> ERROR, log PARSE_FAILED, re-raise.
           4. Transition evidence → PARSING; persist.
           5. Log PARSE_STARTED.
           6. Enqueue task (FAST or HEAVY queue).
@@ -94,7 +95,27 @@ class ParsingOrchestrationService:
                 context={"evidence_id": str(evidence_id)},
             )
 
-        parser = await self._detect_parser(evidence, evidence_key)
+        try:
+            parser = await self._detect_parser(evidence, evidence_key)
+        except ParsingError as exc:
+            # dispatch_parse (celery_app.py) has no exception handling of its
+            # own — without this, a detection failure (unsupported format,
+            # content that doesn't match any registered parser) left the
+            # evidence stuck in RECEIVED forever: the Celery task crashed and
+            # got logged, but nothing ever recorded the failure against the
+            # evidence itself, so the UI just showed it "processing" with no
+            # indication anything went wrong.
+            evidence = evidence.with_error("no_parser_found")
+            await self._repo.update(evidence)
+            await self._audit.log(
+                AuditEventType.PARSE_FAILED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                evidence_id=evidence.evidence_id,
+                details={"error": str(exc), "error_type": "ParsingError"},
+            )
+            raise
 
         evidence = evidence.with_state(EvidenceState.PARSING)
         await self._repo.update(evidence)

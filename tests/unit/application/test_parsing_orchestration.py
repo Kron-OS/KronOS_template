@@ -230,6 +230,33 @@ class TestStartParsing:
             await orchestrator.start_parsing(evidence.evidence_id, tenant)
 
     @pytest.mark.asyncio
+    async def test_start_parsing_no_parser_transitions_to_error(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        # dispatch_parse (celery_app.py) has no exception handling of its own
+        # — without persisting ERROR here, a "no parser found" failure left
+        # the evidence stuck in RECEIVED forever with no audit trail, even
+        # though the Celery task itself crashed and got logged.
+        evidence = await _seed_received_evidence(evidence_repo, local_storage, tenant)
+        registry = ParserRegistry()  # empty — no parser registered
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+        )
+        with pytest.raises(ParsingError, match="No parser found"):
+            await orchestrator.start_parsing(evidence.evidence_id, tenant)
+
+        persisted = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert persisted is not None
+        assert persisted.state == EvidenceState.ERROR
+        assert persisted.error_reason == "no_parser_found"
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED in types
+
+    @pytest.mark.asyncio
     async def test_start_parsing_wrong_state_raises(
         self, evidence_repo, local_storage, audit_repo, task_queue, tenant
     ) -> None:
