@@ -17,7 +17,7 @@ COPY kronos_attest/ ./kronos_attest/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir . \
-    && /opt/venv/bin/pip install --no-cache-dir plaso==20240101
+    && /opt/venv/bin/pip install --no-cache-dir plaso==20260512
 
 RUN mkdir -p /var/log/kronos && touch /var/log/kronos/.keep
 

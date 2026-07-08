@@ -55,7 +55,7 @@ class FirecrackerLauncher:
         org_alias: str,
         sha256: str,
         parser_name: str = "plaso",
-        parser_version: str = "20240101",
+        parser_version: str = "20260512",
     ) -> AsyncIterator[TimelineRecord]:
         """Yield TimelineRecord objects from Plaso parsing of evidence_path."""
         cmd = [
