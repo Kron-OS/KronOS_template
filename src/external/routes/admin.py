@@ -109,8 +109,12 @@ async def list_org_users(
     """List all users in the caller's org. Proxied to Keycloak Admin REST API."""
     try:
         users = await _list_keycloak_org_users(tenant)
-    except StorageError:
-        return OrgUsersResponse(items=[], total=0)
+    except StorageError as exc:
+        # A Keycloak Admin API failure (auth, permissions, connectivity) is
+        # not "this org has zero users" — returning an empty 200 here hid
+        # the real error behind a misleading empty state instead of the
+        # frontend's existing "Failed to load users" error banner.
+        raise _to_http_error(exc) from exc
     return OrgUsersResponse(items=users, total=len(users))
 
 

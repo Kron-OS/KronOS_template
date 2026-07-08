@@ -103,7 +103,7 @@
     {
       "clientId": "kronos-backend",
       "name": "KronOS Backend",
-      "description": "KronOS FastAPI backend service account. AUTH-001: scoped to manage-users/view-users only (see docs/access-management-review.md AUTH-001 section); never grant realm-admin.",
+      "description": "KronOS FastAPI backend service account. AUTH-001: scoped to manage-users/view-users/manage-realm/view-realm only (see docs/access-management-review.md AUTH-001 section); never grant realm-admin.",
       "enabled": true,
       "publicClient": false,
       "serviceAccountsEnabled": true,
@@ -402,7 +402,7 @@
       "enabled": true,
       "serviceAccountClientId": "kronos-backend",
       "clientRoles": {
-        "realm-management": ["manage-users", "view-users"]
+        "realm-management": ["manage-users", "view-users", "manage-realm", "view-realm"]
       }
     }
   ],

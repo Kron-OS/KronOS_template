@@ -18,6 +18,7 @@ from src.external.routes.admin import (
     _is_org_member,
     _iso_from_epoch_millis,
     _to_http_error,
+    list_org_users,
 )
 from tests.fixtures.factories import make_tenant_context
 
@@ -260,3 +261,29 @@ async def test_find_user_by_email_returns_candidate_when_member_of_caller_org(
     result = await _find_user_by_email(tenant, "teammate@caller-org.example")
     assert result is not None
     assert result["id"] == member_user_id
+
+
+# ---------------------------------------------------------------------------
+# GET /users must surface a Keycloak Admin API failure as an error, not a
+# misleadingly-empty "0 users" 200 (the frontend's "Failed to load users"
+# error banner never fired otherwise — see docs/access-management-review.md
+# §5 for the 403-on-Organizations-endpoints case that first exposed this).
+# ---------------------------------------------------------------------------
+
+
+async def test_list_org_users_propagates_keycloak_failure_as_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_list(_tenant: object) -> list[OrgUserOut]:
+        raise StorageError(
+            "Keycloak Admin API request failed",
+            context={"status": 403, "body": {"errorMessage": "Forbidden"}},
+        )
+
+    monkeypatch.setattr("src.external.routes.admin._list_keycloak_org_users", fake_list)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_org_users(tenant)
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
