@@ -82,14 +82,29 @@ class OpenSearchClient(AbstractTimelineIndex):
         )
 
     async def ensure_ism_policy(self) -> None:
+        """Create the ISM rollover policy, tolerating "already exists".
+
+        TimelineIngestionService builds a fresh instance (and so calls this)
+        on every single Celery ingest task — see celery_runtime.py's
+        per-task-loop-scoped resources. PUT on an *existing* ISM policy
+        without ``if_seq_no``/``if_primary_term`` always 409s in OpenSearch,
+        so without this the very first ingest after the policy exists (i.e.
+        every ingest after the first one ever) raised ConflictError and
+        failed the whole parse.
+        """
+        from opensearchpy.exceptions import ConflictError  # noqa: PLC0415
+
         policy_path = Path(__file__).parent / "ism_policy.json"
         with policy_path.open() as fh:
             policy = json.load(fh)
-        await self._client.transport.perform_request(
-            "PUT",
-            "/_plugins/_ism/policies/kronos-rollover",
-            body=policy,
-        )
+        try:
+            await self._client.transport.perform_request(
+                "PUT",
+                "/_plugins/_ism/policies/kronos-rollover",
+                body=policy,
+            )
+        except ConflictError:
+            pass
 
     async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
         role_name = f"kronos-tenant-{org_id}"
