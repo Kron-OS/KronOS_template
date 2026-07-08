@@ -139,6 +139,37 @@ def test_cookie_takes_precedence_over_body(monkeypatch: pytest.MonkeyPatch) -> N
     assert captured["data"]["refresh_token"] == "cookie-token"
 
 
+def test_refresh_falls_back_to_body_when_cookie_is_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stale cookie (e.g. left over from before a Keycloak restart) must not
+    # permanently block the AUTH-002 bootstrap handoff: a fresh keycloak-js
+    # login always supplies its own refresh token via the body, and that
+    # must still be able to re-establish the cookie even though the browser
+    # is also sending an old, now-invalid one.
+    class _StalenessAwareClient(_FakeAsyncClient):
+        async def post(self, *_args: Any, **kwargs: Any) -> httpx.Response:
+            token = kwargs["data"]["refresh_token"]
+            if token == "stale-cookie-token":
+                return httpx.Response(
+                    400,
+                    json={"error": "invalid_grant"},
+                    request=httpx.Request("POST", "https://idp.test/token"),
+                )
+            return _keycloak_success_response()
+
+    fake_client = _StalenessAwareClient()
+    app = _app(monkeypatch, fake_client)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/auth/refresh",
+        cookies={"refresh_token": "stale-cookie-token"},
+        json={"refresh_token": "fresh-bootstrap-token"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"access_token": "new-access-token"}
+    assert resp.cookies.get("refresh_token") == "new-refresh-token"
+
+
 def test_refresh_returns_401_when_keycloak_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_client = _FakeAsyncClient(
         response=httpx.Response(
