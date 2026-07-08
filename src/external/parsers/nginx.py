@@ -15,19 +15,27 @@ from src.domain.user import TenantContext
 
 logger = logging.getLogger(__name__)
 
-# Combined Log Format regex.
+# Combined Log Format regex. Both the leading "$host:$server_port " prefix
+# (nginx's log_format when multiple vhosts share one log file) and the
+# trailing referrer/user-agent pair (absent in plain Common Log Format,
+# which some nginx/apache configs still use) are optional — real-world
+# access logs mix all of these; a real Plaso test corpus sample
+# (test_data/apache_access.log, see tests/fixtures/samples/real/) has both
+# variants sitting next to fully-combined lines in the same file, and the
+# strict all-fields-required version of this regex silently dropped 9 of
+# its 15 lines.
 _COMBINED_LOG_RE = re.compile(
+    r"(?:\S+:\d+ )?"
     r"(?P<remote_addr>\S+) \S+ (?P<remote_user>\S+) "
     r"\[(?P<time_local>[^\]]+)\] "
     r'"(?P<method>\S+) (?P<path>\S+) (?P<protocol>[^"]+)" '
-    r"(?P<status>\d{3}) (?P<bytes_sent>\d+|-) "
-    r'"(?P<referrer>[^"]*)" '
-    r'"(?P<user_agent>[^"]*)"'
+    r"(?P<status>\d{3}) (?P<bytes_sent>\d+|-)"
+    r'(?: "(?P<referrer>[^"]*)" "(?P<user_agent>[^"]*)")?'
 )
 _TIME_FMT = "%d/%b/%Y:%H:%M:%S %z"
 
-# Quick check: does the header look like combined log format?
-_HEADER_RE = re.compile(rb"^\S+ \S+ \S+ \[[\d/\w: +\-]+\] \"")
+# Quick check: does the header look like combined/common log format?
+_HEADER_RE = re.compile(rb"^(?:\S+:\d+ )?\S+ \S+ \S+ \[[\d/\w: +\-]+\] \"")
 
 
 def _ext(filename: str) -> str:
@@ -107,7 +115,11 @@ class NginxParser(ForensicParser):
             ts = datetime.now(UTC)
 
         remote_user: str | None = m["remote_user"] if m["remote_user"] != "-" else None
-        referrer: str | None = m["referrer"] if m["referrer"] != "-" else None
+        # referrer/user_agent are None outright (not "-") when the trailing
+        # pair is absent entirely — plain Common Log Format, no quotes to
+        # even contain a "-".
+        referrer: str | None = m["referrer"] if m["referrer"] not in (None, "-") else None
+        user_agent: str | None = m["user_agent"] if m["user_agent"] not in (None, "-") else None
         bytes_sent: int | None = int(m["bytes_sent"]) if m["bytes_sent"] != "-" else None
 
         extra: dict[str, Any] = {
@@ -117,12 +129,13 @@ class NginxParser(ForensicParser):
             "http.request.method": m["method"],
             "url.path": m["path"],
             "http.response.status_code": int(m["status"]),
-            "user_agent.original": m["user_agent"],
         }
         if bytes_sent is not None:
             extra["http.response.body.bytes"] = bytes_sent
         if referrer is not None:
             extra["http.request.referrer"] = referrer
+        if user_agent is not None:
+            extra["user_agent.original"] = user_agent
 
         provenance = KronosProvenance(
             evidence_id=evidence.evidence_id,

@@ -20,7 +20,16 @@ logger = logging.getLogger(__name__)
 
 # Magic bytes for formats Plaso specialises in.
 _REGF_MAGIC = b"regf"
-_PREFETCH_MAGIC = b"MAM"  # Prefetch files start with MAM\x04 or MAM\x08
+_PREFETCH_MAM_MAGIC = b"MAM"  # MAM-compressed prefetch: starts with MAM\x04 or MAM\x08
+# Uncompressed prefetch: a 4-byte format-version field followed directly by
+# the "SCCA" signature at offset 4 (e.g. Windows 10 version 17 files are
+# \x11\x00\x00\x00SCCA...). Real-world prefetch is frequently *not*
+# MAM-compressed — e.g. compression disabled, or already decompressed by
+# whatever forensic tool extracted it — and MAM-only detection rejected
+# those files outright ("No parser found for this evidence file"); verified
+# against a real Windows 10 prefetch sample (see
+# tests/fixtures/samples/real/, sourced from Plaso's own test corpus).
+_PREFETCH_SCCA_MAGIC = b"SCCA"
 _SQLITE_MAGIC = b"SQLite format 3"
 _EVTX_MAGIC = b"ElfFile\x00"  # Already handled by FastEvtxParser
 
@@ -66,8 +75,10 @@ class PlasoParser(ForensicParser):
         if header_bytes.startswith(_REGF_MAGIC):
             return True
 
-        # Prefetch files
-        if len(header_bytes) >= 4 and header_bytes[:3] == b"MAM":
+        # Prefetch files: MAM-compressed container, or uncompressed SCCA.
+        if header_bytes[:3] == _PREFETCH_MAM_MAGIC:
+            return True
+        if header_bytes[4:8] == _PREFETCH_SCCA_MAGIC:
             return True
 
         # SQLite databases (SRUM, Amcache, browser history, etc.)
