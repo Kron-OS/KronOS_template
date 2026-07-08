@@ -50,7 +50,7 @@ class PlasoParser(ForensicParser):
 
     @property
     def parser_version(self) -> str:
-        return "20240101"
+        return "20260512"
 
     @property
     def parser_type(self) -> ParserType:
