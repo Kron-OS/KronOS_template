@@ -9,6 +9,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from src.adapter.repository._schema_lock import acquire_schema_creation_lock
 from src.adapter.repository.case_repository import CaseRepository
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.exceptions import StorageError
@@ -50,7 +51,10 @@ class PostgresCaseRepository(CaseRepository):
     @classmethod
     async def create_tables(cls, engine: AsyncEngine) -> None:
         async with engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: _metadata.create_all(bind=sync_conn, checkfirst=True))
+            await acquire_schema_creation_lock(conn)
+            await conn.run_sync(
+                lambda sync_conn: _metadata.create_all(bind=sync_conn, checkfirst=True)
+            )
 
     async def save(self, case: Case) -> Case:
         async with self._engine.begin() as conn:
