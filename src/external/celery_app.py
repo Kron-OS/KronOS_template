@@ -40,16 +40,28 @@ from celery.signals import worker_init  # noqa: E402
 
 @worker_init.connect
 def _on_worker_init(**_kwargs: object) -> None:
-    """Wire real dependencies when a Celery worker process starts."""
+    """Wire real dependencies when a Celery worker process starts.
+
+    Does NOT swallow wiring failures. This used to catch every exception and
+    log a warning, which let the worker finish booting — and start accepting
+    tasks — even when wire_dependencies_sync() died partway through (e.g. a
+    transient DB error while creating tables) and never reached
+    configure_dependencies(). Every task dispatched to that worker then
+    failed deep in execution with a confusing "EvidenceStorage is not
+    configured" instead of the real, immediate cause. Re-raising here makes
+    Celery abort worker startup so the failure is loud and the process
+    restarts instead of running in a silently broken state.
+    """
     import os  # noqa: PLC0415
 
     if os.getenv("DATABASE_URL"):
-        try:
-            from src.external.startup import wire_dependencies_sync  # noqa: PLC0415
+        from src.external.startup import wire_dependencies_sync  # noqa: PLC0415
 
+        try:
             wire_dependencies_sync()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("celery worker startup wiring failed: %s", exc)
+        except Exception:
+            logger.exception("celery worker startup wiring failed; refusing to start")
+            raise
 
 
 celery_app.conf.update(
