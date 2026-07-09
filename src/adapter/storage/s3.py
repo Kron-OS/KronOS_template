@@ -242,7 +242,27 @@ class S3EvidenceStorage(EvidenceStorage):
             kwargs: dict[str, Any] = {"Bucket": bucket}
             if object_lock:
                 kwargs["ObjectLockEnabledForBucket"] = True
-            await self._run(self._client.create_bucket, **kwargs)
+            try:
+                await self._run(self._client.create_bucket, **kwargs)
+            except self._client.exceptions.BucketAlreadyOwnedByYou:
+                # head_bucket -> create_bucket is a check-then-act race: every
+                # evidence.upload_request for an org whose bucket doesn't
+                # exist yet calls this, and a batch upload fires several of
+                # those requests concurrently. All of them see the 404 from
+                # head_bucket before any of them has created the bucket, so
+                # all but the first create_bucket call land here — the
+                # bucket already exists (created by whichever request won
+                # the race), which is exactly the state this method is
+                # trying to reach. Previously unhandled, this surfaced as an
+                # unhandled BucketAlreadyOwnedByYou -> 500 (occasionally a
+                # 502 from nginx if the backend connection reset mid-response)
+                # on POST /api/evidence/upload/request for every request in
+                # the batch except the one that won.
+                logger.debug(
+                    "bucket_already_exists_race",
+                    extra={"bucket": bucket, "object_lock": object_lock},
+                )
+                return
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
             if object_lock:
                 # WORM enforcement (Project_Specifications.md §2/§5): without a

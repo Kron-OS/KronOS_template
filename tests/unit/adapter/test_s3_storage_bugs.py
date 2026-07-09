@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock
 
+import boto3
 from botocore.exceptions import ClientError
 
 from src.adapter.storage.s3 import S3EvidenceStorage
@@ -158,4 +159,78 @@ async def test_promote_creates_missing_evidence_bucket_with_worm_retention() -> 
     _, kwargs = mock_client.put_object_lock_configuration.call_args
     assert kwargs["Bucket"] == "kronos-evidence-acme"
     assert kwargs["ObjectLockConfiguration"]["Rule"]["DefaultRetention"]["Mode"] == "COMPLIANCE"
+    mock_client.copy_object.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-upload bucket-creation race: head_bucket -> create_bucket is a
+# check-then-act pair. A batch upload fires several
+# POST /api/evidence/upload/request calls concurrently for the same org, and
+# when its bucket doesn't exist yet, every one of them observes the 404 from
+# head_bucket before any of them has finished create_bucket, so all but the
+# race winner get BucketAlreadyOwnedByYou back. That must be treated as
+# success (the bucket exists, which is the desired end state), not propagated
+# as a 500.
+# ---------------------------------------------------------------------------
+
+
+# botocore generates exception classes per-client at construction time (no
+# network I/O involved), so a throwaway client gives us real, instantiable
+# exception types — unlike a bare MagicMock attribute access, these actually
+# satisfy an `except self._client.exceptions.X:` clause. Built once at import
+# time and reused across tests.
+_REAL_EXCEPTIONS = boto3.client(
+    "s3",
+    endpoint_url="http://minio:9000",
+    aws_access_key_id="key",
+    aws_secret_access_key="secret",
+).exceptions
+
+
+def _bucket_already_owned_by_you() -> Exception:
+    return _REAL_EXCEPTIONS.BucketAlreadyOwnedByYou(
+        {
+            "Error": {
+                "Code": "BucketAlreadyOwnedByYou",
+                "Message": (
+                    "Your previous request to create the named bucket "
+                    "succeeded and you already own it."
+                ),
+            }
+        },
+        "CreateBucket",
+    )
+
+
+async def test_ensure_bucket_tolerates_concurrent_creation_race() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    mock_client.exceptions = _REAL_EXCEPTIONS
+    mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    ev = _evidence("acme")
+
+    # Must not raise: losing the create_bucket race is not a failure.
+    await storage.request_presigned_upload(ev)
+
+    mock_client.create_bucket.assert_called_once_with(Bucket="kronos-evidence-acme-quarantine")
+    # The race loser never sets up retention — the winner already did (or will).
+    mock_client.put_object_lock_configuration.assert_not_called()
+
+
+async def test_ensure_evidence_bucket_tolerates_concurrent_creation_race() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    mock_client.exceptions = _REAL_EXCEPTIONS
+    mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    # Must not raise, and must still proceed to copy the object into the
+    # (now-existing, created by the race winner) evidence bucket.
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.create_bucket.assert_called_once_with(
+        Bucket="kronos-evidence-acme", ObjectLockEnabledForBucket=True
+    )
+    mock_client.put_object_lock_configuration.assert_not_called()
     mock_client.copy_object.assert_called_once()
