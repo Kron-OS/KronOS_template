@@ -147,6 +147,8 @@ class ParsingOrchestrationService:
         self,
         evidence_id: uuid.UUID,
         tenant: TenantContext,
+        *,
+        is_final_attempt: bool = True,
     ) -> int:
         """Run the full parse; called by the Celery worker.
 
@@ -155,8 +157,16 @@ class ParsingOrchestrationService:
           2. Detect parser from storage header.
           3. Stream object; feed annotated records to timeline ingest (if wired).
           4. On success: transition → COMPLETE; log PARSE_COMPLETED with record_count.
-          5. On exception: transition → ERROR; log PARSE_FAILED; re-raise.
+          5. On exception: if is_final_attempt, transition → ERROR and log
+             PARSE_FAILED; otherwise leave evidence in PARSING so a Celery
+             retry's own PARSING-state precondition still holds. Re-raise either way.
           6. Return total record count.
+
+        is_final_attempt defaults to True so direct/manual callers (tests, the
+        admin recovery route) keep the original fail-fast-to-ERROR behaviour.
+        parse_artefact_fast/heavy (celery_app.py) pass whether this is the
+        last retry the task will get, computed from Celery's own retry
+        counters — see their docstring-adjacent comment for why this matters.
         """
         evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
         if evidence is None:
@@ -211,30 +221,54 @@ class ParsingOrchestrationService:
 
         except StorageError as exc:
             # Ingest failure: INGEST_FAILED already logged by TimelineIngestionService.
-            # Transition evidence to ERROR and log at orchestration level, then re-raise
-            # as StorageError (not ParsingError) to preserve the correct error category.
-            evidence = evidence.with_error("ingest_failed")
-            await self._repo.update(evidence)
-            await self._audit.log(
-                AuditEventType.PARSE_FAILED,
-                org_id=tenant.org_id,
-                actor_user_id=tenant.user_id,
-                evidence_id=evidence.evidence_id,
-                details={"error": str(exc), "error_type": "StorageError"},
-            )
+            if is_final_attempt:
+                # Transition evidence to ERROR and log at orchestration level, then
+                # re-raise as StorageError (not ParsingError) to preserve the
+                # correct error category.
+                evidence = evidence.with_error("ingest_failed")
+                await self._repo.update(evidence)
+                await self._audit.log(
+                    AuditEventType.PARSE_FAILED,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    evidence_id=evidence.evidence_id,
+                    details={"error": str(exc), "error_type": "StorageError"},
+                )
+            else:
+                # A Celery retry is coming: marking ERROR here (a terminal FSM
+                # state) would make that retry's own PARSING-state precondition
+                # fail immediately with a confusing EvidenceStateConflictError,
+                # masking whatever transient condition (e.g. a not-yet-ready
+                # OpenSearch cluster returning 503 right after stack startup)
+                # actually caused this attempt to fail. Leave evidence in
+                # PARSING and let the retry try again.
+                logger.warning(
+                    "parse_failed_will_retry",
+                    extra={"evidence_id": str(evidence_id), "error": str(exc)},
+                )
             raise
         except (ParsingError, ValidationError):
             raise
         except Exception as exc:
-            evidence = evidence.with_error("parse_failed")
-            await self._repo.update(evidence)
-            await self._audit.log(
-                AuditEventType.PARSE_FAILED,
-                org_id=tenant.org_id,
-                actor_user_id=tenant.user_id,
-                evidence_id=evidence.evidence_id,
-                details={"error": str(exc), "error_type": type(exc).__name__},
-            )
+            if is_final_attempt:
+                evidence = evidence.with_error("parse_failed")
+                await self._repo.update(evidence)
+                await self._audit.log(
+                    AuditEventType.PARSE_FAILED,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    evidence_id=evidence.evidence_id,
+                    details={"error": str(exc), "error_type": type(exc).__name__},
+                )
+            else:
+                logger.warning(
+                    "parse_failed_will_retry",
+                    extra={
+                        "evidence_id": str(evidence_id),
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
             raise ParsingError(
                 f"Parse failed: {exc}",
                 context={"evidence_id": str(evidence_id)},

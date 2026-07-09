@@ -363,6 +363,47 @@ class TestExecuteParse:
         assert AuditEventType.PARSE_FAILED in types
 
     @pytest.mark.asyncio
+    async def test_execute_parse_non_final_attempt_leaves_evidence_parsing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Regression: a Celery retry re-runs execute_parse with the evidence
+        still in PARSING (its own precondition). If a non-final failure
+        transitioned evidence to the terminal ERROR state, that retry would
+        immediately blow up with EvidenceStateConflictError instead of trying
+        again — turning a transient failure (e.g. OpenSearch briefly
+        returning 503 right after stack startup) into a permanently stuck,
+        confusingly-logged evidence. Non-final attempts must leave evidence
+        in PARSING so the retry's state check still passes.
+        """
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FailingParser()
+        )
+        with pytest.raises(ParsingError):
+            await orchestrator.execute_parse(evidence.evidence_id, tenant, is_final_attempt=False)
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.PARSING
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED not in types
+
+    @pytest.mark.asyncio
+    async def test_execute_parse_final_attempt_transitions_to_error(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FailingParser()
+        )
+        with pytest.raises(ParsingError):
+            await orchestrator.execute_parse(evidence.evidence_id, tenant, is_final_attempt=True)
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.ERROR
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED in types
+
+    @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:
         eid = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         d1 = _make_document_id(eid, "cloudtrail", 5)

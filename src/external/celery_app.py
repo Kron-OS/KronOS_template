@@ -165,9 +165,18 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
+    # self.request.retries is 0 on the first execution and increments on each
+    # self.retry() call, so this is True exactly when calling self.retry()
+    # below would exhaust the budget (raise MaxRetriesExceededError) rather
+    # than schedule another attempt — i.e. this really is the last chance to
+    # parse this evidence. Only then should the orchestration layer flip
+    # evidence to the terminal ERROR state; see execute_parse's docstring.
+    is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
 
     async def _work(resources):  # type: ignore[no-untyped-def]
-        return await resources.orchestration_service.execute_parse(uuid.UUID(evidence_id), tenant)
+        return await resources.orchestration_service.execute_parse(
+            uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
+        )
 
     try:
         count = run_evidence_coro(_work)
@@ -210,9 +219,14 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
     from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
+    # See parse_artefact_fast's identical comment: only the true last attempt
+    # should flip evidence to the terminal ERROR state.
+    is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
 
     async def _work(resources):  # type: ignore[no-untyped-def]
-        return await resources.orchestration_service.execute_parse(uuid.UUID(evidence_id), tenant)
+        return await resources.orchestration_service.execute_parse(
+            uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
+        )
 
     try:
         count = run_evidence_coro(_work)

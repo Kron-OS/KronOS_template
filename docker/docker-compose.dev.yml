@@ -330,10 +330,19 @@ services:
     # Gate on health: worker_init wiring (startup.py) connects to Postgres, so it
     # must not start while "the database system is starting up", otherwise
     # configure_dependencies() fails and beat tasks hit an unconfigured repo.
+    # opensearch is included too — unlike kronos-backend (which already
+    # waited on it), this worker consumes q.index and calls OpenSearch
+    # directly (ensure_ism_policy, bulk_index) from the moment it picks up
+    # its first task, which can be within a couple seconds of container start
+    # if evidence was already queued. Without this it used to race OpenSearch
+    # still initializing its ISM plugin indices, surfacing as transient
+    # search_phase_execution_exception/503s on the very first parses of a
+    # freshly-started stack.
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4 --loglevel=info
 
   celery-worker-plaso:
@@ -365,10 +374,13 @@ services:
       TSA_URL: http://tsa:318/api/v1/timestamp
       KRONOS_LOG_FILE: /var/log/kronos/celery-plaso.log
       PLASO_WORKER_PATH: /app/plaso-worker/kronos-plaso-worker.py
+    # See celery-worker's identical comment above — execute_parse's ingest
+    # step calls OpenSearch directly (ensure_ism_policy, bulk_index) here too.
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
     command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
 
   celery-beat:
