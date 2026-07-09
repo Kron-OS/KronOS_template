@@ -223,6 +223,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    # kronos-backend, celery-worker and celery-beat all build this exact
+    # same context+dockerfile with no service-specific build args, so a
+    # shared `image:` tag makes Compose build it once and reuse the result
+    # for all three containers instead of running the (identical) apt/pip
+    # install three times per `docker compose build`.
+    image: kronos-backend:dev
     volumes:
       - ../src:/app/src:ro
       # Shared with fluent-bit (docker/fluent-bit/docker-compose.fluent-bit.yml)
@@ -288,6 +294,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: kronos-backend:dev
     volumes:
       - ../src:/app/src:ro
       # Same shared log volume as kronos-backend — fluent-bit.conf tails
@@ -368,6 +375,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: kronos-backend:dev
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
