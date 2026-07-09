@@ -49,6 +49,7 @@ class OpenSearchClient(AbstractTimelineIndex):
         http_auth: tuple[str, str] | None = None,
         use_ssl: bool = True,
         verify_certs: bool = True,
+        timeout: int = 60,
     ) -> None:
         from opensearchpy import AsyncOpenSearch  # noqa: PLC0415
 
@@ -57,6 +58,20 @@ class OpenSearchClient(AbstractTimelineIndex):
             http_auth=http_auth,
             use_ssl=use_ssl,
             verify_certs=verify_certs,
+            # opensearch-py's own default is a 10s connection/read timeout
+            # with retry_on_timeout=False — too tight for a _bulk request
+            # under concurrent load (several Celery workers indexing at
+            # once) against a resource-constrained node: observed a real
+            # request finish at 9.1-9.3s and the very next one killed
+            # client-side at 10.35s, which then cascaded into a Celery
+            # retry landing on an already-ERROR evidence row
+            # (EvidenceStateConflictError). A slow-but-alive cluster isn't
+            # the same failure as an unreachable one; give bulk requests
+            # real headroom and let the client retry a timeout once before
+            # surfacing it as a StorageError.
+            timeout=timeout,
+            max_retries=2,
+            retry_on_timeout=True,
         )
 
     async def bulk_index(self, documents: list[tuple[str, str, dict[str, Any]]]) -> int:
