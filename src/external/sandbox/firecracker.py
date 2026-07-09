@@ -174,13 +174,26 @@ class FirecrackerLauncher:
                 )
 
         proc.wait()
+        stderr = proc.stderr.read() if proc.stderr else ""
         if proc.returncode not in (0, None):
-            stderr = proc.stderr.read() if proc.stderr else ""
             logger.error(
                 "firecracker_worker_failed",
                 extra={"returncode": proc.returncode, "stderr": stderr[:500]},
             )
             raise RuntimeError(f"Plaso worker exited with code {proc.returncode}: {stderr[:200]}")
+
+        if stderr.strip():
+            # kronos-plaso-worker.py always exits 0 — even when it falls back
+            # to the plaso:placeholder stub (Plaso not installed, or
+            # log2timeline genuinely extracted nothing) — and logs *why* to
+            # its own stderr. Previously that stderr was only ever read on a
+            # non-zero exit, so every stub-fallback run left zero trace of
+            # its cause: the placeholder events in OpenSearch were
+            # unexplainable from server-side logs alone (Track B1).
+            logger.info(
+                "firecracker_worker_stderr",
+                extra={"evidence_id": evidence_id, "stderr": stderr[:2000]},
+            )
 
         logger.info(
             "firecracker_stream_complete",
