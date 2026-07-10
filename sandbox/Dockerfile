@@ -34,6 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         iptables iproute2 gosu tini \
         openssh-server \
         build-essential python3-dev libffi-dev \
+        # libyal / Plaso build deps: on arm64 most libyal wheels (libfsntfs,
+        # libfsext, libvhdi, libmodi, libfsfat, …) don't exist and pip compiles
+        # them from source. Their ./configure needs pkg-config (build-essential
+        # doesn't provide it) plus zlib/openssl headers, else the build fails
+        # with "configure: error: pkg-config not found".
+        pkg-config zlib1g-dev libssl-dev \
         nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 

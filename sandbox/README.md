@@ -108,11 +108,15 @@ python docker/plaso/kronos-plaso-worker.py \
 
 ## Notes / caveats
 
-- These artifacts were authored but **not built or run** in the environment
-  that generated them (image building is out of scope there). Expect to iterate
-  on the first `--build` — most likely on Plaso's transitive apt/pip deps for
-  your host arch. If a Plaso wheel needs a system lib, add it to the
-  `apt-get install` line in the `Dockerfile`.
+- **First build is slow, especially on arm64/Apple Silicon.** Plaso pulls ~20
+  libyal C libraries (libfsntfs, libfsext, libvhdi, …). On x86_64 most arrive
+  as prebuilt wheels; on **arm64 many have no wheel and are compiled from
+  source**, which is why the image ships the libyal build deps
+  (`pkg-config zlib1g-dev libssl-dev` alongside `build-essential`). Budget
+  10–20 min for the first `docker compose build`; it's cached afterwards. If a
+  future Plaso release adds a lib that needs another system header, add it to
+  the `apt-get install` line in the `Dockerfile` (the build error names the
+  missing `configure` dependency).
 - `no-new-privileges` + sshd privilege-separation are compatible (sshd starts
   as root and *drops* to the login user; that's not a privilege *gain*). If
   your host kernel/seccomp is unusually strict and sshd fails to start, run the
