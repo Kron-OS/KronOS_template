@@ -34,13 +34,44 @@ _COMBINED_LOG_RE = re.compile(
 )
 _TIME_FMT = "%d/%b/%Y:%H:%M:%S %z"
 
-# Quick check: does the header look like combined/common log format?
-_HEADER_RE = re.compile(rb"^(?:\S+:\d+ )?\S+ \S+ \S+ \[[\d/\w: +\-]+\] \"")
+# Number of leading *content* lines detection inspects before giving up.
+# Detection must not be anchored to byte 0: a real access log can legitimately
+# begin with blank lines, an operator annotation, or W3C/IIS-style "#Fields:"
+# comment headers, and the previous byte-0-anchored check ("^...") rejected
+# the entire file in that case — surfacing as a "No parser found" ParsingError
+# on upload even though every data line was a perfectly standard access-log
+# entry. Scanning a bounded number of leading lines keeps detection O(1) on
+# file size while tolerating that leading noise. Detection reuses the exact
+# same _COMBINED_LOG_RE the parser uses, so "detected" always implies
+# "parseable" — the two can no longer drift apart (they previously were two
+# separate regexes that had to be kept in sync by hand).
+_DETECT_MAX_LINES = 50
 
 
 def _ext(filename: str) -> str:
     dot = filename.rfind(".")
     return filename[dot:].lower() if dot != -1 else ""
+
+
+def _looks_like_access_log(header_bytes: bytes) -> bool:
+    """True if any of the first _DETECT_MAX_LINES content lines is a log line.
+
+    Skips a leading UTF-8 BOM, blank lines, and comment/header lines (``#``).
+    Only the detection window (first N KB) is passed in; the last line may be
+    truncated, which is harmless — earlier full lines decide the match.
+    """
+    text = header_bytes.decode("utf-8", errors="replace").lstrip("﻿")
+    seen = 0
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _COMBINED_LOG_RE.match(line) is not None:
+            return True
+        seen += 1
+        if seen >= _DETECT_MAX_LINES:
+            break
+    return False
 
 
 class NginxParser(ForensicParser):
@@ -59,10 +90,10 @@ class NginxParser(ForensicParser):
         return ParserType.FAST
 
     def supports(self, filename: str, content_type: str, header_bytes: bytes) -> bool:
-        """Accept .log/.txt files whose header matches combined log format."""
+        """Accept .log/.txt files with at least one combined/common log line."""
         if _ext(filename) not in {".log", ".txt"}:
             return False
-        return bool(_HEADER_RE.search(header_bytes))
+        return _looks_like_access_log(header_bytes)
 
     async def parse(
         self,
