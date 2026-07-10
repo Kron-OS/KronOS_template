@@ -171,12 +171,18 @@ def get_parser_registry() -> ParserRegistry:
     """Return the global parser registry, building it on first call."""
     global _parser_registry
     if _parser_registry is None:
+        from src.external.parsers.chrome_history import ChromeHistoryParser  # noqa: PLC0415
         from src.external.parsers.cloudtrail import CloudTrailParser  # noqa: PLC0415
         from src.external.parsers.nginx import NginxParser  # noqa: PLC0415
 
         registry = ParserRegistry()
         registry.register(CloudTrailParser())
         registry.register(NginxParser())
+        # ChromeHistoryParser must precede PlasoParser: both match the SQLite
+        # magic, but the native parser handles Chrome/Chromium 'History' DBs
+        # (fast, in-process, real browsing-timeline data) while every other
+        # SQLite artifact still falls through to the heavy Plaso path.
+        registry.register(ChromeHistoryParser())
         try:
             from src.external.parsers.evtx import FastEvtxParser  # noqa: PLC0415
 
