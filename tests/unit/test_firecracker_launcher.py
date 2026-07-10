@@ -48,6 +48,40 @@ async def test_run_yields_records_from_stdout_jsonl(tmp_path: Path) -> None:
     assert records[0].message == "hello"
 
 
+async def test_maps_realistic_psort_prefetch_event(tmp_path: Path) -> None:
+    """A psort json_line event (the worker's real output shape) must map onto a
+    TimelineRecord: datetime -> @timestamp, message -> message, and every other
+    field preserved under extra. This locks the heavy-path pre-OpenSearch
+    mapping contract between kronos-plaso-worker.py and FirecrackerLauncher.
+    """
+    script = _write_worker(
+        tmp_path,
+        """
+        import json
+        print(json.dumps({
+            "datetime": "2013-03-10T14:00:00+00:00",
+            "message": "Prefetch [CMD.EXE] executed, run count 2",
+            "timestamp_desc": "Last Time Executed",
+            "data_type": "windows:prefetch:execution",
+            "parser": "prefetch",
+            "run_count": 2,
+        }))
+        """,
+    )
+    launcher = FirecrackerLauncher(worker_path=script, python_bin=sys.executable)
+
+    records = await _collect(launcher)
+
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.timestamp.year == 2013 and rec.timestamp.month == 3
+    assert rec.message == "Prefetch [CMD.EXE] executed, run count 2"
+    # Non-time/message fields are preserved for querying.
+    assert rec.extra["data_type"] == "windows:prefetch:execution"
+    assert rec.extra["run_count"] == 2
+    assert rec.kronos.parser == "plaso"
+
+
 async def test_run_raises_on_nonzero_exit(tmp_path: Path) -> None:
     script = _write_worker(
         tmp_path,
