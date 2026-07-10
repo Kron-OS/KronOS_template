@@ -47,6 +47,12 @@ services:
       # Persistent home so Claude Code creds / shell history survive restarts.
       # (Layered under the repo mount above; the more specific path wins.)
       - sandbox_home:/root
+      # Dedicated volume for SSH state (authorized_keys + persistent host keys
+      # under ~/.ssh/hostkeys). Kept separate from the home volume so the box's
+      # SSH identity — and thus its host-key fingerprint — survives even a
+      # `docker volume rm` of sandbox_home. Layered over /root, so it wins for
+      # /root/.ssh specifically.
+      - sandbox_ssh:/root/.ssh
     networks:
       - sandbox_net
 
@@ -78,3 +84,4 @@ networks:
 
 volumes:
   sandbox_home:
+  sandbox_ssh:

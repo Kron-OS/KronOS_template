@@ -12,6 +12,23 @@
 ### For TasksThis document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
 Warning : Never deploy docker containers or break system. You can use ~/venv/ python env for running tests. Commit your modifications on current branch, push them, but no pull request.
 
+### Sandbox files may look missing or empty — that is normal
+
+When running **inside the KronOS sandbox** (`sandbox/`), some files are
+deliberately masked or gitignored and will appear missing or empty. This is
+expected and intentional — **do not recreate, restore, or commit anything
+about them**:
+
+- `sandbox/docker-compose.yml` is bind-mounted from `/dev/null` inside the box,
+  so it reads as an **empty file**. It is not corrupted; the workload is
+  intentionally denied sight of its own isolation config. Never "fix" or commit
+  it from inside the sandbox.
+- `sandbox/.env`, `sandbox/authorized_keys`, and the SSH host keys under
+  `~/.ssh/` are gitignored or machine-local and are **absent by design**.
+
+If `git status` inside the box shows changes to these paths, ignore them —
+never stage or commit them.
+
 ## Project Context
 
 ### What KronOS Does

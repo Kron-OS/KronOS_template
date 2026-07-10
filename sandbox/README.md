@@ -65,12 +65,13 @@ docker exec -it kronos-sandbox bash
 tunnel (`ssh -L 50923:127.0.0.1:50923 <docker-host>`) rather than exposing the
 port on your LAN.
 
-> **Host keys are persisted** on the `sandbox_home` volume (`~/.sandbox-ssh`)
-> so the fingerprint is stable across `up --build` rebuilds. Clients that pin
-> host keys (notably Claude Code's SSH remote, which reports a mismatch as
+> **Host keys are persisted** on the dedicated `sandbox_ssh` volume
+> (`~/.ssh/hostkeys`) so the fingerprint is stable across `up --build`
+> rebuilds — it even survives wiping the home volume. Clients that pin host
+> keys (notably Claude Code's SSH remote, which reports a mismatch as
 > `Host denied (verification failed)` and offers no re-accept prompt) then keep
-> working after the first accept. If you ever *do* need a fresh identity, delete
-> the volume (`docker compose down -v`) or `rm ~/.sandbox-ssh/ssh_host_*` and
+> working after the first accept. If you ever *do* need a fresh identity, run
+> `docker volume rm kronos-sandbox_sandbox_ssh` (or `rm ~/.ssh/hostkeys/*`) and
 > restart, then clear the stale entry on the client
 > (`ssh-keygen -R "[127.0.0.1]:50923"`).
 
@@ -105,7 +106,10 @@ Sysbox-isolated, and only sees this repo.
   never prompts for edits/commands here, and this setting **does not touch your
   host's Claude Code sessions** on the same repo. (Written only if absent, so
   your own edits persist. To restore prompting, set `defaultMode` to `default`
-  or delete the file.)
+  or delete the file.) The image also exports **`IS_SANDBOX=1`** (via sshd
+  `SetEnv` for SSH sessions and image `ENV` for `docker exec`); without it
+  Claude Code refuses bypass-permissions mode under `root` and would prompt
+  anyway. This is why the box runs prompt-free even though login is root.
 
 - **Auto-resume across Plan usage limits** — `claude-auto`:
 

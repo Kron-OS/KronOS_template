@@ -17,10 +17,12 @@ REPO_DIR="${HOME_DIR}/kronos"
 # each rebuild, which trips strict host-key checking in clients that pin it
 # (e.g. Claude Code's SSH remote, which then fails with "Host denied
 # (verification failed)" and, unlike openssh, offers no way to re-accept).
-# Persist them on the home volume instead and copy them into /etc/ssh each
-# boot, so the fingerprint is stable for the life of the sandbox_home volume.
+# Persist them on the dedicated sandbox_ssh volume (~/.ssh/hostkeys) instead
+# and copy them into /etc/ssh each boot, so the fingerprint is stable for the
+# life of that volume — surviving even a wipe of the home volume.
 mkdir -p /run/sshd
-HOSTKEY_STORE="${HOME_DIR}/.sandbox-ssh"
+install -d -m 700 "${HOME_DIR}/.ssh"
+HOSTKEY_STORE="${HOME_DIR}/.ssh/hostkeys"
 install -d -m 700 "${HOSTKEY_STORE}"
 if ! ls "${HOSTKEY_STORE}"/ssh_host_*_key >/dev/null 2>&1; then
     ssh-keygen -q -t ed25519 -N '' -f "${HOSTKEY_STORE}/ssh_host_ed25519_key"
@@ -31,8 +33,7 @@ cp -a "${HOSTKEY_STORE}"/ssh_host_*_key "${HOSTKEY_STORE}"/ssh_host_*_key.pub /e
 chmod 600 /etc/ssh/ssh_host_*_key
 chmod 644 /etc/ssh/ssh_host_*_key.pub
 
-# --- authorized_keys (home may be an empty named volume on first start) -----
-install -d -m 700 "${HOME_DIR}/.ssh"
+# --- authorized_keys (on the sandbox_ssh volume; ~/.ssh already created) -----
 AUTH_KEYS="${HOME_DIR}/.ssh/authorized_keys"
 if [ -n "${SANDBOX_SSH_PUBKEY:-}" ]; then
     printf '%s\n' "${SANDBOX_SSH_PUBKEY}" > "${AUTH_KEYS}"

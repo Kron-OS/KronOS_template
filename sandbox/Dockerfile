@@ -83,6 +83,11 @@ RUN systemctl enable docker
 # --- sshd hardening --------------------------------------------------------
 # Key-only, root login allowed (Sysbox isolates the host). Host keys are
 # generated at first boot by kronos-provision.service (kept out of the image).
+#
+# SetEnv IS_SANDBOX=1 marks every SSH session as sandboxed so Claude Code's
+# bypass-permissions mode works under root (it otherwise refuses to skip
+# prompts as uid 0). It covers interactive shells AND the non-interactive
+# command channel the Claude Code SSH remote uses.
 RUN mkdir -p /run/sshd \
     && { \
         echo 'PermitRootLogin yes'; \
@@ -95,7 +100,12 @@ RUN mkdir -p /run/sshd \
         echo 'AllowTcpForwarding yes'; \
         echo 'PermitTunnel no'; \
         echo 'ClientAliveInterval 120'; \
+        echo 'SetEnv IS_SANDBOX=1'; \
     } > /etc/ssh/sshd_config.d/kronos-sandbox.conf
+
+# Same flag for non-SSH entry points: Docker injects image ENV into
+# `docker exec`, so `claude` run that way is prompt-free under root too.
+ENV IS_SANDBOX=1
 
 COPY sandbox/firewall.sh /usr/local/bin/firewall.sh
 COPY sandbox/kronos-capture-env.sh /usr/local/bin/kronos-capture-env.sh
