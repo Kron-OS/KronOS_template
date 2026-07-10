@@ -1,0 +1,3 @@
+# Secrets / machine-local sandbox config — never commit.
+.env
+authorized_keys
