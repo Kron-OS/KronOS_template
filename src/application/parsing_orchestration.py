@@ -180,6 +180,8 @@ class ParsingOrchestrationService:
                 context={"evidence_id": str(evidence_id), "state": evidence.state.value},
             )
 
+        tenant = self._reconcile_tenant_alias(tenant, evidence)
+
         evidence_key = evidence.minio_evidence_key
         if not evidence_key:
             raise ParsingError(
@@ -277,6 +279,29 @@ class ParsingOrchestrationService:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reconcile_tenant_alias(tenant: TenantContext, evidence: Evidence) -> TenantContext:
+        """Return a tenant whose org_alias matches the evidence's own metadata.
+
+        The Celery parse tasks rebuild a minimal TenantContext from the task
+        payload, which only carries org_id + user_id, so they fill org_alias
+        with a placeholder ("system"). But org_alias is what routes every
+        timeline record to its per-tenant index (kronos-<org>-case-...) and
+        names the per-tenant OpenSearch DLS role — using the placeholder made
+        *all* parsed evidence, for every org, land in a single
+        kronos-system-case-* index and provisioned a "system" role the real
+        tenant's index pattern (kronos-<org>-*) would never match.
+
+        The authoritative alias is the immutable one captured on the evidence
+        at upload time from the uploader's organization. get_by_id() already
+        loaded this evidence scoped to tenant.org_id, so the org matches and
+        this reconciliation cannot cross a tenant boundary — it only repairs
+        the human-readable alias the task couldn't carry.
+        """
+        if tenant.org_alias == evidence.metadata.org_alias:
+            return tenant
+        return tenant.model_copy(update={"org_alias": evidence.metadata.org_alias})
 
     async def _detect_parser(self, evidence: Evidence, evidence_key: str) -> ForensicParser:
         """Read the first 8 KB and return the matching parser."""

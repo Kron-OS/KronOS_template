@@ -404,6 +404,74 @@ class TestExecuteParse:
         assert AuditEventType.PARSE_FAILED in types
 
     @pytest.mark.asyncio
+    async def test_indexes_under_evidence_org_alias_not_task_placeholder(
+        self, evidence_repo, local_storage, audit_repo, task_queue
+    ) -> None:
+        """Records must route to the evidence's real per-tenant index.
+
+        The Celery parse task rebuilds a tenant with org_alias="system" (its
+        payload carries only org_id/user_id). Without reconciliation, every
+        org's evidence landed in a single kronos-system-case-* index. The
+        authoritative alias is on the immutable evidence metadata; execute_parse
+        must use it so records route to kronos-<realorg>-case-*.
+        """
+        from src.adapter.opensearch.client import InMemoryOpenSearchClient
+        from src.application.timeline_ingest import TimelineIngestionService
+        from src.domain.evidence import EvidenceMetadata
+        from src.domain.user import Role
+
+        org_id = uuid.uuid4()
+        # Evidence captured at upload for org "acmecorp".
+        evidence_key = f"acmecorp/case/{uuid.uuid4()}"
+        local_storage.write_evidence(evidence_key, _CLOUDTRAIL_BYTES)
+        meta = EvidenceMetadata(
+            original_filename="trail.json",
+            content_type="application/json",
+            size_bytes=len(_CLOUDTRAIL_BYTES),
+            uploader_user_id=uuid.uuid4(),
+            case_id=uuid.uuid4(),
+            org_id=org_id,
+            org_alias="acmecorp",
+        )
+        evidence = Evidence(
+            metadata=meta,
+            state=EvidenceState.PARSING,
+            sha256="a" * 64,
+            minio_evidence_key=evidence_key,
+        )
+        await evidence_repo.save(evidence)
+
+        # The task-built tenant: same org_id, but the placeholder alias.
+        task_tenant = TenantContext(
+            org_id=org_id,
+            org_alias="system",
+            user_id=uuid.uuid4(),
+            username="celery-worker",
+            roles=frozenset({Role.ANALYST}),
+            correlation_id=str(uuid.uuid4()),
+        )
+
+        opensearch = InMemoryOpenSearchClient()
+        ingest = TimelineIngestionService(opensearch, AuditLogService(audit_repo))
+        registry = ParserRegistry()
+        registry.register(_FakeCloudTrailParser())
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+            timeline_ingest=ingest,
+        )
+
+        await orchestrator.execute_parse(evidence.evidence_id, task_tenant)
+
+        indices = opensearch.all_indices()
+        assert indices, "no documents were indexed"
+        assert all(idx.startswith("kronos-acmecorp-case-") for idx in indices), indices
+        assert not any("system" in idx for idx in indices)
+
+    @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:
         eid = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         d1 = _make_document_id(eid, "cloudtrail", 5)
