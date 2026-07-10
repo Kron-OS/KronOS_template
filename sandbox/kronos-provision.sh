@@ -11,9 +11,25 @@ log() { echo "[kronos-provision] $*" >&2; }
 HOME_DIR=/root
 REPO_DIR="${HOME_DIR}/kronos"
 
-# --- SSH host keys ----------------------------------------------------------
+# --- SSH host keys (persisted across rebuilds) ------------------------------
+# /etc/ssh is on the container's ephemeral layer, so keys generated there are
+# regenerated on every `docker compose up --build` — the fingerprint changes
+# each rebuild, which trips strict host-key checking in clients that pin it
+# (e.g. Claude Code's SSH remote, which then fails with "Host denied
+# (verification failed)" and, unlike openssh, offers no way to re-accept).
+# Persist them on the home volume instead and copy them into /etc/ssh each
+# boot, so the fingerprint is stable for the life of the sandbox_home volume.
 mkdir -p /run/sshd
-ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1 || ssh-keygen -A >/dev/null
+HOSTKEY_STORE="${HOME_DIR}/.sandbox-ssh"
+install -d -m 700 "${HOSTKEY_STORE}"
+if ! ls "${HOSTKEY_STORE}"/ssh_host_*_key >/dev/null 2>&1; then
+    ssh-keygen -q -t ed25519 -N '' -f "${HOSTKEY_STORE}/ssh_host_ed25519_key"
+    ssh-keygen -q -t rsa -b 4096 -N '' -f "${HOSTKEY_STORE}/ssh_host_rsa_key"
+    log "generated persistent SSH host keys in ${HOSTKEY_STORE}"
+fi
+cp -a "${HOSTKEY_STORE}"/ssh_host_*_key "${HOSTKEY_STORE}"/ssh_host_*_key.pub /etc/ssh/
+chmod 600 /etc/ssh/ssh_host_*_key
+chmod 644 /etc/ssh/ssh_host_*_key.pub
 
 # --- authorized_keys (home may be an empty named volume on first start) -----
 install -d -m 700 "${HOME_DIR}/.ssh"

@@ -65,6 +65,15 @@ docker exec -it kronos-sandbox bash
 tunnel (`ssh -L 50923:127.0.0.1:50923 <docker-host>`) rather than exposing the
 port on your LAN.
 
+> **Host keys are persisted** on the `sandbox_home` volume (`~/.sandbox-ssh`)
+> so the fingerprint is stable across `up --build` rebuilds. Clients that pin
+> host keys (notably Claude Code's SSH remote, which reports a mismatch as
+> `Host denied (verification failed)` and offers no re-accept prompt) then keep
+> working after the first accept. If you ever *do* need a fresh identity, delete
+> the volume (`docker compose down -v`) or `rm ~/.sandbox-ssh/ssh_host_*` and
+> restart, then clear the stale entry on the client
+> (`ssh-keygen -R "[127.0.0.1]:50923"`).
+
 ## Exercise the pipeline
 
 Inside the box (you start in `~/kronos`, venv already on `PATH`):
