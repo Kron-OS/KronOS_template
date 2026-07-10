@@ -16,7 +16,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # --- system packages -------------------------------------------------------
 #  iptables/iproute2 : the start-up egress firewall (block LAN).
-#  openssh-server    : external access (key-only).
+#  openssh-server, openssh-sftp-server : external access (key-only) + the
+#                      sftp subsystem. Listed explicitly (not just pulled in
+#                      transitively) since --no-install-recommends can drop it
+#                      depending on how the base image's package graph is
+#                      structured, which breaks SFTP-based clients (e.g. the
+#                      Claude Code SSH remote) while plain interactive ssh
+#                      still works fine.
 #  build-essential + python3-dev + libffi-dev : build any C extensions Plaso
 #                      or evtx need if a wheel is unavailable.
 #  nodejs/npm        : the Claude Code CLI.
@@ -25,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd systemd-sysv dbus dbus-user-session \
         ca-certificates gpg curl git ripgrep jq sqlite3 less nano procps \
         iptables iproute2 \
-        openssh-server \
+        openssh-server openssh-sftp-server \
         build-essential python3-dev libffi-dev \
         pkg-config zlib1g-dev libssl-dev \
         nodejs npm \
