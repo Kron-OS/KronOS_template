@@ -54,10 +54,32 @@ alias t='python -m pytest tests/unit -q --no-cov'
 echo "KronOS sandbox — venv on PATH (python/pytest/ruff/black/mypy), Plaso installed."
 echo "  run tests:   python -m pytest tests/unit -q --no-cov"
 echo "  heavy path:  log2timeline.py --version ; psort.py --version"
+echo "  claude:      claude          (permissions bypassed in this box)"
+echo "  unattended:  claude-auto ..  (auto-resumes across Plan usage limits)"
 BASHRC
     chown sandbox:sandbox "${HOME_DIR}/.bashrc"
 fi
 
-# --- 5) Drop root: exec sshd (only root process; logins are 'sandbox') -----
+# --- 5) Claude Code: permit all actions without prompting -------------------
+# This is a locked-down box — network-isolated (no LAN), non-root workload,
+# only this repo mounted — so unattended, prompt-free operation is the whole
+# point. Scoped to the container's own ~/.claude (a named volume), so it never
+# affects Claude Code sessions on your host. Written only if absent, so your
+# own edits persist.
+install -d -o sandbox -g sandbox -m 700 "${HOME_DIR}/.claude"
+CLAUDE_SETTINGS="${HOME_DIR}/.claude/settings.json"
+if [ ! -f "${CLAUDE_SETTINGS}" ]; then
+    cat > "${CLAUDE_SETTINGS}" <<'JSON'
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  }
+}
+JSON
+    chown sandbox:sandbox "${CLAUDE_SETTINGS}"
+    log "seeded ~/.claude/settings.json with bypassPermissions (no prompts)"
+fi
+
+# --- 6) Drop root: exec sshd (only root process; logins are 'sandbox') -----
 log "starting sshd (container :22 -> host :2222 by default)"
 exec /usr/sbin/sshd -D -e

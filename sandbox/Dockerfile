@@ -89,7 +89,8 @@ RUN mkdir -p /run/sshd \
 
 COPY sandbox/firewall.sh /usr/local/bin/firewall.sh
 COPY sandbox/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/firewall.sh /usr/local/bin/entrypoint.sh
+COPY sandbox/claude-auto.sh /usr/local/bin/claude-auto
+RUN chmod 0755 /usr/local/bin/firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/claude-auto
 
 EXPOSE 22
 

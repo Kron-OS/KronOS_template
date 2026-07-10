@@ -83,6 +83,40 @@ python docker/plaso/kronos-plaso-worker.py \
 
 ---
 
+## Claude Code in the box
+
+The `claude` CLI is preinstalled and configured for **unattended, prompt-free**
+operation, which is safe here precisely because the box is network-isolated,
+non-root, and only sees this repo.
+
+- **All actions permitted without asking.** The entrypoint seeds
+  `~/.claude/settings.json` with `{"permissions": {"defaultMode":
+  "bypassPermissions"}}` inside the container's own home volume — so `claude`
+  never prompts for edits/commands here, and this setting **does not touch your
+  host's Claude Code sessions** on the same repo. (Written only if absent, so
+  your own edits persist. To restore prompting, set `defaultMode` to `default`
+  or delete the file.)
+
+- **Auto-resume across Plan usage limits** — `claude-auto`:
+
+  ```bash
+  claude-auto                     # interactive; rides through usage-limit windows
+  claude-auto -p "run the tests"  # headless task; same
+  ```
+
+  It runs `claude`, and when the plan's usage window is exhausted it waits until
+  the window resets (parsed from Claude's message when possible, otherwise a
+  periodic retry) and then **`--continue`s the same conversation** so nothing is
+  lost. A non-limit exit is passed straight through — it doesn't mask real
+  crashes. Tunables (env): `CLAUDE_AUTO_FALLBACK_SLEEP` (default 1200s),
+  `CLAUDE_AUTO_MAX_RETRIES` (0 = unlimited), `CLAUDE_AUTO_BUFFER`, `CLAUDE_BYPASS`
+  (1 = also pass `--dangerously-skip-permissions`).
+
+  > For reliable unattended runs use a **headless** invocation (`-p "..."`):
+  > Claude exits when it hits the limit, which is what lets the supervisor
+  > detect it, wait, and resume. Pair it with `nohup`/`tmux` and it will keep a
+  > long task moving across multiple usage windows on its own.
+
 ## Toggles
 
 - **Full air-gap** (no internet either): set `internal: true` on `sandbox_net`
