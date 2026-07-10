@@ -10,7 +10,28 @@
 ## 🚀 Quick Start for All Agents
 
 ### For TasksThis document contains the complete Phase 1–5 backend implementation guidelines. The backend core is finished; these sections are reference only.
-Warning : Never deploy docker containers or break system. You can use ~/venv/ python env for running tests. Commit your modifications on current branch, push them, but no pull request.
+Warning : Never deploy docker containers or break system. You can use ~/venv/ python env for running tests. Commit your modifications on current branch, push them, but no pull request. **Exception: inside the KronOS sandbox, the nested Docker stack is allowed — see below.**
+
+### Docker is allowed *inside the KronOS sandbox only*
+
+The blanket "never deploy docker containers" rule above exists to protect the
+**host**. It does **not** apply when you are running **inside the KronOS
+sandbox** — a Sysbox-isolated Docker-in-Docker box (`sandbox/`) built
+specifically to exercise the full pipeline, which cannot affect the host
+system. Detect the sandbox by the environment variable `IS_SANDBOX=1` and the
+`kronos-sandbox` hostname.
+
+**When (and only when) inside the sandbox**, you MAY run the project's nested
+Docker stack to bring up services and run true end-to-end tests:
+
+- `make dev` / `make clean` / `make test-integration`
+- `docker compose -f docker/docker-compose.dev.yml ...` and
+  `docker compose -f docker/docker-compose.test.yml ...`
+
+**Outside the sandbox** (a developer host, CI, or any box without
+`IS_SANDBOX=1`), the original rule stands: do not deploy containers; use
+`~/venv` for tests. Never run `sandbox/`'s own compose (it manages the box you
+are in).
 
 ### Sandbox files may look missing or empty — that is normal
 
