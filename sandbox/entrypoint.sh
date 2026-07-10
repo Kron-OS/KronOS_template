@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
-# Sandbox entrypoint. Runs as root only long enough to (1) install the egress
-# firewall and (2) provision SSH, then execs sshd. Every interactive login
-# lands as the unprivileged 'sandbox' user, which has no CAP_NET_ADMIN and so
-# cannot undo the firewall.
+# Sandbox entrypoint. Runs as root to (1) install the egress firewall and
+# (2) provision SSH. Sysbox runtime provides host isolation, so running as
+# root inside is safe.
 
 set -euo pipefail
 
 log() { echo "[sandbox-entrypoint] $*" >&2; }
 
-HOME_DIR=/home/sandbox
+HOME_DIR=/root
 REPO_DIR="${HOME_DIR}/kronos"
 
 # --- 1) Egress firewall (block the local network) --------------------------
@@ -29,7 +28,7 @@ mkdir -p /run/sshd
 ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1 || ssh-keygen -A >/dev/null
 
 # --- 3) authorized_keys (home may be an empty named volume on first start) -
-install -d -o sandbox -g sandbox -m 700 "${HOME_DIR}/.ssh"
+install -d -m 700 "${HOME_DIR}/.ssh"
 AUTH_KEYS="${HOME_DIR}/.ssh/authorized_keys"
 if [ -n "${SANDBOX_SSH_PUBKEY:-}" ]; then
     printf '%s\n' "${SANDBOX_SSH_PUBKEY}" > "${AUTH_KEYS}"
@@ -39,9 +38,8 @@ elif [ -f "${REPO_DIR}/sandbox/authorized_keys" ]; then
     log "authorized_keys set from sandbox/authorized_keys"
 else
     log "WARNING: no SSH public key provided — SSH login will be impossible."
-    log "         Set SANDBOX_SSH_PUBKEY in sandbox/.env, or use: docker exec -it -u sandbox kronos-sandbox bash"
+    log "         Set SANDBOX_SSH_PUBKEY in sandbox/.env, or use: docker exec -it kronos-sandbox bash"
 fi
-chown sandbox:sandbox "${AUTH_KEYS}" 2>/dev/null || true
 chmod 600 "${AUTH_KEYS}" 2>/dev/null || true
 
 # --- 4) Seed a friendly shell (home volume starts empty) -------------------
@@ -51,22 +49,20 @@ if [ ! -f "${HOME_DIR}/.bashrc" ] || ! grep -q "kronos-sandbox" "${HOME_DIR}/.ba
 export PATH=/opt/venv/bin:$PATH
 if [ -d "$HOME/kronos" ]; then cd "$HOME/kronos"; fi
 alias t='python -m pytest tests/unit -q --no-cov'
-echo "KronOS sandbox — venv on PATH (python/pytest/ruff/black/mypy), Plaso installed."
+echo "KronOS sandbox (root/Sysbox) — venv on PATH (python/pytest/ruff/black/mypy), Plaso installed."
 echo "  run tests:   python -m pytest tests/unit -q --no-cov"
 echo "  heavy path:  log2timeline.py --version ; psort.py --version"
 echo "  claude:      claude          (permissions bypassed in this box)"
 echo "  unattended:  claude-auto ..  (auto-resumes across Plan usage limits)"
 BASHRC
-    chown sandbox:sandbox "${HOME_DIR}/.bashrc"
 fi
 
 # --- 5) Claude Code: permit all actions without prompting -------------------
-# This is a locked-down box — network-isolated (no LAN), non-root workload,
+# This is a locked-down box — network-isolated (no LAN), Sysbox-isolated,
 # only this repo mounted — so unattended, prompt-free operation is the whole
 # point. Scoped to the container's own ~/.claude (a named volume), so it never
-# affects Claude Code sessions on your host. Written only if absent, so your
-# own edits persist.
-install -d -o sandbox -g sandbox -m 700 "${HOME_DIR}/.claude"
+# affects Claude Code sessions on your host. Written only if absent.
+install -d -m 700 "${HOME_DIR}/.claude"
 CLAUDE_SETTINGS="${HOME_DIR}/.claude/settings.json"
 if [ ! -f "${CLAUDE_SETTINGS}" ]; then
     cat > "${CLAUDE_SETTINGS}" <<'JSON'
@@ -76,10 +72,9 @@ if [ ! -f "${CLAUDE_SETTINGS}" ]; then
   }
 }
 JSON
-    chown sandbox:sandbox "${CLAUDE_SETTINGS}"
     log "seeded ~/.claude/settings.json with bypassPermissions (no prompts)"
 fi
 
-# --- 6) Drop root: exec sshd (only root process; logins are 'sandbox') -----
-log "starting sshd (container :22 -> host :2222 by default)"
+# --- 6) Start sshd (running as root; Sysbox provides host isolation) --------
+log "starting sshd (container :22 -> host :50923 by default)"
 exec /usr/sbin/sshd -D -e

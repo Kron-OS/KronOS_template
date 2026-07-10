@@ -4,12 +4,11 @@
 #
 #   cp sandbox/.env.example sandbox/.env   # then paste your SSH public key
 #   docker compose -f sandbox/docker-compose.yml up -d --build
-#   ssh -p 2222 sandbox@127.0.0.1          # or: docker exec -it -u sandbox kronos-sandbox bash
+#   ssh -p 50923 root@127.0.0.1            # or: docker exec -it kronos-sandbox bash
 #
 # Isolation summary:
 #   - mounts ONLY this repo (nothing else on your machine is visible);
-#   - workload runs as a non-root user with all Linux caps dropped;
-#   - no-new-privileges, so nothing can regain them via setuid binaries;
+#   - uses Sysbox runtime for full root access inside with host isolation;
 #   - a start-up firewall blocks the local network (LAN/host/other containers)
 #     while still allowing the public internet and inbound SSH.
 
@@ -29,49 +28,30 @@ services:
     ports:
       # SSH. Bound to host loopback by default so the box is NOT exposed on your
       # LAN. To reach it from another machine, prefer an SSH tunnel; only change
-      # this to "2222:22" if you understand you're exposing it on the host's
+      # this to "50923:22" if you understand you're exposing it on the host's
       # network interfaces.
-      - "127.0.0.1:2222:22"
+      - "50923:22"
     volumes:
       # The ONLY host path mounted: this repository. No other repo is visible.
-      - ..:/home/sandbox/kronos:rw
+      - ..:/root/kronos:rw
       # Persistent home so Claude Code creds / shell history survive restarts.
       # (Layered under the repo mount above; the more specific path wins.)
-      - sandbox_home:/home/sandbox
+      - sandbox_home:/root
     networks:
       - sandbox_net
 
-    # --- runtime hardening ---
-    cap_drop:
-      - ALL
-    cap_add:
-      # NET_ADMIN/NET_RAW: the root entrypoint needs them to install iptables
-      # rules. The unprivileged workload never gets them (caps are cleared on
-      # setuid to 'sandbox'), so it cannot alter the firewall.
-      - NET_ADMIN
-      - NET_RAW
-      # CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/KILL: sshd host-key setup and
-      # dropping privileges to the login user; tini reaping.
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETUID
-      - SETGID
-      - KILL
-    security_opt:
-      - no-new-privileges:true
+    # --- Sysbox isolation ---
+    # Sysbox provides a rootful container with its own kernel view (user namespaces),
+    # so you get root access inside (for iptables, sshd chroot, etc.) without
+    # exposing host root privileges. No manual cap_drop/cap_add needed.
+    runtime: sysbox-runc
+
     tmpfs:
       # Writable scratch that plaso/pytest need, kept off any persistent layer.
       - /tmp:exec,mode=1777,size=2g
     pids_limit: 4096
     mem_limit: 6g
     restart: unless-stopped
-
-    # --- STRONGER ISOLATION (optional) ---
-    # Sysbox gives each container its own user-namespaced kernel view and lets
-    # it safely run nested Docker/systemd/Firecracker (useful for the real
-    # Firecracker Plaso sandbox). Install Sysbox on the host, then uncomment:
-    # runtime: sysbox-runc
 
 networks:
   sandbox_net:
