@@ -19,11 +19,12 @@ potentially-compromised and boxed in on every axis:
 
 | Concern | Control |
 |---|---|
-| Reaching your LAN / host / other containers | Start-up **egress firewall** drops all traffic to RFC1918 + link-local + CGNAT + multicast. Enforced by root before any workload runs; the workload is non-root and can't undo it. |
+| Reaching your LAN / host / other containers | Start-up **egress firewall** (`kronos-firewall.service`) drops all traffic to RFC1918 + link-local + CGNAT + multicast. `ssh.service` and `docker.service` both `Requires=` it, so neither comes up until it has applied. |
 | Seeing your other repos / files | Bind-mounts **only this repository** (`..`) — nothing else on your machine is visible. |
-| Privilege escalation | `cap_drop: ALL` (only what root needs to set the firewall + run sshd is added back), `no-new-privileges: true`, non-root login user. |
+| Reading/editing its own isolation config | `sandbox/docker-compose.yml` itself is masked out of the mount (bind-mounted from `/dev/null`) — the workload can't see or rewrite the definition of its own sandbox. |
+| Privilege escalation | Sysbox runtime (user-namespaced root), `no-new-privileges` semantics from Sysbox isolation. |
 | Runaway resource use | `pids_limit`, `mem_limit`, `tmpfs` scratch. |
-| Inbound exposure | SSH is key-only, `PermitRootLogin no`, single `AllowUsers sandbox`, and the port is bound to host **loopback** by default. |
+| Inbound exposure | SSH is key-only, `PasswordAuthentication no`, and the port is bound to host **loopback** by default. |
 
 **Internet is still allowed** (for `pip`/`plaso`/`apt`) — only the *local
 network* is blocked, which is the stated threat. Blocking RFC1918 does not
@@ -50,18 +51,18 @@ First build is slow (Plaso + toolchain). Subsequent starts are instant.
 
 **SSH** (default; port bound to host loopback):
 ```bash
-ssh -p 2222 sandbox@127.0.0.1
+ssh -p 50923 root@127.0.0.1
 ```
 
 **Without SSH** (no key configured, or you prefer exec):
 ```bash
-docker exec -it -u sandbox kronos-sandbox bash
+docker exec -it kronos-sandbox bash
 ```
 
 **Claude Code** — the `claude` CLI is preinstalled. Either SSH in and run
 `claude` in `~/kronos`, or point a Claude Code remote/SSH environment at
-`sandbox@127.0.0.1:2222`. To reach the box from another machine, prefer an SSH
-tunnel (`ssh -L 2222:127.0.0.1:2222 <docker-host>`) rather than exposing the
+`root@127.0.0.1:50923`. To reach the box from another machine, prefer an SSH
+tunnel (`ssh -L 50923:127.0.0.1:50923 <docker-host>`) rather than exposing the
 port on your LAN.
 
 ## Exercise the pipeline
@@ -87,9 +88,9 @@ python docker/plaso/kronos-plaso-worker.py \
 
 The `claude` CLI is preinstalled and configured for **unattended, prompt-free**
 operation, which is safe here precisely because the box is network-isolated,
-non-root, and only sees this repo.
+Sysbox-isolated, and only sees this repo.
 
-- **All actions permitted without asking.** The entrypoint seeds
+- **All actions permitted without asking.** `kronos-provision.service` seeds
   `~/.claude/settings.json` with `{"permissions": {"defaultMode":
   "bypassPermissions"}}` inside the container's own home volume — so `claude`
   never prompts for edits/commands here, and this setting **does not touch your
@@ -122,21 +123,43 @@ non-root, and only sees this repo.
 - **Full air-gap** (no internet either): set `internal: true` on `sandbox_net`
   in `docker-compose.yml`. Published ports stop working on internal networks,
   so connect via `docker exec` instead of SSH.
-- **Stronger runtime isolation**: install [Sysbox](https://github.com/nestybox/sysbox)
-  on the host and uncomment `runtime: sysbox-runc`. This user-namespaces the
-  container and lets it safely run nested Docker/systemd/Firecracker (e.g. the
-  real Firecracker Plaso sandbox).
-- **Expose SSH beyond loopback**: change `127.0.0.1:2222:22` to `2222:22`
+- **Runtime isolation**: requires [Sysbox](https://github.com/nestybox/sysbox)
+  on the host (`runtime: sysbox-runc` is already set in `docker-compose.yml`).
+  This user-namespaces the container and gives it a real init system, so it
+  can safely run systemd, nested Docker, and Firecracker (e.g. the real
+  Firecracker Plaso sandbox) as first-class managed services.
+- **Expose SSH beyond loopback**: change `50923:22` to a host-wide bind
   (understand the exposure first) — or, better, keep loopback and tunnel.
 - **Disable the firewall** (debugging only): `SANDBOX_FIREWALL=0` in `.env`.
+
+## Boot sequence (systemd)
+
+Sysbox lets the container run a real init, so the box boots like a small VM
+rather than a single hand-run script — `ENTRYPOINT ["/sbin/init"]` starts
+systemd, which brings units up in this order:
+
+```
+kronos-boot.service       (capture Compose env vars for later units)
+  └─► kronos-firewall.service   (apply the egress firewall; Requires'd by:)
+        ├─► ssh.service         (after kronos-provision.service too)
+        └─► docker.service      (nested Docker daemon)
+kronos-provision.service  (SSH host keys, authorized_keys, shell, claude config)
+```
+
+`ssh.service` and `docker.service` each carry a `Requires=kronos-firewall.service`
+drop-in (`systemd/ssh.service.d/`, `systemd/docker.service.d/`), so if the
+firewall unit fails, neither comes up — the box refuses to start unprotected.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | The sandbox image: Python venv (project + dev deps + Plaso), Node + Claude Code CLI, sshd, firewall tooling. |
-| `docker-compose.yml` | Runs it with the hardening + isolated network + single repo mount. |
-| `entrypoint.sh` | Root: apply firewall, provision sshd/keys, then `exec sshd` (logins are non-root). |
+| `Dockerfile` | The sandbox image: Python venv (project + dev deps + Plaso), Node + Claude Code CLI, sshd, Docker, systemd units. |
+| `docker-compose.yml` | Runs it with the hardening + isolated network + single repo mount (with its own compose file masked out — see above). |
+| `systemd/` | Unit files + drop-ins wiring the firewall/provisioning/ssh/docker boot sequence (see below). |
+| `kronos-capture-env.sh` | Copies `SANDBOX_*` vars from `/proc/1/environ` so systemd units can read them. |
+| `kronos-firewall-guard.sh` | Applies (or, if `SANDBOX_FIREWALL=0`, skips with a warning) `firewall.sh`. |
+| `kronos-provision.sh` | SSH host keys, `authorized_keys`, shell seed, Claude Code settings — run before `ssh.service`. |
 | `firewall.sh` | iptables rules blocking the local network. |
 | `.env.example` | Your SSH pubkey + firewall toggle (copy to `.env`). |
 
@@ -151,7 +174,8 @@ non-root, and only sees this repo.
   future Plaso release adds a lib that needs another system header, add it to
   the `apt-get install` line in the `Dockerfile` (the build error names the
   missing `configure` dependency).
-- `no-new-privileges` + sshd privilege-separation are compatible (sshd starts
-  as root and *drops* to the login user; that's not a privilege *gain*). If
-  your host kernel/seccomp is unusually strict and sshd fails to start, run the
-  box via `docker exec` while you adjust `cap_add`.
+- Requires the [Sysbox](https://github.com/nestybox/sysbox) container runtime
+  on the host (`runtime: sysbox-runc` in `docker-compose.yml`) — plain
+  `runc`/`containerd` cannot run systemd-as-PID1 with a nested Docker daemon
+  safely. If `docker compose up` fails with an unknown-runtime error, install
+  Sysbox first.

@@ -7,10 +7,14 @@
 #   ssh -p 50923 root@127.0.0.1            # or: docker exec -it kronos-sandbox bash
 #
 # Isolation summary:
-#   - mounts ONLY this repo (nothing else on your machine is visible);
-#   - uses Sysbox runtime for full root access inside with host isolation;
-#   - a start-up firewall blocks the local network (LAN/host/other containers)
-#     while still allowing the public internet and inbound SSH.
+#   - mounts ONLY this repo (nothing else on your machine is visible), and this
+#     compose file itself is masked out of that mount so the workload can't
+#     read or rewrite its own isolation boundary;
+#   - uses Sysbox runtime for full root access inside with host isolation, and
+#     to run systemd as PID 1 (ssh.service, docker.service, kronos-* units);
+#   - a start-up firewall (kronos-firewall.service) blocks the local network
+#     (LAN/host/other containers) while still allowing the public internet and
+#     inbound SSH — ssh.service and docker.service both `Requires=` it.
 
 name: kronos-sandbox
 
@@ -34,6 +38,12 @@ services:
     volumes:
       # The ONLY host path mounted: this repository. No other repo is visible.
       - ..:/root/kronos:rw
+      # Mask this compose file inside the box: the workload must not be able
+      # to read or edit the definition of its own isolation boundary (mount
+      # list, firewall toggle, capabilities, runtime) and have that change
+      # take effect on the next `docker compose up`. Bind-mounting /dev/null
+      # over it shadows the file with an empty, read-only one.
+      - /dev/null:/root/kronos/sandbox/docker-compose.yml:ro
       # Persistent home so Claude Code creds / shell history survive restarts.
       # (Layered under the repo mount above; the more specific path wins.)
       - sandbox_home:/root
