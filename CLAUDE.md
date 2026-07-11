@@ -33,21 +33,21 @@ Docker stack to bring up services and run true end-to-end tests:
 `~/venv` for tests. Never run `sandbox/`'s own compose (it manages the box you
 are in).
 
-### Sandbox files may look missing or empty — that is normal
+### The `sandbox/` directory is read-only inside the box
 
-When running **inside the KronOS sandbox** (`sandbox/`), some files are
-deliberately masked or gitignored and will appear missing or empty. This is
-expected and intentional — **do not recreate, restore, or commit anything
-about them**:
+When running **inside the KronOS sandbox**, the `sandbox/` directory is
+bind-mounted **read-only** — the box can read its own isolation config but
+cannot rewrite it. So from inside the box:
 
-- `sandbox/docker-compose.yml` is bind-mounted from `/dev/null` inside the box,
-  so it reads as an **empty file**. It is not corrupted; the workload is
-  intentionally denied sight of its own isolation config. Never "fix" or commit
-  it from inside the sandbox.
+- **Do not try to edit any file under `sandbox/`** (Dockerfile, compose,
+  firewall, provisioning, systemd units). Writes fail by design; that is not a
+  bug. Make sandbox changes from a trusted host checkout, not from inside the
+  untrusted box.
 - `sandbox/.env`, `sandbox/authorized_keys`, and the SSH host keys under
-  `~/.ssh/` are gitignored or machine-local and are **absent by design**.
+  `~/.ssh/` are gitignored or machine-local and may be **absent by design** —
+  do not recreate or commit them.
 
-If `git status` inside the box shows changes to these paths, ignore them —
+If `git status` inside the box shows changes under these paths, ignore them —
 never stage or commit them.
 
 ## Project Context

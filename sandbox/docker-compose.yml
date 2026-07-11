@@ -7,9 +7,9 @@
 #   ssh -p 50923 root@127.0.0.1            # or: docker exec -it kronos-sandbox bash
 #
 # Isolation summary:
-#   - mounts ONLY this repo (nothing else on your machine is visible), and this
-#     compose file itself is masked out of that mount so the workload can't
-#     read or rewrite its own isolation boundary;
+#   - mounts ONLY this repo (nothing else on your machine is visible), with the
+#     sandbox/ directory (the box's own isolation config) mounted read-only so
+#     the workload can read but never rewrite the blueprint of its own cage;
 #   - uses Sysbox runtime for full root access inside with host isolation, and
 #     to run systemd as PID 1 (ssh.service, docker.service, kronos-* units);
 #   - a start-up firewall (kronos-firewall.service) blocks the local network
@@ -38,12 +38,12 @@ services:
     volumes:
       # The ONLY host path mounted: this repository. No other repo is visible.
       - ..:/root/kronos:rw
-      # Mask this compose file inside the box: the workload must not be able
-      # to read or edit the definition of its own isolation boundary (mount
-      # list, firewall toggle, capabilities, runtime) and have that change
-      # take effect on the next `docker compose up`. Bind-mounting /dev/null
-      # over it shadows the file with an empty, read-only one.
-      - /dev/null:/root/kronos/sandbox/docker-compose.yml:ro
+      # The sandbox's own definition is mounted READ-ONLY. The workload can read
+      # it (so an agent inside is not confused by a missing/empty file) but
+      # cannot edit the box's isolation config from inside and have that persist
+      # to the host or take effect on the next `docker compose up`. The longer
+      # path wins over the rw repo mount above, so only sandbox/ turns read-only.
+      - ../sandbox:/root/kronos/sandbox:ro
       # Persistent home so Claude Code creds / shell history survive restarts.
       # (Layered under the repo mount above; the more specific path wins.)
       - sandbox_home:/root

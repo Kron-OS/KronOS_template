@@ -21,7 +21,7 @@ potentially-compromised and boxed in on every axis:
 |---|---|
 | Reaching your LAN / host / other containers | Start-up **egress firewall** (`kronos-firewall.service`) drops all traffic to RFC1918 + link-local + CGNAT + multicast. `ssh.service` and `docker.service` both `Requires=` it, so neither comes up until it has applied. |
 | Seeing your other repos / files | Bind-mounts **only this repository** (`..`) — nothing else on your machine is visible. |
-| Reading/editing its own isolation config | `sandbox/docker-compose.yml` itself is masked out of the mount (bind-mounted from `/dev/null`) — the workload can't see or rewrite the definition of its own sandbox. |
+| Editing its own isolation config | The `sandbox/` directory is mounted **read-only** — the workload can read its own config (compose, Dockerfile, firewall, units) but can't rewrite the definition of its own sandbox from inside. |
 | Privilege escalation | Sysbox runtime (user-namespaced root), `no-new-privileges` semantics from Sysbox isolation. |
 | Runaway resource use | `pids_limit`, `mem_limit`, `tmpfs` scratch. |
 | Inbound exposure | SSH is key-only, `PasswordAuthentication no`, and the port is bound to host **loopback** by default. |
@@ -168,7 +168,7 @@ firewall unit fails, neither comes up — the box refuses to start unprotected.
 | File | Purpose |
 |---|---|
 | `Dockerfile` | The sandbox image: Python venv (project + dev deps + Plaso), Node + Claude Code CLI, sshd, Docker, systemd units. |
-| `docker-compose.yml` | Runs it with the hardening + isolated network + single repo mount (with its own compose file masked out — see above). |
+| `docker-compose.yml` | Runs it with the hardening + isolated network + single repo mount (`sandbox/` mounted read-only inside the box — see above). |
 | `systemd/` | Unit files + drop-ins wiring the firewall/provisioning/ssh/docker boot sequence (see below). |
 | `kronos-capture-env.sh` | Copies `SANDBOX_*` vars from `/proc/1/environ` so systemd units can read them. |
 | `kronos-firewall-guard.sh` | Applies (or, if `SANDBOX_FIREWALL=0`, skips with a warning) `firewall.sh`. |
