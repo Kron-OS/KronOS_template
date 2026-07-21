@@ -1,0 +1,25 @@
+service-account token claims:
+{
+  "exp": 1784667769,
+  "iat": 1784666869,
+  "jti": "trrtcc:bda7ac03-a322-4685-b5a3-94e7bf726318",
+  "iss": "http://localhost:18080/realms/kronos",
+  "sub": "274a67f7-ceca-4dbd-a37d-ba3168b81bd0",
+  "typ": "Bearer",
+  "azp": "kronos-backend",
+  "acr": "aal1",
+  "scope": "organization kronos-roles kronos-sub"
+}
+
+--- decode WITH audience='kronos-backend', verify_aud=True, token has no 'aud' claim ---
+decode SUCCEEDED (no exception) -- claims: {
+  "exp": 1784667769,
+  "iat": 1784666869,
+  "jti": "trrtcc:bda7ac03-a322-4685-b5a3-94e7bf726318",
+  "iss": "http://localhost:18080/realms/kronos",
+  "sub": "274a67f7-ceca-4dbd-a37d-ba3168b81bd0",
+  "typ": "Bearer",
+  "azp": "kronos-backend",
+  "acr": "aal1",
+  "scope": "organization kronos-roles kronos-sub"
+}

@@ -121,19 +121,43 @@ class TestRFC3161TimestampService:
 
     @pytest.mark.asyncio
     async def test_verify_digest_mismatch_fails_closed(self, svc):
-        """A token whose embedded digest differs from the expected one must raise."""
+        """A token whose embedded digest differs from the expected one must raise.
+
+        The fake here mirrors rfc3161ng's REAL shape (confirmed against the
+        pinned 2.1.3 install and a real openssl-issued token in
+        poc/rfc3161/run_poc.py): ``time_stamp_token.tst_info`` is a
+        *property* (attribute access, not a dict key), and the decoded
+        TSTInfo/MessageImprint are pyasn1 objects addressed by their ASN.1
+        component names (camelCase "genTime"/"messageImprint"/
+        "hashedMessage") with no ``.native`` accessor. A prior version of
+        this test used a plain dict keyed by "tst_info"/"gen_time"/
+        "message_imprint"/"hashed_message" with ``.native`` mocks -- that
+        shape doesn't exist in the real library, so it exercised a
+        `verify()` implementation bug (subscripting instead of attribute
+        access, wrong field-name casing, non-existent `.native`) without
+        ever catching it. See poc/rfc3161/README.md.
+        """
+
+        class _FakeTimeStampToken:
+            def __init__(self, tst_info: dict) -> None:
+                self._tst_info = tst_info
+
+            @property
+            def tst_info(self) -> dict:
+                return self._tst_info
+
         mock_rfc3161ng = MagicMock()
         mock_ts_resp = MagicMock()
-        mock_tst = {
-            "tst_info": {
-                "gen_time": MagicMock(
-                    native=__import__("datetime").datetime.now(__import__("datetime").UTC)
-                ),
-                "message_imprint": {"hashed_message": MagicMock(native=b"\xff" * 32)},
+        mock_ts_resp.time_stamp_token = _FakeTimeStampToken(
+            {
+                "genTime": "20260101120000Z",
+                "messageImprint": {"hashedMessage": b"\xff" * 32},
             }
-        }
-        mock_ts_resp.time_stamp_token = mock_tst
+        )
         mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
+        mock_rfc3161ng.api.generalizedtime_to_utc_datetime = MagicMock(
+            return_value=__import__("datetime").datetime.now(__import__("datetime").UTC)
+        )
 
         import sys
 
@@ -146,22 +170,36 @@ class TestRFC3161TimestampService:
 
     @pytest.mark.asyncio
     async def test_verify_with_rfc3161ng(self, svc):
-        """When rfc3161ng IS available, use it to parse the token."""
+        """When rfc3161ng IS available, use it to parse the token.
+
+        See the note on ``test_verify_digest_mismatch_fails_closed`` above --
+        this fake mirrors the real rfc3161ng 2.1.3 API shape, verified
+        against a genuine openssl-issued RFC 3161 token in
+        poc/rfc3161/run_poc.py.
+        """
         from datetime import UTC, datetime
 
         expected_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         digest = b"\xaa" * 32
 
+        class _FakeTimeStampToken:
+            def __init__(self, tst_info: dict) -> None:
+                self._tst_info = tst_info
+
+            @property
+            def tst_info(self) -> dict:
+                return self._tst_info
+
         mock_rfc3161ng = MagicMock()
         mock_ts_resp = MagicMock()
-        mock_tst = {
-            "tst_info": {
-                "gen_time": MagicMock(native=expected_time),
-                "message_imprint": {"hashed_message": MagicMock(native=digest)},
+        mock_ts_resp.time_stamp_token = _FakeTimeStampToken(
+            {
+                "genTime": "20240101120000Z",
+                "messageImprint": {"hashedMessage": digest},
             }
-        }
-        mock_ts_resp.time_stamp_token = mock_tst
+        )
         mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
+        mock_rfc3161ng.api.generalizedtime_to_utc_datetime = MagicMock(return_value=expected_time)
 
         import sys
 

@@ -1,0 +1,257 @@
+======================================================================
+PoC run: Vault Transit -> KES -> MinIO SSE-KMS
+Pinned versions: hashicorp/vault:1.17, minio/kes:2024-06-17T15-47-05Z,
+minio/minio:latest (RELEASE.2025-09-07T16-13-09Z at run time)
+Run date: 2026-07-21
+======================================================================
+
+--- 1. Vault dev-mode container up, unsealed ---
+$ docker run -d --name kronos-poc-vaultkes-vault ... hashicorp/vault:1.17
+WARNING! dev mode is enabled! ...
+Unseal Key: NAyu8dOE8I3r5rmxa3QfyVR13DW+HP0sfxDymTepmUs=
+Root Token: kronos-poc-root-token
+core: vault is unsealed
+
+--- 2. vault-init container: literal entrypoint script copied from
+    docker/vault/docker-compose.vault.yml's vault-init service, run
+    unmodified ---
+Success! Enabled the transit secrets engine at: transit/
+Key                       Value
+---                       -----
+...
+name                      kronos-evidence
+supports_decryption       true
+supports_encryption       true
+type                      aes256-gcm96
+Success! Uploaded policy: kronos-kes
+Success! Enabled approle auth method at: approle/
+Success! Data written to: auth/approle/role/kronos-kes
+Vault initialized successfully.
+
+GAP FOUND #1: this script creates the "kronos-kes" AppRole role but never
+emits role_id/secret_id anywhere. docker/kes/docker-compose.kes.yml expects
+VAULT_APPROLE_ID / VAULT_APPROLE_SECRET to already be set (defaults to
+empty string). Nothing in the repo bridges these two steps. Had to do it
+by hand:
+
+$ curl -H "X-Vault-Token: $VAULT_TOKEN" \
+    http://127.0.0.1:18200/v1/auth/approle/role/kronos-kes/role-id
+ROLE_ID=fa8b6d2a-ea7f-5597-9472-b59b94e65aa7
+$ curl -X POST -H "X-Vault-Token: $VAULT_TOKEN" \
+    http://127.0.0.1:18200/v1/auth/approle/role/kronos-kes/secret-id
+SECRET_ID=614e5728-8133-b73c-e3ac-de6c1a119588
+
+--- 3. First KES boot attempt using docker/kes/kes-config.yml's ACTUAL
+    field names (engine_path / key_name / retry) -- FAILED ---
+Error: kesconf: invalid vault keystore: invalid transit config: no key name specified
+
+GAP FOUND #2: fetched the real schema for this pinned KES tag directly
+from github.com/minio/kes @ 2024-06-17T15-47-05Z (server-config.yaml):
+  keystore.vault.transit fields are named `engine` and `key`, NOT
+  `engine_path` / `key_name` as docker/kes/kes-config.yml has them.
+  Also: KES's vault keystore in this version is fundamentally a K/V
+  secrets-engine-backed keystore (fields: engine, version, prefix) with
+  Transit as an OPTIONAL wrap-at-rest layer for what's stored in K/V --
+  it is not "Vault Transit is the KMS backend" as the repo's comments
+  and roadmap.md Prompt 5.2 assume. Required adding a `kv` v1 mount in
+  Vault and `engine: kv / version: v1 / prefix: kes-keys` to the config,
+  which the repo's kes-config.yml has no equivalent of at all.
+
+--- 4. Vault policy extended (kronos-kes did NOT include kv/* access
+    needed by KES's real keystore backend) ---
+$ curl -X PUT .../v1/sys/policies/acl/kronos-kes -d '{"policy": "...
+  path \"kv/kes-keys/*\" { capabilities = [\"create\",\"read\",...] }\n"}'
+policy update status: 204
+
+GAP FOUND #3: docker/vault/docker-compose.vault.yml's vault-init policy
+only grants transit/* paths. That is necessary but NOT sufficient for
+KES 2024-06-17 to function -- it also needs kv/<prefix>/* CRUD, which is
+absent from the repo's policy block.
+
+--- 5. KES restarted with corrected keystore config -- started clean ---
+Version                           2024-06-17T15-47-05Z    commit=12195cc3...
+KMS                               Hashicorp Vault: http://vault:8200
+API                               · https://127.0.0.1:7373
+Admin                              <disabled>
+=> Server is up and running...
+
+--- 6. mTLS identity check: first attempt using SHA-256(full DER cert)
+    as the policy identity (matching kes-config.yml's own comment:
+    "MinIO's mTLS certificate identity (SHA-256 of cert)") -- FAILED ---
+$ curl -sk https://127.0.0.1:17373/v1/status --cert minio-client.crt \
+    --key minio-client.key --cacert ca.crt
+{"message":"not authorized: insufficient permissions"}
+HTTP 403
+
+GAP FOUND #4: fetched auth.go from the pinned KES tag. The real identity
+computation is:
+    h := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+    kes.Identity(hex.EncodeToString(h[:]))
+i.e. SHA-256 of the certificate's SubjectPublicKeyInfo, NOT the whole DER
+certificate. Verified with the authoritative CLI:
+$ docker run --rm -v $PWD:/certs --entrypoint /kes \
+    minio/kes:2024-06-17T15-47-05Z identity of /certs/minio-client.crt
+138c11dfd9c057edba4528166f86e4da383fee793e8c04d8871f3cdda85b1d77
+(full-cert-DER hash had been c0257d56...; genuinely different value --
+the repo's own comment describing this is factually wrong for this
+pinned KES version.)
+
+--- 7. Retest with corrected identity -- SUCCESS ---
+$ curl -sk https://127.0.0.1:17373/v1/status --cert minio-client.crt \
+    --key minio-client.key --cacert ca.crt
+{"version":"2024-06-17T15-47-05Z","os":"linux","arch":"amd64","uptime":5,
+ "num_cpu":4,"num_cpu_used":4,"mem_heap_used":4867504,
+ "mem_stack_used":950272,"keystore_latency":1}
+HTTP 200
+
+$ curl -X POST https://127.0.0.1:17373/v1/key/create/kronos-evidence ...
+HTTP 200 (empty body = success)
+
+$ curl -X POST https://127.0.0.1:17373/v1/key/generate/kronos-evidence ...
+{"plaintext":"5xEMT4xAqn0kvudVFCkio4wwIYLxVPDaS31J+smwx6Y=",
+ "ciphertext":"zkWrUBIcacBOL8ObNylnc3GwAJVUxEZ4vgVowgdH9UdQqw8r7bZ6fXWO0r1HQex16ZlO9RHMbKw575jeDCfnKiiZ1jhSeHHYl8g7dA=="}
+HTTP 200
+
+--- 8. Confirm the master key genuinely never leaves Vault in plaintext:
+    inspect what KES actually stored in Vault's kv engine ---
+$ curl -H "X-Vault-Token: $VAULT_TOKEN" http://127.0.0.1:18200/v1/kv/kes-keys/kronos-evidence
+{
+  "data": {
+    "kronos-evidence": "vault:v1:TZ/ScESQXRrmPKKmUEDrqKl1Jjh40HZHoQ6YC7FP0UJpmg6RpvczSG0U4dvjhiKLhNLrmIo9SReSyPJb1+1HPrfm/CdrKUk6Gle3ZpeLZRPkSgy7PZmkjXSli/qbHnMkMSIHpVN40cCp2ZD7gfuBZ2A4Z3nJmYmBVzDQ38CGXnJBxBsYA8HOwLBmw/Vnhe3UTqsqfxlc83prdP7cpMgPLWvw+oh0dbViUcylTxZnxhiHhMJxKqS5QIShQgPIPRNI0dB4+/I76uBTilxw4ix5HZFVeY62LVqTFRQtah2QfqnbUCK/S3bI+D49Mug="
+  },
+  "mount_type": "kv"
+}
+-- "vault:v1:..." is Vault Transit's own ciphertext envelope format,
+confirming the K/V entry is itself Transit-encrypted; the master key
+material never appears in plaintext outside Vault.
+$ curl .../v1/transit/keys/kronos-evidence -> latest_version: 1 (unchanged
+throughout -- Transit key itself never rotated/exposed, only used to wrap).
+
+--- 9. MinIO container brought up with MINIO_KMS_KES_* env vars -- FAILED
+    on first attempt ---
+FATAL Failed to connect to KMS: failed to generate data key with KMS key:
+Post "https://kes:7373/v1/key/generate/kronos-evidence": tls: failed to
+verify certificate: x509: certificate signed by unknown authority
+
+GAP FOUND #5: used `MINIO_KMS_KES_CA_PATH` (the name roadmap.md's
+Prompt 5.2 deliverable list literally specifies: "MINIO_KMS_KES_CERT_FILE,
+MINIO_KMS_KES_KEY_FILE, MINIO_KMS_KES_CA_PATH"). Extracted strings from
+the real minio/minio:latest binary:
+$ strings /usr/bin/minio | grep KMS_KES
+  ... MINIO_KMS_KES_CAPATH ... MINIO_KMS_KES_ENDPOINT ...
+  MINIO_KMS_KES_KEY_FILE ... MINIO_KMS_KES_KEY_NAME ...
+  MINIO_KMS_KES_CERT_FILE ... MINIO_KMS_KES_KEY_PASSWORD ...
+  MINIO_KMS_KES_API_KEY ...
+The real env var is `MINIO_KMS_KES_CAPATH` (no underscore before CAPATH).
+roadmap.md's own deliverable spec names the wrong variable.
+
+Also discovered along the way: certs signed by a bare self-signed
+identical leaf-as-CA (my first cert-generation attempt) produced a TLS
+handshake that "succeeded" per curl -v trace but KES's app layer still
+returned "tls: client certificate is required" for MinIO<->KES -- a
+proper CA-signs-leaf chain (root CA -> KES server cert, root CA -> MinIO
+client cert) was needed for reliable mTLS; documented in run_poc.sh.
+
+--- 10. MinIO restarted with MINIO_KMS_KES_CAPATH -- clean boot ---
+MinIO Object Storage Server
+Version: RELEASE.2025-09-07T16-13-09Z (go1.24.6 linux/amd64)
+API: http://172.25.2.4:9000  http://127.0.0.1:9000
+(no KMS errors -- MinIO successfully generated a data key from KES at boot)
+
+--- 11. mc admin kms key status: confirms MinIO <-> KES key ops work ---
+Key: kronos-evidence
+   - Encryption ✔
+   - Decryption ✔
+
+(mc admin kms key list fails with "not authorized: insufficient
+permissions" -- expected: MinIO's own KES policy in kes-config.yml only
+grants create/generate/decrypt/bulk-decrypt + /v1/status, not /v1/key/list.
+Correct least-privilege behavior, not a bug.)
+
+--- 12. Bucket created, default SSE-KMS enabled ---
+Bucket created successfully `kronosminio/kronos-evidence-poc`.
+Auto encryption configuration has been set successfully for
+kronosminio/kronos-evidence-poc
+Auto encryption 'sse-kms' is enabled with KeyID: kronos-evidence
+
+--- 13. Real object uploaded with a plaintext canary string ---
+$ echo "This is real KronOS evidence PoC plaintext content — SHOULD NOT
+be readable on disk. Marker: KRONOS-SSE-KMS-PLAINTEXT-CANARY-8842." > evidence_sample.txt
+$ mc cp /tmp/evidence_sample.txt kronosminio/kronos-evidence-poc/evidence_sample.txt
+`/tmp/evidence_sample.txt` -> `kronosminio/kronos-evidence-poc/evidence_sample.txt`
+Total: 133 B  Transferred: 133 B
+
+--- 14. mc stat: confirms SSE-KMS applied to the actual object ---
+Name      : evidence_sample.txt
+Size      : 133 B
+Encryption: SSE-KMS (arn:aws:kms:kronos-evidence)
+
+--- 15. Real raw HTTP response headers (mc --debug HEAD request) ---
+HEAD /kronos-evidence-poc/evidence_sample.txt HTTP/1.1
+...
+HTTP/1.1 200 OK
+X-Amz-Server-Side-Encryption: aws:kms
+X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id: arn:aws:kms:kronos-evidence
+
+--- 16. GET through the real S3 API: transparent decryption works ---
+$ mc cat kronosminio/kronos-evidence-poc/evidence_sample.txt
+This is real KronOS evidence PoC plaintext content — SHOULD NOT be
+readable on disk. Marker: KRONOS-SSE-KMS-PLAINTEXT-CANARY-8842.
+
+--- 17. Raw on-disk bytes: plaintext canary is ABSENT ---
+$ grep -rl "KRONOS-SSE-KMS-PLAINTEXT-CANARY-8842" ./data/
+(no match -- exit code 1)
+
+$ find data -path "*kronos-evidence-poc*" -type f
+data/kronos-evidence-poc/evidence_sample.txt/xl.meta
+data/.minio.sys/buckets/kronos-evidence-poc/.metadata.bin/xl.meta
+
+$ xxd data/kronos-evidence-poc/evidence_sample.txt/xl.meta | head -40
+00000000: 584c 3220 0100 0300 c600 0003 cf03 0301  XL2 ............
+...
+00000100: 6153 7973 86bc 782d 6d69 6e69 6f2d 696e  aSys..x-minio-in
+00000110: 7465 726e 616c 2d69 6e6c 696e 652d 6461  ternal-inline-da
+00000120: 7461 c404 7472 7565 d92a 582d 4d69 6e69  ta..true.*X-Mini
+00000130: 6f2d 496e 7465 726e 616c 2d53 6572 7665  o-Internal-Serve
+00000140: 722d 5369 6465 2d45 6e63 7279 7074 696f  r-Side-Encryptio
+00000150: 6e2d 4976 c42c 6271 4950 6837 2f62 6b34  n-Iv.,bqIPh7/bk4
+00000160: 4232 6a59 4958 724d 5358 576e 4542 7764  B2jYIXrMSXWnEBwd
+00000170: 535a 7441 6a6d 5267 374d 7167 6f36 6e70  SZtAjmRg7Mqgo6np
+00000180: 673d d936 582d 4d69 6e69 6f2d 496e 7465  g=.6X-Minio-Inte
+00000190: 726e 616c 2d53 6572 7665 722d 5369 6465  rnal-Server-Side
+000001a0: 2d45 6e63 7279 7074 696f 6e2d 4b6d 732d  -Encryption-Kms-
+000001b0: 5365 616c 6564 2d4b 6579 c458 4941 4566  Sealed-Key.XIAEf
+000001c0: 414e 4439 636d 5a50 7845 6537 7244 5a56  AND9cmZPxEe7rDZV
+000001d0: 3544 3273 6333 696a 6355 2b70 2f48 4433  5D2sc3ijcU+p/HD3
+000001e0: 7464 627a 7438 2f33 5377 484d 5954 3045  tdbzt8/3SwHMYT0E
+000001f0: 4a6f 596e 6a7a 7072 6264 3869 346d 5978  JoYnjzprbd8i4mYx
+00000200: 4667 6575 7a2b 4f49 7863 4b4a 5958 6944  Fgeuz+OIxcKJYXiD
+00000210: 3277 3d3d d935 582d 4d69 6e69 6f2d 496e  2w==.5X-Minio-In
+00000220: 7465 726e 616c 2d53 6572 7665 722d 5369  ternal-Server-Si
+00000230: 6465 2d45 6e63 7279 7074 696f 6e2d 5333  de-Encryption-S3
+00000240: 2d4b 6d73 2d4b 6579 2d49 64c4 0f6b 726f  -Kms-Key-Id..kro
+00000250: 6e6f 732d 6576 6964 656e 6365 d936 582d  nos-evidence.6X-
+00000260: 4d69 6e69 6f2d 496e 7465 726e 616c 2d53  Minio-Internal-S
+00000270: 6572 7665 722d 5369 6465 2d45 6e63 7279  erver-Side-Encry
+00000280: 6572 7665 722d 5369 6465 2d45 6e63 7279  erver-Side-Encry
+00000280: 6572 2d53 6964 652d 4b6d 732d 4b65 792d  er-Side-Encrypt
+00000290: 6564 2d4b 6579 2d49 64c4 0f6b 726f 6e6f  ed-Key-Id
+Confirmed: xl.meta (this small object was stored inline in its own
+metadata file, per "x-minio-internal-inline-data: true") contains
+internal SSE-KMS bookkeeping (per-object IV, KMS-sealed data key, the
+"kronos-evidence" key ID) instead of the plaintext body. The canary
+string never appears anywhere in the raw on-disk representation, while
+the S3 GET path (step 16) returns it correctly -- proving encryption-at-
+rest with transparent decryption-on-read through the real MinIO<->KES<->
+Vault Transit chain.
+
+======================================================================
+CONCLUSION: the documented chain (Vault Transit -> KES -> MinIO SSE-KMS)
+DOES work end-to-end, but only after fixing 5 concrete gaps in the
+repo's existing docker/vault, docker/kes files and roadmap.md's Prompt
+5.2 spec (wrong KES config field names/schema, wrong identity-hash
+description, missing AppRole role-id/secret-id handoff, missing Vault kv
+policy grant, wrong MinIO env var name). None of these gaps were
+discoverable by reading the docs -- only by actually running it.
+See README.md for the full gap list and exact fixes.
+======================================================================

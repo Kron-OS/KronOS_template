@@ -1,0 +1,7 @@
+--- token with NO aud claim, decode(audience='kronos-backend') ---
+SUCCEEDED (no exception): {'sub': 'x', 'iss': 'test'}
+
+--- token with WRONG (present) aud claim, decode(audience='kronos-backend') ---
+raised JWTClaimsError: Invalid audience
+
+python-jose version: 3.5.0

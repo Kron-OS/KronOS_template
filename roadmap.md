@@ -751,7 +751,9 @@ Deliverables:
    data keys with kronos-evidence master key; cannot read the master key directly.
 3. docker/minio/docker-compose.minio.yml — updated MinIO config:
    MINIO_KMS_KES_ENDPOINT, MINIO_KMS_KES_CERT_FILE, MINIO_KMS_KES_KEY_FILE,
-   MINIO_KMS_KES_CA_PATH — all pointing to mTLS certs from step 5.1.
+   MINIO_KMS_KES_CAPATH (no underscore before CAPATH — confirmed against the
+   real minio/minio binary; see poc/vault_kes_minio/README.md gap #5) — all
+   pointing to mTLS certs from step 5.1.
 4. scripts/provision_buckets.sh — creates all buckets with SSE-KMS enabled:
    mc mb myminio/kronos-evidence-{org}-quarantine
    mc encrypt set sse-kms kronos-evidence myminio/kronos-evidence-{org}-quarantine

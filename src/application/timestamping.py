@@ -97,8 +97,18 @@ class RFC3161TimestampService:
         try:
             ts_response = rfc3161ng.decode_timestamp_response(token)
             tst = ts_response.time_stamp_token
-            gen_time = tst["tst_info"]["gen_time"].native
-            embedded_digest = tst["tst_info"]["message_imprint"]["hashed_message"].native
+            # `tst` is an rfc3161ng.types.TimeStampToken (a CMS ContentInfo
+            # wrapper): tst_info is a *property* that lazily decodes the
+            # embedded TSTInfo, not a dict key. The decoded TSTInfo/
+            # MessageImprint are pyasn1 objects (this library does not use
+            # asn1crypto), so fields are addressed by their ASN.1 componentType
+            # names (camelCase: "genTime", "messageImprint", "hashedMessage")
+            # and have no `.native` accessor — GeneralizedTime must go through
+            # rfc3161ng's own string-to-datetime helper, OctetString through
+            # bytes().
+            tst_info = tst.tst_info
+            gen_time = rfc3161ng.api.generalizedtime_to_utc_datetime(str(tst_info["genTime"]))
+            embedded_digest = bytes(tst_info["messageImprint"]["hashedMessage"])
         except Exception as exc:
             raise TimestampingError(
                 "Failed to parse RFC 3161 TimeStampToken",

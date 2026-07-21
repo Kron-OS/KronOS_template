@@ -1,0 +1,52 @@
+services:
+  keycloak:
+    # Pinned exactly as docker/docker-compose.dev.yml: 26.2, not 26.0, because
+    # the organization-id token claim (addOrganizationId) that
+    # src/external/middleware/keycloak_auth.py's _extract_tenant() requires
+    # only lands in Keycloak 26.1+ (see comment in docker-compose.dev.yml).
+    image: quay.io/keycloak/keycloak:26.2
+    container_name: kronos-poc-keycloak-server
+    command: start-dev --import-realm
+    environment:
+      KC_DB: dev-mem
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_FEATURES: organization,token-exchange
+      KC_HEALTH_ENABLED: "true"
+      # Must match the host:port this PoC actually reaches Keycloak on, or
+      # the token 'iss' claim won't match the issuer the validator checks.
+      KC_HOSTNAME: http://localhost:18080
+    volumes:
+      - ./kronos-realm-poc.json:/opt/keycloak/data/import/kronos-realm.json:ro
+    ports:
+      - "18080:8080"
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/9000; printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3; grep -q "200 OK" <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  keycloak-init:
+    image: curlimages/curl:latest
+    container_name: kronos-poc-keycloak-init
+    depends_on:
+      keycloak: { condition: service_healthy }
+    restart: "no"
+    volumes:
+      - ../../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: admin
+      ORG_NAME: KronOS Dev
+      ORG_ALIAS: kronos-dev
+      ORG_DESCRIPTION: PoC development organization
+      ORG_DOMAIN: kronos.dev
+      ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
+    entrypoint: ["sh", "/provision_keycloak_org.sh"]
