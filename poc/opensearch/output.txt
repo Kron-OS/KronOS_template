@@ -1,0 +1,18 @@
+opensearch-py version: (3, 2, 0)
+
+--- ensure_index_template() ---
+OK
+
+--- ensure_ism_policy() ---
+OK
+
+--- ensure_tenant_role() ---
+FAILED: RequestError: RequestError(400, 'no handler found for uri [/_plugins/_security/api/roles/kronos-tenant-test-org-id] and method [PUT]', 'no handler found for uri [/_plugins/_security/api/roles/kronos-tenant-test-org-id] and method [PUT]')
+
+--- bulk_index() with a plain ECS-shaped doc ---
+bulk_index returned indexed_count=1
+
+--- GET back the indexed doc ---
+{'@timestamp': '2026-07-21T10:00:00Z', 'message': 'PoC: plain log doc ingested directly (not via Plaso)', 'event': {'kind': 'event', 'category': 'process', 'type': 'info', 'outcome': 'success'}, 'host': {'name': 'poc-host', 'os': {'name': 'linux'}}, 'kronos': {'evidence_id': '00000000-0000-0000-0000-000000000001', 'case_id': '00000000-0000-0000-0000-00000000000c', 'org_id': 'test-org-id', 'sha256': 'deadbeef', 'parser': 'poc-manual', 'parser_version': '0', 'record_index': 0, 'ingest_timestamp': '2026-07-21T10:00:00Z'}}
+
+--- search hit count: {'value': 1, 'relation': 'eq'} ---

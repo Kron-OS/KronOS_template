@@ -73,11 +73,18 @@ def _run_plaso(evidence_path: str) -> list[dict]:
       log2timeline.py  <source>            -> <storage>.plaso   (extraction)
       psort.py -o json_line -w <out.jsonl> <storage>.plaso      (formatting)
     """
-    l2t = _find_tool("log2timeline.py")
-    psort = _find_tool("psort.py")
+    # plaso==20260512 (pinned in docker/plaso/Dockerfile) installs these as
+    # unsuffixed setuptools console_scripts ("log2timeline", "psort"), not
+    # the legacy "log2timeline.py"/"psort.py" names some older Plaso releases
+    # shipped. Verified by inspecting the installed venv's console_scripts
+    # entry points and bin/ listing directly (poc/plaso/README.md) — without
+    # this, _find_tool always returned None and every parse silently fell
+    # back to the placeholder event, even with Plaso correctly installed.
+    l2t = _find_tool("log2timeline") or _find_tool("log2timeline.py")
+    psort = _find_tool("psort") or _find_tool("psort.py")
     if not l2t or not psort:
         logger.error(
-            "Plaso CLI tools not found on PATH (log2timeline.py=%s psort.py=%s); "
+            "Plaso CLI tools not found on PATH (log2timeline=%s psort=%s); "
             "emitting placeholder",
             l2t,
             psort,
@@ -90,6 +97,15 @@ def _run_plaso(evidence_path: str) -> list[dict]:
     os.close(storage_fd)
     json_fd, json_path = tempfile.mkstemp(suffix=".jsonl")
     os.close(json_fd)
+    # psort's own "-w" refuses to write to a file that already exists
+    # ("ERROR: Output file already exists"), unlike log2timeline which
+    # happily overwrites the pre-created storage file. Verified directly
+    # against a real psort run (poc/plaso/README.md) — with the file left
+    # in place, psort exited 1 and the worker always fell back to the
+    # placeholder. mkstemp still bought us a unique, unpredictable name
+    # (the actual EVID-11 concern); we just can't leave the placeholder
+    # file sitting there for psort to trip over.
+    os.unlink(json_path)
     try:
         # log2timeline overwrites the (empty) storage file it was handed.
         _run_subprocess(

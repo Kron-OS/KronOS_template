@@ -139,6 +139,23 @@ class FirecrackerLauncher:
                         ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                     except ValueError:
                         ts = ingest_ts
+                elif isinstance(ts_raw, int | float):
+                    # psort's json_line "timestamp" field (and the worker's
+                    # own normalized "datetime" when it fell back to that
+                    # key) is Plaso's internal epoch representation:
+                    # microseconds since 1970-01-01, regardless of the
+                    # original DateTimeValues subclass (Filetime, PosixTime,
+                    # etc — psort itself resolves those to this one int
+                    # convention). Verified against a real log2timeline +
+                    # psort run on a Windows Prefetch sample
+                    # (poc/plaso/README.md): every event carried this as a
+                    # plain int, and treating it as "not a str" and silently
+                    # replacing it with wall-clock ingest time discarded the
+                    # actual forensic timestamp on every single record.
+                    try:
+                        ts = datetime.fromtimestamp(ts_raw / 1_000_000, tz=UTC)
+                    except (ValueError, OverflowError, OSError):
+                        ts = ingest_ts
                 else:
                     ts = ingest_ts
 
