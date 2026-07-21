@@ -1,0 +1,55 @@
+{"event": "clamav_unreachable_dev_fallback", "level": "warning", "logger": "src.external.dependencies", "timestamp": "2026-07-21T22:20:19.752607Z", "clamd_host": "localhost", "clamd_port": 3310, "environment": "development"}
+{"event": "startup: dependencies wired (sync/celery)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-07-21T22:20:19.752762Z"}
+ 
+ -------------- kronos-poc-fp-worker3@reca-dk v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-7.0.0-27-generic-x86_64-with-glibc2.43 2026-07-22 00:20:19
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         kronos:0x7133f739c830
+- ** ---------- .> transport:   redis://localhost:16381/1
+- ** ---------- .> results:     redis://localhost:16381/2
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> q.index          exchange=q.index(direct) key=q.index
+                .> q.parse.fast     exchange=q.parse.fast(direct) key=q.parse.fast
+                .> q.parse.plaso    exchange=q.parse.plaso(direct) key=q.parse.plaso
+
+[tasks]
+  . kronos.abort_orphan_parses
+  . kronos.abort_orphan_uploads
+  . kronos.anchor_audit_log
+  . kronos.auto_dispatch_received
+  . kronos.dispatch_parse
+  . kronos.finalize_evidence
+  . kronos.parse_artefact_fast
+  . kronos.parse_artefact_heavy
+
+[2026-07-22 00:20:19,941: INFO/MainProcess] Connected to redis://localhost:16381/1
+[2026-07-22 00:20:19,948: INFO/MainProcess] mingle: searching for neighbors
+[2026-07-22 00:20:20,960: INFO/MainProcess] mingle: all alone
+[2026-07-22 00:20:21,009: INFO/MainProcess] kronos-poc-fp-worker3@reca-dk ready.
+[2026-07-22 00:20:33,083: INFO/MainProcess] Task kronos.dispatch_parse[efc544b3-1f71-4eee-adc3-7db5caff47ea] received
+[2026-07-22 00:20:33,324: INFO/ForkPoolWorker-1] audit_event_logged
+[2026-07-22 00:20:33,331: INFO/ForkPoolWorker-1] parse_queued
+[2026-07-22 00:20:33,331: INFO/MainProcess] Task kronos.parse_artefact_fast[b7575e27-894f-4472-a24c-b4dbe8c3138e] received
+[2026-07-22 00:20:33,332: INFO/ForkPoolWorker-1] dispatch_parse_done
+[2026-07-22 00:20:33,334: INFO/ForkPoolWorker-1] Task kronos.dispatch_parse[efc544b3-1f71-4eee-adc3-7db5caff47ea] succeeded in 0.25042614599988156s: 'a87138f4-e685-4818-afad-2faca4dd60f8'
+[2026-07-22 00:20:33,518: INFO/ForkPoolWorker-2] PUT http://localhost:19500/_index_template/kronos-template [status:200 request:0.029s]
+[2026-07-22 00:20:33,527: WARNING/ForkPoolWorker-2] PUT http://localhost:19500/_plugins/_ism/policies/kronos-rollover [status:409 request:0.008s]
+[2026-07-22 00:20:33,527: WARNING/ForkPoolWorker-2] opensearch_security_disabled_skipping_tenant_role
+[2026-07-22 00:20:33,567: INFO/ForkPoolWorker-2] audit_event_logged
+[2026-07-22 00:20:34,011: INFO/ForkPoolWorker-2] POST http://localhost:19500/_bulk [status:200 request:0.414s]
+[2026-07-22 00:20:34,050: INFO/ForkPoolWorker-2] audit_event_logged
+[2026-07-22 00:20:34,050: INFO/ForkPoolWorker-2] ingest_completed
+[2026-07-22 00:20:34,129: INFO/ForkPoolWorker-2] audit_event_logged
+[2026-07-22 00:20:34,129: INFO/ForkPoolWorker-2] parse_completed
+[2026-07-22 00:20:34,144: INFO/MainProcess] Task kronos.finalize_evidence[0c352cff-8a7b-4802-8f2a-d14d6414c647] received
+[2026-07-22 00:20:34,147: INFO/ForkPoolWorker-2] Task kronos.parse_artefact_fast[b7575e27-894f-4472-a24c-b4dbe8c3138e] succeeded in 0.8154740890004177s: {'evidence_id': 'a87138f4-e685-4818-afad-2faca4dd60f8', 'record_count': 194}
+[2026-07-22 00:20:34,194: INFO/ForkPoolWorker-1] audit_event_logged
+[2026-07-22 00:20:34,195: INFO/ForkPoolWorker-1] finalize_evidence_done
+[2026-07-22 00:20:34,196: INFO/ForkPoolWorker-1] Task kronos.finalize_evidence[0c352cff-8a7b-4802-8f2a-d14d6414c647] succeeded in 0.051590229999419535s: None
+
+worker: Warm shutdown (MainProcess)

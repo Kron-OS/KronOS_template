@@ -43,6 +43,7 @@ class TimelineIngestionService:
         self._batch_size = batch_size
         self._normalizer = ECSNormalizer()
         self._ism_applied = False
+        self._template_applied = False
         self._provisioned_orgs: set[str] = set()
         self._security_enabled = security_enabled
         self._security_warned = False
@@ -61,6 +62,20 @@ class TimelineIngestionService:
         Raises:
             StorageError: if the underlying bulk request fails.
         """
+        if not self._template_applied:
+            # Verified against a real OpenSearch cluster (poc/full_pipeline/):
+            # without this, nothing ever calls ensure_index_template(), so
+            # every kronos-* index is created by dynamic mapping instead of
+            # the ECS template's explicit field types. String fields (e.g.
+            # kronos.evidence_id, kronos.org_id) then become "text" +
+            # ".keyword" multi-fields instead of pure "keyword", and a term
+            # query against the un-suffixed field name (exactly what
+            # OpenSearchQueryBuilder.org_id_filter builds) silently matches
+            # nothing — not a data leak, but a real, silent functionality
+            # break for any exact-match filter, tested and confirmed here.
+            await self._opensearch.ensure_index_template()
+            self._template_applied = True
+
         if not self._ism_applied:
             await self._opensearch.ensure_ism_policy()
             self._ism_applied = True
