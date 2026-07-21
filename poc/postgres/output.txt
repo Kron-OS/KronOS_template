@@ -1,0 +1,36 @@
+audit_chain_tampered
+
+=== Test A: sequential hash chain ===
+[PASS] sequential chain of 5 events verifies intact
+[PASS] sequence number reached 5 -- got 5
+
+=== Test B: 30 concurrent appends to the SAME org ===
+[PASS] sequence advanced by exactly 30 (5 + 30 = 35), no lost/duplicate writes -- got 35
+[PASS] chain still verifies intact after concurrent writes
+[PASS] no duplicate sequence_number rows in real Postgres -- []
+
+=== Test C: concurrent writers on two DIFFERENT orgs (lock scoping) ===
+40 concurrent writes, ONE org (fully serialized): 0.431s -- 40 concurrent writes, TWO orgs 20 each: 0.081s
+[PASS] two different orgs' writers do NOT serialize against each other (same total work split across 2 orgs is meaningfully faster than 1 org) -- one_org=0.431s two_org=0.081s ratio=5.35
+[PASS] org 844713b4-b2d5-4c07-936e-681c5a1b4d83 chain intact after concurrent cross-org writes
+[PASS] org a6f3b25b-18c8-4138-ba44-e31e2474333e chain intact after concurrent cross-org writes
+
+=== Test D: tamper detection (direct raw SQL UPDATE, bypassing the app) ===
+[PASS] verify_chain() DETECTS a raw-SQL tamper of event content -- Hash mismatch at seq=3 event_id=3db24323-f3cc-470f-b6e2-8f3e7253b5f9
+
+=== Test E: PostgresEvidenceRepository real CRUD ===
+[PASS] evidence saved
+[PASS] evidence fetched back with same id
+[PASS] evidence state transition persisted for real -- SCANNING
+[PASS] evidence NOT visible to a different org_id
+[PASS] evidence delete_by_id returns True
+[PASS] evidence really gone after delete
+
+=== Test F: PostgresCaseRepository pagination + update ===
+[PASS] pagination: total is 7 -- got 7
+[PASS] pagination: page1 has 5, page2 has 2 -- 5/2
+[PASS] pagination: no overlap between pages
+
+============================================================
+18 passed, 0 failed
+============================================================
