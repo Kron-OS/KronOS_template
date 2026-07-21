@@ -22,6 +22,7 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
         PostgresAuditLogRepository,
     )
+    from src.adapter.repository.postgres_case import PostgresCaseRepository  # noqa: PLC0415
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
@@ -45,9 +46,11 @@ async def wire_dependencies_async() -> None:
 
     audit_repo = PostgresAuditLogRepository(engine)
     evidence_repo = PostgresEvidenceRepository(engine)
+    case_repo = PostgresCaseRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
+    await PostgresCaseRepository.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
@@ -93,6 +96,7 @@ async def wire_dependencies_async() -> None:
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
+        case_repository=case_repo,
         evidence_storage=storage,
         task_queue=task_queue,
         opensearch_client=opensearch,
