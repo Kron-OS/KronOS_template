@@ -44,7 +44,7 @@ class TimelineIngestionService:
         self._normalizer = ECSNormalizer()
         self._ism_applied = False
         self._template_applied = False
-        self._provisioned_orgs: set[str] = set()
+        self._tenant_role_applied = False
         self._security_enabled = security_enabled
         self._security_warned = False
 
@@ -80,17 +80,17 @@ class TimelineIngestionService:
             await self._opensearch.ensure_ism_policy()
             self._ism_applied = True
 
-        org_key = str(tenant.org_id)
-        if org_key not in self._provisioned_orgs:
+        if not self._tenant_role_applied:
+            # Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE
+            # generic, org-agnostic DLS role + static mapping, created once
+            # ever -- not per-org. New orgs/members need zero further calls
+            # here; DLS is templated from each caller's own JWT at query time.
             if self._security_enabled:
-                await self._opensearch.ensure_tenant_role(str(tenant.org_id), tenant.org_alias)
+                await self._opensearch.ensure_generic_tenant_role()
             elif not self._security_warned:
-                logger.warning(
-                    "opensearch_security_disabled_skipping_tenant_role",
-                    extra={"org_id": org_key},
-                )
+                logger.warning("opensearch_security_disabled_skipping_tenant_role")
                 self._security_warned = True
-            self._provisioned_orgs.add(org_key)
+            self._tenant_role_applied = True
 
         await self._audit.log(
             AuditEventType.INGEST_STARTED,

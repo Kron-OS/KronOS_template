@@ -61,3 +61,31 @@ async def test_ensure_ism_policy_reraises_other_errors() -> None:
 
     with pytest.raises(OSConnectionError):
         await client.ensure_ism_policy()
+
+
+async def test_ensure_generic_tenant_role_creates_one_role_and_one_mapping() -> None:
+    """Verified design (poc/keycloak_opensearch_dls/): ONE org-agnostic role
+    templated as ${attr.jwt.org_id}, ONE static mapping to every KronOS realm
+    role — never per-org, never per-user. Replaces the old per-org
+    ensure_tenant_role(org_id, org_alias), which created a role but never
+    mapped anyone to it (poc/opensearch_jwt/README.md result #3).
+    """
+    client = _make_client()
+    client._client.transport.perform_request = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await client.ensure_generic_tenant_role()
+
+    assert client._client.transport.perform_request.await_count == 2
+    role_call, mapping_call = client._client.transport.perform_request.await_args_list
+
+    assert role_call.args == ("PUT", "/_plugins/_security/api/roles/kronos-generic-tenant")
+    dls = role_call.kwargs["body"]["index_permissions"][0]["dls"]
+    assert "${attr.jwt.org_id}" in dls
+    assert role_call.kwargs["body"]["index_permissions"][0]["index_patterns"] == ["kronos-*"]
+
+    assert mapping_call.args == (
+        "PUT", "/_plugins/_security/api/rolesmapping/kronos-generic-tenant",
+    )
+    assert mapping_call.kwargs["body"]["backend_roles"] == [
+        "org-admin", "case-lead", "analyst", "read-only",
+    ]

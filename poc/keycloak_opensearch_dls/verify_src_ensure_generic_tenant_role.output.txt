@@ -1,0 +1,17 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19940 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+Called the real OpenSearchClient.ensure_generic_tenant_role()
+role GET -> 200 {"kronos-generic-tenant":{"reserved":false,"hidden":false,"cluster_permissions":[],"index_permissions":[{"index_patterns":["kronos-*"],"dls":"{\"term\": {\"kronos.org_id\": \"${attr.jwt.org_id}\"}}","fls":[],"masked_fields":[],"allowed_actions":["read","indices:data/read/search"]}],"tenant_permissio
+mapping GET -> 200 {"kronos-generic-tenant":{"hosts":[],"users":[],"reserved":false,"hidden":false,"backend_roles":["org-admin","case-lead","analyst","read-only"],"and_backend_roles":[]}}
+[PASS] real role created via the real src/ method (GET returns 200, not 404)
+[PASS] real mapping created via the real src/ method (GET returns 200, not 404)
+[PASS] real mapping includes all four KronOS realm roles
+[PASS] calling ensure_generic_tenant_role() a second time does not raise
+[PASS] both real docs indexed via the real bulk_index()
+user-a sees: {'doc-org-a'}, user-b sees: {'doc-org-b'}
+[PASS] user A isolated to org A's doc via the REAL src/ role+mapping -- {'doc-org-a'}
+[PASS] user B isolated to org B's doc via the REAL src/ role+mapping -- {'doc-org-b'}
+
+============================================================
+7 passed, 0 failed
+============================================================

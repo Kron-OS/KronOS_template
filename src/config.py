@@ -62,8 +62,9 @@ class Settings(BaseSettings):
     opensearch_password: SecretStr
     # Dev OpenSearch runs with DISABLE_SECURITY_PLUGIN=true (docker-compose.dev.yml)
     # — the Security plugin's REST API (roles, DLS) doesn't exist there, so
-    # TimelineIngestionService must skip ensure_tenant_role() in that mode. ISM
-    # (index rollover) is a separate, always-present plugin — unaffected, never gated.
+    # TimelineIngestionService must skip ensure_generic_tenant_role() in that
+    # mode. ISM (index rollover) is a separate, always-present plugin —
+    # unaffected, never gated.
     # Production Keycloak+OpenSearch-Security deployments must set this true.
     opensearch_security_enabled: bool = Field(
         default=False,

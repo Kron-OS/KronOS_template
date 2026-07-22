@@ -236,6 +236,32 @@
           }
         }
       ]
+    },
+    {
+      "name": "kronos-org-id",
+      "description": "Flat, top-level org_id claim backed by a plain user attribute (set by scripts/provision_keycloak_org.sh). Required because OpenSearch DLS templating (${attr.jwt.org_id}) cannot resolve the nested 'organization' claim above -- confirmed in poc/opensearch_jwt/README.md result #2 and verified end-to-end in poc/keycloak_opensearch_dls/.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "org-id-attribute-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "authenticationFlows": [
@@ -334,7 +360,8 @@
     "acr",
     "kronos-roles",
     "kronos-sub",
-    "organization"
+    "organization",
+    "kronos-org-id"
   ],
   "defaultOptionalClientScopes": [
     "offline_access",

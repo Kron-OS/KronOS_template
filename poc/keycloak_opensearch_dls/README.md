@@ -102,6 +102,20 @@ Not done here: porting these changes into the real
 `scripts/provision_keycloak_org.sh` / `docker/keycloak/kronos-realm.json` /
 `src/adapter/opensearch/client.py` (step 5).
 
+## Step 5 verification: the real src/ method itself, not just the design
+
+Steps 3-4 above proved the *design* by hand-crafting the OpenSearch role +
+mapping via raw curl in `run_poc.sh` — they never actually called
+`OpenSearchClient.ensure_generic_tenant_role()` (the real production method,
+added in `src/adapter/opensearch/client.py` as step 5's fix, replacing the
+old per-org `ensure_tenant_role(org_id, org_alias)`). Per CLAUDE.md Section
+F, a refactored method is unverified until it's actually run — so
+`verify_src_ensure_generic_tenant_role.py` calls the real method directly
+against a real OpenSearch, confirms the role + mapping it creates via GET,
+confirms calling it twice is harmless, and re-runs the same DLS isolation
+check through the real method this time. 7/7 passed
+(`verify_src_ensure_generic_tenant_role.output.txt`).
+
 ## Files
 - `kronos-realm-poc.json` — minimal PoC realm: 3 users, `kronos-org-id` scope
 - `provision_keycloak_org.sh` — step-3-extended copy of the real

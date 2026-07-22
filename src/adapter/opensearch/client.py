@@ -7,6 +7,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+# Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE role, ONE static
+# mapping to every KronOS realm role (hyphenated -- see
+# src/external/middleware/keycloak_auth.py's _ROLE_MAP), created once, ever.
+# DLS (${attr.jwt.org_id}) is what actually restricts each query to its own
+# org, not this mapping, so mapping broadly here is correct, not an over-grant.
+_GENERIC_TENANT_ROLE_NAME = "kronos-generic-tenant"
+_GENERIC_TENANT_BACKEND_ROLES = ["org-admin", "case-lead", "analyst", "read-only"]
+
 
 class AbstractTimelineIndex(ABC):
     """Port for OpenSearch bulk-indexing operations."""
@@ -31,8 +39,19 @@ class AbstractTimelineIndex(ABC):
         """Create or update the ISM rollover policy for kronos-* indices."""
 
     @abstractmethod
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        """Create or update the per-tenant DLS security role."""
+    async def ensure_generic_tenant_role(self) -> None:
+        """Create the one generic, org-agnostic DLS security role + its static mapping.
+
+        Called once ever, not per-org: DLS is templated from the caller's
+        own JWT (``${attr.jwt.org_id}``) at query time, so a single role
+        with a single static role-mapping (to every KronOS realm role)
+        correctly isolates every org, including orgs and members created
+        after this call — verified in
+        ``poc/keycloak_opensearch_dls/`` (steps 3-4). This replaces the
+        previous per-org ``ensure_tenant_role(org_id, org_alias)``, which
+        created a new role per org but never mapped any user/backend_role
+        to it (see ``poc/opensearch_jwt/README.md`` result #3).
+        """
 
     @abstractmethod
     async def close(self) -> None:
@@ -121,14 +140,13 @@ class OpenSearchClient(AbstractTimelineIndex):
         except ConflictError:
             pass
 
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        role_name = f"kronos-tenant-{org_id}"
+    async def ensure_generic_tenant_role(self) -> None:
         role_body = {
             "cluster_permissions": [],
             "index_permissions": [
                 {
-                    "index_patterns": [f"kronos-{org_alias.lower()}-*"],
-                    "dls": json.dumps({"term": {"kronos.org_id": org_id}}),
+                    "index_patterns": ["kronos-*"],
+                    "dls": json.dumps({"term": {"kronos.org_id": "${attr.jwt.org_id}"}}),
                     "allowed_actions": [
                         "read",
                         "indices:data/read/search",
@@ -139,8 +157,13 @@ class OpenSearchClient(AbstractTimelineIndex):
         }
         await self._client.transport.perform_request(
             "PUT",
-            f"/_plugins/_security/api/roles/{role_name}",
+            f"/_plugins/_security/api/roles/{_GENERIC_TENANT_ROLE_NAME}",
             body=role_body,
+        )
+        await self._client.transport.perform_request(
+            "PUT",
+            f"/_plugins/_security/api/rolesmapping/{_GENERIC_TENANT_ROLE_NAME}",
+            body={"backend_roles": _GENERIC_TENANT_BACKEND_ROLES},
         )
 
     async def close(self) -> None:
@@ -153,7 +176,7 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
     def __init__(self) -> None:
         self._indices: dict[str, dict[str, dict[str, Any]]] = {}
         self.bulk_calls: list[list[tuple[str, str, dict[str, Any]]]] = []
-        self.roles_created: dict[str, dict[str, Any]] = {}
+        self.generic_tenant_role_created: bool = False
         self.template_set: bool = False
         self.ism_set: bool = False
 
@@ -169,8 +192,8 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
     async def ensure_ism_policy(self) -> None:
         self.ism_set = True
 
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        self.roles_created[org_id] = {"org_alias": org_alias}
+    async def ensure_generic_tenant_role(self) -> None:
+        self.generic_tenant_role_created = True
 
     async def close(self) -> None:
         pass
