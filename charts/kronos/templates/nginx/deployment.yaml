@@ -42,15 +42,19 @@ spec:
             - name: https
               containerPort: 443
               protocol: TCP
+          # /nginx-health (files/nginx.conf.template) checks nginx itself
+          # only -- deliberately NOT /healthz, which proxies to the
+          # backend and would get this pod killed by a transient backend
+          # blip even though nginx itself is fine.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /nginx-health
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /health
+              path: /nginx-health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5

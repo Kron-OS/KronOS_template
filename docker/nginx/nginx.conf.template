@@ -152,11 +152,25 @@ server {
     }
 
     # -----------------------------------------------------------------------
-    # Health check — no auth, no rate limit, no access log
+    # Health checks — no auth, no rate limit, no access log
     # -----------------------------------------------------------------------
+    # Full-stack check (nginx + backend both reachable) -- for external
+    # uptime monitoring against the public nginx origin. src/external/fastapi_app.py
+    # now serves a real /healthz route (previously this proxied to a route
+    # that never existed anywhere in the backend -- always 404'd).
     location = /healthz {
         proxy_pass  http://backend/healthz;
         access_log  off;
+    }
+
+    # nginx-only check -- deliberately does NOT proxy anywhere. Used as
+    # THIS pod's own Kubernetes liveness/readiness probe target
+    # (charts/kronos/templates/nginx/deployment.yaml): probing /healthz
+    # instead would make nginx's own pod get killed by a transient backend
+    # blip even though nginx itself is perfectly healthy.
+    location = /nginx-health {
+        access_log  off;
+        return 200  "ok\n";
     }
 }
 

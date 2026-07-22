@@ -74,6 +74,21 @@ class TestAppFactory:
         )
         assert resp.status_code == 422  # evidence not found = ValidationError → 422
 
+    def test_healthz_returns_200_with_no_auth_or_dependencies(self, base_app) -> None:
+        # Backs both docker/nginx/nginx.conf.template's /healthz proxy and
+        # charts/kronos/templates/backend/deployment.yaml's liveness/readiness
+        # probes -- must succeed with zero setup (no Authorization header, no
+        # DB), or a real Kubernetes deployment never reaches Ready.
+        client = TestClient(base_app)
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_healthz_not_in_openapi_schema(self, base_app) -> None:
+        client = TestClient(base_app)
+        schema = client.get("/openapi.json").json()
+        assert "/healthz" not in schema["paths"]
+
 
 class TestExceptionHandlers:
     def test_storage_error_returns_503(self, base_app) -> None:

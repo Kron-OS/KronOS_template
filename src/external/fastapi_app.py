@@ -109,6 +109,23 @@ def create_app(
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
     app.include_router(step_up_routes.router)
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict[str, str]:
+        """Liveness/readiness probe target.
+
+        Deliberately dependency-free (no DB/OpenSearch/etc. check): this
+        endpoint backs BOTH the Kubernetes liveness and readiness probes
+        (charts/kronos/templates/backend/deployment.yaml) and nginx's
+        /healthz proxy (docker/nginx/nginx.conf.template) -- a liveness
+        probe that depends on an external service causes Kubernetes to
+        kill and restart an otherwise-healthy process during a transient
+        downstream outage. Real, verified gap this closes: no such route
+        existed at all before, so every one of those probes always 404'd
+        (docs/verification-pass-findings.md finding G).
+        """
+        return {"status": "ok"}
+
     _register_exception_handlers(app)
 
     return app
