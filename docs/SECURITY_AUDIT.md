@@ -260,8 +260,15 @@ factory-boy into the runtime image — needless size and attack surface.
 - Hash-chain verification re-derives from a running `prev_hash` rather than the
   stored field, so an attacker who can rewrite rows still can't forge a
   consistent chain.
-- Hard tenant isolation: `QueryIsolationGuard` plus an always-on
-  `kronos.org_id` term filter in `OpenSearchQueryBuilder.build`.
+- Hard tenant isolation: every Postgres repository scopes its query by
+  `org_id` in the `WHERE` clause itself (e.g. `PostgresCaseRepository.get_by_id`),
+  and OpenSearch isolation is enforced server-side via DLS on the flat JWT
+  `org_id` claim (`poc/opensearch_jwt/`, `poc/keycloak_opensearch_dls/`) —
+  not by an application-layer filter. `QueryIsolationGuard` and
+  `OpenSearchQueryBuilder` exist as scaffolding for a future direct backend
+  search API that doesn't exist yet; they have zero real call sites today
+  (correctly flagged, not "done well", in
+  `reviews/Static_Compliance_Pentest_Review.md` AUDIT-15).
 - Direct-to-MinIO presigned uploads keep large files off the app tier; WORM via
   Object Lock `COMPLIANCE` with default retention; SSE-KMS via KES/Vault.
 - Structured logging with correlation IDs; step-up tickets are single-use and

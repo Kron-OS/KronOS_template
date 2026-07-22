@@ -22,7 +22,7 @@ This document has three parts, as requested:
 | **MinIO** | Static access key / secret | Root credentials used by *all* clients | `docker-compose.*.yml`, `scripts/provision_buckets.sh` |
 | **KES** | mTLS client identity | Policy `kronos-minio` scoped to `kronos-evidence*` keys | `docker/kes/kes-config.yml` |
 | **Vault** | Token (dev) / AppRole (KES) | Transit engine `kronos-evidence` | `docker/docker-compose.prod.yml`, `docker/vault/*` |
-| **OpenSearch 2.13** | HTTP basic (`admin`) | Per-tenant DLS roles (`kronos-tenant-<org_id>`) + backend `OpenSearchQueryBuilder` org filter | `src/adapter/opensearch/client.py`, `src/external/middleware/opensearch_isolation.py` |
+| **OpenSearch 2.13** | HTTP basic (`admin`) | *(superseded — see note in §2.4)* generic DLS role (`kronos-generic-tenant`) templated on the flat JWT `org_id` claim | `src/adapter/opensearch/client.py`, `scripts/provision_keycloak_org.sh`, `docker/keycloak/kronos-realm.json` |
 | **OpenSearch Dashboards** | (intended) OIDC via Keycloak `opensearch-dashboards` client | (intended) DLS-backed tenancy | realm JSON client + iframe embed in frontend |
 | **Postgres / Redis** | Username/password | Single application role | `docker-compose.*.yml` |
 
@@ -34,7 +34,7 @@ The backend access-control core is **well built** and matches its tool versions:
 - **Tenant extraction** (`_extract_tenant`): reads the Keycloak **Organization** claim shaped as
   `{"<org-alias>": {"id": "<uuid>", ...}}`. This **matches the Keycloak 26.2 organization-membership mapper output** when `addOrganizationId=true` (verified against the 26.2 docs — see §3). ✔
 - **RBAC** (`rbac.py`): `requires_role(*roles)` FastAPI dependency, 403 on missing role. ✔
-- **Query isolation** (`query_isolation.py` + `opensearch_isolation.py`): every Postgres/OpenSearch access is forced through an `org_id` equality check / `bool.filter` term. The OpenSearch DLS role body uses a **stringified** `dls` query, which is the **correct OpenSearch 2.13 Security API format** (verified — see §3). ✔
+- **Query isolation**: every Postgres repository scopes its own query by `org_id` in the `WHERE` clause (e.g. `PostgresCaseRepository.get_by_id`) — real, in the request path. OpenSearch isolation is enforced server-side via DLS on the flat JWT `org_id` claim (superseded design — see note in §2.4), not by an application-layer filter. `query_isolation.py`'s `QueryIsolationGuard` and `opensearch_isolation.py`'s `OpenSearchQueryBuilder` have **zero real call sites in `src/`** — they are unused scaffolding for a future direct backend search API that doesn't exist yet (correctly flagged as such, not as an active control, in `reviews/Static_Compliance_Pentest_Review.md` AUDIT-15). The OpenSearch DLS role body itself does use a **stringified** `dls` query, which is the **correct OpenSearch 2.13 Security API format** (verified). ✔
 - **Step-up auth** (`step_up_auth.py`): RFC 9470 `insufficient_user_authentication` with `acr_values="aal2"`, one-time tickets, numeric ACR comparison. ✔
 
 **Conclusion of research:** the *code* layer of access management is sound and version-correct. The defects are concentrated in the **deployment/configuration layer**, where the application's security assumptions are not actually satisfied by the infrastructure it runs on.
@@ -62,10 +62,22 @@ Derived from `Project_Specifications.md` §5 (Security & Compliance) / §6 (Iden
 - Evidence buckets remain WORM (Object Lock Compliance) + SSE-KMS via KES→Vault.
 
 ### 2.4 Timeline store isolation (OpenSearch + Dashboards)
+
+> **Superseded (2026-07-22):** the per-org DLS role (`kronos-tenant-<org_id>`)
+> design below was tried and found to require a nested `organization` JWT
+> claim that OpenSearch's DLS templating cannot resolve. It was replaced
+> with a single generic, org-agnostic role (`kronos-generic-tenant`)
+> templated on a flat `org_id` claim, verified end-to-end against a real
+> Keycloak 26.2 + OpenSearch 2.13 (including new orgs/members needing zero
+> further OpenSearch-side provisioning). See `poc/opensearch_jwt/`,
+> `poc/keycloak_opensearch_dls/`, and `docs/subsystems/multi-tenancy.md`
+> for the current, accurate design; C-1/C-2 below describe the design that
+> predates this fix.
+
 - Security plugin **enabled** in any environment that holds real tenant data.
 - Per-tenant **DLS role** (`kronos-tenant-<org_id>`) **plus a role-mapping** binding it to the OIDC `organization` subject. A DLS role with no `rolesmapping` is inert.
 - The backend must connect as a **non-superuser** (superusers bypass DLS).
-- Dashboards must authenticate via the Keycloak `opensearch-dashboards` OIDC client and inherit the same DLS, because the Timeline tab embeds Dashboards **directly in the browser**, bypassing the backend's `OpenSearchQueryBuilder`.
+- Dashboards must authenticate via the Keycloak `opensearch-dashboards` OIDC client and inherit the same DLS, because the Timeline tab embeds Dashboards **directly in the browser**, which OpenSearchQueryBuilder (dead code — see §1 above) was never in the path for regardless.
 
 ### 2.5 KMS / secrets (Vault + KES)
 - Production Vault runs as a **sealed server** with persistent storage and the `transit/` engine — **not** `-dev` mode (in-memory, auto-unsealed, root token).
@@ -80,13 +92,13 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow.
 ### [C-1] OpenSearch Dashboards iframe bypasses all tenant isolation
 - **Dev:** `docker-compose.dev.yml` sets `DISABLE_SECURITY_DASHBOARDS_PLUGIN=true` and `DISABLE_SECURITY_PLUGIN=true`.
 - The frontend Timeline tab embeds Dashboards **in an iframe** (browser → `:5601` directly).
-- With the security plugin disabled, that iframe can query **every** `kronos-*` index across **all** tenants. The backend's `OpenSearchQueryBuilder` org filter is never in the path.
+- With the security plugin disabled, that iframe can query **every** `kronos-*` index across **all** tenants. There is no backend-mediated filter in this path at all — `OpenSearchQueryBuilder` is dead code with zero real call sites (see §1 above), not a control that was merely bypassed here.
 - The Keycloak `opensearch-dashboards` OIDC client exists in the realm but is **not wired** to anything.
 - **Impact:** cross-tenant evidence-timeline disclosure — the most serious finding.
 - **Remediation (documented; infra change, not auto-applied):** enable the OpenSearch & Dashboards security plugins, configure the OIDC `openid` authc domain against the existing client, provision DLS role-mappings, and have the backend connect as a non-superuser. This requires standing up the security plugin (certs, `securityadmin`) and is tracked as a follow-up because it cannot be validated safely in this template environment.
 
 ### [C-2] OpenSearch DLS is provisioned but never enforced
-- `OpenSearchClient.ensure_tenant_role()` `PUT`s `/_plugins/_security/api/roles/...`. With `DISABLE_SECURITY_PLUGIN=true` that endpoint **does not exist** → the call 404s. In `docker-compose.prod.yml` OpenSearch has **no** security config at all (it references `./opensearch/opensearch.yml`, **which does not exist in the repo**).
+- `OpenSearchClient.ensure_tenant_role()` (since renamed `ensure_generic_tenant_role()` — see superseded note above) `PUT`s `/_plugins/_security/api/roles/...`. With `DISABLE_SECURITY_PLUGIN=true` that endpoint **does not exist** → the call 404s. In `docker-compose.prod.yml` OpenSearch has **no** security config at all (it references `./opensearch/opensearch.yml`, **which does not exist in the repo**).
 - Even with the plugin on: the created role has **no `rolesmapping`**, so it binds to no user; and the backend connects as **`admin`** (superuser), which **bypasses DLS** entirely.
 - The DLS query string itself is **correct** for OpenSearch 2.13 (the Security API expects `dls` as an escaped JSON string — verified against the 2.13 "Document-level security" / "API" docs), so the code is right; the environment is wrong.
 - **Remediation:** same follow-up as C-1; the missing `docker/opensearch/opensearch.yml` and a non-superuser service account are the concrete artifacts to add.
