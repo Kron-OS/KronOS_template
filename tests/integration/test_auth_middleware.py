@@ -60,6 +60,12 @@ class _NoopStorage(EvidenceStorage):
     async def object_exists(self, object_key, *, bucket="quarantine"):
         return True
 
+    def bucket_for(self, object_key, *, bucket="evidence"):
+        return f"noop-{bucket}"
+
+    async def set_legal_hold(self, object_key, hold, *, bucket="evidence"):
+        pass
+
 
 @pytest.fixture(autouse=True)
 def reset_deps():
