@@ -1,0 +1,80 @@
+25bb9fc9de6c963a8e7c9fe973acdf41f44809b4f2751d9d33e92d0e6c2f91ec
+kronos-poc-kcosdls-opensearch
+288ab971fb0f1ca54a9eaa6e8bfa5f48df52d40e2cccc3b229f2be3f836005b4
+Declared org_id as an admin-managed User Profile attribute.
+provision_keycloak_org: realm=kronos org=kronos-dls-a base=http://localhost:18084
+Creating organization kronos-dls-a
+create organization -> HTTP 201
+Organization ID: 07d7c3de-494a-4554-bda2-8d8e57f26df8
+Linked member 20000000-0000-4000-8000-000000000001 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000001 -> HTTP 204
+Linked member 20000000-0000-4000-8000-000000000002 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000002 -> HTTP 204
+provision_keycloak_org: complete
+provision_keycloak_org: realm=kronos org=kronos-dls-b base=http://localhost:18084
+Creating organization kronos-dls-b
+create organization -> HTTP 201
+Organization ID: c5efe28b-07d1-4a56-b2d2-46cc1e8082f2
+Linked member 20000000-0000-4000-8000-000000000003 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000003 -> HTTP 204
+provision_keycloak_org: complete
+{"status":"OK","message":"'config' updated."}
+Keycloak + OpenSearch ready. Running run_poc.py...
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19920 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+========== 1. Real password-grant logins ==========
+user-a1 claims: {
+  "sub": "20000000-0000-4000-8000-000000000001",
+  "roles": [
+    "analyst"
+  ],
+  "organization": {
+    "kronos-dls-a": {
+      "id": "07d7c3de-494a-4554-bda2-8d8e57f26df8"
+    }
+  },
+  "org_id": "07d7c3de-494a-4554-bda2-8d8e57f26df8"
+}
+user-a2 claims: {
+  "sub": "20000000-0000-4000-8000-000000000002",
+  "roles": [
+    "analyst"
+  ],
+  "organization": {
+    "kronos-dls-a": {
+      "id": "07d7c3de-494a-4554-bda2-8d8e57f26df8"
+    }
+  },
+  "org_id": "07d7c3de-494a-4554-bda2-8d8e57f26df8"
+}
+user-b1 claims: {
+  "sub": "20000000-0000-4000-8000-000000000003",
+  "roles": [
+    "analyst"
+  ],
+  "organization": {
+    "kronos-dls-b": {
+      "id": "c5efe28b-07d1-4a56-b2d2-46cc1e8082f2"
+    }
+  },
+  "org_id": "c5efe28b-07d1-4a56-b2d2-46cc1e8082f2"
+}
+[PASS] real login succeeded for all 3 users (password grant against real Keycloak)
+[PASS] user-a1's REAL JWT carries a flat top-level 'org_id' claim
+[PASS] user-a2's REAL JWT carries the SAME flat org_id as user-a1 (same org)
+[PASS] user-b1's REAL JWT carries a DIFFERENT flat org_id (different org)
+
+========== 2. Real bulk_index() into real OpenSearch ==========
+[PASS] both real docs indexed via the real bulk_index()
+
+========== 3. Real DLS isolation via REAL Keycloak-issued tokens ==========
+user-a1 (real org 07d7c3de-494a-4554-bda2-8d8e57f26df8) sees: {'doc-org-a'}
+[PASS] user-a1 sees ONLY org A's doc (real token, real org) -- {'doc-org-a'}
+user-a2 (real org 07d7c3de-494a-4554-bda2-8d8e57f26df8, second member of org A) sees: {'doc-org-a'}
+[PASS] user-a2 (second real member of org A) is ALSO correctly isolated -- zero OpenSearch-side per-member work -- {'doc-org-a'}
+user-b1 (real org c5efe28b-07d1-4a56-b2d2-46cc1e8082f2) sees: {'doc-org-b'}
+[PASS] user-b1 sees ONLY org B's doc (real token, real org) -- {'doc-org-b'}
+
+============================================================
+8 passed, 0 failed
+============================================================

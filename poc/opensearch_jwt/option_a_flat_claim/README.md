@@ -54,6 +54,16 @@ simpler and more scalable design than what's coded today, or than the
 org-scoped-backend-role alternative (Option B) discussed earlier, which
 still requires re-provisioning per org even if not per user.
 
+## Follow-up done: `../../keycloak_opensearch_dls/` verified this against a REAL Keycloak token
+
+Step 3 of the plan: real Keycloak 26.2, two real Organizations, real
+password-grant logins, real DLS isolation via the exact one-role/one-mapping
+design here — 8/8 passed, same isolation result now proven end-to-end, not
+just with hand-signed test JWTs. Also found and fixed two real, orthogonal
+Keycloak Admin REST bugs along the way (PUT-is-not-partial-update wiping
+firstName/lastName/email; org_id silently dropped unless declared in the
+realm's Declarative User Profile). See `../../keycloak_opensearch_dls/README.md`.
+
 ## Follow-up: how to actually get a flat claim out of Keycloak — researched, not yet built
 
 See `keycloak_mapper_research.md`. Read the real Keycloak 26.2.0 source
