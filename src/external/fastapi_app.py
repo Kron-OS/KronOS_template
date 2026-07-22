@@ -24,6 +24,7 @@ from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
+from src.external.routes import step_up as step_up_routes
 
 # Configure structured JSON logging as early as possible (module import time)
 # so every log emitted during app startup — not just requests — is rendered
@@ -107,6 +108,7 @@ def create_app(
     app.include_router(admin_routes.router)
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
+    app.include_router(step_up_routes.router)
     _register_exception_handlers(app)
 
     return app
