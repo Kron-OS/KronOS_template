@@ -1,0 +1,83 @@
+# Verification-First Pass — Findings Summary and Remaining Task List
+
+**Date:** 2026-07-22
+**Scope:** Every bug found while executing CLAUDE.md Section F's verification-first PoC pass across the whole stack (Plaso, OpenSearch, MinIO, Vault/KES, Keycloak, Celery, RFC3161, Postgres, ClamAV, nginx, Helm/Kubernetes, OpenSearch Dashboards, frontend build). See `poc/*/README.md` for full per-pair detail; this document is the consolidated ledger plus what's left to reach a clean, error-free build.
+
+---
+
+## 1. Bugs found and fixed (shipped to `src/`/`docker/`/`charts/`/`scripts/`)
+
+| # | Component | Bug | Commit |
+|---|---|---|---|
+| 1 | Plaso worker | Wrong `log2timeline`/`psort` binary lookup — parsing was a silent no-op | `db9133d` |
+| 2 | Plaso worker | psort refused to write because the worker pre-created its output file | `db9133d` |
+| 3 | Plaso → timeline | Forensic event timestamps silently replaced with ingest-time "now" | `db9133d` |
+| 4 | `pyproject.toml` | Missing `opensearch-py[async]` extra (`AsyncOpenSearch` needs it) | `db9133d` |
+| 5 | `RFC3161TimestampService.verify()` | Never successfully parsed a real TSA response (wrong ASN.1 assumptions); existing unit tests mocked the wrong shape | `e51c657` |
+| 6 | `keycloak_auth.py` | JWT audience check silently bypassed by a token with no `aud` claim at all | `e51c657` |
+| 7 | Vault → KES → MinIO SSE-KMS chain | Didn't work as configured (KES config schema, missing Vault policy grants, KES templating syntax) | `e51c657` |
+| 8 | `wire_dependencies_async()` | Never wired `PostgresCaseRepository` — cases lived only in a process-local in-memory repo, losing all data on restart/across replicas | `110cca4` |
+| 9 | `ensure_index_template()` | Defined three times, called nowhere — every OpenSearch index built by dynamic mapping instead of the ECS template, silently breaking exact-match `term` queries | `cfdde10` |
+| 10 | `celery_app.py` `anchor_audit_log` | Computed "yesterday" via local server `date.today()` instead of UTC — wrong day whenever the server is ahead of UTC | `cfdde10`, `0a6ee04` |
+| 11 | `kronos_attest/report.py` `day_report()` | `tsa_anchored` could never be `True` — filtered on `details.get("day")` but the stored key is `"date"`; an existing test had the same wrong key baked into its own fixture, so it never caught this | `0a6ee04` |
+| 12 | `src/external/routes/step_up.py` | `POST /api/step-up/ticket` — the endpoint `DELETE /api/evidence/{id}`'s own docstring names as required — never existed anywhere; `issue_ticket()` had zero callers | `5e92110` |
+| 13 | `src/adapter/opensearch/client.py` / `timeline_ingest.py` / `scripts/provision_keycloak_org.sh` / `docker/keycloak/kronos-realm.json` | `ensure_tenant_role()` created a per-org DLS role but nothing ever mapped a user to it — replaced with a verified, simpler generic-role + flat-`org_id`-claim design (see `poc/opensearch_jwt/`, `poc/keycloak_opensearch_dls/`) | `dd5f2cd` → `6d1a350` |
+| 14 | `docker/nginx/nginx.conf.template` | Comment falsely claimed an unset CSP-origin var "safely" substitutes to empty string — real behavior is nginx **crashes at startup entirely** (`nginx: [emerg] unknown "..." variable`) | `122e0c3` |
+| 15 | `charts/kronos/templates/nginx/` | nginx Deployment mounted a ConfigMap (`{fullname}-nginx-config`) that no template in the chart ever created — every real Kubernetes deployment would leave nginx (the sole DMZ/ingress layer) stuck in `ContainerCreating` forever, blocking all traffic | `122e0c3` |
+
+## 2. Bugs/gaps found and flagged, **not yet fixed**
+
+| # | Component | Issue | Severity | Where found |
+|---|---|---|---|---|
+| A | Keycloak realm auth flow | Step-up MFA is not conditional at all — every login forces mandatory TOTP regardless of requested `acr_values`, so no `aal1` session can ever be issued, defeating the documented two-tier trust model. Needs Keycloak authentication-flow expertise, not a code change. | High | `poc/auth_flow/README.md` |
+| B | `src/external/middleware/query_isolation.py` / `opensearch_isolation.py` | `QueryIsolationGuard`/`OpenSearchQueryBuilder` are dead code — zero real call sites in `src/` — despite `docs/subsystems/multi-tenancy.md` describing them as the "belt-and-braces" isolation layer. Needs a decision: wire them in for real, or remove them and correct the docs. | Medium | `poc/multi_tenancy/README.md` |
+| C | OpenSearch Dashboards multi-tenancy | Design verified sound (`poc/opensearch_dashboards_tenancy/`), but production wiring (automated per-org tenant/role provisioning, Keycloak OIDC SSO for Dashboards) doesn't exist yet — only hand-provisioned in the PoC. | Medium | `poc/opensearch_dashboards_tenancy/README.md` |
+| D | `docker/nginx/nginx.conf.template` `/silent-check-sso.html` | Real, documented nginx behavior: a location block with its own `add_header` doesn't inherit *any* `add_header` from the server level. This location's own CSP means it genuinely lacks `X-Frame-Options`/`X-Content-Type-Options`/HSTS. Low practical exposure (same-origin static file, own CSP already constrains framing) but confirms those headers were never actually verified globally. | Low | `poc/nginx/README.md` |
+| E | `cases.py`'s Dashboards embed URL | Never specifies which index pattern Discover/Data Explorer should open (no `_a` app-state). Whether the real app falls back sensibly or shows nothing needs a live browser to observe — deferred to `poc/frontend_browser` (not yet done). | Medium (unverified, not confirmed broken) | `poc/dashboards_embed/README.md` |
+
+## 3. New findings surfaced while compiling this document (real, verified via static analysis + tool runs today, not yet fixed)
+
+| # | Component | Issue | Severity |
+|---|---|---|---|
+| F | `docker/docker-compose.test.yml` | Bind-mounts `docker/keycloak/realm-export.json`, which **does not exist anywhere in the repo** (only `docker/keycloak/kronos-realm.json` does). `docker compose -f docker-compose.test.yml up` will not import a real realm — Docker silently creates an empty directory in place of the missing bind-mount source, so Keycloak either fails or comes up with no realm at all. | High — breaks the test compose stack outright |
+| G | Backend health checks | No `/healthz` or `/health` route exists anywhere in the FastAPI app. Two real consequences, confirmed by reading the actual config: (1) `docker/nginx/nginx.conf.template`'s `/healthz` location proxies to `http://backend/healthz`, which 404s, always; (2) `charts/kronos/templates/backend/deployment.yaml`'s `livenessProbe`/`readinessProbe` both hit `GET /health` directly on the backend container — a 404 fails the probe, so in a real Kubernetes deployment the backend pod **never becomes Ready** (never receives traffic) and is eventually **killed and restarted in a crash loop** by the failing liveness probe, even though the app itself is healthy. The Helm nginx Deployment's own `/health` probe has the same problem but happens to "pass" by accident (falls through to the SPA's `try_files` catch-all, which serves `index.html` with a `200`) — not because a real health check exists. | **Severe** — the backend would never run stably in the chart's own target environment (Kubernetes) |
+| H | `tests/integration/test_auth_middleware.py` | `_NoopStorage` test double doesn't implement the full `EvidenceStorage` ABC (missing `bucket_for`, `set_legal_hold`, and possibly others) — confirmed still present as of this pass, causing 9 real test collection errors every run (`653 passed, 9 errors` on the current full suite). Pre-existing, not introduced by any change in this pass. | Medium — masks whatever those 9 tests are meant to verify |
+| I | Lint/type debt | `ruff check src/` → 58 findings (mostly `N815` mixedCase — likely **intentional** camelCase Pydantic fields matching the frontend JSON contract, consistent with this branch's own name `fix/evidence-upload-camelcase`; the rest are `B008`/`B904`/`E501`). `mypy src/` → 187 findings across 16 files (missing type annotations, missing generic type args, a few `Any`-return leaks). Confirmed pre-existing — none of these files were touched by this verification pass's own edits. | Low-Medium — violates CLAUDE.md's own "linting clean" checklist, may block a strict CI gate |
+
+## 4. Confirmed genuinely correct (no bugs found)
+
+- MinIO Object Lock / WORM enforcement (`poc/minio/`)
+- Celery ↔ Redis dispatch (`poc/celery_redis/`)
+- Postgres audit hash-chain concurrency + tamper-detection (`poc/postgres/`)
+- Real ClamAV EICAR scan through the full intake path (`poc/clamav/`)
+- The four Celery beat tasks (`abort_orphan_uploads`, `abort_orphan_parses`, `auto_dispatch_received`, `anchor_audit_log`) against genuinely stale seeded rows (`poc/celery_beat/`)
+- `cases.py`'s Dashboards embed URL's app path, RISON encoding, and `meta.index` handling, verified against the real pinned OpenSearch Dashboards 2.11.1 source (`poc/dashboards_embed/`)
+- Frontend build: `npm install && npm run build` succeeds cleanly (`vite build`, 275ms), `npm run test` → 33/33 passed, `npm run lint` → 1 benign warning, 0 errors (checked while compiling this document)
+- `docker compose -f docker/docker-compose.{dev,test,prod}.yml config` — all three parse without structural errors (only expected missing-`.env`-value warnings)
+- `helm lint charts/kronos` — 0 charts failed (after fixing finding #15 above)
+
+---
+
+## 5. Task list — what's left to build the whole project cleanly
+
+### P0 — blocks a real environment from actually starting
+1. **Fix `docker-compose.test.yml`'s missing `realm-export.json`** (finding F) — either point the bind mount at the real `docker/keycloak/kronos-realm.json`, or add the missing file, whichever the test stack's Keycloak actually needs.
+2. **Add a real health-check route to the FastAPI backend** (finding G) and point every consumer at the *same* real path: `docker/nginx/nginx.conf.template`'s `/healthz` location, `charts/kronos/templates/backend/deployment.yaml`'s liveness/readiness probes, and `charts/kronos/templates/nginx/deployment.yaml`'s probes (currently accidentally-passing via the SPA fallback, not a real check). This is required for the backend to ever reach `Ready` in Kubernetes.
+3. **Fix `tests/integration/test_auth_middleware.py`'s `_NoopStorage`** (finding H) so the full suite runs without 9 collection errors — implement the missing `EvidenceStorage` abstract methods.
+
+### P1 — real, open product/security gaps
+4. **Make Keycloak's step-up MFA conditional on `acr_values`** (flag A) — needs someone with Keycloak authentication-flow expertise to redesign the realm's `browser-stepup` flow so `aal1` sessions can actually be issued.
+5. **Decide the fate of `QueryIsolationGuard`/`OpenSearchQueryBuilder`** (flag B) — wire them in as real belt-and-braces isolation, or delete them and correct `docs/subsystems/multi-tenancy.md`.
+6. **Wire OpenSearch Dashboards multi-tenancy into production** (flag C) — automate per-org tenant + role provisioning (mirroring `scripts/provision_keycloak_org.sh`'s pattern) and real Keycloak OIDC SSO for Dashboards.
+
+### P2 — lint/type debt (CLAUDE.md's own checklist, may gate CI)
+7. **Ruff**: add a `per-file-ignores` rule for the intentional camelCase Pydantic response fields (don't rename them — that's the exact bug this branch exists to avoid reintroducing), then fix the remaining genuine `B008`/`B904`/`E501` findings (finding I).
+8. **Mypy**: dedicated typing pass across the 16 affected files (finding I) — mostly missing annotations and generic type arguments, not structural issues.
+
+### P3 — remaining verification work (not bugs — unfinished PoCs)
+9. **`poc/evtx_opensearch`** — real `system.evtx` sample ingested into real OpenSearch (never run).
+10. **`poc/frontend_browser`** — real Playwright pass: `keycloak-js` login + the React app + the Dashboards iframe embed. This would also resolve flag E (which index pattern Discover actually opens) by direct observation instead of static analysis.
+
+---
+
+*Cross-reference: `poc/README.md` (per-PoC index), `poc/opensearch_jwt/README.md` + `poc/keycloak_opensearch_dls/` (the full multi-tenancy DLS arc), `poc/nginx/README.md`, `poc/dashboards_embed/README.md`, `poc/celery_beat/README.md` for full captured-output detail behind every row above.*

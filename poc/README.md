@@ -5,11 +5,30 @@ below runs the **real** dependency at the version pinned in this repo,
 using KronOS's own `src/` classes wherever possible instead of
 reimplementations, and keeps its actual captured output alongside the code.
 
+**Full consolidated findings + remaining task list:** [`docs/verification-pass-findings.md`](../docs/verification-pass-findings.md).
+
 | Directory | Component pair | Status |
 |---|---|---|
 | `plaso/` | Plaso 20260512 alone, against a real forensic sample | 2 bugs found + fixed (binary names, psort pre-existing-file) |
 | `opensearch/` | `src/adapter/opensearch/client.py` alone, against real OpenSearch 2.11.1 | 1 bug found + fixed (`opensearch-py[async]` extra); 1 gap documented (`ensure_tenant_role` untestable with security plugin disabled) |
 | `plaso_opensearch/` | The two linked: real Plaso output through the real ingestion pipeline into real OpenSearch | 1 bug found + fixed (timestamp handling silently used ingest-time instead of forensic event-time) |
+| `minio/` | `S3EvidenceStorage` against real MinIO Object Lock | No bugs — genuinely correct |
+| `vault_kes_minio/` | Vault → KES → MinIO SSE-KMS chain | 1 chain found broken + fixed (KES config schema, Vault policy grants, KES templating syntax) |
+| `keycloak/` | `keycloak_auth.py`/`tenant_context.py` against real Keycloak 26.2 | 1 bug found + fixed (JWT `aud`-bypass with no `aud` claim) |
+| `celery_redis/` | Real Celery task dispatch through Redis | No bugs — genuinely correct |
+| `rfc3161/` | `RFC3161TimestampService` against a real local TSA responder | 1 bug found + fixed (`verify()` never parsed a real response) |
+| `multi_tenancy/` | Cross-org isolation: Postgres + OpenSearch + JWT, real FastAPI app | 1 severe bug found + fixed (`PostgresCaseRepository` never wired); dead-code gap flagged (`QueryIsolationGuard`/`OpenSearchQueryBuilder`) |
+| `postgres/` | Audit hash-chain concurrency + tamper-detection | No bugs — genuinely correct |
+| `full_pipeline/` | Full backend-only evidence lifecycle, real Celery worker + real `system.evtx` | 1 bug found + fixed (dead `ensure_index_template()`); UTC-date timezone bug found and deferred to `chain_of_custody/` |
+| `chain_of_custody/` | Postgres → Merkle → real RFC3161 TSA → real `kronos-attest` CLI | 2 bugs found + fixed (the timezone bug, and `tsa_anchored` always-False) |
+| `clamav/` | Real ClamAV EICAR scan through the intake pipeline | No bugs — genuinely correct |
+| `auth_flow/` | Scripted PKCE + step-up (TOTP) against real Keycloak | 1 severe gap flagged, not fixed (step-up MFA not conditional); 1 bug found + fixed (missing `/api/step-up/ticket` route) |
+| `opensearch_jwt/` (+ `option_a_flat_claim/`) | OpenSearch security plugin + JWT authc + DLS — new construction | Found the `ensure_tenant_role()` role-mapping gap; verified the fix design (flat `org_id` claim + one generic role) |
+| `keycloak_opensearch_dls/` (+ `step4_new_member/`) | Real Keycloak 26.2 flat `org_id` claim → real OpenSearch DLS, end to end | Verified the production fix design against real Keycloak; several Keycloak Admin REST gotchas found along the way (not KronOS bugs) |
+| `opensearch_dashboards_tenancy/` | OpenSearch Dashboards saved-object multi-tenancy — new construction | Design confirmed sound; production wiring (SSO, automated provisioning) not done |
+| `celery_beat/` | The four beat-scheduled tasks against real seeded-stale Postgres rows | No product bugs — confirms the UTC-date fix stays fixed |
+| `nginx/` | `nginx.conf.template` + real FastAPI `CORSMiddleware` | 1 bug found + fixed (misleading comment; nginx actually crashes on an unset CSP var); 1 severe Helm bug found + fixed (missing nginx ConfigMap) |
+| `dashboards_embed/` | `cases.py`'s Dashboards embed-URL route vs. real Dashboards 2.11.1 source | No bug (a suspected one was ruled out via source); one question flagged for a future browser pass |
 
 ## Fixes this pass made to `src/`/`docker/` (not just `poc/`)
 
