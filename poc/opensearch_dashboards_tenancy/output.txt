@@ -1,0 +1,42 @@
+7e2edfd1d9d08e666e990ff5d958c4adad5fb7d4185b96ac50aca2932028951b
+OpenSearch ready
+73a5a648459a4c8206427ed3de67196ebce34c693a7082eda5ba993de703cf3e
+Dashboards ready
+{"status":"CREATED","message":"'kronos-org-a' created."}
+{"status":"CREATED","message":"'kronos-org-b' created."}
+{"status":"CREATED","message":"'kronos-dash-org-a' created."}
+{"status":"CREATED","message":"'kronos-dash-org-b' created."}
+{"status":"CREATED","message":"'dash-user-a' created."}
+{"status":"CREATED","message":"'dash-user-b' created."}
+{"status":"CREATED","message":"'kronos-dash-org-a' created."}
+{"status":"CREATED","message":"'kronos-dash-org-b' created."}
+OpenSearch + Dashboards ready, tenants/roles/users provisioned. Running run_poc.py...
+========== 1. Real Dashboards logins + tenant visibility ==========
+user-a tenants: {'dash-user-a': True, 'kronos-org-a': True}
+user-b tenants: {'kronos-org-b': True, 'dash-user-b': True}
+[PASS] user-a's real tenant list includes their own org tenant
+[PASS] user-a's real tenant list does NOT include org B's tenant
+[PASS] user-b's real tenant list includes their own org tenant
+[PASS] user-b's real tenant list does NOT include org A's tenant
+
+========== 2. Real saved objects created per-org, in their own tenant ==========
+create as user-a -> 200
+create as user-b -> 200
+[PASS] user-a's real saved object created in their own tenant
+[PASS] user-b's real saved object created in their own tenant
+
+========== 3. Real cross-org saved-object isolation ==========
+user-a GETs org B's object via their OWN tenant -> 404
+[PASS] user-a cannot see org B's saved object (404, not leaked)
+user-b GETs org A's object via their OWN tenant -> 404
+[PASS] user-b cannot see org A's saved object (404, not leaked)
+user-a's _find lists: {'kronos-demo-pattern-a'}
+user-b's _find lists: {'kronos-demo-pattern-b'}
+[PASS] user-a's saved-object listing shows ONLY their own object -- {'kronos-demo-pattern-a'}
+[PASS] user-b's saved-object listing shows ONLY their own object -- {'kronos-demo-pattern-b'}
+user-b explicitly requests org A's tenant (no grant) -> 500
+[PASS] requesting a tenant with no role grant is denied, not silently served
+
+============================================================
+11 passed, 0 failed
+============================================================
