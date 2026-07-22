@@ -18,7 +18,7 @@ bare hostnames like `localhost` (use `127.0.0.1`), and Keycloak marks
 session cookies `Secure=True` even over plain dev-mode HTTP (a real browser
 would just use HTTPS; this scripted client bypasses that one check).
 
-## Real finding #1 (severe, documented — needs a Keycloak flow expert, not a blind fix): step-up MFA is not actually conditional
+## Real finding #1 (fixed — see `step_up_conditional_fix/`): step-up MFA was not actually conditional
 
 `docs/subsystems/multi-tenancy.md` documents the design explicitly: `acr`
 is `"aal1"` (password only) for normal use, elevating to `"aal2"` only
@@ -39,20 +39,27 @@ platform's entire two-tier trust model (only require MFA for genuinely
 sensitive operations) doesn't exist in practice — everything is
 unconditionally MFA-gated.
 
-**Not blindly fixed here.** Root-causing exactly why Keycloak's
-`conditional-level-of-authentication` authenticator isn't reading the
-requested ACR level correctly requires either Keycloak's own debug-level
-authentication SPI logging or focused expertise with this specific
-authenticator's internals — guessing at a fix to realm.json's flow wiring
-risks landing a worse misconfiguration (e.g. silently disabling MFA
-altogether) without being able to verify the fix is actually correct.
-Flagging clearly for dedicated follow-up rather than papering over it.
+**Root-caused and fixed in `step_up_conditional_fix/`.** Reading Keycloak
+26.2's actual source (`ConditionalLoaAuthenticator.matchCondition()`)
+showed the real cause: with only a single level=2 condition in the flow,
+there is no prior LoA established in the session, so the authenticator's
+own `currentAuthenticationLoa < Constants.MINIMUM_LOA` check always fires
+true — it doesn't matter what `acr_values` was requested, the condition
+that's supposed to gate OTP always evaluates to "yes, require it." The
+official Keycloak step-up pattern (`server_admin/topics/authentication/
+flows.adoc`, `_step-up-flow` section) fixes this with a *first* conditional
+subflow (level=1) that establishes the baseline LoA via the actual
+username/password form nested inside the condition, before the existing
+level=2/OTP subflow runs. Rebuilt via the real Admin REST API, verified
+empirically (6/6 real PKCE logins), then ported into the real
+`docker/keycloak/kronos-realm.json` and re-verified there directly — see
+`step_up_conditional_fix/README.md` for the full account.
 
-One consequence of this bug for this PoC's own scope: it's not possible to
-exercise the negative "aal1 token attempts a step-up-gated action" path
-against a real, live-issued token — the platform cannot currently issue
-one. `StepUpAuth.assert_acr`'s rejection logic is already covered by
-`tests/unit/middleware/test_step_up_auth.py` with fabricated
+At the time this PoC was first written, the bug above meant it wasn't
+possible to exercise the negative "aal1 token attempts a step-up-gated
+action" path against a real, live-issued token — the platform couldn't
+issue one. `StepUpAuth.assert_acr`'s rejection logic was already covered
+by `tests/unit/middleware/test_step_up_auth.py` with fabricated
 `TenantContext` objects, which is legitimate per CLAUDE.md B.5 for that
 class in isolation; it just couldn't be re-verified end-to-end through a
 real Keycloak session here.

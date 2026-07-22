@@ -9,6 +9,20 @@ mistaken for application bugs):
   2. Keycloak marks its session cookies Secure=True even over plain HTTP in
      dev mode; a real browser would just use HTTPS. For this scripted
      client, the Secure-flag gate is bypassed (only that check).
+
+A real bug this file's own client config caused, found and fixed while
+verifying the step-up conditional-flow fix (see
+poc/auth_flow/step_up_conditional_fix/): the shared httpx.Client is built
+with follow_redirects=True. Under the ORIGINAL (broken) step-up flow, a
+login POST's response was always a 200 MFA page, never a redirect, so this
+never mattered. Once step-up was actually fixed, a plain aal1 login's
+login POST became an IMMEDIATE 302 straight to redirect_uri?code=... --
+and nothing listens on that port in this PoC (see
+extract_code_and_exchange's own comment below) -- so httpx's automatic
+redirect-following tried to connect there itself and raised a raw
+ConnectError, which looked exactly like environment flakiness at first
+until traced to this. Fixed by passing follow_redirects=False on this one
+call site, matching every other POST in this file that already does.
 """
 
 from __future__ import annotations
@@ -38,25 +52,48 @@ def new_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def start_auth(client: httpx.Client, verifier_challenge: tuple[str, str], *, state: str) -> httpx.Response:
+def start_auth(
+    client: httpx.Client,
+    verifier_challenge: tuple[str, str],
+    *,
+    state: str,
+    acr_values: str | None = None,
+) -> httpx.Response:
     _, challenge = verifier_challenge
+    params = {
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    if acr_values is not None:
+        params["acr_values"] = acr_values
     return client.get(
         f"{KC}/realms/{REALM}/protocol/openid-connect/auth",
-        params={
-            "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
-            "response_type": "code",
-            "scope": "openid",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-        },
+        params=params,
     )
 
 
 def submit_username_password(client: httpx.Client, resp: httpx.Response, username: str, password: str) -> httpx.Response:
     action = unescape(re.search(r'action="([^"]+)"', resp.text).group(1))
-    return client.post(action, data={"username": username, "password": password})
+    # follow_redirects=False: when no further MFA is needed (e.g. a plain
+    # aal1 login under the fixed step-up flow), this response IS the final
+    # 302 straight to redirect_uri with ?code=... -- nothing listens on
+    # that port in this PoC (see extract_code_and_exchange's docstring),
+    # so the client's own default follow_redirects=True would make httpx
+    # try to auto-follow it and raise a real ConnectError on THAT hop, not
+    # this one. Every other call site in this file already passes
+    # follow_redirects=False for exactly this reason; this was the one
+    # that didn't, because until the step-up flow was actually fixed this
+    # call's response was never a redirect (always a 200 MFA page).
+    return client.post(
+        action,
+        data={"username": username, "password": password},
+        follow_redirects=False,
+    )
 
 
 def complete_totp_setup(client: httpx.Client, resp: httpx.Response) -> tuple[str, httpx.Response]:
@@ -126,24 +163,50 @@ def decode_jwt_payload(token: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(payload))
 
 
-def real_browser_login(username: str, password: str, *, totp_secret: str | None, state: str) -> tuple[dict, str | None]:
+def real_browser_login(
+    username: str,
+    password: str,
+    *,
+    totp_secret: str | None,
+    state: str,
+    acr_values: str | None = None,
+) -> tuple[dict, str | None, str]:
     """Full real scripted browser login. If totp_secret is None, assumes the
     user has no TOTP credential yet and completes real CONFIGURE_TOTP setup,
     returning the newly-registered secret as the second tuple element (None
-    if a pre-existing secret was reused)."""
+    if a pre-existing secret was reused). Third element reports what
+    actually happened server-side ("none" | "setup" | "otp_entry") so
+    callers can assert on it directly instead of inferring it from
+    new_secret alone (which is None both when no MFA step ran at all AND
+    when OTP entry ran with an already-known secret -- those are very
+    different outcomes to be verifying)."""
     client = httpx.Client(follow_redirects=True)
     verifier, challenge = new_pkce_pair()
-    resp = start_auth(client, (verifier, challenge), state=state)
+    resp = start_auth(client, (verifier, challenge), state=state, acr_values=acr_values)
     resp = submit_username_password(client, resp, username, password)
 
+    # submit_username_password disables auto-follow (see its own comment).
+    # If MFA IS required, Keycloak's response here is itself a 302 to an
+    # intermediate page (e.g. .../login-actions/required-action?execution=
+    # CONFIGURE_TOTP), not the final redirect_uri -- follow that one
+    # explicitly to reach the real page whose content the checks below
+    # inspect. If no MFA is required, the redirect goes straight to
+    # redirect_uri and is left alone for extract_code_and_exchange.
+    loc = resp.headers.get("location")
+    if loc and REDIRECT_URI not in loc:
+        resp = client.get(loc, follow_redirects=False)
+
     new_secret = None
+    mfa_path = "none"
     if "login-config-totp" in resp.text:
         b32secret, resp = complete_totp_setup(client, resp)
         new_secret = b32secret
+        mfa_path = "setup"
     elif "login-otp" in resp.text:
         if totp_secret is None:
             raise RuntimeError("User already has a TOTP credential but no secret was provided")
         resp = submit_totp_code(client, resp, totp_secret)
+        mfa_path = "otp_entry"
 
     tokens = extract_code_and_exchange(client, resp, verifier)
-    return tokens, new_secret
+    return tokens, new_secret, mfa_path

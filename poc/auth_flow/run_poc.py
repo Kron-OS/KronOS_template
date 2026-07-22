@@ -53,7 +53,7 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 def main() -> None:
     print("=== Real scripted PKCE + TOTP login (case-lead) ===")
-    tokens, _ = real_browser_login(
+    tokens, _, _ = real_browser_login(
         "case-lead", "DevCaseLead#2026", totp_secret=CASE_LEAD_TOTP_SECRET, state="poc-auth-flow"
     )
     access_token = tokens["access_token"]

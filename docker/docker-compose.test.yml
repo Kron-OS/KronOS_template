@@ -58,7 +58,7 @@ services:
       - opensearch_data:/usr/share/opensearch/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.2
     command: start-dev --import-realm
     environment:
       KC_DB: dev-mem
@@ -74,8 +74,8 @@ services:
       # This file never existed in the repo (was "realm-export.json") --
       # docker/keycloak/kronos-realm.json is the real, single-source-of-truth
       # realm export already used by dev/prod; confirmed importing it
-      # unmodified into a real Keycloak 26.0 (this service's pinned version)
-      # succeeds (poc/README.md's findings doc).
+      # unmodified into a real Keycloak 26.2 (this service's pinned version,
+      # standardized across dev/test) succeeds (poc/README.md's findings doc).
       - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
     healthcheck:
       # The Keycloak 26 image ships no curl/wget, and /health lives on the

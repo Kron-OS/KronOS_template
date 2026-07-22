@@ -22,7 +22,8 @@ reimplementations, and keeps its actual captured output alongside the code.
 | `full_pipeline/` | Full backend-only evidence lifecycle, real Celery worker + real `system.evtx` | 1 bug found + fixed (dead `ensure_index_template()`); UTC-date timezone bug found and deferred to `chain_of_custody/` |
 | `chain_of_custody/` | Postgres → Merkle → real RFC3161 TSA → real `kronos-attest` CLI | 2 bugs found + fixed (the timezone bug, and `tsa_anchored` always-False) |
 | `clamav/` | Real ClamAV EICAR scan through the intake pipeline | No bugs — genuinely correct |
-| `auth_flow/` | Scripted PKCE + step-up (TOTP) against real Keycloak | 1 severe gap flagged, not fixed (step-up MFA not conditional); 1 bug found + fixed (missing `/api/step-up/ticket` route) |
+| `auth_flow/` | Scripted PKCE + step-up (TOTP) against real Keycloak | 2 bugs found + fixed: missing `/api/step-up/ticket` route; step-up MFA not conditional on `acr_values` (see `auth_flow/step_up_conditional_fix/`) |
+| `auth_flow/step_up_conditional_fix/` | Root-cause + fix for the step-up conditional-flow bug above | Fixed and verified: 6/6 real PKCE logins against the actual shipped `docker/keycloak/kronos-realm.json` |
 | `opensearch_jwt/` (+ `option_a_flat_claim/`) | OpenSearch security plugin + JWT authc + DLS — new construction | Found the `ensure_tenant_role()` role-mapping gap; verified the fix design (flat `org_id` claim + one generic role) |
 | `keycloak_opensearch_dls/` (+ `step4_new_member/`) | Real Keycloak 26.2 flat `org_id` claim → real OpenSearch DLS, end to end | Verified the production fix design against real Keycloak; several Keycloak Admin REST gotchas found along the way (not KronOS bugs) |
 | `opensearch_dashboards_tenancy/` | OpenSearch Dashboards saved-object multi-tenancy — new construction | Design confirmed sound; production wiring (SSO, automated provisioning) not done |
