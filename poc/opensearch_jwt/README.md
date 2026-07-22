@@ -98,6 +98,15 @@ identity to map, and a real fix has to pick an approach:
   claim it has today), or
 - some other pattern OpenSearch supports that wasn't explored here.
 
+**Follow-up done: `option_a_flat_claim/` verified the best of these.** A
+flat, top-level scalar claim (not nested, unlike `organization`) DOES
+resolve correctly in `${attr.jwt.X}` DLS templating — confirmed with one
+generic role + one static mapping, ever, correctly isolating multiple
+users (including one added with zero OpenSearch-side provisioning at all)
+by their own org. See `option_a_flat_claim/README.md` for the full result;
+it eliminates `ensure_tenant_role()`'s per-org role creation entirely if a
+Keycloak-side flat `org_id` claim mapper is added.
+
 Flagging clearly rather than picking one blind, same reasoning as the
 Keycloak step-up MFA bug in `poc/auth_flow/README.md`.
 
