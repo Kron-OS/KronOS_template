@@ -98,14 +98,19 @@ identity to map, and a real fix has to pick an approach:
   claim it has today), or
 - some other pattern OpenSearch supports that wasn't explored here.
 
-**Follow-up done: `option_a_flat_claim/` verified the best of these.** A
-flat, top-level scalar claim (not nested, unlike `organization`) DOES
-resolve correctly in `${attr.jwt.X}` DLS templating — confirmed with one
-generic role + one static mapping, ever, correctly isolating multiple
-users (including one added with zero OpenSearch-side provisioning at all)
-by their own org. See `option_a_flat_claim/README.md` for the full result;
-it eliminates `ensure_tenant_role()`'s per-org role creation entirely if a
-Keycloak-side flat `org_id` claim mapper is added.
+**Follow-up done, full chain (`option_a_flat_claim/` -> `../keycloak_opensearch_dls/` -> production):**
+A flat, top-level scalar claim (not nested, unlike `organization`) DOES
+resolve correctly in `${attr.jwt.X}` DLS templating — confirmed
+Keycloak-free first (`option_a_flat_claim/`), then against real Keycloak
+26.2 with real Organizations and real password-grant logins
+(`../keycloak_opensearch_dls/`), then proven to scale to a brand-new member
+added after the system is already configured with zero further OpenSearch
+calls (`../keycloak_opensearch_dls/step4_new_member/`). The production fix
+is now shipped: `src/adapter/opensearch/client.py`'s `ensure_tenant_role()`
+was replaced with `ensure_generic_tenant_role()` (one static role + one
+static mapping, created once ever), `scripts/provision_keycloak_org.sh` and
+`docker/keycloak/kronos-realm.json` wire the flat `org_id` claim for real.
+This gap is closed.
 
 Flagging clearly rather than picking one blind, same reasoning as the
 Keycloak step-up MFA bug in `poc/auth_flow/README.md`.
