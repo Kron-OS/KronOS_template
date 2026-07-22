@@ -185,6 +185,13 @@ nginx:
     repository: nginx
     tag: alpine
   replicaCount: 2
+  # Browser-facing origins for the CSP header's connect-src (see
+  # templates/nginx/configmap.yaml). Default empty, matching
+  # docker-compose.prod.yml's own default: neither the backend nor MinIO is
+  # published directly to browsers in this chart's ingress topology (nginx
+  # is the sole DMZ-facing entry point), so both collapse to nothing.
+  backendPublicUrl: ""
+  minioPublicUrl: ""
   resources:
     requests:
       cpu: "100m"

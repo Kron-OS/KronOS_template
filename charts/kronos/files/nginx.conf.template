@@ -20,41 +20,18 @@ server {
     # -----------------------------------------------------------------------
     # Security headers — applied globally, overridden where needed
     # -----------------------------------------------------------------------
-    # This file is processed by nginx's docker-entrypoint envsubst step
-    # (it lives at /etc/nginx/templates/*.template in the image), which
-    # substitutes the ${...} placeholders below from container environment
-    # variables before nginx starts. Each placeholder is a *browser-facing*
-    # origin for a service that differs between dev (localhost:<port>) and
-    # prod (its own subdomain) — see KEYCLOAK_PUBLIC_URL/BACKEND_PUBLIC_URL/
-    # MINIO_PUBLIC_URL/OPENSEARCH_DASHBOARDS_URL in docker-compose.*.yml and
-    # src/config.py. A var that is PRESENT but empty substitutes to an empty
-    # string, which is safe (collapses to a harmless extra space) -- verified
-    # in poc/nginx/. But a var that is genuinely UNSET (never passed to the
-    # container at all) is NOT substituted -- the real docker-entrypoint
-    # script only knows about variable names actually present in its own
-    # environment -- and the leftover literal "${VARNAME}" then makes
-    # nginx's OWN config parser try to resolve it as an nginx variable,
-    # which does not exist, and nginx refuses to start at all
-    # ("nginx: [emerg] unknown \"...\" variable" -- confirmed for real in
-    # poc/nginx/README.md). docker-compose*.yml's `${VAR:-}` syntax always
-    # defines all four vars (defaulting to empty), which is what actually
-    # keeps this safe here -- any invocation that doesn't guarantee that
-    # will crash nginx on startup, not silently degrade.
-    #
-    # script-src deliberately omits 'unsafe-inline' (a Vite production build emits
-    # no inline scripts); 'unsafe-inline' is kept only for style-src, which
-    # Tailwind/runtime theming still requires.
-    # connect-src includes MINIO_PUBLIC_URL because evidence uploads PUT
-    # directly from the browser to a presigned MinIO URL — without it the
-    # browser silently blocks the request client-side (status 0, no network
-    # activity at all) before it's ever sent.
-    # frame-src includes OPENSEARCH_DASHBOARDS_URL because the Timeline tab
-    # embeds OpenSearch Dashboards directly from its own public origin (not
-    # proxied through this nginx — Dashboards' own absolute asset URLs
-    # (/ui/*, /bootstrap.js) only resolve correctly when it's loaded from its
-    # own root, not from a subpath like /dashboards/).
+    # UNLIKE docker/nginx/nginx.conf.template (the docker-compose copy this
+    # file is derived from), this file is rendered by Helm's `tpl` function
+    # at chart-install time (see ../templates/nginx/configmap.yaml) — NOT by
+    # nginx's own envsubst entry-point script. That distinction matters: a
+    # real run of the docker-compose copy confirmed nginx's envsubst crashes
+    # the container outright (nginx: [emerg] unknown "..." variable) if any
+    # of these origins is left completely unset (poc/nginx/README.md) --
+    # Helm's `default ""` below avoids that failure mode entirely by
+    # resolving to a real empty string at render time, never leaving a
+    # dangling placeholder for nginx to choke on.
     add_header Content-Security-Policy
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' {{ .Values.keycloak.url }} {{ .Values.opensearch.dashboardsUrl | default "" }}; frame-ancestors 'self'; connect-src 'self' {{ .Values.keycloak.url }} {{ .Values.nginx.backendPublicUrl | default "" }} {{ .Values.nginx.minioPublicUrl | default "" }}; object-src 'none'"
         always;
     add_header X-Content-Type-Options        "nosniff"                            always;
     add_header X-Frame-Options               "SAMEORIGIN"                         always;

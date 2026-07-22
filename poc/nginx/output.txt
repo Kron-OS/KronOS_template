@@ -1,0 +1,49 @@
+real backend (uvicorn) started, pid=230589, port=8000
+backend ready
+
+### Reproducing the unset-var nginx startup crash (OPENSEARCH_DASHBOARDS_URL left unset) ###
+20-envsubst-on-templates.sh: Running envsubst on /etc/nginx/templates/default.conf.template to /etc/nginx/conf.d/default.conf
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/07/22 18:56:34 [emerg] 1#1: unknown "opensearch_dashboards_url" variable
+nginx: [emerg] unknown "opensearch_dashboards_url" variable
+Running=false ExitCode=1
+
+### Starting the real, correctly-configured nginx (all 4 vars present, matching docker-compose*.yml) ###
+nginx ready
+Running run_poc.py...
+========== 0. Real nginx startup crash on an unset CSP-origin var ==========
+[PASS] real nginx:alpine container with OPENSEARCH_DASHBOARDS_URL fully unset (not even empty) genuinely fails to start (nginx: [emerg] unknown "opensearch_dashboards_url" variable) -- contradicts nginx.conf.template's own comment that an unset var 'substitutes to empty string, which is safe'
+
+========== 1. Real CORS preflight direct to the backend ==========
+OPTIONS preflight (allowed origin) -> 200 ACAO='http://localhost:5173' ACAC='true'
+[PASS] real preflight from an ALLOWED origin gets that origin echoed back
+[PASS] real preflight response allows credentials (allow_credentials=True)
+OPTIONS preflight (disallowed origin) -> 400 ACAO=None
+[PASS] real preflight from a DISALLOWED origin gets NO Access-Control-Allow-Origin
+[PASS] a plain request with NO Origin header gets no CORS header at all (real, standard behavior)
+
+========== 2. Real CSP header via real nginx (envsubst) ==========
+GET / -> 200
+CSP: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' https://keycloak.kronos-poc.example ; frame-ancestors 'self'; connect-src 'self' https://keycloak.kronos-poc.example  ; object-src 'none'
+[PASS] KEYCLOAK_PUBLIC_URL (set) was correctly substituted into the real CSP header
+[PASS] the three EMPTY (but present) vars correctly collapse to nothing, not literal '${VARNAME}' text -- confirms docker-compose*.yml's ${VAR:-} pattern (always defines the var, defaulting to empty) is what actually keeps section 0's crash from happening in this repo's real compose files; anything that DOESN'T guarantee that (a bare docker run missing one, or -- confirmed separately -- the current Helm chart, whose nginx Deployment sets none of these four vars) hits the real crash instead -- default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' https://keycloak.kronos-poc.example ; frame-ancestors 'self'; connect-src 'self' https://keycloak.kronos-poc.example  ; object-src 'none'
+
+========== 3. Real add_header inheritance on /silent-check-sso.html ==========
+GET /silent-check-sso.html -> 404
+  headers present: ['connection', 'content-length', 'content-security-policy', 'content-type', 'date', 'server']
+[PASS] its own CSP (frame-ancestors 'self') IS present, as configured
+[PASS] nginx's real, documented add_header inheritance rule (a location block with its OWN add_header does not inherit ANY add_header from the server level) means X-Frame-Options is REAL confirmed absent here, not a copy-paste oversight in this PoC
+[PASS] X-Content-Type-Options is ALSO absent here for the same reason
+[PASS] Strict-Transport-Security is ALSO absent here for the same reason
+[PASS] ...while the root '/' response (no location-level add_header) DOES carry all of them
+
+========== 4. Real /api/ proxy: nginx CSP + backend CORS on the SAME response ==========
+GET /api/cases (via nginx) -> 401 ACAO='http://localhost:5173' CSP-present=True
+[PASS] real request through nginx's /api/ proxy reaches the real backend (a real HTTP response came back, not a hang/timeout)
+[PASS] the backend's real CORS header survives the real nginx proxy_pass, unmodified
+[PASS] nginx's own CSP header is ALSO present on the same proxied response (both layers apply)
+
+============================================================
+15 passed, 0 failed
+============================================================
