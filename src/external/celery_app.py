@@ -466,7 +466,7 @@ def anchor_audit_log(self: object) -> dict[str, str]:
 
     Returns ``{org_id: root_hash}`` for every org anchored.
     """
-    from datetime import UTC, date, datetime, timedelta  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
     from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
     from src.external.dependencies import get_timestamp_service  # noqa: PLC0415
@@ -474,7 +474,15 @@ def anchor_audit_log(self: object) -> dict[str, str]:
     async def _work(resources):  # type: ignore[no-untyped-def]
         timestamp_service = get_timestamp_service()
 
-        yesterday = date.today() - timedelta(days=1)
+        # UTC date, not local server date (date.today()): every audit event's
+        # occurred_at is UTC (AuditLogService.log()'s datetime.now(UTC)
+        # default), and the merkle-proof route scopes anchors by
+        # occurred_at.date() (UTC). date.today() uses the server's local
+        # timezone, which is wrong by exactly one day for roughly 2 hours
+        # around local midnight on any server ahead of UTC (e.g. CEST,
+        # UTC+2) — reproduced directly (poc/full_pipeline/README.md) and
+        # fixed here.
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
         day_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=UTC)
         day_end = day_start + timedelta(days=1)
 

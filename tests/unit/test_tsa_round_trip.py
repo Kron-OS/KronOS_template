@@ -210,7 +210,7 @@ def test_day_report_tsa_anchored_true_for_genuine_token(tsa_fixture: dict[str, P
             "prev_row_hash": "genesis",
             "row_hash": "a" * 64,
             "details": {
-                "day": day,
+                "date": day,  # AuditLogService.anchor_day() stores this key as "date"
                 "root_hash": root_hash,
                 "tsa_token": token_der.hex(),
             },
@@ -240,7 +240,7 @@ def test_day_report_tsa_anchored_false_for_tampered_root(tsa_fixture: dict[str, 
             "prev_row_hash": "genesis",
             "row_hash": "a" * 64,
             "details": {
-                "day": day,
+                "date": day,  # AuditLogService.anchor_day() stores this key as "date"
                 "root_hash": tampered_root,
                 "tsa_token": token_der.hex(),
             },

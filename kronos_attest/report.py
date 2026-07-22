@@ -103,7 +103,14 @@ class AttestationReport:
             if ev.get("event_type") != "audit.merkle_anchored":
                 continue
             details = ev.get("details") or {}
-            if details.get("day") != day:
+            # AuditLogService.anchor_day() (src/application/audit_log.py)
+            # stores this key as "date", not "day" -- confirmed by running
+            # a real anchor_day() end to end (poc/chain_of_custody/): this
+            # mismatch made day_report()'s tsa_anchored always False, even
+            # for a day that was genuinely TSA-anchored, since every anchor
+            # event was skipped here and control fell through to the final
+            # `return False, None`.
+            if details.get("date") != day:
                 continue
 
             root_hash = details.get("root_hash")

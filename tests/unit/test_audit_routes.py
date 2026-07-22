@@ -84,10 +84,13 @@ class TestMerkleProof:
     def test_single_event_proof_after_anchoring(self, audit_client):
         client, repo, org_id, case_id = audit_client
         import asyncio
-        from datetime import date
+        from datetime import UTC, datetime
 
         target_id = None
-        today = date.today()
+        # UTC date, not local date.today(): events are stamped occurred_at=
+        # datetime.now(UTC) and the route scopes anchors by occurred_at.date()
+        # (UTC) -- see src/external/celery_app.py's anchor_audit_log fix.
+        today = datetime.now(UTC).date()
 
         async def _add_and_anchor():
             nonlocal target_id
@@ -116,10 +119,10 @@ class TestMerkleProof:
         """A row_hash mutated after anchoring must fail proof validation."""
         client, repo, org_id, case_id = audit_client
         import asyncio
-        from datetime import date
+        from datetime import UTC, datetime
 
         target_id = None
-        today = date.today()
+        today = datetime.now(UTC).date()
 
         async def _add_and_anchor():
             nonlocal target_id

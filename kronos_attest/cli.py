@@ -80,7 +80,9 @@ def _verify_all_tsa_anchors(events: list[dict[str, Any]], tsa_cert_path: str) ->
         if ev.get("event_type") != "audit.merkle_anchored":
             continue
         details = ev.get("details") or {}
-        day = details.get("day", "unknown")
+        # AuditLogService.anchor_day() stores this key as "date" -- see the
+        # matching fix/comment in kronos_attest/report.py._verify_tsa_anchor.
+        day = details.get("date", "unknown")
         root_hash = details.get("root_hash")
         tsa_token_hex = details.get("tsa_token")
         if not root_hash or not tsa_token_hex:
