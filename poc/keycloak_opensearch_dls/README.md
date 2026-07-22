@@ -91,12 +91,16 @@ real Keycloak included:
   rolesmapping call it never made (`../opensearch_jwt/README.md` result #3),
   can both be replaced by this simpler design.
 
+Step 4 (`step4_new_member/`, done): proved a brand-new member added to an
+**already-existing** real org, after OpenSearch is already fully configured,
+gets correct DLS isolation with zero further `/_plugins/_security/*` calls
+of any kind. Found two more real, orthogonal Keycloak REST gotchas along the
+way (`POST /users` ignores a client-supplied `id`; `realmRoles` in the same
+payload is also silently ignored) — see `step4_new_member/README.md`.
+
 Not done here: porting these changes into the real
 `scripts/provision_keycloak_org.sh` / `docker/keycloak/kronos-realm.json` /
-`src/adapter/opensearch/client.py` (step 5), and step 4 (proving a *new*
-member added to an *already-existing* real org gets correct access with
-literally zero re-run of any script, i.e. observing it happen via the
-existing dev stack rather than a fresh provisioning run).
+`src/adapter/opensearch/client.py` (step 5).
 
 ## Files
 - `kronos-realm-poc.json` — minimal PoC realm: 3 users, `kronos-org-id` scope
