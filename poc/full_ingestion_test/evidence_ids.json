@@ -1,0 +1,30 @@
+{
+  "case_id": "8f2057bf-1821-4a8c-a810-dcbf4497818e",
+  "evidence": [
+    {
+      "label": "cloudtrail",
+      "evidence_id": "76d3d15d-26bf-4d65-88b6-d4cc8a8f54b7",
+      "filename": "aws_cloudtrail.jsonl"
+    },
+    {
+      "label": "nginx",
+      "evidence_id": "2417a513-3bfa-4e8e-a6b1-d5a3bd5b3f18",
+      "filename": "apache_access.log"
+    },
+    {
+      "label": "chrome-history",
+      "evidence_id": "2a3e7edc-dbf6-4636-b05f-907926d8237b",
+      "filename": "History"
+    },
+    {
+      "label": "evtx-rs",
+      "evidence_id": "5593ff51-0941-4183-9ce6-178cc5ee121e",
+      "filename": "system.evtx"
+    },
+    {
+      "label": "plaso",
+      "evidence_id": "aa726919-6bb2-4600-908d-01bcae619748",
+      "filename": "CMD.EXE-087B4001.pf"
+    }
+  ]
+}

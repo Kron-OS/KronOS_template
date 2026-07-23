@@ -27,8 +27,14 @@ BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
 _MAGIC_TABLE: list[tuple[int, bytes, str]] = [
     # Windows Event Log (EVTX)
     (0, b"ElfFile\x00", "evtx"),
-    # Prefetch
+    # Prefetch (MAM-compressed container)
     (0, b"MAM\x04", "prefetch"),
+    # Prefetch (uncompressed): 4-byte format-version field then "SCCA" at
+    # offset 4 -- real-world prefetch is frequently not MAM-compressed
+    # (confirmed against a real Windows 10 sample, PlasoParser already
+    # accepts this exact signature; this table was missing it, silently
+    # 422-rejecting a valid artefact before the parser ever saw it).
+    (4, b"SCCA", "prefetch-scca"),
     # SQLite (browser artefacts)
     (0, b"SQLite format 3\x00", "sqlite"),
     # GZIP (compressed logs, journald)

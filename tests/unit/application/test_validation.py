@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,7 @@ PDF_HEADER = b"%PDF-1.4\n" + b"\x00" * 100
 GZIP_HEADER = b"\x1f\x8b" + b"\x00" * 100
 ZIP_HEADER = b"PK\x03\x04" + b"\x00" * 100
 PREFETCH_HEADER = b"MAM\x04" + b"\x00" * 100
+REAL_SAMPLES = Path(__file__).parents[2] / "fixtures" / "samples" / "real"
 UNKNOWN_BINARY = b"\xff\xfe\x00\x01" * 100  # unrecognised binary
 
 
@@ -92,6 +94,20 @@ class TestMagicByteValidator:
 
     def test_accepts_gzip(self) -> None:
         self.validator.validate("log.gz", "application/octet-stream", 1024, GZIP_HEADER)
+
+    def test_accepts_mam_compressed_prefetch(self) -> None:
+        self.validator.validate(
+            "SVCHOST.EXE-1234.pf", "application/octet-stream", 1024, PREFETCH_HEADER
+        )
+
+    def test_accepts_uncompressed_scca_prefetch_real_sample(self) -> None:
+        """Real bug found in poc/full_ingestion_test/: this validator only
+        recognized MAM-compressed Prefetch, rejecting a genuine uncompressed
+        Windows 10 Prefetch sample (SCCA signature at offset 4) that
+        PlasoParser already supports -- finalize_upload 422'd before the
+        parser ever ran. Uses the real sample, not a hand-crafted header."""
+        header = (REAL_SAMPLES / "CMD.EXE-087B4001.pf").read_bytes()[:16]
+        self.validator.validate("CMD.EXE-087B4001.pf", "application/octet-stream", 11986, header)
 
     def test_accepts_pdf(self) -> None:
         self.validator.validate("report.pdf", "application/octet-stream", 1024, PDF_HEADER)
