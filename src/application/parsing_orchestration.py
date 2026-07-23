@@ -14,6 +14,7 @@ from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
+from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import TimelineRecord
@@ -26,6 +27,7 @@ from src.exceptions import (
 )
 
 if TYPE_CHECKING:
+    from src.application.artifact_ingest import ArtifactIngestService
     from src.application.timeline_ingest import TimelineIngestionService
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ class ParsingOrchestrationService:
         parser_registry: ParserRegistry,
         task_queue: TaskQueue,
         timeline_ingest: TimelineIngestionService | None = None,
+        artifact_ingest: ArtifactIngestService | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -58,6 +61,7 @@ class ParsingOrchestrationService:
         self._registry = parser_registry
         self._task_queue = task_queue
         self._timeline_ingest = timeline_ingest
+        self._artifact_ingest = artifact_ingest
 
     async def start_parsing(
         self,
@@ -206,6 +210,27 @@ class ParsingOrchestrationService:
                 async for _ in annotated:
                     count += 1
 
+            # Independent second pass -- a fresh stream fetch, same pattern
+            # _detect_parser's own separate header-peek fetch already uses.
+            # Default extract_artifacts() yields nothing, so this is a
+            # true no-op for every parser that hasn't opted in (known,
+            # documented v1 tradeoff: two stream_object() calls for a
+            # parser that implements both -- see
+            # reviews/Data_Source_Module_System.md §5/§9).
+            artifact_stream = await self._storage.stream_object(evidence_key, bucket="evidence")
+            annotated_artifacts = _annotate_artifacts(
+                parser.extract_artifacts(artifact_stream, evidence, tenant),
+                tenant.org_alias,
+            )
+            if self._artifact_ingest is not None:
+                artifact_count = await self._artifact_ingest.ingest_artifacts(
+                    annotated_artifacts, tenant, evidence_id
+                )
+            else:
+                artifact_count = 0
+                async for _ in annotated_artifacts:
+                    artifact_count += 1
+
             evidence = evidence.with_state(EvidenceState.COMPLETE)
             await self._repo.update(evidence)
             await self._audit.log(
@@ -213,11 +238,19 @@ class ParsingOrchestrationService:
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 evidence_id=evidence.evidence_id,
-                details={"parser": parser.parser_name, "record_count": count},
+                details={
+                    "parser": parser.parser_name,
+                    "record_count": count,
+                    "artifact_count": artifact_count,
+                },
             )
             logger.info(
                 "parse_completed",
-                extra={"evidence_id": str(evidence_id), "record_count": count},
+                extra={
+                    "evidence_id": str(evidence_id),
+                    "record_count": count,
+                    "artifact_count": artifact_count,
+                },
             )
             return count
 
@@ -341,3 +374,17 @@ async def _annotate_records(
         updated_kronos = record.kronos.model_copy(update={"org_alias": org_alias})
         yield record.model_copy(update={"document_id": doc_id, "kronos": updated_kronos})
         count += 1
+
+
+async def _annotate_artifacts(
+    source: AsyncIterator[StructuredArtifact],
+    org_alias: str,
+) -> AsyncGenerator[StructuredArtifact, None]:
+    """Wrap a module's artifact stream, correcting org_alias the same way
+    _annotate_records does (Celery-rebuilt TenantContext carries a
+    placeholder org_alias -- see _reconcile_tenant_alias's own docstring
+    for why the authoritative value must come from the evidence's own
+    metadata, not the task payload)."""
+    async for artifact in source:
+        updated_kronos = artifact.kronos.model_copy(update={"org_alias": org_alias})
+        yield artifact.model_copy(update={"kronos": updated_kronos})

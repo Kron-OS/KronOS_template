@@ -38,6 +38,12 @@ class AuditEventType(StrEnum):
     INGEST_COMPLETED = "ingest.completed"
     INGEST_FAILED = "ingest.failed"
 
+    # Structured (non-timeline) artifact ingestion -- see
+    # reviews/Data_Source_Module_System.md
+    ARTIFACT_INGEST_STARTED = "artifact_ingest.started"
+    ARTIFACT_INGEST_COMPLETED = "artifact_ingest.completed"
+    ARTIFACT_INGEST_FAILED = "artifact_ingest.failed"
+
     # Authentication & authorization
     AUTH_LOGIN = "auth.login"
     AUTH_LOGOUT = "auth.logout"

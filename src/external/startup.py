@@ -19,6 +19,9 @@ async def wire_dependencies_async() -> None:
         OpenSearchClient as OpenSearchTimelineIndex,  # noqa: PLC0415
     )
     from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
+        PostgresArtifactRepository,
+    )
     from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
         PostgresAuditLogRepository,
     )
@@ -47,10 +50,12 @@ async def wire_dependencies_async() -> None:
     audit_repo = PostgresAuditLogRepository(engine)
     evidence_repo = PostgresEvidenceRepository(engine)
     case_repo = PostgresCaseRepository(engine)
+    artifact_repo = PostgresArtifactRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
     await PostgresCaseRepository.create_tables(engine)
+    await PostgresArtifactRepository.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
@@ -97,6 +102,7 @@ async def wire_dependencies_async() -> None:
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
         case_repository=case_repo,
+        artifact_repository=artifact_repo,
         evidence_storage=storage,
         task_queue=task_queue,
         opensearch_client=opensearch,
@@ -133,6 +139,9 @@ def wire_dependencies_sync() -> None:
     import asyncio  # noqa: PLC0415
 
     from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
+        PostgresArtifactRepository,
+    )
     from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
         PostgresAuditLogRepository,
     )
@@ -159,6 +168,7 @@ def wire_dependencies_sync() -> None:
         try:
             await PostgresAuditLogRepository.create_tables(engine)
             await PostgresEvidenceRepository.create_tables(engine)
+            await PostgresArtifactRepository.create_tables(engine)
         finally:
             await engine.dispose()
 

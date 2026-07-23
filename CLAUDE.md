@@ -467,3 +467,133 @@ subagent brief should be self-contained and specify:
   documentation.
 
 ---
+
+## G. Data Source Module Development (DFIR Platform Generalization)
+
+**Design authority:** `reviews/DFIR_Artifact_Landscape.md` (what to
+ingest — the researched catalogue of Linux, memory/Volatility, mobile,
+network, cloud, container, macOS, and email data sources) and
+`reviews/Data_Source_Module_System.md` (the architecture this section
+enforces — read it before writing a new module).
+
+**Problem this section fixes:** KronOS started as a single-artifact-family
+(Windows/KAPE) platform where every parser produced exactly one output
+shape (`TimelineRecord`). The moment the platform grows to Linux, memory
+forensics, mobile, network, and cloud sources, most new artifacts will
+*not* be timeline-shaped (a Volatility `pstree`, a NetFlow connection
+graph, a `.plist` snapshot). This section is the binding process for
+adding a new module so that generalization stays consistent, safe, and
+never regresses the six existing parsers.
+
+### G.1 The module is `ForensicParser` — there is no second interface
+
+Every data-source module, whatever it ingests, is a `ForensicParser`
+subclass (`src/application/parsing.py`). There is exactly one interface to
+implement:
+
+- `parse()` — unchanged contract, yields `TimelineRecord`s. Implement this
+  when the source is (or contains) discrete timestamped events.
+- `extract_artifacts()` — new, **optional** (concrete default: yields
+  nothing). Override this when the source produces non-timeline structured
+  data (a tree, a graph, a snapshot, a listing) — see
+  `reviews/DFIR_Artifact_Landscape.md` §10 for the real, named catalogue of
+  what belongs here (do not invent new categories without checking that
+  list first).
+
+A single module may implement both and internally run several
+sub-analyses — this is not a hypothetical, `PlasoParser` already does it
+for `parse()` (EVTX/prefetch/registry/journald from one Plaso invocation)
+and `ZipArchiveParser` already does it for recursive re-dispatch. A future
+`VolatilityModule` follows the exact same shape: one class, internally
+invokes multiple `volatility3` plugins, yields a mixed
+`TimelineRecord`/`StructuredArtifact` stream. **Do not** propose a parallel
+class hierarchy ("Module" vs "Parser") for this — it was considered and
+rejected, see `reviews/Data_Source_Module_System.md` §2.
+
+### G.2 Non-timeline output: `StructuredArtifact`
+
+`src/domain/artifact.py`. `content: dict[str, Any]` is intentionally
+opaque — no per-kind schema exists yet, and building one speculatively is
+out of scope (product direction: capture and store safely now, design
+presentation/analysis later). Requirements when yielding one:
+
+- `kind` is a namespaced string you choose (e.g. `"volatility.pstree"`),
+  documented in your module's own docstring. Do not add it to a central
+  enum — the whole point is new kinds need zero domain-layer changes.
+- `kronos` is the **same** `KronosProvenance` block `TimelineRecord` uses —
+  populate `record_index` yourself (same contract as `parse()`), and set
+  `source_path` when the artifact came from inside a container/image
+  (reuse the recursion pattern `ZipArchiveParser`/`PlasoParser`'s EWF
+  routing already established — do not reinvent path-tracking).
+- Content is capped at 8 MiB (`ArtifactIngestService._MAX_CONTENT_BYTES`,
+  `src/application/artifact_ingest.py`) — a real, enforced limit, not
+  advisory. If your module's natural output exceeds this for one artifact
+  (e.g. a huge `filescan` listing), split it into multiple
+  `StructuredArtifact`s with the same `kind`, don't ask to raise the cap
+  as a first response.
+
+### G.3 Security (non-negotiable, same two-tier model as containers/plugins)
+
+`reviews/Extensibility_Architecture_Proposal.md` §4 already designed the
+trust boundary; it is **reused unchanged**, not redesigned per module:
+
+- **First-party module, pure Python/stdlib** (e.g. a Zeek/Suricata JSONL
+  mapper) → in-process, same as `NginxParser`/`CloudTrailParser`.
+- **First-party module wrapping a real external tool** (`volatility3`,
+  `mac_apt`, Hayabusa, a UAC-archive walker) → **subprocess, sandboxed at
+  the container level**, following `FirecrackerLauncher`
+  (`src/external/sandbox/firecracker.py`) exactly — do not shell out
+  directly from inside a parser class. If the tool needs a heavier/
+  different runtime (e.g. `volatility3`'s own dependency set), give it its
+  own Dockerfile variant the way `docker/Dockerfile.plaso-worker` extends
+  the base image, and route it to its own Celery queue if resource
+  characteristics differ meaningfully from `q.parse.plaso`.
+- **Third-party/customer-supplied code** → **Track D, still not started,
+  still gated** behind first-party modules being solid
+  (`SandboxedExternalParser`, manifest + Cosign/Trivy gate, no-network/
+  no-secrets sandbox). Do not build a shortcut "just this once" sandboxed
+  execution path outside that design — if a module needs to run untrusted
+  code before Track D lands, that is a signal to prioritize Track D, not
+  to bypass it.
+- **The tenant index/table is always computed by KronOS from the
+  authenticated `TenantContext`, never from module output** — this
+  invariant from the original container design applies identically to
+  `StructuredArtifact`'s `org_id`/`case_id` columns. A module cannot write
+  into another tenant's data by lying in its output.
+
+### G.4 Maintainability checklist for a new module (every PR)
+
+- [ ] Implements `ForensicParser`; only overrides `extract_artifacts()` if
+      it actually has non-timeline output.
+- [ ] Registered in `get_parser_registry()`
+      (`src/external/dependencies.py`) — one line, correct position
+      relative to `ZipArchiveParser` (must stay first) and any
+      magic-byte-overlapping parsers (document why, mirroring
+      `ChromeHistoryParser`-before-`PlasoParser`'s existing comment).
+- [ ] `parser_type` set correctly (`FAST` vs `HEAVY`) — if the module
+      might internally need Plaso/a heavy external tool for *any* input it
+      accepts, it is `HEAVY` unconditionally (mirrors `ZipArchiveParser`'s
+      own reasoning, not a per-file decision).
+- [ ] `MagicByteValidator._MAGIC_TABLE` (`src/application/validation.py`)
+      updated if the new format has a real magic signature — verified
+      against an actual sample, not guessed (this exact gap caused two
+      real, shipped bugs already: uncompressed Prefetch and missing EWF).
+- [ ] No new abstraction invented beyond `ForensicParser`/
+      `StructuredArtifact` without updating
+      `reviews/Data_Source_Module_System.md` first and explaining why the
+      existing two don't fit.
+- [ ] `reviews/DFIR_Artifact_Landscape.md` updated if the module covers (or
+      changes the status of) a row in that catalogue.
+
+### G.5 Verification-first applies to modules exactly as Section F requires
+
+A new module is an integration between KronOS and a real external tool
+(Volatility, Hayabusa, mac_apt, ...) or a real file format — Section F's
+whole rule applies without modification: pin the real tool version, build
+a throwaway `poc/<module>/` PoC against a real sample first, capture real
+output, only then write the `src/` module. "Plausible code that should
+parse a `pstree` correctly" without a captured real run against real
+`volatility3` output is exactly the failure mode Section F exists to stop,
+applied to a new class of integration instead of a new backend service.
+
+---

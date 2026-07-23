@@ -14,10 +14,15 @@ from fastapi import Depends
 
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
+from src.adapter.repository.artifact_repository import (
+    ArtifactRepository,
+    InMemoryArtifactRepository,
+)
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
+from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
@@ -45,6 +50,7 @@ logger = logging.getLogger(__name__)
 _audit_log_repository: AuditLogRepository | None = None
 _evidence_repository: EvidenceRepository | None = None
 _case_repository: CaseRepository = InMemoryCaseRepository()
+_artifact_repository: ArtifactRepository = InMemoryArtifactRepository()
 _evidence_storage: EvidenceStorage | None = None
 _scanner: AntivirusScanner = NoOpScanner()
 _task_queue: TaskQueue = InMemoryTaskQueue()
@@ -83,6 +89,10 @@ def get_evidence_repository() -> EvidenceRepository:
 
 def get_case_repository() -> CaseRepository:
     return _case_repository
+
+
+def get_artifact_repository() -> ArtifactRepository:
+    return _artifact_repository
 
 
 def get_opensearch_dashboards_url() -> str | None:
@@ -256,11 +266,18 @@ def get_timeline_ingest_service(
     )
 
 
+def get_artifact_ingest_service(
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> ArtifactIngestService:
+    return ArtifactIngestService(repository=_artifact_repository, audit_log=audit_log)
+
+
 def get_parsing_orchestration_service(
     evidence_repository: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
     storage: Annotated[EvidenceStorage, Depends(get_evidence_storage)],
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
     timeline_ingest: Annotated[TimelineIngestionService, Depends(get_timeline_ingest_service)],
+    artifact_ingest: Annotated[ArtifactIngestService, Depends(get_artifact_ingest_service)],
 ) -> ParsingOrchestrationService:
     """FastAPI dependency for ParsingOrchestrationService."""
     return ParsingOrchestrationService(
@@ -270,6 +287,7 @@ def get_parsing_orchestration_service(
         parser_registry=get_parser_registry(),
         task_queue=get_task_queue(),
         timeline_ingest=timeline_ingest,
+        artifact_ingest=artifact_ingest,
     )
 
 
@@ -348,6 +366,7 @@ def configure_dependencies(
     parser_registry: ParserRegistry | None = None,
     opensearch_client: AbstractTimelineIndex | None = None,
     case_repository: CaseRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
     opensearch_dashboards_url: str | None = None,
@@ -360,7 +379,7 @@ def configure_dependencies(
     global _scanner, _task_queue, _parser_registry, _opensearch_client
     global _max_upload_bytes, _presigned_expiry, _case_repository
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
-    global _opensearch_security_enabled
+    global _opensearch_security_enabled, _artifact_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -376,6 +395,8 @@ def configure_dependencies(
         _opensearch_client = opensearch_client
     if case_repository is not None:
         _case_repository = case_repository
+    if artifact_repository is not None:
+        _artifact_repository = artifact_repository
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
     _opensearch_dashboards_url = opensearch_dashboards_url
@@ -390,11 +411,13 @@ def reset_dependencies() -> None:
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
+    global _artifact_repository
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
     _case_repository = InMemoryCaseRepository()
+    _artifact_repository = InMemoryArtifactRepository()
     _scanner = NoOpScanner()
     _task_queue = InMemoryTaskQueue()
     _parser_registry = None

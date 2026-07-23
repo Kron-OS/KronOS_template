@@ -20,8 +20,10 @@ from typing import TypeVar
 from urllib.parse import urlparse
 
 from src.adapter.opensearch.client import OpenSearchClient
+from src.adapter.repository.postgres_artifact import PostgresArtifactRepository
 from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
 from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
+from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.timeline_ingest import TimelineIngestionService
@@ -44,6 +46,7 @@ class TaskResources:
     evidence_repository: PostgresEvidenceRepository
     audit_log_repository: PostgresAuditLogRepository
     audit_log_service: AuditLogService
+    artifact_repository: PostgresArtifactRepository
     orchestration_service: ParsingOrchestrationService
 
 
@@ -57,6 +60,8 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
     evidence_repo = PostgresEvidenceRepository(engine)
     audit_repo = PostgresAuditLogRepository(engine)
     audit_service = AuditLogService(audit_repo)
+    artifact_repo = PostgresArtifactRepository(engine)
+    artifact_service = ArtifactIngestService(repository=artifact_repo, audit_log=audit_service)
 
     parsed = urlparse(settings.opensearch_url)
     use_ssl = parsed.scheme == "https"
@@ -82,12 +87,14 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         parser_registry=get_parser_registry(),
         task_queue=get_task_queue(),
         timeline_ingest=timeline_ingest,
+        artifact_ingest=artifact_service,
     )
 
     resources = TaskResources(
         evidence_repository=evidence_repo,
         audit_log_repository=audit_repo,
         audit_log_service=audit_service,
+        artifact_repository=artifact_repo,
         orchestration_service=orchestration,
     )
     return resources, engine, opensearch

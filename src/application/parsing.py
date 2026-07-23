@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import StrEnum
 
+from src.domain.artifact import StructuredArtifact
 from src.domain.evidence import Evidence
 from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
@@ -19,11 +20,17 @@ class ParserType(StrEnum):
 
 
 class ForensicParser(ABC):
-    """Abstract base for all forensic parsers.
+    """Abstract base for all forensic parsers -- the one unified module
+    interface for turning raw evidence into KronOS data, whether that data
+    is timeline-shaped (parse()) or not (extract_artifacts()).
 
     Subclasses implement format-specific logic and register themselves with
     ParserRegistry at startup.  The orchestrator selects a parser purely via
-    supports() — no if/elif chains anywhere in orchestration code.
+    supports() — no if/elif chains anywhere in orchestration code. A single
+    module may internally run several sub-analyses and yield a mixed result
+    (PlasoParser already does this for TimelineRecord; a future
+    VolatilityModule would do the same across parse()+extract_artifacts()) --
+    see reviews/Data_Source_Module_System.md for the full design.
     """
 
     @property
@@ -60,5 +67,24 @@ class ForensicParser(ABC):
         zero-based position within this evidence file.
         """
         # Stub body makes this an async generator consistent with concrete subclasses.
+        return
+        yield  # noqa: RET504
+
+    async def extract_artifacts(
+        self,
+        stream: AsyncIterator[bytes],
+        evidence: Evidence,
+        tenant: TenantContext,
+    ) -> AsyncIterator[StructuredArtifact]:
+        """Yield non-timeline structured artifacts this parser can produce.
+
+        Concrete (not abstract) with a real default of "nothing" -- every
+        existing parser needs zero changes to keep working. Override only
+        when this module produces data that doesn't belong in a timeline
+        (a process tree, a network graph, a config snapshot, ...); see
+        reviews/DFIR_Artifact_Landscape.md §10 for the real, named examples
+        this exists for, and reviews/Data_Source_Module_System.md for why
+        this is a second method rather than a union return type on parse().
+        """
         return
         yield  # noqa: RET504
