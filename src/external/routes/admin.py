@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/org", tags=["admin"])
 
 _ADMIN_ROLES = (Role.ORG_ADMIN,)
+_ACR_LEVEL = {"aal1": 1, "aal2": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +308,14 @@ def _to_http_error(exc: StorageError) -> HTTPException:
 
 def _assert_aal2(tenant: TenantContext) -> None:
     """Raise 401 step-up challenge if the token doesn't satisfy aal2."""
-    _ACR_LEVEL = {"aal1": 1, "aal2": 2}
     if _ACR_LEVEL.get(tenant.acr, 0) < 2:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Step-up authentication required for this operation",
             headers={
-                "WWW-Authenticate": 'Bearer error="insufficient_user_authentication", acr_values="aal2"'
+                "WWW-Authenticate": (
+                    'Bearer error="insufficient_user_authentication", acr_values="aal2"'
+                )
             },
         )
 

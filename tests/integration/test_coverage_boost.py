@@ -651,7 +651,7 @@ async def test_timeline_ingest_returns_record_count() -> None:
     tenant = _make_tenant()
 
     async def _records():
-        for i in range(5):
+        for _i in range(5):
             record = _make_record(org_id=tenant.org_id)
             # Give each record the right org alias and a unique index
             yield record

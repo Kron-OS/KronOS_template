@@ -194,7 +194,7 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
         raise
     except Exception as exc:
         logger.error("parse_fast_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
         raise
     except Exception as exc:
         logger.error("parse_heavy_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ def finalize_evidence(
         logger.error(
             "finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)}
         )
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ _tickets: dict[str, dict] = {}
 
 _POLL_INTERVAL_SECONDS = 5
 _MAX_STREAM_SECONDS = 300  # 5-minute ceiling per connection
+_TERMINAL_STATES = {"COMPLETE", "ERROR"}
 
 
 class SSETicketIn(BaseModel):
@@ -79,7 +80,6 @@ async def evidence_sse_stream(
         )
 
     org_id = uuid.UUID(ticket_data["org_id"])
-    _TERMINAL = {"COMPLETE", "ERROR"}
 
     async def event_generator():  # type: ignore[return]
         last_states: dict[str, str] = {}
@@ -98,7 +98,7 @@ async def evidence_sse_stream(
                 last_states = current
 
                 # Stop streaming once all evidence is terminal.
-                if current and all(s in _TERMINAL for s in current.values()):
+                if current and all(s in _TERMINAL_STATES for s in current.values()):
                     yield "event: done\ndata: {}\n\n"
                     return
 
