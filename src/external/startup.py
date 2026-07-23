@@ -35,7 +35,7 @@ async def wire_dependencies_async() -> None:
         configure_step_up_auth,
     )
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
 
     engine = create_async_engine(
         settings.database_url.get_secret_value(),
@@ -149,7 +149,7 @@ def wire_dependencies_sync() -> None:
         configure_step_up_auth,
     )
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
 
     async def _create_tables() -> None:
         from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -35,7 +36,7 @@ configure_logging()
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Wire real database/storage dependencies on startup when env vars are set."""
     import os  # noqa: PLC0415
 

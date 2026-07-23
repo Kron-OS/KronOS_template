@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEventType
 from src.domain.user import Role, TenantContext
 from src.exceptions import StorageError
@@ -123,8 +124,8 @@ async def list_org_users(
 async def invite_user(
     body: InviteUserIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
-) -> dict:
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> dict[str, Any]:
     """Create a user, add them to the caller's org, and assign their role.
 
     This is a direct-create flow (no email): Keycloak has no SMTP configured
@@ -181,7 +182,7 @@ async def update_user_role(
     user_id: str,
     body: UpdateRoleIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> OrgUserOut:
     """Change a user's role within the org."""
     _assert_aal2(tenant)
@@ -204,7 +205,7 @@ async def update_user_role(
 async def remove_user(
     user_id: str,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> None:
     """Remove a user from the org."""
     _assert_aal2(tenant)
@@ -233,7 +234,7 @@ async def get_org_settings(
     """Return org-level retention and legal-hold defaults."""
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     return OrgSettingsOut(
         retentionDays=settings.minio_default_retention_days,
         legalHoldDefault=False,
@@ -244,7 +245,7 @@ async def get_org_settings(
 async def update_org_settings(
     body: UpdateSettingsIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> OrgSettingsOut:
     """Update org retention defaults (stored in-org metadata)."""
     _assert_aal2(tenant)
@@ -324,7 +325,7 @@ async def _get_service_account_token(tenant: TenantContext) -> str:
     """Obtain a Keycloak service-account token for Admin REST API calls."""
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     token_url = (
         f"{settings.keycloak_url}/realms/{settings.keycloak_realm}"
         f"/protocol/openid-connect/token"
@@ -343,7 +344,7 @@ async def _get_service_account_token(tenant: TenantContext) -> str:
             "Failed to obtain Keycloak service-account token",
             context={"status": resp.status_code},
         )
-    return resp.json()["access_token"]  # type: ignore[no-any-return]
+    return resp.json()["access_token"]
 
 
 # Realm roles the org-admin page is allowed to assign/manage.
@@ -365,7 +366,7 @@ async def _keycloak_admin_request(
     """
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     try:
         token = await _get_service_account_token(tenant)
     except (httpx.HTTPError, StorageError) as exc:
@@ -453,7 +454,7 @@ async def _create_or_get_user(
     return str(existing["id"]), False
 
 
-async def _find_user_by_email(tenant: TenantContext, email: str) -> dict | None:
+async def _find_user_by_email(tenant: TenantContext, email: str) -> dict[str, Any] | None:
     """Return the Keycloak user with an exact email match, scoped to the caller's org.
 
     A realm-wide email search would let any org-admin discover — and, via

@@ -85,7 +85,7 @@ class RFC3161TimestampService:
         success (see AUDIT-06 / COMP-3).
         """
         try:
-            import rfc3161ng  # type: ignore[import-untyped]  # noqa: PLC0415
+            import rfc3161ng  # noqa: PLC0415
         except ImportError as exc:
             logger.error("rfc3161ng_not_installed", extra={"digest": digest.hex()})
             raise TimestampingError(

@@ -51,7 +51,7 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     engine = create_async_engine(settings.database_url.get_secret_value(), poolclass=NullPool)
 
     evidence_repo = PostgresEvidenceRepository(engine)

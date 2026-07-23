@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import TYPE_CHECKING, Any
 
 from celery import Celery
 from celery.schedules import crontab
 
 from src.config import Settings
+from src.domain.user import TenantContext
 from src.exceptions import EvidenceStateConflictError
 from src.external.logging_config import configure_logging
+
+if TYPE_CHECKING:
+    from src.external.celery_runtime import TaskResources
 
 # Configure structured JSON logging as early as possible (module import
 # time), mirroring fastapi_app.py, so Celery worker/beat logs reach the same
@@ -26,7 +31,7 @@ from src.external.logging_config import configure_logging
 # would otherwise override the root logger with its default formatter.
 configure_logging()
 
-_settings = Settings()
+_settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
 logger = logging.getLogger(__name__)
 
 celery_app = Celery(
@@ -107,7 +112,7 @@ celery_app.conf.update(
 # ---------------------------------------------------------------------------
 
 
-def _tenant(org_id: str, user_id: str):  # type: ignore[return]
+def _tenant(org_id: str, user_id: str) -> TenantContext:
     from src.external.dependencies import _build_tenant_from_task  # noqa: PLC0415
 
     return _build_tenant_from_task(org_id, user_id)
@@ -118,7 +123,7 @@ def _tenant(org_id: str, user_id: str):  # type: ignore[return]
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.dispatch_parse", bind=True, max_retries=0)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.dispatch_parse", bind=True, max_retries=0)
 def dispatch_parse(
     self: object,
     evidence_id: str,
@@ -135,7 +140,7 @@ def dispatch_parse(
 
     tenant = _tenant(org_id, user_id)
 
-    async def _work(resources):  # type: ignore[no-untyped-def]
+    async def _work(resources: TaskResources) -> None:
         await resources.orchestration_service.start_parsing(uuid.UUID(evidence_id), tenant)
 
     run_evidence_coro(_work)
@@ -150,14 +155,16 @@ def dispatch_parse(
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     name="kronos.parse_artefact_fast",
     bind=True,
     max_retries=3,
     default_retry_delay=30,
     queue="q.parse.fast",
 )
-def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> dict:  # type: ignore[return]
+def parse_artefact_fast(
+    self: object, evidence_id: str, *, org_id: str, user_id: str
+) -> dict[str, Any]:
     """Fast parse task — runs in gVisor sandbox.
 
     Returns {evidence_id, record_count} for finalize_evidence.
@@ -173,7 +180,7 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     # evidence to the terminal ERROR state; see execute_parse's docstring.
     is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
 
-    async def _work(resources):  # type: ignore[no-untyped-def]
+    async def _work(resources: TaskResources) -> int:
         return await resources.orchestration_service.execute_parse(
             uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
         )
@@ -202,7 +209,7 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     name="kronos.parse_artefact_heavy",
     bind=True,
     max_retries=2,
@@ -211,7 +218,9 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     time_limit=600,
     soft_time_limit=540,
 )
-def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id: str) -> dict:  # type: ignore[return]
+def parse_artefact_heavy(
+    self: object, evidence_id: str, *, org_id: str, user_id: str
+) -> dict[str, Any]:
     """Heavy parse task — delegates to Plaso via FirecrackerLauncher.
 
     Returns {evidence_id, record_count} for finalize_evidence.
@@ -223,7 +232,7 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
     # should flip evidence to the terminal ERROR state.
     is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
 
-    async def _work(resources):  # type: ignore[no-untyped-def]
+    async def _work(resources: TaskResources) -> int:
         return await resources.orchestration_service.execute_parse(
             uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
         )
@@ -252,10 +261,10 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.finalize_evidence", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.finalize_evidence", bind=True, max_retries=3)
 def finalize_evidence(
     self: object,
-    parse_result: dict,
+    parse_result: dict[str, Any],
     *,
     org_id: str,
     user_id: str,
@@ -272,7 +281,7 @@ def finalize_evidence(
 
     tenant = _tenant(org_id, user_id)
 
-    async def _work(resources):  # type: ignore[no-untyped-def]
+    async def _work(resources: TaskResources) -> None:
         await resources.audit_log_service.log(
             AuditEventType.INGEST_COMPLETED,
             org_id=tenant.org_id,
@@ -297,7 +306,7 @@ def finalize_evidence(
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.abort_orphan_uploads", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.abort_orphan_uploads", bind=True, max_retries=1)
 def abort_orphan_uploads(self: object) -> int:
     """Transition evidence stuck in UPLOADING for >2 h to ERROR.
 
@@ -315,7 +324,7 @@ def abort_orphan_uploads(self: object) -> int:
 
     try:
 
-        async def _work(resources):  # type: ignore[no-untyped-def]
+        async def _work(resources: TaskResources) -> int:
             count = 0
             async for ev in resources.evidence_repository.stream_all_by_state(
                 EvidenceState.UPLOADING
@@ -345,7 +354,7 @@ def abort_orphan_uploads(self: object) -> int:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.abort_orphan_parses", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.abort_orphan_parses", bind=True, max_retries=1)
 def abort_orphan_parses(self: object) -> int:
     """Transition evidence stuck in PARSING for >3 h to ERROR.
 
@@ -363,7 +372,7 @@ def abort_orphan_parses(self: object) -> int:
 
     try:
 
-        async def _work(resources):  # type: ignore[no-untyped-def]
+        async def _work(resources: TaskResources) -> int:
             count = 0
             async for ev in resources.evidence_repository.stream_all_by_state(
                 EvidenceState.PARSING
@@ -393,7 +402,7 @@ def abort_orphan_parses(self: object) -> int:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.auto_dispatch_received", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.auto_dispatch_received", bind=True, max_retries=1)
 def auto_dispatch_received(self: object) -> int:
     """Re-enqueue dispatch_parse for evidence stuck in RECEIVED longer than 5 min.
 
@@ -414,7 +423,7 @@ def auto_dispatch_received(self: object) -> int:
     try:
         queue = CeleryTaskQueue()
 
-        async def _work(resources):  # type: ignore[no-untyped-def]
+        async def _work(resources: TaskResources) -> int:
             count = 0
             async for ev in resources.evidence_repository.stream_all_by_state(
                 EvidenceState.RECEIVED
@@ -448,7 +457,7 @@ def auto_dispatch_received(self: object) -> int:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.anchor_audit_log", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.anchor_audit_log", bind=True, max_retries=3)
 def anchor_audit_log(self: object) -> dict[str, str]:
     """Anchor yesterday's audit log: one Merkle root + TSA anchor per active org.
 
@@ -471,7 +480,7 @@ def anchor_audit_log(self: object) -> dict[str, str]:
     from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
     from src.external.dependencies import get_timestamp_service  # noqa: PLC0415
 
-    async def _work(resources):  # type: ignore[no-untyped-def]
+    async def _work(resources: TaskResources) -> dict[str, str]:
         timestamp_service = get_timestamp_service()
 
         # UTC date, not local server date (date.today()): every audit event's

@@ -6,7 +6,8 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Annotated
+from collections.abc import AsyncIterator
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/api/sse", tags=["sse"])
 
 # In-memory one-shot ticket store.  In production replace with Redis (TTL 60s).
 # Not safe under multiple Uvicorn workers — each process has its own dict.
-_tickets: dict[str, dict] = {}
+_tickets: dict[str, dict[str, Any]] = {}
 
 _POLL_INTERVAL_SECONDS = 5
 _MAX_STREAM_SECONDS = 300  # 5-minute ceiling per connection
@@ -81,7 +82,7 @@ async def evidence_sse_stream(
 
     org_id = uuid.UUID(ticket_data["org_id"])
 
-    async def event_generator():  # type: ignore[return]
+    async def event_generator() -> AsyncIterator[str]:
         last_states: dict[str, str] = {}
         deadline = time.time() + _MAX_STREAM_SECONDS
         try:

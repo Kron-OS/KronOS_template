@@ -55,7 +55,7 @@ async def refresh_token(request: Request) -> JSONResponse:
 
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     token_url = (
         f"{settings.keycloak_url}/realms/{settings.keycloak_realm}"
         f"/protocol/openid-connect/token"

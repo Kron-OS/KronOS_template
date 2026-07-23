@@ -82,6 +82,29 @@ module = [
 ]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
+# Same root cause (no pydantic.mypy plugin), different symptom: these files
+# construct TimelineRecord via a dict-unpack (**{"@timestamp": ts}) mixed
+# with keyword args for aliased fields (e.g. event_original=...,
+# alias="event.original", model_config populate_by_name=True). mypy's
+# synthesized __init__ can't verify either the dict-unpack's value types or
+# that populate_by_name permits the plain field name as a keyword, even
+# though both are correct at runtime -- confirmed by real parser PoCs
+# (poc/plaso_opensearch/, poc/opensearch/) actually ingesting real records
+# built this exact way.
+[[tool.mypy.overrides]]
+module = [
+    "src.external.parsers.*",
+    "src.external.sandbox.firecracker",
+]
+disable_error_code = ["call-arg", "arg-type"]
+
+# Celery's own @app.task decorator has no type stubs, matching the
+# untyped-decorator suppression already applied to routes.* above for the
+# same reason (FastAPI's own decorators).
+[[tool.mypy.overrides]]
+module = ["src.external.celery_app"]
+disable_error_code = ["untyped-decorator"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

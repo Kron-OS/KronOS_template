@@ -123,7 +123,7 @@ def configure_clamav_from_settings() -> None:
     from src.exceptions import StorageError  # noqa: PLC0415
 
     try:
-        s = Settings()
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     except Exception:
         return  # keep NoOpScanner in test/dev environments without full Settings
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -94,7 +94,7 @@ class AuditEventOut(BaseModel):
     orgId: uuid.UUID | None
     userId: str
     occurredAt: str
-    details: dict
+    details: dict[str, Any]
     rowHash: str | None
     sequenceNumber: int
 
@@ -116,7 +116,7 @@ async def create_case(
     body: CreateCaseIn,
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> CaseOut:
     """Create a new investigation case for the caller's org."""
     case = Case(
@@ -184,7 +184,7 @@ async def add_case_member(
     body: AddCaseMemberIn,
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> CaseOut:
     """Assign a user as a member of a case (AUTH-007).
 
@@ -213,7 +213,7 @@ async def delete_case(
     case_id: uuid.UUID,
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> None:
     """Archive a case.
 
