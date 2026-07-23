@@ -1,0 +1,146 @@
+=== run_kape_ingest.py (real login + case + upload/finalize) ===
+{
+  "case_id": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+  "evidence": [
+    {
+      "label": "kape-zip",
+      "evidence_id": "06d17b84-66e7-4323-a295-7374a30e5404",
+      "filename": "kape_triage.zip",
+      "sha256": "4bfdfdbde67bea7cab1bcb2b0aca9ad9e3dd1b49b88f5206af8612befc23f0da"
+    },
+    {
+      "label": "kape-e01",
+      "evidence_id": "af8d1c6e-47c9-4573-aefc-3bea52eaf8a0",
+      "filename": "kape_triage.E01",
+      "sha256": "62956a1b12e8ae88ac284a97c3527699f46f257859e436893bb81963bfd62eed"
+    }
+  ]
+}
+=== poll_and_verify.py stderr (poll to COMPLETE + real OpenSearch fetch/verify) ===
+{'kape_triage.zip': 'PARSING', 'kape_triage.E01': 'PARSING'}
+... (poll every 5s) ...
+{'kape_triage.zip': 'COMPLETE', 'kape_triage.E01': 'COMPLETE'}
+fetched 631 real documents for case_id=fc6b270b-bdab-407b-9c94-cbaba56b65d4
+by parser: {'chrome-history': 3, 'evtx-rs': 194, 'nginx': 15, 'plaso': 419}
+
+=== kape_verification.json (final) ===
+{
+  "case_id": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+  "total_documents": 631,
+  "by_parser": {
+    "chrome-history": 3,
+    "evtx-rs": 194,
+    "nginx": 15,
+    "plaso": 419
+  },
+  "zip_source_paths_found": [
+    "C/Users/jdoe/AppData/Local/Google/Chrome/User Data/Default/History",
+    "C/Windows/Prefetch/CMD.EXE-087B4001.pf",
+    "C/Windows/System32/winevt/Logs/System.evtx",
+    "C/inetpub/logs/LogFiles/W3SVC1/u_ex260723.log"
+  ],
+  "zip_source_paths_expected_present": true,
+  "e01_source_paths_found": [
+    "C",
+    "C/Windows",
+    "C/Windows/Prefetch",
+    "C/Windows/Prefetch/CMD.EXE-087B4001.pf",
+    "C/Windows/System32",
+    "C/Windows/System32/winevt",
+    "C/Windows/System32/winevt/Logs",
+    "C/Windows/System32/winevt/Logs/System.evtx"
+  ],
+  "e01_source_paths_expected_present": true,
+  "flagged_parsing_errors": [],
+  "container_sha256_mismatches": [],
+  "verdict": "PASS"
+}
+=== spot-check: real EVTX event from inside the E01, via Plaso whole-image routing ===
+{
+    "took": 2,
+    "timed_out": false,
+    "_shards": {
+        "total": 9,
+        "successful": 9,
+        "skipped": 0,
+        "failed": 0
+    },
+    "hits": {
+        "total": {
+            "value": 388,
+            "relation": "eq"
+        },
+        "max_score": 0.4071802,
+        "hits": [
+            {
+                "_index": "kronos-kronos-dev-case-fc6b270b-bdab-407b-9c94-cbaba56b65d4-201508",
+                "_id": "2d87ce7aa9b4c3507b187e15faa5907f46567738",
+                "_score": 0.4071802,
+                "_source": {
+                    "@timestamp": "2015-08-08T02:06:17.078125+00:00",
+                    "event": {
+                        "original": "[4608 / 0x1200] Provider identifier: {54849625-5478-4994-a5ba-3e3b0328c30d} Source Name: Microsoft-Windows-Security-Auditing Strings: [] Computer Name: 37L4247E29-32 Record Number: 1 Event Level: 0 Message string: Windows is starting up.\\n\\nThis event is logged when LSASS.EXE starts and the auditing subsystem is initialized."
+                    },
+                    "kronos": {
+                        "evidence_id": "af8d1c6e-47c9-4573-aefc-3bea52eaf8a0",
+                        "case_id": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+                        "org_id": "f541df34-91f6-45cb-b763-ba4c6e441700",
+                        "org_alias": "kronos-dev",
+                        "sha256": "62956a1b12e8ae88ac284a97c3527699f46f257859e436893bb81963bfd62eed",
+                        "parser": "plaso",
+                        "parser_version": "20260512",
+                        "record_index": 2,
+                        "ingest_timestamp": "2026-07-23T12:11:48.603287+00:00",
+                        "source_path": "C/Windows/System32/winevt/Logs/System.evtx",
+                        "container_sha256": "62956a1b12e8ae88ac284a97c3527699f46f257859e436893bb81963bfd62eed"
+                    },
+                    "message": "[4608 / 0x1200] Provider identifier: {54849625-5478-4994-a5ba-3e3b0328c30d} Source Name: Microsoft-Windows-Security-Auditing Strings: [] Computer Name: 37L4247E29-32 Record Number: 1 Event Level: 0 Message string: Windows is starting up.\\n\\nThis event is logged when LSASS.EXE starts and the auditing subsystem is initialized.",
+                    "file": {
+                        "path": "C/Windows/System32/winevt/Logs/System.evtx"
+                    },
+                    "__container_type__": "event",
+                    "__type__": "AttributeContainer",
+                    "computer_name": "37L4247E29-32",
+                    "data_type": "windows:evtx:record",
+                    "date_time": {
+                        "__class_name__": "Filetime",
+                        "__type__": "DateTimeValues",
+                        "timestamp": 130834731770781250
+                    },
+                    "display_name": "FAT:\\C\\Windows\\System32\\winevt\\Logs\\System.evtx",
+                    "event_identifier": 4608,
+                    "event_level": 0,
+                    "event_version": 0,
+                    "filename": "\\C\\Windows\\System32\\winevt\\Logs\\System.evtx",
+                    "inode": "-",
+                    "message_identifier": 4608,
+                    "offset": 0,
+                    "parser": "winevtx",
+                    "pathspec": {
+                        "__type__": "PathSpec",
+                        "identifier": 59488,
+                        "location": "\\C\\Windows\\System32\\winevt\\Logs\\System.evtx",
+                        "parent": {
+                            "__type__": "PathSpec",
+                            "parent": {
+                                "__type__": "PathSpec",
+                                "location": "/tmp/tmpqiwyk4h4.E01",
+                                "type_indicator": "OS"
+                            },
+                            "type_indicator": "EWF"
+                        },
+                        "type_indicator": "FAT"
+                    },
+                    "provider_identifier": "{54849625-5478-4994-a5ba-3e3b0328c30d}",
+                    "record_number": 1,
+                    "recovered": false,
+                    "sha256_hash": "ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224",
+                    "source_name": "Microsoft-Windows-Security-Auditing",
+                    "strings": [],
+                    "timestamp_desc": "Content Modification Time",
+                    "xml_string": "<Event xmlns=\"http://schemas.microsoft.com/win/2004/08/events/event\">\n  <System>\n    <Provider Name=\"Microsoft-Windows-Security-Auditing\" Guid=\"{54849625-5478-4994-A5BA-3E3B0328C30D}\"/>\n    <EventID>4608</EventID>\n    <Version>0</Version>\n    <Level>0</Level>\n    <Task>12288</Task>\n    <Opcode>0</Opcode>\n    <Keywords>0x8020000000000000</Keywords>\n    <TimeCreated SystemTime=\"2015-08-08T02:06:17.078125000Z\"/>\n    <EventRecordID>1</EventRecordID>\n    <Correlation/>\n    <Execution ProcessID=\"448\" ThreadID=\"452\"/>\n    <Channel>Security</Channel>\n    <Computer>37L4247E29-32</Computer>\n    <Security/>\n  </System>\n  <EventData/>\n</Event>\n"
+                }
+            }
+        ]
+    }
+}

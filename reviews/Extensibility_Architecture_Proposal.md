@@ -1,7 +1,25 @@
 # Extensibility Architecture Proposal — Containers, Disk Images & Dynamic Plugins
 
-**Status:** design proposal (2026-07-09). No code change yet — companion to
-`reviews/KAPE_Coverage_Analysis.md`.
+**Status:** design proposal (2026-07-09), **§3.1/§3.2 implemented with a
+deliberate simplification (2026-07-23)** — see the note below. §3.3/§4
+(dynamic plugins, Tracks D) remain proposal-only, no code change.
+Companion to `reviews/KAPE_Coverage_Analysis.md`.
+
+> **Implementation note (2026-07-23):** ZIP support shipped as
+> `ZipArchiveParser` (`src/external/parsers/archive.py`), a `ForensicParser`
+> subclass registered first in `ParserRegistry` — **not** the separate
+> `ArchiveExtractor` ABC + `ExtractorRegistry` + new orchestration branch
+> sketched in §3.1 below. The simpler shape needed zero changes to
+> `ParsingOrchestrationService` (still just "resolve one parser, call
+> parse()") and shipped fully verified in one pass; the cost is that an
+> extracted member's bytes are buffered in memory per-member (bounded by a
+> real cap) rather than streamed from a lazily-reopened archive handle. E01
+> disk images are handled per §3.1's own "fallback" idea — routed whole to
+> `PlasoParser`, which already gets a real in-image path per event via
+> dfVFS, no new `DiskImageExtractor` code required. §6.1's sub-evidence
+> question is resolved: same-evidence-record, not a child `Evidence` row.
+> Full detail: `reviews/Ingestion_Roadmap.md` Track C,
+> `poc/kape_ingestion_test/`.
 
 **Goal.** Let KronOS ingest the *output of a KAPE triage collection* — which
 arrives as a **ZIP archive** or a **forensic disk image** (E01, raw/dd,
@@ -298,22 +316,25 @@ ParserRegistry:                              ├─ first-match-wins WITHIN a ti
 
 ## 6. Open decisions (need product input)
 
-1. **Sub-evidence granularity** — inner artifacts as child records under one
-   custody entry (recommended: simpler) vs. full child `Evidence` rows
-   (heavier, but each artifact gets its own FSM/legal-hold). Affects schema
-   + FSM.
+1. ~~**Sub-evidence granularity**~~ **RESOLVED (2026-07):** same-evidence
+   child records (recommended option) — no child `Evidence` rows;
+   `source_path`/`container_sha256` alone distinguish inner artifacts.
 2. **Per-tenant plugins?** — global allowlist only, or can a tenant enable a
    private plugin? Per-tenant raises isolation questions (a tenant's plugin
    must still be sandboxed and never see other tenants) but is a strong SaaS
-   selling point.
-3. **Disk-image strategy** — per-file extraction via dfVFS + re-dispatch
-   (fine-grained, our parsers, `source_path` per event) vs. whole-image to
-   Plaso (fast to build, coarser mapping). Likely **both**, chosen by size /
-   artifact selection.
+   selling point. **Still open** (Track D, not started).
+3. ~~**Disk-image strategy**~~ **RESOLVED for E01 (2026-07):** whole-image →
+   Plaso fallback only, no dedicated per-file `DiskImageExtractor` — dfVFS's
+   own event-level path info was already sufficient (see `_plaso_source_path`
+   in `src/external/sandbox/firecracker.py`). raw/VHDX/VMDK/QCOW are not yet
+   given a magic-byte trigger, so the "fine-grained, our own parsers"
+   half of this decision remains theoretical/unbuilt for any image format.
 4. **Sandbox substrate for v1** — reuse the current subprocess stub
    (dev-simplification, weak isolation), or invest in gVisor/Firecracker now
    given untrusted third-party code is the explicit target. For Tier-2 code,
-   real isolation is not optional.
+   real isolation is not optional. **Still open** (Track D, not started) —
+   unaffected by the ZIP/E01 work above, which is entirely first-party,
+   in-process code (Tier 1).
 
 ---
 
@@ -321,11 +342,11 @@ ParserRegistry:                              ├─ first-match-wins WITHIN a ti
 
 | Phase | Deliverable | Unlocks | Risk |
 |---|---|---|---|
-| **0** | `source_path`/`container_sha256` in `KronosProvenance` + ECS `file.path` mapping | field ready before extractors exist | trivial, additive |
-| **1** | `ArchiveExtractor` ABC + `ZipExtractor`/`GzipExtractor` + bounded recursive re-dispatch | **the #1 real-world gap**: KAPE `.zip` uploads work with existing parsers | medium; needs bomb guards |
-| **2** | `DiskImageExtractor` on dfVFS (E01/raw/VHDX/VMDK) + whole-image→Plaso fallback | E01 ingestion; `source_path` from image | higher; native libs in sandbox |
-| **3** | Generalize `FirecrackerLauncher` → `SandboxedExternalParser` + manifest + Cosign/Trivy gate + layered registry | **first safe third-party parser**, no-leak by construction | security-critical; do last, deliberately |
-| **4** | KAPE-output modules (EZ Tools CSV mappers) as sandboxed parsers | native EZ Tools CSV ingestion w/o full Plaso | builds on phase 3 |
+| **0** | ~~`source_path`/`container_sha256` in `KronosProvenance` + ECS `file.path` mapping~~ | **DONE (2026-07)** | — |
+| **1** | ~~`ArchiveExtractor` ABC + `ZipExtractor`/`GzipExtractor` + bounded recursive re-dispatch~~ | **DONE for ZIP (2026-07)**, shipped as `ZipArchiveParser` — see the implementation note at the top of this doc. **GZIP not done.** | — |
+| **2** | ~~`DiskImageExtractor` on dfVFS (E01/raw/VHDX/VMDK) + whole-image→Plaso fallback~~ | **DONE for E01 only (2026-07)** — whole-image fallback via `PlasoParser`, no new extractor class. raw/VHDX/VMDK/QCOW not triggered. | — |
+| **3** | Generalize `FirecrackerLauncher` → `SandboxedExternalParser` + manifest + Cosign/Trivy gate + layered registry | **first safe third-party parser**, no-leak by construction | security-critical; do last, deliberately — **not started** |
+| **4** | KAPE-output modules (EZ Tools CSV mappers) as sandboxed parsers | native EZ Tools CSV ingestion w/o full Plaso | builds on phase 3 — **not started** |
 
 ---
 

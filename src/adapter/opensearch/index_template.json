@@ -40,16 +40,23 @@
             "name": { "type": "keyword" }
           }
         },
+        "file": {
+          "properties": {
+            "path": { "type": "keyword" }
+          }
+        },
         "kronos": {
           "properties": {
-            "evidence_id":      { "type": "keyword" },
-            "case_id":          { "type": "keyword" },
-            "org_id":           { "type": "keyword" },
-            "sha256":           { "type": "keyword" },
-            "parser":           { "type": "keyword" },
-            "parser_version":   { "type": "keyword" },
-            "record_index":     { "type": "long" },
-            "ingest_timestamp": { "type": "date" }
+            "evidence_id":       { "type": "keyword" },
+            "case_id":           { "type": "keyword" },
+            "org_id":            { "type": "keyword" },
+            "sha256":            { "type": "keyword" },
+            "parser":            { "type": "keyword" },
+            "parser_version":    { "type": "keyword" },
+            "record_index":      { "type": "long" },
+            "ingest_timestamp":  { "type": "date" },
+            "source_path":       { "type": "keyword" },
+            "container_sha256":  { "type": "keyword" }
           }
         }
       }

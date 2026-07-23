@@ -60,10 +60,14 @@ class ECSNormalizer:
                 "parser_version": record.kronos.parser_version,
                 "record_index": record.kronos.record_index,
                 "ingest_timestamp": record.kronos.ingest_timestamp.isoformat(),
+                "source_path": record.kronos.source_path,
+                "container_sha256": record.kronos.container_sha256,
             },
         }
         if record.message is not None:
             raw["message"] = record.message
+        if record.kronos.source_path is not None:
+            raw["file"] = {"path": record.kronos.source_path}
 
         doc = _clean_none(raw)
         # Merge extra fields, expanding dotted keys into nested dicts (ECS convention).

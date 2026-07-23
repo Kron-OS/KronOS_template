@@ -174,8 +174,8 @@ ERROR after the 2026-07 fix, rather than hanging):
 
 | Accepted magic/ext | Parser exists? | Note |
 |---|---|---|
-| `PK\x03\x04` **ZIP** | ❌ | No archive extraction — a `.zip` of EVTX/logs is a dead-end. Common KAPE output packaging. |
-| `\x1f\x8b` **GZIP** | ❌ | No decompression — `.gz` logs / journald exports dead-end. |
+| `PK\x03\x04` **ZIP** | ✅ (2026-07) | `ZipArchiveParser` (`src/external/parsers/archive.py`) recursively re-dispatches every member through `ParserRegistry`, stamping `kronos.source_path`/`file.path` + `kronos.container_sha256`. Verified end-to-end against a real KAPE-shaped zip (`poc/kape_ingestion_test/`). |
+| `\x1f\x8b` **GZIP** | ❌ | Still no decompression — `.gz` logs / journald exports dead-end. Not addressed this pass (scope was ZIP + disk images, matching the explicit ask). |
 | `%PDF` **PDF** | ❌ | Accepted (spec lists as "reports") but no parser. |
 | `.csv` | ❌ | Accepted as text; no CSV parser. |
 | `.xml` | ❌ | Accepted as text; no XML parser (Scheduled Tasks, etc.). |
@@ -211,7 +211,10 @@ Legend: ✅ handled · 🟡 partial / only via generic Plaso routing ·
 | **AWS CloudTrail** | ✅ | `CloudTrailParser` (non-KAPE) |
 | **nginx/Apache access logs** | ✅ | `NginxParser` (non-KAPE) |
 | **Linux journald** | 🟡 | Magic routes to Plaso |
-| ZIP / GZIP containers | ❌ | Accepted at intake, no extraction (§4.1) |
+| ZIP containers | ✅ (2026-07) | `ZipArchiveParser` recursive re-dispatch (§4.1) |
+| GZIP containers | ❌ | Still accepted at intake, no extraction (§4.1) |
+| Disk images (**E01/Ex01**) | ✅ (2026-07) | EWF magic routes the whole image to `PlasoParser` -> `log2timeline`'s dfVFS auto-detection walks every partition/filesystem directly; verified against a real E01 (388 real `windows:evtx:record` + 1 `windows:prefetch:execution` + more, each with real in-image `source_path`) |
+| Disk images (raw/dd, VHDX, VMDK, QCOW) | ❌ | Not yet given a magic-byte trigger in `PlasoParser.supports()` (only EWF added this pass) or the validator's `_MAGIC_TABLE` -- same whole-image-to-Plaso mechanism would likely work, unverified |
 
 ---
 
@@ -220,12 +223,13 @@ Legend: ✅ handled · 🟡 partial / only via generic Plaso routing ·
 Ranked by DFIR triage impact vs. implementation effort. Not a commitment —
 input for roadmap planning.
 
-1. **Container extraction (ZIP/GZIP).** Highest leverage: KAPE and most
-   collection tools hand examiners a `.zip`/`.gz`. Today that's an
-   accepted-then-dead-ended upload. A container "parser" that extracts
-   members and re-dispatches each through the registry unlocks *every*
-   other format at once and removes the most likely real-world upload
-   failure. (Needs a recursion/zip-bomb guard — see EVID-5 JAR check.)
+1. ~~**Container extraction (ZIP).**~~ **DONE (2026-07)** — `ZipArchiveParser`
+   (`src/external/parsers/archive.py`) recursively re-dispatches every
+   member through the registry, with a real depth/count/byte budget +
+   zip-slip guard (`tests/unit/parsers/test_archive.py`). **GZIP is still
+   open** (not addressed this pass). E01/Ex01 disk images are also now
+   handled (see the coverage matrix above) via `PlasoParser`'s
+   whole-image dfVFS routing — raw/VHDX/VMDK/QCOW are not yet triggered.
 2. **`$MFT` parsing.** The single richest Windows timeline artifact;
    universally collected. Plaso can already do it — mainly needs a
    `supports()` trigger (`FILE0`/`BAAD` signature or `$MFT` filename) to
@@ -246,10 +250,12 @@ input for roadmap planning.
 ## 7. One-line summary
 
 KronOS today robustly parses **EVTX + AWS CloudTrail + web-server access
-logs**, plus **prefetch, registry hives, SQLite and journald via Plaso** —
-covering the *execution* and *cloud/web* slices well, but **missing the
-file-system (`$MFT`), shell (LNK/JumpLists), ESE-database, and container
-(ZIP/GZIP) artifact classes** that make up the rest of a standard KAPE
-triage. The most impactful next step is container extraction, because it
-turns every accepted-but-dead-ended archive upload into working input for
-the parsers we already have.
+logs**, plus **prefetch, registry hives, SQLite and journald via Plaso**,
+**and now (2026-07) a real KAPE `.zip` (recursive re-dispatch,
+`ZipArchiveParser`) or `.E01` image (whole-image Plaso routing)** — covering
+the *execution*, *cloud/web*, and *container* slices, but still **missing
+the file-system (`$MFT`), shell (LNK/JumpLists), ESE-database, and GZIP
+artifact classes** that make up the rest of a standard KAPE triage. See
+`poc/kape_ingestion_test/` for the real end-to-end verification (zip + E01,
+631 real records, correct `source_path`/`file.path` provenance on every
+one).

@@ -30,7 +30,14 @@ Recent work already merged on `fix/evidence-upload-camelcase`:
 Baseline today: **EVTX, AWS CloudTrail, nginx/Apache logs** parse cleanly;
 **prefetch, registry hives, SQLite, journald** go through Plaso (coverage
 gated by `PlasoParser.supports()`, Plaso worker output not yet fully
-verified E2E).
+verified E2E). **Update (2026-07): Track C (containers/images) shipped for
+ZIP + E01** — see that section below and `poc/kape_ingestion_test/` for the
+real end-to-end verification. This also verified a *slice* of Track A's
+Plaso-E2E exit criterion for real, as a side effect: the E01 test drove
+real `log2timeline`/`psort` output for prefetch, volume-metadata, and
+EVTX-via-Plaso content (not the `plaso:placeholder` stub) — registry hive
+and a real Plaso-routed SQLite artifact are **still unverified**, so that
+exit criterion stays open below.
 
 ---
 
@@ -71,8 +78,10 @@ Exit criteria for Track A:
 - [ ] Plaso worker **verified E2E**: confirm it emits real events (not the
       `plaso:placeholder` stub) for registry hive, SQLite, and prefetch on a
       real run — this validates a large "🟡 partial" swath of the KAPE
-      matrix without new code. (Currently unverifiable in-sandbox; needs a
-      real Docker run.)
+      matrix without new code. **Prefetch: done** (real run via both
+      `poc/full_ingestion_test/` and `poc/kape_ingestion_test/`, genuine
+      `windows:prefetch:execution` events, not the placeholder). **Registry
+      hive and a real Plaso-routed SQLite artifact: still open.**
 
 ---
 
@@ -109,31 +118,52 @@ root-caused mapping.
 
 ---
 
-## Track C — Containers & disk images (LATER: the big one)
+## Track C — Containers & disk images (DONE for ZIP + E01, 2026-07)
 
 **Goal:** ingest the *actual* output of a KAPE collection — a `.zip` or a
 disk image (E01/raw/VHDX/VMDK) full of artifacts — by exploding it into
 inner files and re-dispatching each to the (now-deepened) parser layer, with
-the path-in-image recorded. Follows
-`Extensibility_Architecture_Proposal.md` phasing.
+the path-in-image recorded. Shipped with one deliberate simplification vs.
+`Extensibility_Architecture_Proposal.md`'s original phasing — see below.
 
-- [ ] **C0 — Provenance fields.** Add `source_path` + `container_sha256` to
-      `KronosProvenance` (additive), surface as ECS `file.path`. Ships before
-      extractors so the schema is ready. *(Trivial, do first.)*
-- [ ] **C1 — `ArchiveExtractor` + ZIP/GZIP.** New ABC (separate from
-      `ForensicParser`), `ExtractorRegistry`, and bounded **recursive
-      re-dispatch** of inner artifacts through `ParserRegistry`. **Zip-bomb
-      guards** (max depth, max total bytes, max file count, per-file cap →
-      ERROR, never OOM). *This is the #1 real-world gap — a KAPE `.zip`
-      upload is the most likely thing an examiner actually sends.*
-- [ ] **C2 — `DiskImageExtractor` on dfVFS.** E01/Ex01, raw/dd, VHDX, VMDK,
-      QCOW, read-only path-spec walk; per-event `source_path` from the image;
-      **whole-image → Plaso fallback** for coarse "just parse everything".
-      Higher risk (native libs, must run sandboxed).
-- [ ] **C3 — Sub-evidence model decision** (see Extensibility §6.1): inner
-      artifacts as child records under one custody entry (recommended) vs.
-      full child `Evidence` rows. Resolve before C1 lands in prod, as it
-      shapes schema + FSM.
+- [x] **C0 — Provenance fields.** Done: `source_path` + `container_sha256`
+      added to `KronosProvenance` (`src/domain/timeline.py`, additive),
+      surfaced as ECS `file.path` (`src/application/timeline_normalization.py`)
+      and mapped in the OpenSearch index template.
+- [x] **C1 — ZIP recursive re-dispatch.** Done, but as a **simplification**:
+      shipped as `ZipArchiveParser` (`src/external/parsers/archive.py`), a
+      `ForensicParser` subclass registered first in `ParserRegistry`, instead
+      of the originally-sketched separate `ArchiveExtractor` ABC +
+      `ExtractorRegistry` + new orchestration branch. This meant **zero**
+      changes to `ParsingOrchestrationService`'s control flow — it still
+      just "resolve one parser, call parse(), get records" — which shipped
+      and verified in one pass instead of a parallel dispatch path. Real
+      zip-bomb guards (max depth via `ContextVar`, max total bytes actually
+      read — never trusting `ZipInfo.file_size` — max member count) and a
+      zip-slip path-traversal guard, all with real tests
+      (`tests/unit/parsers/test_archive.py`). GZIP is **not** done.
+      Verified end-to-end against a real KAPE-shaped zip
+      (`poc/kape_ingestion_test/`, 4 different inner parsers dispatched from
+      one container).
+- [x] **C2 — Disk images: E01 only, via whole-image Plaso fallback.** Done
+      for **EWF/E01** specifically (`PlasoParser.supports()` detects the
+      real EWF magic; `log2timeline`'s own dfVFS auto-detection walks the
+      image, no new extractor code needed since dfVFS is already a real
+      Plaso dependency). raw/dd, VHDX, VMDK, QCOW are **not yet triggered**
+      (same mechanism would likely work, unverified). Per-event
+      `source_path` comes from Plaso's own `display_name`/`filename` field,
+      gated on the dfVFS type-indicator prefix so a single-file parse's
+      local temp path is never mistaken for a real in-image path (see
+      `src/external/sandbox/firecracker.py::_plaso_source_path`). A real,
+      reproducible Plaso/dfVFS/libewf interop bug was found and worked
+      around while building the E01 test fixture — a **FAT12** filesystem
+      inside the EWF silently drops all real file content (only directory
+      `fs:stat` events survive); FAT16 does not have this problem — see
+      `tests/fixtures/samples/real/kape/NOTICE.md`.
+- [x] **C3 — Sub-evidence model decision.** Resolved as recommended:
+      inner artifacts stay under the **same** `Evidence`/custody entry —
+      no child `Evidence` rows. `kronos.source_path`/`container_sha256`
+      alone distinguish them, avoiding FSM/schema churn.
 
 ---
 

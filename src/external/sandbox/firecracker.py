@@ -28,6 +28,44 @@ _PLASO_WORKER_PATH = (
     Path(__file__).parent.parent.parent.parent / "docker" / "plaso" / "kronos-plaso-worker.py"
 )
 
+# dfVFS path-spec type-indicator prefixes psort's display_name carries ahead
+# of the real in-image path (e.g. "FAT:\C\Windows\..."). "OS:" (a raw local
+# file, not a real filesystem inside an image) is deliberately excluded --
+# see _plaso_source_path's docstring for why that distinction is load-bearing.
+_DFVFS_TYPE_PREFIXES = ("FAT:", "NTFS:", "EXT:", "HFS:", "APFS:", "TSK:", "EWF:")
+
+
+def _plaso_source_path(raw: dict[str, Any]) -> str | None:
+    """Return the real in-image path Plaso recorded for this event, or None.
+
+    ``display_name`` is always prefixed with the dfVFS path-spec type
+    indicator. For a *single-file* parse (a bare registry hive/prefetch/
+    SQLite file uploaded directly) that prefix is always "OS:" and the path
+    itself is our own ephemeral local temp file (e.g. "OS:/tmp/tmpXXXX.pf")
+    -- confirmed against a real run (poc/full_ingestion_test/documents.json).
+    That is not a meaningful evidence path and must NOT be surfaced.
+
+    For a *multi-file image* parse (E01/raw/etc, see PlasoParser's EWF
+    routing) the prefix is a real filesystem type (FAT/NTFS/EXT/...) and the
+    path is the genuine in-image location -- verified against a real E01
+    image (tests/fixtures/samples/real/kape/): 414/414 real events
+    correctly attributed, including directory ``fs:stat`` entries whose
+    ``pathspec`` field is null even though ``display_name`` still carries a
+    real "FAT:" path (an earlier, less robust version of this check keyed
+    on ``pathspec`` nesting and missed exactly those 18 records).
+    """
+    display_name = raw.get("display_name")
+    if not isinstance(display_name, str):
+        return None
+    matched_prefix = next((p for p in _DFVFS_TYPE_PREFIXES if display_name.startswith(p)), None)
+    if matched_prefix is None:
+        return None  # "OS:" (local temp file) or an unrecognized type indicator
+
+    raw_path = raw.get("filename") or display_name[len(matched_prefix) :]
+    if not isinstance(raw_path, str):
+        return None
+    return raw_path.replace("\\", "/").lstrip("/")
+
 
 class FirecrackerLauncher:
     """Run a Plaso parse job and stream TimelineRecord objects.
@@ -159,6 +197,7 @@ class FirecrackerLauncher:
                 else:
                     ts = ingest_ts
 
+                source_path = _plaso_source_path(raw)
                 record = TimelineRecord(
                     **{"@timestamp": ts},
                     message=raw.get("message") or raw.get("description"),
@@ -179,6 +218,12 @@ class FirecrackerLauncher:
                         parser_version=parser_version,
                         record_index=record_index,
                         ingest_timestamp=ingest_ts,
+                        source_path=source_path,
+                        # The Plaso-parsed evidence file itself is the
+                        # "container" for whole-image sources (E01/raw/etc)
+                        # -- same semantics as ZipArchiveParser's
+                        # container_sha256, just one level instead of N.
+                        container_sha256=sha256 if source_path else None,
                     ),
                 )
                 yield record

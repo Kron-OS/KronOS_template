@@ -1,7 +1,8 @@
 """PlasoParser: heavy forensic parser using Plaso in a Firecracker microVM.
 
 Supports: Windows Registry (REGF), Prefetch, SRUM, SQLite artifacts,
-Amcache, systemd journald, and EML email archives.
+Amcache, systemd journald, EML email archives, and EWF (E01/Ex01) disk
+images (whole-image fallback via Plaso's own dfVFS-based auto-detection).
 """
 
 from __future__ import annotations
@@ -32,6 +33,14 @@ _PREFETCH_MAM_MAGIC = b"MAM"  # MAM-compressed prefetch: starts with MAM\x04 or 
 _PREFETCH_SCCA_MAGIC = b"SCCA"
 _SQLITE_MAGIC = b"SQLite format 3"
 _EVTX_MAGIC = b"ElfFile\x00"  # Already handled by FastEvtxParser
+# EWF (E01/Ex01) disk image signature. Verified against a real image built
+# with ewfacquirestream 20140816 (see tests/fixtures/samples/real/kape/
+# NOTICE.md): log2timeline auto-detects an EWF path argument as a "storage
+# media image" via dfVFS (already a real Plaso dependency, confirmed present
+# in docker/Dockerfile.plaso-worker's venv) and walks every partition/
+# filesystem inside it directly -- no separate DiskImageExtractor needed,
+# same subprocess invocation as every other PlasoParser artifact.
+_EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
 
 
 class PlasoParser(ForensicParser):
@@ -87,6 +96,10 @@ class PlasoParser(ForensicParser):
 
         # journald binary journals
         if header_bytes.startswith(b"\xbe\xb9\xb0\xd9\x70\x14\x1e\x2d"):
+            return True
+
+        # EWF disk image (E01/Ex01) -- whole-image fallback, see _EWF_MAGIC.
+        if header_bytes.startswith(_EWF_MAGIC):
             return True
 
         ext = Path(filename).suffix.lstrip(".").lower()

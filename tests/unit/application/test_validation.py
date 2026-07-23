@@ -109,6 +109,15 @@ class TestMagicByteValidator:
         header = (REAL_SAMPLES / "CMD.EXE-087B4001.pf").read_bytes()[:16]
         self.validator.validate("CMD.EXE-087B4001.pf", "application/octet-stream", 11986, header)
 
+    def test_accepts_ewf_e01_real_sample(self) -> None:
+        """A KAPE-style disk image (E01) must pass intake validation so it
+        can reach PlasoParser's dfVFS-based whole-image routing -- uses a
+        real EWF image built with ewfacquirestream (see
+        tests/fixtures/samples/real/kape/NOTICE.md), not a hand-crafted
+        header."""
+        header = (REAL_SAMPLES / "kape" / "kape_triage.E01").read_bytes()[:16]
+        self.validator.validate("kape_triage.E01", "application/octet-stream", 47764, header)
+
     def test_accepts_pdf(self) -> None:
         self.validator.validate("report.pdf", "application/octet-stream", 1024, PDF_HEADER)
 

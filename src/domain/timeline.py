@@ -24,6 +24,19 @@ class KronosProvenance(BaseModel):
     record_index: int = Field(ge=0, description="Zero-based index within the parsed evidence file")
     ingest_timestamp: datetime = Field(description="UTC time the record was written to OpenSearch")
 
+    # Additive, optional: only set for records extracted from a container
+    # (KAPE zip, disk image). Lets an examiner filter "all events from
+    # .../winevt/Logs/Security.evtx inside evidence.zip" -- surfaced as ECS
+    # file.path. container_sha256 links a derived record back to the sealed
+    # top-level evidence object even after recursive extraction.
+    source_path: str | None = Field(
+        default=None, description="Path of the originating file inside the container/image"
+    )
+    container_sha256: str | None = Field(
+        default=None,
+        description="SHA-256 of the top-level container (unset for non-container evidence)",
+    )
+
 
 class ECSBase(BaseModel):
     """Minimal ECS base fields required for all timeline records."""

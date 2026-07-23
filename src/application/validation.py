@@ -37,6 +37,11 @@ _MAGIC_TABLE: list[tuple[int, bytes, str]] = [
     (4, b"SCCA", "prefetch-scca"),
     # SQLite (browser artefacts)
     (0, b"SQLite format 3\x00", "sqlite"),
+    # EWF disk image (E01/Ex01) -- KAPE/forensic-imaging tool output. Verified
+    # against a real image built with ewfacquirestream 20140816 (see
+    # tests/fixtures/samples/real/kape/NOTICE.md); PlasoParser already routes
+    # this magic to Plaso's dfVFS-based whole-image parsing.
+    (0, b"EVF\x09\x0d\x0a\xff\x00", "ewf"),
     # GZIP (compressed logs, journald)
     (0, b"\x1f\x8b", "gzip"),
     # ZIP (container for many log formats)

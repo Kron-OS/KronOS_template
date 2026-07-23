@@ -171,11 +171,17 @@ def get_parser_registry() -> ParserRegistry:
     """Return the global parser registry, building it on first call."""
     global _parser_registry
     if _parser_registry is None:
+        from src.external.parsers.archive import ZipArchiveParser  # noqa: PLC0415
         from src.external.parsers.chrome_history import ChromeHistoryParser  # noqa: PLC0415
         from src.external.parsers.cloudtrail import CloudTrailParser  # noqa: PLC0415
         from src.external.parsers.nginx import NginxParser  # noqa: PLC0415
 
         registry = ParserRegistry()
+        # Must be registered FIRST: claims the ZIP magic before any other
+        # parser, and its own recursive get_parser() calls (zip-in-zip) rely
+        # on finding itself in this same registry -- see archive.py's
+        # docstring for the full extraction/re-dispatch design.
+        registry.register(ZipArchiveParser(registry))
         registry.register(CloudTrailParser())
         registry.register(NginxParser())
         # ChromeHistoryParser must precede PlasoParser: both match the SQLite
