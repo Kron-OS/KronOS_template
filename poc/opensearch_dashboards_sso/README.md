@@ -127,15 +127,25 @@ script — no internal users, no manual setup.
   `scripts/provision_keycloak_org.sh`'s pattern).
 - `output.txt` — captured transcript of the last real run (11/11 passed).
 
-## What this confirms for production wiring (not done here — this is a PoC)
-- Enable the OpenSearch + Dashboards security plugins in
-  `docker-compose.dev.yml`/`docker-compose.prod.yml` (currently
-  `DISABLE_SECURITY_PLUGIN=true`/`DISABLE_SECURITY_DASHBOARDS_PLUGIN=true`).
-- Add the openid authc domain to a real `docker/opensearch/opensearch.yml`
-  / security config (currently missing entirely per
-  `access-management-review.md` `[C-2]`).
-- Add the same static Dashboards `opensearch_dashboards.yml` additions
-  verified here (`auth.type`, `openid.connect_url`, `client_id`,
-  `client_secret`, `base_redirect_url`, `scope`).
-- Promote `provision_dashboards_tenant.sh` to `scripts/` and call it
-  alongside `scripts/provision_keycloak_org.sh` wherever orgs get created.
+## Production wiring: now shipped
+
+Everything below was ported into the real `docker-compose.dev.yml` stack
+(not just this PoC) and re-verified end-to-end against all 18 real
+services brought up together — see `docs/verification-pass-findings.md`
+row 23 for the full account, including one more real bug
+(`KC_HOSTNAME_BACKCHANNEL_DYNAMIC`) that only surfaced once the actual
+multi-service stack was brought up:
+- OpenSearch + Dashboards security plugins genuinely enabled in
+  `docker-compose.dev.yml` (`DISABLE_SECURITY_PLUGIN`/
+  `DISABLE_SECURITY_DASHBOARDS_PLUGIN` removed).
+- `docker/opensearch/opensearch.yml` now exists for real (was missing per
+  `access-management-review.md` `[C-2]`); the openid authc domain + generic
+  DLS role are provisioned by a new `opensearch-init` service
+  (`scripts/provision_opensearch_security.py`).
+- Dashboards' `opensearch_dashboards.yml` gets the same additions verified
+  here (`auth.type`, `openid.connect_url`, `client_id`, `client_secret`,
+  `base_redirect_url`, `scope`), appended in a single container boot
+  (`docker/opensearch-dashboards/opensearch_security_openid.yml`).
+- `provision_dashboards_tenant.sh` promoted to `scripts/` (now resolves
+  `org_id` itself via the Keycloak Admin API) and wired into a new
+  `dashboards-tenant-init` service.

@@ -89,19 +89,41 @@ Derived from `Project_Specifications.md` §5 (Security & Compliance) / §6 (Iden
 
 Severity: **C**ritical / **H**igh / **M**edium / **L**ow.
 
-### [C-1] OpenSearch Dashboards iframe bypasses all tenant isolation
-- **Dev:** `docker-compose.dev.yml` sets `DISABLE_SECURITY_DASHBOARDS_PLUGIN=true` and `DISABLE_SECURITY_PLUGIN=true`.
-- The frontend Timeline tab embeds Dashboards **in an iframe** (browser → `:5601` directly).
-- With the security plugin disabled, that iframe can query **every** `kronos-*` index across **all** tenants. There is no backend-mediated filter in this path at all — `OpenSearchQueryBuilder` is dead code with zero real call sites (see §1 above), not a control that was merely bypassed here.
-- The Keycloak `opensearch-dashboards` OIDC client exists in the realm but is **not wired** to anything.
-- **Impact:** cross-tenant evidence-timeline disclosure — the most serious finding.
-- **Remediation (documented; infra change, not auto-applied):** enable the OpenSearch & Dashboards security plugins, configure the OIDC `openid` authc domain against the existing client, provision DLS role-mappings, and have the backend connect as a non-superuser. This requires standing up the security plugin (certs, `securityadmin`) and is tracked as a follow-up because it cannot be validated safely in this template environment.
+### [C-1] OpenSearch Dashboards iframe bypasses all tenant isolation — **FIXED (dev)**
+> **Fixed (2026-07-23):** real Keycloak OIDC SSO + per-org Dashboards tenant
+> isolation is now genuinely wired into `docker-compose.dev.yml`, verified
+> end-to-end against the actual dev stack (not just a PoC): a real scripted
+> login through Dashboards' own `/auth/openid/login` route against the real
+> `kronos-dev` org correctly created and isolated a saved object in that
+> org's own tenant. See `poc/opensearch_dashboards_sso/README.md` for the
+> full design account (8 real bugs found and fixed while building it) and
+> `docs/verification-pass-findings.md` row 23 for the production-wiring
+> commit references. Original finding (now historical) below.
 
-### [C-2] OpenSearch DLS is provisioned but never enforced
-- `OpenSearchClient.ensure_tenant_role()` (since renamed `ensure_generic_tenant_role()` — see superseded note above) `PUT`s `/_plugins/_security/api/roles/...`. With `DISABLE_SECURITY_PLUGIN=true` that endpoint **does not exist** → the call 404s. In `docker-compose.prod.yml` OpenSearch has **no** security config at all (it references `./opensearch/opensearch.yml`, **which does not exist in the repo**).
-- Even with the plugin on: the created role has **no `rolesmapping`**, so it binds to no user; and the backend connects as **`admin`** (superuser), which **bypasses DLS** entirely.
-- The DLS query string itself is **correct** for OpenSearch 2.13 (the Security API expects `dls` as an escaped JSON string — verified against the 2.13 "Document-level security" / "API" docs), so the code is right; the environment is wrong.
-- **Remediation:** same follow-up as C-1; the missing `docker/opensearch/opensearch.yml` and a non-superuser service account are the concrete artifacts to add.
+- **Dev (as originally found):** `docker-compose.dev.yml` set `DISABLE_SECURITY_DASHBOARDS_PLUGIN=true` and `DISABLE_SECURITY_PLUGIN=true`.
+- The frontend Timeline tab embeds Dashboards **in an iframe** (browser → `:5601` directly).
+- With the security plugin disabled, that iframe could query **every** `kronos-*` index across **all** tenants. There was no backend-mediated filter in this path at all — `OpenSearchQueryBuilder` is dead code with zero real call sites (see §1 above), not a control that was merely bypassed here.
+- The Keycloak `opensearch-dashboards` OIDC client existed in the realm but was **not wired** to anything.
+- **Impact:** cross-tenant evidence-timeline disclosure — the most serious finding, now closed for dev.
+- **Prod still open:** `docker-compose.prod.yml` deploys no Dashboards service at all, so this specific iframe-bypass scenario doesn't apply there today; if/when Dashboards is deployed in prod, the same dev config (openid authc domain, `opensearch-init`/`dashboards-tenant-init` pattern) should be ported, plus real (non-demo) TLS material — see C-2's own still-open note.
+
+### [C-2] OpenSearch DLS is provisioned but never enforced — **FIXED (dev)**
+> **Fixed (2026-07-23):** `docker-compose.dev.yml`'s `opensearch` service now
+> runs with security genuinely enabled (not `DISABLE_SECURITY_PLUGIN=true`),
+> and a new `opensearch-init` service
+> (`scripts/provision_opensearch_security.py`) provisions the real openid
+> authc domain and the generic DLS role + rolesmapping (`backend_roles`
+> covering all four realm roles) once OpenSearch is healthy — the missing
+> piece this finding called out. `docker/opensearch/opensearch.yml` (the
+> file this finding said didn't exist) now exists for real, for both dev
+> and prod. Verified: a real ROPC-granted token's DLS-relevant claims
+> resolved correctly via OpenSearch's own `authinfo` endpoint, both in
+> `poc/opensearch_dashboards_sso/` and against the real dev stack.
+
+- `OpenSearchClient.ensure_tenant_role()` (since renamed `ensure_generic_tenant_role()` — see superseded note above) `PUT`s `/_plugins/_security/api/roles/...`. With `DISABLE_SECURITY_PLUGIN=true` that endpoint **did not exist** → the call 404d. In `docker-compose.prod.yml` OpenSearch had **no** security config at all (it referenced `./opensearch/opensearch.yml`, which did not exist in the repo).
+- Even with the plugin on: the created role had **no `rolesmapping`** in the original code path — fixed as part of `ensure_generic_tenant_role()`'s own redesign (row 13, `docs/verification-pass-findings.md`), independent of this specific fix.
+- The DLS query string itself was **correct** for OpenSearch 2.13 (the Security API expects `dls` as an escaped JSON string — verified against the 2.13 "Document-level security" / "API" docs), so the code was right; the environment was wrong.
+- **Still open (prod):** the backend still connects as `admin` (superuser) in dev — acceptable there because the backend never serves per-user OpenSearch queries itself (confirmed: only writes — indexing, template/ISM/role management — all under one static service credential; all per-user reads go through Dashboards' own DLS-enforced session, per `docs/subsystems/multi-tenancy.md`). Prod's own compose already uses a non-superuser `OPENSEARCH_USERNAME: kronos_backend` for this reason, but prod's OpenSearch security setup still relies on the bundled *demo* self-signed certs (`install_demo_configuration.sh`), not real production TLS material — a real, still-open gap, not fixed here (see `docker/docker-compose.prod.yml`'s own comment on this).
 
 ### [H-1] Production backend & Celery cannot boot — env vars don't match `config.py`
 `src/config.py` is a `pydantic-settings` model whose required fields have **no defaults** (intentional fail-fast). `Settings()` is instantiated at startup (`startup.py:35`) and at Celery import (`celery_app.py:21`). In `docker-compose.prod.yml` the backend/celery services:
@@ -162,7 +184,7 @@ Low-risk, statically-verifiable configuration corrections (the larger infra item
 3. **This document** — the access-management research, target structure, and evaluation.
 
 ### Not changed here (tracked follow-ups, need a live cluster to validate)
-- C-1 / C-2: enable OpenSearch + Dashboards security plugin, add `docker/opensearch/opensearch.yml`, OIDC authc domain, DLS `rolesmapping`, non-superuser backend account.
+- ~~C-1 / C-2: enable OpenSearch + Dashboards security plugin, add `docker/opensearch/opensearch.yml`, OIDC authc domain, DLS `rolesmapping`.~~ **Done (2026-07-23)** for dev — see the updated C-1/C-2 sections above and `poc/opensearch_dashboards_sso/`. Non-superuser backend account remains prod-only (dev intentionally keeps `admin`; see C-2's still-open note).
 - H-2: scoped MinIO service accounts for `tusd` and the backend.
 - M-2: sealed production Vault server.
 
