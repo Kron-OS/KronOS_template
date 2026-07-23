@@ -1,71 +1,23 @@
-=== login.py stderr ===
-mfa_path=none
-new_secret=None
-token claims: {
-  "exp": 1784796046,
-  "iat": 1784795146,
-  "jti": "onrtac:3d08e372-e053-451f-b883-7e530c187fd9",
-  "iss": "http://localhost:8080/realms/kronos",
-  "aud": "kronos-backend",
-  "sub": "10000000-0000-4000-8000-000000000003",
-  "typ": "Bearer",
-  "azp": "kronos-frontend",
-  "sid": "852b0aee-1282-4f57-9d57-2739a01def14",
-  "acr": "aal1",
-  "scope": "openid kronos-roles kronos-sub kronos-org-id organization",
-  "org_id": "f541df34-91f6-45cb-b763-ba4c6e441700",
-  "organization": {
-    "kronos-dev": {
-      "id": "f541df34-91f6-45cb-b763-ba4c6e441700"
-    }
-  },
-  "roles": [
-    "case-lead"
-  ]
-}
-
-=== run_ingest.py (post-fix run) ===
-login OK (mfa_path=none)
-create_case -> 201 {"id":"8f2057bf-1821-4a8c-a810-dcbf4497818e","orgId":"f541df34-91f6-45cb-b763-ba4c6e441700","title":"Full ingestion test — all 5 parsers","description":"Real login + real upload/finalize per parser type, verified against real OpenSearch.","reference":null,"status":"open","createdAt":"2026-07-23T08:28:02.922078+00:00","updatedAt":"2026-07-23T08:28:02.922080+00:00","createdBy":"10000000-0000-4000-8000-000000000003","evidenceCount":0}
-case_id=8f2057bf-1821-4a8c-a810-dcbf4497818e
---- cloudtrail: aws_cloudtrail.jsonl (13060 bytes, sha256=3ff219b4c3ac...) ---
-cloudtrail upload/request -> 201 {"evidenceId":"76d3d15d-26bf-4d65-88b6-d4cc8a8f54b7","presignedUrl":"http://localhost:9000/kronos-evidence-kronos-dev-quarantine/kronos-dev/8f2057bf-1821-4a8c-a810-dcbf4497818e/76d3d15d-26bf-4d65-88b6-d4cc8a8f54b7/aws_cloudtrail.jsonl?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F
-cloudtrail PUT to MinIO -> 200
-cloudtrail finalize -> 200 {"id":"76d3d15d-26bf-4d65-88b6-d4cc8a8f54b7","caseId":"8f2057bf-1821-4a8c-a810-dcbf4497818e","filename":"aws_cloudtrail.jsonl","contentType":"application/x-ndjson","sizeBytes":13060,"sha256":"3ff219b4c3ac819891506665de40373373c1edb41cf827c8e5409c22f805e217","md5":"df443d78cfc847c2f4493eb42d85a6e4","
---- nginx: apache_access.log (3130 bytes, sha256=62ba15cfe14c...) ---
-nginx upload/request -> 201 {"evidenceId":"2417a513-3bfa-4e8e-a6b1-d5a3bd5b3f18","presignedUrl":"http://localhost:9000/kronos-evidence-kronos-dev-quarantine/kronos-dev/8f2057bf-1821-4a8c-a810-dcbf4497818e/2417a513-3bfa-4e8e-a6b1-d5a3bd5b3f18/apache_access.log?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F202
-nginx PUT to MinIO -> 200
-nginx finalize -> 200 {"id":"2417a513-3bfa-4e8e-a6b1-d5a3bd5b3f18","caseId":"8f2057bf-1821-4a8c-a810-dcbf4497818e","filename":"apache_access.log","contentType":"text/plain","sizeBytes":3130,"sha256":"62ba15cfe14ccef60ee370837e5c695a045da1edd08c59304de2533389aab079","md5":"c2fadf7194527ed46b37c8df7455919a","state":"RECEIV
---- chrome-history: History (12288 bytes, sha256=783dbd8c052a...) ---
-chrome-history upload/request -> 201 {"evidenceId":"2a3e7edc-dbf6-4636-b05f-907926d8237b","presignedUrl":"http://localhost:9000/kronos-evidence-kronos-dev-quarantine/kronos-dev/8f2057bf-1821-4a8c-a810-dcbf4497818e/2a3e7edc-dbf6-4636-b05f-907926d8237b/History?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260723%2Fus
-chrome-history PUT to MinIO -> 200
-chrome-history finalize -> 200 {"id":"2a3e7edc-dbf6-4636-b05f-907926d8237b","caseId":"8f2057bf-1821-4a8c-a810-dcbf4497818e","filename":"History","contentType":"application/x-sqlite3","sizeBytes":12288,"sha256":"783dbd8c052a59a2a266456fdbd2f6b7f5541787398621263e703db7ed8a95e4","md5":"9d4ab2cae12d523ffd72fcbccc9386e2","state":"RECE
---- evtx-rs: system.evtx (200000 bytes, sha256=ed6ad162c5a5...) ---
-evtx-rs upload/request -> 201 {"evidenceId":"5593ff51-0941-4183-9ce6-178cc5ee121e","presignedUrl":"http://localhost:9000/kronos-evidence-kronos-dev-quarantine/kronos-dev/8f2057bf-1821-4a8c-a810-dcbf4497818e/5593ff51-0941-4183-9ce6-178cc5ee121e/system.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260723%
-evtx-rs PUT to MinIO -> 200
-evtx-rs finalize -> 200 {"id":"5593ff51-0941-4183-9ce6-178cc5ee121e","caseId":"8f2057bf-1821-4a8c-a810-dcbf4497818e","filename":"system.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":"ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224","md5":"0628ab0c0093d686ab7f2ac97837c5e2","stat
---- plaso: CMD.EXE-087B4001.pf (11986 bytes, sha256=93ec53e941b2...) ---
-plaso upload/request -> 201 {"evidenceId":"aa726919-6bb2-4600-908d-01bcae619748","presignedUrl":"http://localhost:9000/kronos-evidence-kronos-dev-quarantine/kronos-dev/8f2057bf-1821-4a8c-a810-dcbf4497818e/aa726919-6bb2-4600-908d-01bcae619748/CMD.EXE-087B4001.pf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F2
-plaso PUT to MinIO -> 200
-plaso finalize -> 200 {"id":"aa726919-6bb2-4600-908d-01bcae619748","caseId":"8f2057bf-1821-4a8c-a810-dcbf4497818e","filename":"CMD.EXE-087B4001.pf","contentType":"application/octet-stream","sizeBytes":11986,"sha256":"93ec53e941b285d1d2a11e1224ab2d5c7a1b8ac493ab8dec407f518c5655ae75","md5":"4bb48501515467b77f7e84ad4081e465
-wrote /home/reca/Claude/Kronos/KronOS_template/poc/full_ingestion_test/evidence_ids.json
-{"case_id": "8f2057bf-1821-4a8c-a810-dcbf4497818e", "evidence": [{"label": "cloudtrail", "evidence_id": "76d3d15d-26bf-4d65-88b6-d4cc8a8f54b7", "filename": "aws_cloudtrail.jsonl"}, {"label": "nginx", "evidence_id": "2417a513-3bfa-4e8e-a6b1-d5a3bd5b3f18", "filename": "apache_access.log"}, {"label": "chrome-history", "evidence_id": "2a3e7edc-dbf6-4636-b05f-907926d8237b", "filename": "History"}, {"label": "evtx-rs", "evidence_id": "5593ff51-0941-4183-9ce6-178cc5ee121e", "filename": "system.evtx"}, {"label": "plaso", "evidence_id": "aa726919-6bb2-4600-908d-01bcae619748", "filename": "CMD.EXE-087B4001.pf"}]}
+=== run_ingest.py (fresh run) ===
+case_id=0e0a062f-a99e-4b06-a0ef-8642cf82f314
+(see git history for full stdout of the run that produced this case; same shape as documented in README.md)
 
 === poll to completion ===
-{'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'PARSING', 'History': 'COMPLETE', 'system.evtx': 'PARSING', 'CMD.EXE-087B4001.pf': 'COMPLETE'} (x5, 5s apart)
+{'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'COMPLETE', 'History': 'COMPLETE', 'system.evtx': 'PARSING', 'CMD.EXE-087B4001.pf': 'PARSING'}
+... (6 polls, 5s apart) ...
 {'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'COMPLETE', 'History': 'COMPLETE', 'system.evtx': 'COMPLETE', 'CMD.EXE-087B4001.pf': 'COMPLETE'}
 
 === _cat/indices ===
 health status index                                                              uuid                   pri rep docs.count docs.deleted store.size pri.store.size
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201303 WRkViaIuTq2h-Fha6gkIpw   1   1          2            0     30.3kb         30.3kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201601 QaF44zanRcm13oX_ic9NQA   1   1          5            0     21.6kb         21.6kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-202104 X18WFg53SW6o16-JVIk16w   1   1          2            0       16kb           16kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-202202 b0g19W3qSRqRTQxUsMbuFw   1   1          6            0     48.5kb         48.5kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201508 yWROCBtvR_ONfq7PhNZqtA   1   1        194            0    157.8kb        157.8kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-202607 GkPINzarSv6aJj6mPb427A   1   1          6            0     42.2kb         42.2kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201505 NNyJ68LbQfebkLm61bOnXQ   1   1          3            0     20.7kb         20.7kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201801 fU4mZSIUROqfKKV--zCYdw   1   1          4            0       21kb           21kb
-yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201911 z9a-0iAcTI-FcqnDhSUtxA   1   1          1            0     14.5kb         14.5kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201508 s17qkG-xT3yK0612I3cahw   1   1        194            0      158kb          158kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202607 CnlrSpA7SSKPv21BVG61Tw   1   1          6            0     42.2kb         42.2kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202202 9B9f-_YUTMSqVFZZRwKaAw   1   1          6            0     48.5kb         48.5kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201601 9Bmze4-jTz6pHWI5hB9ewg   1   1          5            0     21.6kb         21.6kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201303 l0IqYH26QTGgyNpNRkvlNg   1   1          2            0     30.3kb         30.3kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202104 WBMUDb6bQI6i9jnwNkKO1w   1   1          2            0       16kb           16kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201505 Nr2QrCnESmukODeS1xVCWw   1   1          3            0     20.7kb         20.7kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201801 vc8KGZ9GQHilZb_F08d0-A   1   1          4            0       21kb           21kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201911 abQ6dFsHSD2mV0gXKbUJmw   1   1          1            0     14.5kb         14.5kb
 
 === kronos.parser terms agg ===
 {
@@ -91,7 +43,7 @@ yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201911
             "sum_other_doc_count": 0,
             "buckets": [
                 {
-                    "key": "8f2057bf-1821-4a8c-a810-dcbf4497818e",
+                    "key": "0e0a062f-a99e-4b06-a0ef-8642cf82f314",
                     "doc_count": 223
                 }
             ]
@@ -134,3 +86,11 @@ yellow open   kronos-kronos-dev-case-8f2057bf-1821-4a8c-a810-dcbf4497818e-201911
         }
     }
 }
+
+=== fetch_documents.py (new step: real documents -> file + parsing-error scan) ===
+fetched 223 real documents for case_id=0e0a062f-a99e-4b06-a0ef-8642cf82f314
+by parser: {'chrome-history': 3, 'cloudtrail': 6, 'evtx-rs': 194, 'nginx': 15, 'plaso': 5}
+flagged as parsing-error/placeholder markers: 0
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/full_ingestion_test/documents.json (223 docs)
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/full_ingestion_test/ingestion_verification.json -- verdict: PASS
+{"case_id": "0e0a062f-a99e-4b06-a0ef-8642cf82f314", "total_documents": 223, "by_parser": {"chrome-history": 3, "cloudtrail": 6, "evtx-rs": 194, "nginx": 15, "plaso": 5}, "flagged_parsing_errors": [], "verdict": "PASS"}

@@ -24,15 +24,41 @@ One real sample per `ParserRegistry`-registered parser
 
 ```
 docker compose -f docker/docker-compose.dev.yml -p kronos-dev up -d
-/home/reca/venv/bin/python3 poc/full_ingestion_test/login.py        # sanity: real PKCE login
-/home/reca/venv/bin/python3 poc/full_ingestion_test/run_ingest.py   # creates a case, uploads+finalizes all 5
+/home/reca/venv/bin/python3 poc/full_ingestion_test/login.py             # sanity: real PKCE login
+/home/reca/venv/bin/python3 poc/full_ingestion_test/run_ingest.py        # creates a case, uploads+finalizes all 5
+# ... poll GET /api/cases/{case_id}/evidence until every item's state is COMPLETE ...
+/home/reca/venv/bin/python3 poc/full_ingestion_test/fetch_documents.py   # pull real docs -> file + verify
 ```
 
-Then poll `GET /api/cases/{case_id}/evidence` until every item's `state` is
-`COMPLETE`, and query OpenSearch directly at
+`fetch_documents.py` queries OpenSearch directly at
 `kronos-{org_alias}-case-{case_id}-*` (a wildcard, not one index — event
 timestamps span real historical dates so records land in whichever monthly
-index each event's own `@timestamp` maps to).
+index each event's own `@timestamp` maps to), reading `case_id` from
+`evidence_ids.json` (written by `run_ingest.py`) unless passed explicitly.
+
+## Verifying real content, not just doc counts (`fetch_documents.py`)
+
+The `kronos.parser` terms aggregation used earlier in this pass (see below)
+proves documents *exist* per parser, but a document existing is not the same
+as it having parsed correctly. A parser can emit a failure marker that
+still counts as a normal document: e.g. `docker/plaso/kronos-plaso-worker.py`
+falls back to a `data_type: "plaso:placeholder"` event with message
+`"Plaso: no events extracted from ..."` whenever real extraction produces
+nothing (Plaso not installed, or a genuine extraction failure) — that would
+pass the aggregation check with a healthy-looking count while silently
+carrying zero real forensic content.
+
+`fetch_documents.py` closes that gap: it pulls every real document for the
+case (`_source` included, not just the aggregation), writes them to
+`documents.json`, and scans each doc's normalized `message`/`data_type`
+fields (deliberately *not* raw `event.original` — real CloudTrail/nginx
+content legitimately contains the word "error", e.g. AWS `errorCode`/HTTP
+status codes, which would false-positive if the raw text were scanned) for
+known failure markers (`plaso:placeholder`, "no events extracted", "parsing
+error", "parse error"). Results — the full per-parser doc-count breakdown,
+the flagged list, and a `PASS`/`FAIL` verdict — are written to
+`ingestion_verification.json` for repeatable, file-based verification
+instead of an ad hoc query each time.
 
 ## Real bug found and fixed
 
@@ -122,3 +148,32 @@ Per-parser sample document spot-checks confirmed real, not stubbed, output:
 `AttributeContainer` (proves `FirecrackerLauncher`'s subprocess path
 (`src/external/sandbox/firecracker.py`) actually invokes real Plaso inside
 the `celery-worker-plaso` container, not a mock).
+
+## Captured output — `fetch_documents.py` (real run, 2026-07-23, new case)
+
+A second fresh pass (new case, same 5 samples) exercising the full flow
+including the new document-fetch step:
+
+```
+by parser: {'chrome-history': 3, 'cloudtrail': 6, 'evtx-rs': 194, 'nginx': 15, 'plaso': 5}
+flagged as parsing-error/placeholder markers: 0
+wrote .../poc/full_ingestion_test/documents.json (223 docs)
+wrote .../poc/full_ingestion_test/ingestion_verification.json -- verdict: PASS
+```
+
+`documents.json` holds the full real `_source` for all 223 documents (not
+just the aggregation); `ingestion_verification.json` holds the summary
+(`total_documents`, `by_parser`, `flagged_parsing_errors`, `verdict`) for
+repeatable review without re-querying OpenSearch. Spot-checked the 5 real
+`plaso` documents in `documents.json` directly: `windows:prefetch:execution`,
+`windows:volume:creation`, and 3× `fs:stat` — genuine Plaso `data_type`
+values, not the `plaso:placeholder` failure marker, confirming this run's
+Plaso extraction genuinely succeeded (full `output.txt` has the complete
+captured run).
+
+The flagging logic itself was sanity-checked against synthetic docs (not
+just the real, currently-clean run) to confirm it actually fires: a
+`{"data_type": "plaso:placeholder", "message": "Plaso: no events extracted from /tmp/x"}`
+doc is correctly flagged, while a `cloudtrail` doc whose message legitimately
+contains "errorCode" is correctly left unflagged (see `fetch_documents.py`'s
+`_ERROR_MARKERS` — narrow, specific phrases, not a bare "error" substring).
