@@ -196,6 +196,25 @@ services:
       # token (iss=localhost:8080) is rejected when the backend redeems it via
       # keycloak:8080 -> 401 invalid_token on /auth/refresh.
       KC_HOSTNAME: http://localhost:8080
+      # Real, reproduced finding (poc/opensearch_dashboards_sso/ work,
+      # ported here): with KC_HOSTNAME pinned above, EVERY discovery-doc
+      # endpoint -- including token_endpoint -- is that same fixed
+      # "localhost:8080" string, verbatim, regardless of who fetched the
+      # doc. That's correct for the browser-facing authorization_endpoint,
+      # but Dashboards' own server-side token-exchange call (container ->
+      # container, via its connect_url reaching "keycloak:8080") then tries
+      # to open a real TCP connection to "localhost:8080" *from inside its
+      # own container*, which means itself, not Keycloak --
+      # ECONNREFUSED, confirmed by direct reproduction. Verified directly
+      # (a real, throwaway Keycloak 26.2 container, discovery doc fetched
+      # both from the host and from a sibling container) that
+      # hostname-backchannel-dynamic keeps issuer/authorization_endpoint
+      # pinned to KC_HOSTNAME (so the backend's own refresh-token issuer
+      # check above is unaffected) while making token_endpoint (and other
+      # backchannel-only endpoints) resolve per-requester instead --
+      # exactly what Dashboards' server-side call needs, with no network
+      # topology changes.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     volumes:
       - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
     ports: ["8080:8080"]
