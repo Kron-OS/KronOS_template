@@ -26,7 +26,8 @@ reimplementations, and keeps its actual captured output alongside the code.
 | `auth_flow/step_up_conditional_fix/` | Root-cause + fix for the step-up conditional-flow bug above | Fixed and verified: 6/6 real PKCE logins against the actual shipped `docker/keycloak/kronos-realm.json` |
 | `opensearch_jwt/` (+ `option_a_flat_claim/`) | OpenSearch security plugin + JWT authc + DLS — new construction | Found the `ensure_tenant_role()` role-mapping gap; verified the fix design (flat `org_id` claim + one generic role) |
 | `keycloak_opensearch_dls/` (+ `step4_new_member/`) | Real Keycloak 26.2 flat `org_id` claim → real OpenSearch DLS, end to end | Verified the production fix design against real Keycloak; several Keycloak Admin REST gotchas found along the way (not KronOS bugs) |
-| `opensearch_dashboards_tenancy/` | OpenSearch Dashboards saved-object multi-tenancy — new construction | Design confirmed sound; production wiring (SSO, automated provisioning) not done |
+| `opensearch_dashboards_tenancy/` | OpenSearch Dashboards saved-object multi-tenancy — new construction | Design confirmed sound (mechanism only, internal users) |
+| `opensearch_dashboards_sso/` | Real Keycloak OIDC SSO into Dashboards + automated per-org tenant provisioning | Fixed and verified: 11/11 real checks, 8 real bugs found+fixed along the way |
 | `celery_beat/` | The four beat-scheduled tasks against real seeded-stale Postgres rows | No product bugs — confirms the UTC-date fix stays fixed |
 | `nginx/` | `nginx.conf.template` + real FastAPI `CORSMiddleware` | 1 bug found + fixed (misleading comment; nginx actually crashes on an unset CSP var); 1 severe Helm bug found + fixed (missing nginx ConfigMap) |
 | `dashboards_embed/` | `cases.py`'s Dashboards embed-URL route vs. real Dashboards 2.11.1 source | No bug (a suspected one was ruled out via source); one question flagged for a future browser pass |
