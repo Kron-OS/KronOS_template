@@ -82,7 +82,19 @@ services:
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
     volumes:
       - opensearch_data:/usr/share/opensearch/data
-      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      # NOT :ro -- real, reproduced finding (docker-compose.dev.yml's own
+      # opensearch service has the full account): the security plugin's
+      # bundled demo installer (install_demo_configuration.sh, runs at
+      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true, which
+      # this file does not set) APPENDS its own transport-SSL cert paths
+      # into this same file; a read-only mount makes that append fail and
+      # the security plugin crash-loops on missing cert paths. This file
+      # itself (docker/opensearch/opensearch.yml) previously didn't exist
+      # at all (access-management-review.md [C-2]) and now does, but this
+      # mount is still relying on the bundled *demo* self-signed certs, not
+      # real production TLS material -- tracked as a real, still-open gap,
+      # not fixed here.
+      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
 
   keycloak:
     # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the

@@ -56,42 +56,119 @@ services:
       retries: 5
 
   opensearch:
-    # Pinned to 2.11.1 (not 2.13.0) for dev: DISABLE_SECURITY_PLUGIN=true is
-    # broken upstream from 2.12.0 onward (opensearch-project/security#4062 /
-    # opensearch-build#4599) — the security plugin stays partially active
-    # despite the flag, so unauthenticated calls (including Dashboards'
-    # /_plugins/_security/api/account probe) get rejected with 400 instead of
-    # the plugin being fully bypassed. 2.11.1 predates the regression and is
-    # the last version where a fully-disabled security plugin works as
-    # documented. Keep in sync with opensearch-dashboards below.
+    # Pinned to 2.11.1 (not 2.13.0) for dev to stay matched with
+    # opensearch-dashboards below (both must be the same minor line).
+    # Security genuinely enabled (poc/opensearch_dashboards_sso/,
+    # access-management-review.md [C-1]/[C-2]) -- opensearch-init below
+    # layers the openid authc domain + generic DLS role on top of the
+    # bundled demo config (admin:admin) once this container is healthy.
     image: opensearchproject/opensearch:2.11.1
     environment:
       - discovery.type=single-node
-      - DISABLE_SECURITY_PLUGIN=true
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Real, reproduced finding: docker/opensearch/opensearch.yml cannot be
+      # bind-mounted read-only here (prod's own compose does exactly that,
+      # matching the same, still-latent bug) -- the security plugin's
+      # bundled demo installer (install_demo_configuration.sh, runs at
+      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true)
+      # APPENDS its own transport-SSL cert paths into this same file, and a
+      # read-only mount makes that append fail silently, so the security
+      # plugin starts with SSL requested but no cert paths configured and
+      # crash-loops with "failed to load plugin class
+      # [OpenSearchSecurityPlugin]". The real entrypoint script (read
+      # directly: opensearch-docker-entrypoint.sh) already translates any
+      # `key.subkey=value` env var into a `-Ekey.subkey=value` JVM
+      # override independent of the file, so this one setting -- the only
+      # one dev actually needs beyond the demo installer's own defaults --
+      # is set here instead, leaving the file alone for the demo installer
+      # to populate uninterrupted.
+      - plugins.security.unsupported.restapi.allow_securityconfig_modification=true
     volumes:
       - opensearch_dev_data:/usr/share/opensearch/data
     ports:
       - "9200:9200"
       - "9600:9600"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      # -k -u: the security plugin's bundled demo config enables HTTPS with
+      # a self-signed cert and requires real credentials -- a bare
+      # unauthenticated http:// probe (the old healthcheck) always 400s/
+      # fails once security is genuinely on.
+      test: ["CMD-SHELL", "curl -sk -u admin:admin -f https://localhost:9200/_cluster/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
 
-  opensearch-dashboards:
-    # See version note on the opensearch service above — must stay matched
-    # to the OpenSearch server version.
-    image: opensearchproject/opensearch-dashboards:2.11.1
-    environment:
-      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
-      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
-    ports: ["5601:5601"]
+  # Adds the openid authc domain (trusting Keycloak) and the generic DLS
+  # tenant role to OpenSearch's security config, once OpenSearch itself is
+  # healthy. Verified end-to-end in poc/opensearch_dashboards_sso/ (11/11
+  # real checks) -- see scripts/provision_opensearch_security.py's own
+  # docstring for the full account.
+  opensearch-init:
+    image: python:3.12-alpine
     depends_on:
       opensearch: { condition: service_healthy }
+    restart: "no"
+    volumes:
+      - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
+    environment:
+      OS_BASE: https://opensearch:9200
+      OS_ADMIN_USER: admin
+      OS_ADMIN_PASSWORD: admin
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+    entrypoint: ["python3", "/provision_opensearch_security.py"]
+
+  opensearch-dashboards:
+    # See version note on the opensearch service above — must stay matched
+    # to the OpenSearch server version. Security genuinely enabled, real
+    # Keycloak openid SSO -- verified end-to-end in
+    # poc/opensearch_dashboards_sso/ (11/11 real checks); see that PoC's
+    # README.md for the full account of every real bug found while
+    # building this (auth-domain ordering, wrong subject_key, non-functional
+    # env vars, broken redirect_uri, invalid_scope, a migration-collision
+    # bug from restarting after first boot, Keycloak's Secure-cookie
+    # requirement).
+    image: opensearchproject/opensearch-dashboards:2.11.1
+    environment:
+      - OPENSEARCH_HOSTS=["https://opensearch:9200"]
+      - OPENSEARCH_USERNAME=kibanaserver
+      - OPENSEARCH_PASSWORD=kibanaserver
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+    # Appends the real openid config (docker/opensearch-dashboards/
+    # opensearch_security_openid.yml) to the config file *before* the
+    # dashboards process itself starts, in the same single container boot
+    # -- not via exec+restart into an already-started container, which hit
+    # a real saved-objects migration collision (.kibana_1
+    # resource_already_exists_exception, Dashboards stuck permanently 503;
+    # see poc/opensearch_dashboards_sso/README.md finding #7). The plugin's
+    # own env-var mechanism doesn't cover opensearch_security.* settings at
+    # all (same README, finding #3), hence the file instead of more env vars.
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        cat /tmp/opensearch_security_openid.yml >> /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml &&
+        exec /usr/share/opensearch-dashboards/opensearch-dashboards-docker-entrypoint.sh opensearch-dashboards
+    volumes:
+      - ./opensearch-dashboards/opensearch_security_openid.yml:/tmp/opensearch_security_openid.yml:ro
+    ports: ["5601:5601"]
+    depends_on:
+      opensearch-init: { condition: service_completed_successfully }
+      # Real, reproduced finding: the security-dashboards plugin fetches
+      # Keycloak's discovery doc EAGERLY at Dashboards' own plugin-setup
+      # time, not lazily on first login -- without Keycloak already up and
+      # reachable, Dashboards fails to start at all ("FATAL Error: Failed
+      # when trying to obtain the endpoints from your IdP"), confirmed by
+      # directly reproducing it (started without Keycloak present).
+      keycloak: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      # Real, reproduced finding: /api/status itself now requires auth
+      # (401) with the security-dashboards plugin genuinely enabled -- a
+      # bare unauthenticated probe there always "fails" even once
+      # Dashboards is fully up. /auth/openid/login is the one route the
+      # plugin intentionally leaves open (authRequired: false, confirmed by
+      # reading its real routes.ts source), and a healthy server always
+      # answers it with a real 302 redirect to Keycloak.
+      test: ["CMD-SHELL", "test \"$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5601/auth/openid/login)\" = 302"]
       interval: 20s
       timeout: 10s
       retries: 10
@@ -158,6 +235,29 @@ services:
       ORG_DOMAIN: kronos.dev
       ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
     entrypoint: ["sh", "/provision_keycloak_org.sh"]
+
+  # Provisions the kronos-dev org's real OpenSearch Dashboards tenant
+  # (saved-object isolation) once both the org itself (keycloak-init) and
+  # OpenSearch's security config (opensearch-init) are ready. Verified
+  # end-to-end in poc/opensearch_dashboards_sso/ (11/11 real checks).
+  dashboards-tenant-init:
+    image: curlimages/curl:latest
+    depends_on:
+      keycloak-init: { condition: service_completed_successfully }
+      opensearch-init: { condition: service_completed_successfully }
+    restart: "no"
+    volumes:
+      - ../scripts/provision_dashboards_tenant.sh:/provision_dashboards_tenant.sh:ro
+    environment:
+      OS_BASE: https://opensearch:9200
+      OS_ADMIN_USER: admin
+      OS_ADMIN_PASSWORD: admin
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      ORG_ALIAS: kronos-dev
+    entrypoint: ["sh", "/provision_dashboards_tenant.sh"]
 
   clamav:
     image: clamav/clamav:stable
@@ -256,10 +356,10 @@ services:
       # enforced independently by each server (backend API vs. presigned
       # MinIO uploads).
       CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:4173"
-      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
-      OPENSEARCH_SECURITY_ENABLED: "false"
+      OPENSEARCH_SECURITY_ENABLED: "true"
       # Browser-facing (like KEYCLOAK_PUBLIC_URL below): the backend embeds
       # this directly as the Timeline tab's iframe src, so it must be a host
       # the browser — not just other containers — can resolve. Must match
@@ -288,6 +388,7 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
     command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
 
   celery-worker:
@@ -313,10 +414,10 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
-      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
-      OPENSEARCH_SECURITY_ENABLED: "false"
+      OPENSEARCH_SECURITY_ENABLED: "true"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
@@ -343,6 +444,7 @@ services:
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4 --loglevel=info
 
   celery-worker-plaso:
@@ -359,10 +461,10 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
-      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
-      OPENSEARCH_SECURITY_ENABLED: "false"
+      OPENSEARCH_SECURITY_ENABLED: "true"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
@@ -381,6 +483,7 @@ services:
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
 
   celery-beat:
@@ -395,10 +498,10 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
-      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
-      OPENSEARCH_SECURITY_ENABLED: "false"
+      OPENSEARCH_SECURITY_ENABLED: "true"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend

@@ -1,0 +1,27 @@
+# Appended to the real config file (not a replacement) at container start,
+# before the dashboards process itself boots -- see the opensearch-dashboards
+# service's entrypoint override in docker-compose.dev.yml/docker-compose.prod.yml
+# for why (a restart-after-first-boot approach hit a real saved-objects
+# migration collision, confirmed in poc/opensearch_dashboards_sso/README.md).
+#
+# The plugin's own env-var mechanism (OPENSEARCH_SECURITY_AUTH_TYPE etc.)
+# does NOT work -- confirmed by reading the real 2.11.1 image's own
+# opensearch-dashboards-docker-entrypoint.sh: its allowlist of env vars it
+# translates into --longopts has zero opensearch_security.* entries at all.
+opensearch_security.auth.type: "openid"
+opensearch_security.openid.connect_url: "http://keycloak:8080/realms/kronos/.well-known/openid-configuration"
+opensearch_security.openid.client_id: "opensearch-dashboards"
+opensearch_security.openid.client_secret: "opensearch-dashboards-secret"
+# Must match the real Keycloak client's registered redirectUris
+# (docker/keycloak/kronos-realm.json: ["http://localhost:5601/*"]) --
+# without this, Dashboards computes its own self-referential redirect_uri
+# from server.host (0.0.0.0 by default), which Keycloak rejects.
+opensearch_security.openid.base_redirect_url: "http://localhost:5601"
+# Narrowed from the plugin's own default ("openid profile email address
+# phone"): the real production kronos-realm.json has no
+# profile/email/address/phone client-scope objects at all (only the custom
+# ones it explicitly defines) -- confirmed via the real Admin API, not
+# assumed -- so the plugin's own default scope request fails with a real
+# invalid_scope error from Keycloak. "openid" is the one always-valid
+# implicit scope; KronOS's own flat-claim design never needed the others.
+opensearch_security.openid.scope: "openid"
