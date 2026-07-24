@@ -9,14 +9,36 @@
       on :4173, run without NGINX in front of it). This is NOT the real
       policy — NGINX sets the authoritative header (docker/nginx/nginx.conf.template)
       with deployment-specific origins substituted in and `frame-ancestors`
-      (which a <meta> tag cannot set at all). These are the dev-compose
-      default origins from frontend/.env.example; adjust if your local ports
-      differ. Kept permissive enough not to break the Keycloak redirect flow,
-      evidence uploads to MinIO, or the OpenSearch Dashboards iframe embed.
+      (which a <meta> tag cannot set at all).
+
+      Real, reproduced bug: this used to hardcode "http://localhost:8080"
+      literally. CSP enforcement ANDs every policy present on a page
+      together -- a resource must be allowed by ALL of them, not just one
+      -- so this static, build-time-fixed value silently overrode NGINX's
+      own (correct, dynamic) header for anyone it didn't cover: a real LAN
+      client kept getting a hard frame-src block on Keycloak's
+      3p-cookies/step1.html even after NGINX's header was independently
+      confirmed correct, because THIS tag's own frame-src never granted
+      the LAN Keycloak origin no matter what NGINX said.
+
+      %VITE_KEYCLOAK_URL% is Vite's own real, built-in HTML env
+      interpolation (confirmed against the installed Vite 8 source,
+      htmlEnvHook) -- resolves to the exact same value
+      docker-compose.dev.yml passes as a build arg (matching NGINX's
+      KEYCLOAK_PUBLIC_URL) for the Docker build, or whatever
+      frontend/.env sets locally for `vite dev`/`vite preview` (defaults
+      to http://localhost:8080 there too, via frontend/.env.example) --
+      one source of truth instead of a second, independently-maintained
+      hardcoded copy that can silently drift out of sync with the real
+      one. Dashboards (:5601) and MinIO/backend (:8000/:9000) origins
+      below are left as local-dev-only fallback values -- not wired to a
+      build arg the way Keycloak's is, since this tag's whole job is only
+      to keep a *non-proxied* local dev session non-broken, not to mirror
+      NGINX's real policy exactly.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' http://localhost:8080 http://localhost:5601; connect-src 'self' http://localhost:8080 http://localhost:8000 http://localhost:9000; object-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' %VITE_KEYCLOAK_URL% http://localhost:5601; connect-src 'self' %VITE_KEYCLOAK_URL% http://localhost:8000 http://localhost:9000; object-src 'none'"
     />
     <title>frontend</title>
   </head>

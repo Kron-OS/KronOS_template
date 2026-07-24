@@ -218,6 +218,58 @@ here would have been a silent security regression, not a cosmetic one.
 alongside the full, current header set; a real login (with the browser's
 exact `redirect_uri`) still succeeds end-to-end after the change.
 
+## Fifth bug found + fixed: the REAL root cause of the recurring CSP violation — a second, hardcoded CSP source
+
+The `Cache-Control` fix above was real and worth keeping, but it wasn't
+the actual cause: the *exact same* CSP violation recurred even from a
+genuinely fresh browser session (new tab, hard reload, `curl` confirming
+the server was correct the entire time). That ruled out caching
+entirely and meant something else was serving the stale policy.
+
+**Root cause, found by reading the served HTML byte-for-byte, not
+guessed:** `frontend/index.html` has always shipped a hardcoded
+`<meta http-equiv="Content-Security-Policy">` tag (FE-7's "fallback for
+non-proxied dev environments" — `vite preview` with no nginx in front).
+CSP has a specific, easy-to-miss rule: when a page carries **multiple**
+CSP sources (an HTTP header *and* a `<meta>` tag), the browser enforces
+the **intersection** of both — a resource must be allowed by *every*
+policy present, not just one. NGINX's header was correct the entire
+time; the static `<meta>` tag's own hardcoded `frame-src 'self'
+http://localhost:8080 http://localhost:5601` never granted the LAN
+Keycloak origin, and that alone was enough to block the iframe — no
+matter what NGINX said.
+
+**Fix:** `frontend/index.html`'s meta tag now uses `%VITE_KEYCLOAK_URL%`,
+Vite's own built-in HTML env-variable interpolation (confirmed against
+the installed Vite 8 source, `htmlEnvHook` in
+`node_modules/vite/dist/node/chunks/node.js`) — the exact same build-arg
+value `docker-compose.dev.yml` already passes to match NGINX's
+`KEYCLOAK_PUBLIC_URL`. One source of truth instead of two
+independently-hardcoded copies that can silently drift apart — which is
+exactly what had already happened here.
+
+**A sixth bug this surfaced while fixing it:** a plain `npm run build`
+with no `frontend/.env` present (this repo only ships `.env.example`)
+left the literal, unresolved string `%VITE_KEYCLOAK_URL%` in the built
+HTML — Vite logs `(!) %VITE_KEYCLOAK_URL% is not defined in env
+variables... Is the variable mistyped?` and leaves the placeholder
+untouched, which would have been a real regression for anyone running
+the frontend outside the Docker build without first copying
+`.env.example` to `.env`. Fixed in `frontend/vite.config.ts` — falls
+back to `http://localhost:8080` (the same default
+`frontend/keycloak.ts`'s own `resolveKeycloakUrl()` already uses) only
+when `VITE_KEYCLOAK_URL` isn't set by a real `.env` file or the process
+environment; a real value from either still wins. Verified all three
+paths directly: no env var (falls back correctly, no warning), an
+explicit `VITE_KEYCLOAK_URL` (wins as expected), and the real Docker
+build (build arg flows through unchanged).
+
+**Verified fixed** the same way as every other fix in this file: real
+scripted login (`poc/auth_flow/auth_helpers.py`, exact `redirect_uri` a
+browser would send) succeeds end-to-end against the rebuilt image; the
+served page's meta tag and NGINX's header now agree exactly; frontend's
+33 tests, lint, and build all still pass clean.
+
 ## Running it again
 
 ```bash
