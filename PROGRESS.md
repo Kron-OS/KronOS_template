@@ -77,6 +77,7 @@ version, with captured output — not inferred from source reading alone.
 | `SuricataEveParser` (first Section G module) | Real `eve.json` (OISF golden fixture + userguide sample), 6/6 events, correct monthly-index split, real alert fields | [`poc/suricata/`](poc/suricata/README.md) |
 | `docker compose config` (all 3 files) | Parses structurally clean | [`docs/verification-pass-findings.md`](docs/verification-pass-findings.md) §4 |
 | `helm lint charts/kronos` | 0 charts failed (after the missing-ConfigMap fix) | [`docs/verification-pass-findings.md`](docs/verification-pass-findings.md) §4 — **not re-run this pass**, `helm` isn't installed on this host; see Remaining §7 |
+| `make dev` (full 18-service stack, OS security enabled) | Fresh `build` + `up -d`: all 18 services healthy, `keycloak-init`/`dashboards-tenant-init` both real-exit-0 with real Keycloak org + Dashboards tenant provisioning output, unauthenticated OpenSearch call correctly 401s, authenticated call succeeds, backend `/healthz` 200 | [`poc/make_dev_bind_mount_fix/`](poc/make_dev_bind_mount_fix/README.md) |
 
 **Known-open bugs/gaps** (found, not yet fixed):
 - `/silent-check-sso.html` nginx location genuinely lacks `X-Frame-Options`/HSTS (own CSP mitigates) — [`poc/nginx/README.md`](poc/nginx/README.md), flag D.
@@ -124,6 +125,7 @@ version, with captured output — not inferred from source reading alone.
 - [x] Step-up MFA actually conditional on `acr_values` (was previously unconditional — real Keycloak 26.2 bug) — [`poc/auth_flow/step_up_conditional_fix/`](poc/auth_flow/step_up_conditional_fix/README.md), commit `c7601ce`
 - [x] `docker-compose.{dev,test}.yml` parse cleanly, Keycloak realm imports cleanly (256-char column-limit regression found+fixed) — [`docs/verification-pass-findings.md`](docs/verification-pass-findings.md) row 17
 - [x] Static compliance/pentest pass (19+18+15 findings across Auth/Evidence/Audit/Infra/Frontend/Compliance) triaged; most Critical/High fixed in three parallel workstreams — [`reviews/Static_Compliance_Pentest_Review.md`](reviews/Static_Compliance_Pentest_Review.md) §0
+- [x] `make dev` actually completes end-to-end with OpenSearch security enabled — `keycloak-init`/`dashboards-tenant-init` no longer depend on host bind-mount permission bits (broke on Docker Desktop/WSL2 for non-root container users, confirmed by a real user run) — [`poc/make_dev_bind_mount_fix/`](poc/make_dev_bind_mount_fix/README.md), `docker/init/Dockerfile.keycloak-init`, `docker/init/Dockerfile.dashboards-tenant-init`
 - [ ] Several dev-mode-triaged-but-still-open + everything explicitly prod-mode-deferred — see Remaining §3–§4
 
 ### 2.7 Frontend SPA

@@ -118,13 +118,17 @@ services:
   # Keycloak 26.2 rejects with "Can not update organization group".
   # Assumes the realm is already provisioned. ORG_MEMBER_IDS is empty in prod:
   # real users join the org through the IdP / org domain, not by seeded ids.
+  # Built (not bind-mounted) -- see docker/init/Dockerfile.keycloak-init for
+  # why: curlimages/curl runs as non-root, and Docker Desktop/WSL2's
+  # bind-mount layer doesn't reliably grant non-root container users read
+  # access to host files, even when the real host file mode is 0755.
   keycloak-init:
-    image: curlimages/curl:latest
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
     restart: "no"
     depends_on:
       - keycloak
-    volumes:
-      - ../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
     environment:
       KC_BASE: http://keycloak:8080
       KC_REALM: kronos
@@ -134,7 +138,6 @@ services:
       ORG_ALIAS: ${KRONOS_ORG_ALIAS:-kronos}
       ORG_DESCRIPTION: KronOS production organization
       ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
-    entrypoint: ["sh", "/provision_keycloak_org.sh"]
 
   clamav:
     image: clamav/clamav:stable

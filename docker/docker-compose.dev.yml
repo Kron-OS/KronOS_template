@@ -236,13 +236,17 @@ services:
   # three dev users. The org is NOT in the realm import because Keycloak 26.2
   # cannot import an organizations block. Uses the shared provisioning script
   # (scripts/provision_keycloak_org.sh) so dev/prod/Helm stay in sync.
+  # Built (not bind-mounted) -- see docker/init/Dockerfile.keycloak-init for
+  # why: curlimages/curl runs as non-root, and Docker Desktop/WSL2's
+  # bind-mount layer doesn't reliably grant non-root container users read
+  # access to host files, even when the real host file mode is 0755.
   keycloak-init:
-    image: curlimages/curl:latest
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
     depends_on:
       keycloak: { condition: service_healthy }
     restart: "no"
-    volumes:
-      - ../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
     environment:
       KC_BASE: http://keycloak:8080
       KC_REALM: kronos
@@ -253,20 +257,20 @@ services:
       ORG_DESCRIPTION: Default development organization
       ORG_DOMAIN: kronos.dev
       ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
-    entrypoint: ["sh", "/provision_keycloak_org.sh"]
 
   # Provisions the kronos-dev org's real OpenSearch Dashboards tenant
   # (saved-object isolation) once both the org itself (keycloak-init) and
   # OpenSearch's security config (opensearch-init) are ready. Verified
-  # end-to-end in poc/opensearch_dashboards_sso/ (11/11 real checks).
+  # end-to-end in poc/opensearch_dashboards_sso/ (11/11 real checks). Built,
+  # not bind-mounted -- same reason as keycloak-init above.
   dashboards-tenant-init:
-    image: curlimages/curl:latest
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.dashboards-tenant-init
     depends_on:
       keycloak-init: { condition: service_completed_successfully }
       opensearch-init: { condition: service_completed_successfully }
     restart: "no"
-    volumes:
-      - ../scripts/provision_dashboards_tenant.sh:/provision_dashboards_tenant.sh:ro
     environment:
       OS_BASE: https://opensearch:9200
       OS_ADMIN_USER: admin
@@ -276,7 +280,6 @@ services:
       KC_ADMIN_USER: admin
       KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       ORG_ALIAS: kronos-dev
-    entrypoint: ["sh", "/provision_dashboards_tenant.sh"]
 
   clamav:
     image: clamav/clamav:stable

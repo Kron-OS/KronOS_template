@@ -1,0 +1,18 @@
+# Bakes scripts/provision_keycloak_org.sh into the image instead of
+# read-only bind-mounting it from the host.
+#
+# WHY: curlimages/curl runs as a non-root user (curl_user, uid 100 -- not
+# root). On a native Linux Docker host that's fine, since the script's real
+# file mode (0755, world-readable) is preserved 1:1 through the bind mount.
+# But on Docker Desktop (Windows/macOS, incl. WSL2's Docker-Desktop
+# integration), the bind-mount layer does not reliably preserve read access
+# for non-root container UIDs -- reproduced by a real user run: this exact
+# service failed with "sh: can't open '/provision_keycloak_org.sh':
+# Permission denied" while opensearch-init (python:3.12-alpine, which has
+# no USER directive and therefore runs as root) succeeded in the same
+# `docker compose up`. Baking the script in via COPY at build time sidesteps
+# the host bind-mount layer entirely -- permissions are set once, inside the
+# image, identically on every platform.
+FROM curlimages/curl:latest
+COPY --chmod=0755 scripts/provision_keycloak_org.sh /provision_keycloak_org.sh
+ENTRYPOINT ["sh", "/provision_keycloak_org.sh"]

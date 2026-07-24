@@ -1,0 +1,8 @@
+# Bakes scripts/provision_dashboards_tenant.sh into the image instead of
+# read-only bind-mounting it from the host. See Dockerfile.keycloak-init in
+# this same directory for the full root-cause writeup (Docker Desktop /
+# WSL2 bind-mount permission translation denies read access to non-root
+# container UIDs; curlimages/curl runs as uid 100, not root).
+FROM curlimages/curl:latest
+COPY --chmod=0755 scripts/provision_dashboards_tenant.sh /provision_dashboards_tenant.sh
+ENTRYPOINT ["sh", "/provision_dashboards_tenant.sh"]
