@@ -1,0 +1,216 @@
+==============================================================================
+STEP 1: real ParserRegistry detection (CloudTrail, Nginx, Suricata)
+==============================================================================
+Fixture: tests/fixtures/samples/real/suricata/eve.json
+Header bytes inspected: 4724
+registry.get_parser() -> SuricataEveParser
+Real CloudTrail sample -> CloudTrailParser (expected CloudTrailParser)
+Real nginx sample -> NginxParser (expected NginxParser)
+
+==============================================================================
+STEP 2: real SuricataEveParser().parse() against the real fixture
+==============================================================================
+Real fixture lines: 6
+TimelineRecords yielded: 6
+
+--- record[0] (real, parsed) ---
+{
+  "@timestamp": "2016-06-08T20:01:52.875791+00:00",
+  "message": "file eicar.com (68 bytes)",
+  "event.kind": "event",
+  "event.category": [
+    "file",
+    "network"
+  ],
+  "event.type": [
+    "info"
+  ],
+  "extra": {
+    "source.ip": "188.40.238.250",
+    "source.port": 80,
+    "destination.ip": "10.16.1.11",
+    "destination.port": 59908,
+    "network.transport": "tcp",
+    "network.protocol": "http",
+    "suricata.flow_id": 841252990914572,
+    "http.hostname": "www.eicar.org",
+    "url.path": "/download/eicar.com",
+    "http.request.method": "GET",
+    "http.response.status_code": 200,
+    "file.name": "eicar.com",
+    "file.size": 68
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 0,
+  "kronos.sha256": ""
+}
+
+--- record[1] (real, parsed) ---
+{
+  "@timestamp": "2023-09-18T06:13:41.532140+00:00",
+  "message": "ET ATTACK_RESPONSE Win32/LeftHook Stealer Browser Extension Config Inbound",
+  "event.kind": "alert",
+  "event.category": [
+    "intrusion_detection",
+    "network"
+  ],
+  "event.type": [
+    "info"
+  ],
+  "extra": {
+    "source.ip": "142.11.240.191",
+    "source.port": 35361,
+    "destination.ip": "192.168.100.237",
+    "destination.port": 49175,
+    "network.transport": "tcp",
+    "network.protocol": "http",
+    "suricata.flow_id": 1676750115612680,
+    "suricata.tx_id": 1,
+    "alert.signature": "ET ATTACK_RESPONSE Win32/LeftHook Stealer Browser Extension Config Inbound",
+    "alert.category": "A Network Trojan was detected",
+    "alert.severity": 1,
+    "alert.action": "allowed",
+    "rule.id": "2045001",
+    "http.hostname": "142.11.240.191",
+    "url.path": "/",
+    "http.request.method": "POST",
+    "http.response.status_code": 200,
+    "flow.bytes_toserver": 1616,
+    "flow.bytes_toclient": 8044,
+    "flow.pkts_toserver": 13,
+    "flow.pkts_toclient": 12
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 1,
+  "kronos.sha256": ""
+}
+
+--- record[2] (real, parsed) ---
+{
+  "@timestamp": "2023-09-18T06:13:33.903924+00:00",
+  "message": "file / (137 bytes)",
+  "event.kind": "event",
+  "event.category": [
+    "file",
+    "network"
+  ],
+  "event.type": [
+    "info"
+  ],
+  "extra": {
+    "source.ip": "192.168.100.237",
+    "source.port": 49175,
+    "destination.ip": "142.11.240.191",
+    "destination.port": 35361,
+    "network.transport": "tcp",
+    "network.protocol": "http",
+    "suricata.flow_id": 1676750115612680,
+    "http.hostname": "142.11.240.191",
+    "url.path": "/",
+    "http.request.method": "POST",
+    "http.response.status_code": 200,
+    "file.name": "/",
+    "file.size": 137
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 2,
+  "kronos.sha256": ""
+}
+
+--- record[3] (real, parsed) ---
+{
+  "@timestamp": "2023-09-18T06:13:33.903924+00:00",
+  "message": "POST 142.11.240.191/ 200",
+  "event.kind": "event",
+  "event.category": [
+    "network",
+    "web"
+  ],
+  "event.type": [
+    "protocol"
+  ],
+  "extra": {
+    "source.ip": "192.168.100.237",
+    "source.port": 49175,
+    "destination.ip": "142.11.240.191",
+    "destination.port": 35361,
+    "network.transport": "tcp",
+    "suricata.flow_id": 1676750115612680,
+    "suricata.tx_id": 0,
+    "http.hostname": "142.11.240.191",
+    "url.path": "/",
+    "http.request.method": "POST",
+    "http.response.status_code": 200
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 3,
+  "kronos.sha256": ""
+}
+
+--- record[4] (real, parsed) ---
+{
+  "@timestamp": "2023-09-18T06:13:58.882971+00:00",
+  "message": "anomaly applayer: UNABLE_TO_MATCH_RESPONSE_TO_REQUEST",
+  "event.kind": "event",
+  "event.category": [
+    "network"
+  ],
+  "event.type": [
+    "error"
+  ],
+  "extra": {
+    "source.ip": "192.168.100.237",
+    "source.port": 49175,
+    "destination.ip": "142.11.240.191",
+    "destination.port": 35361,
+    "network.transport": "tcp",
+    "suricata.flow_id": 1676750115612680,
+    "suricata.tx_id": 3,
+    "anomaly.type": "applayer",
+    "anomaly.event": "UNABLE_TO_MATCH_RESPONSE_TO_REQUEST"
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 4,
+  "kronos.sha256": ""
+}
+
+--- record[5] (real, parsed) ---
+{
+  "@timestamp": "2023-09-18T06:13:21.216460+00:00",
+  "message": "TCP flow 192.168.100.237:49175 -> 142.11.240.191:35361",
+  "event.kind": "event",
+  "event.category": [
+    "network"
+  ],
+  "event.type": [
+    "connection",
+    "end"
+  ],
+  "extra": {
+    "source.ip": "192.168.100.237",
+    "source.port": 49175,
+    "destination.ip": "142.11.240.191",
+    "destination.port": 35361,
+    "network.transport": "tcp",
+    "network.protocol": "http",
+    "suricata.flow_id": 1676750115612680,
+    "flow.bytes_toserver": 3536402,
+    "flow.bytes_toclient": 94102,
+    "flow.pkts_toserver": 3869,
+    "flow.pkts_toclient": 1523,
+    "flow.state": "closed"
+  },
+  "kronos.parser": "suricata-eve",
+  "kronos.parser_version": "1.0.0",
+  "kronos.record_index": 5,
+  "kronos.sha256": ""
+}
+
+==============================================================================
+DONE. 6/6 real EVE JSON lines parsed successfully.
+==============================================================================

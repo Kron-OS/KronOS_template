@@ -185,6 +185,7 @@ def get_parser_registry() -> ParserRegistry:
         from src.external.parsers.chrome_history import ChromeHistoryParser  # noqa: PLC0415
         from src.external.parsers.cloudtrail import CloudTrailParser  # noqa: PLC0415
         from src.external.parsers.nginx import NginxParser  # noqa: PLC0415
+        from src.external.parsers.suricata import SuricataEveParser  # noqa: PLC0415
 
         registry = ParserRegistry()
         # Must be registered FIRST: claims the ZIP magic before any other
@@ -194,6 +195,13 @@ def get_parser_registry() -> ParserRegistry:
         registry.register(ZipArchiveParser(registry))
         registry.register(CloudTrailParser())
         registry.register(NginxParser())
+        # SuricataEveParser keys on EVE JSON's own "event_type"+"flow_id"
+        # fields, which never appear in CloudTrail's "Records"/
+        # "CloudTrailEvent" envelope or Nginx's line-oriented text format --
+        # no overlap with either parser's supports() in either registration
+        # order (verified by reading both side by side); placed here simply
+        # to sit alongside the other FAST JSON/text parsers.
+        registry.register(SuricataEveParser())
         # ChromeHistoryParser must precede PlasoParser: both match the SQLite
         # magic, but the native parser handles Chrome/Chromium 'History' DBs
         # (fast, in-process, real browsing-timeline data) while every other

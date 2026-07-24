@@ -72,6 +72,46 @@ of one example (`pstree`).
 non-timeline category — every plugin renders a tabular `TreeGrid`, and
 whether that's a *timeline* depends entirely on the plugin.
 
+> **Status (2026-07-24): scoped, not yet built.** A `VolatilityModule` PoC
+> was attempted but the build agent was killed by an account-level spend
+> limit before writing any code — no partial/broken state exists, this is a
+> clean not-started. Real research already done so resumption needs zero
+> re-investigation:
+> - **Version to pin: `volatility3==2.28.0`** (confirmed current on PyPI).
+> - **Real sample source found:** the classic `cridex.vmem` (Windows XP,
+>   Cridex/Feodo banking trojan) — the smallest well-known real, legitimately
+>   redistributable memory sample. Original host
+>   (`files.sempersecurus.org/dumps/cridex_memdump.zip`, linked from
+>   Volatility Foundation's own
+>   [Memory-Samples wiki](https://github.com/volatilityfoundation/volatility/wiki/Memory-Samples))
+>   now 403s, but a working Wayback Machine snapshot exists:
+>   `https://web.archive.org/web/20210304131300/http://files.sempersecurus.org/dumps/cridex_memdump.zip`
+>   (verified reachable, `Content-Length: 40352364` — ~40 MB compressed).
+>   **Do not commit this to git** — 40 MB is an order of magnitude larger
+>   than every other fixture in this repo (the KAPE E01 was deliberately
+>   shrunk from 33 MB to 47 KB for exactly this reason). Download it to a
+>   local scratch path for verification, document the URL + sha256 in the
+>   PoC's `README.md`/`NOTICE.md` instead of committing the binary, and gate
+>   any automated unit test on the file's local presence (skip, don't fail,
+>   when absent — mirrors the existing `pytest.importorskip("evtx")`
+>   pattern for an optional real-artifact dependency).
+> - **Volatility3's own CI** (`volatilityfoundation/volatility3`
+>   `.github/workflows/test.yaml`) downloads real samples from its own
+>   official `volatilityfoundation/volatility3-test-data` GitHub Releases
+>   (tag `v0.0.1`) — a Linux sample (`linux-sample-1.bin.gz`, ~137 MB),
+>   a Windows XP image (`win-xp-laptop-2005-06-25.img.gz`, ~172 MB), and a
+>   Windows 10 dump (`win-10_19041-2025_03.dmp.gz`, ~661 MB). All larger
+>   than `cridex.vmem`; noted here as the authoritative upstream source if
+>   a *different* profile/plugin coverage is needed later (e.g. real Linux
+>   `pslist`/`pstree` coverage, which `cridex.vmem` — Windows XP — can't
+>   exercise).
+> - **Detection is a real open question, not yet resolved**: raw physical
+>   memory dumps have no standard magic bytes. Real, verified alternatives
+>   worth checking before falling back to extension-only detection
+>   (`.vmem`/`.mem`/`.raw`/`.dmp`/`.lime`): Microsoft crash dumps have a
+>   real `PAGEDU64`/`PAGEDUMP` magic; LiME format has a real magic too —
+>   neither was verified against a real sample before this PoC was paused.
+
 **Timeline-shaped (map directly to `TimelineRecord`):**
 - `timeliner` — Volatility's own timeline plugin; aggregates timestamps
   (process create, thread, handle, registry) across other plugins into
