@@ -65,6 +65,23 @@ server {
         root /usr/share/nginx/html;
         try_files $uri $uri/ /index.html;
 
+        # Same real, reproduced bug fix as nginx.conf.template's own
+        # location / (see its comment for the full account): index.html
+        # had no Cache-Control, so a browser could reuse a heuristically
+        # cached, CSP-stale copy of the SPA shell indefinitely. Every
+        # header redeclared here because defining any add_header at this
+        # level drops inheritance of ALL server-level ones, not just the
+        # one being added.
+        add_header Cache-Control "no-cache" always;
+        add_header Content-Security-Policy
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
+            always;
+        add_header X-Content-Type-Options        "nosniff"                            always;
+        add_header X-Frame-Options               "SAMEORIGIN"                         always;
+        add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
+        add_header Permissions-Policy            "camera=(), microphone=(), geolocation=(), payment=()" always;
+        add_header Strict-Transport-Security     "max-age=63072000; includeSubDomains; preload" always;
+
         location ~* \.(js|css|woff2|png|jpg|svg|ico)$ {
             expires 1y;
             add_header Cache-Control "public, immutable";

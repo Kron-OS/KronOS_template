@@ -179,16 +179,44 @@ succeeded; then the full `poc/full_ingestion_test/run_ingest.py` flow was
 re-run against the freshly-reprovisioned org, all 5 uploads and finalizes
 still succeeding.
 
-**A fourth report (CSP `frame-src` violation) turned out not to be a live
-bug**: the CSP header nginx serves right now already includes
-`https://192.168.5.13:8443` — checked directly (`curl -sI ... | grep
-content-security-policy`) against the exact same JS bundle hash
-(`index-C19fF7Lh.js`) the client's console referenced. Most likely a
-stale cached page load from before the LAN-HTTPS nginx config finished
-rolling out. Flagged here rather than silently assumed, since it wasn't
-independently reproduced against the current server state — if it
-recurs after a hard refresh, it needs a fresh look, not a re-assertion
-that it's "just cache."
+## Fourth bug found + fixed: `index.html` had no `Cache-Control`, so a fresh browser could still see a stale CSP
+
+The CSP `frame-src` violation reported above recurred even after a "fresh
+browser" test — while the same real client's network trace, in the exact
+same session, showed nginx correctly returning the up-to-date CSP on a
+`POST /auth/refresh`. That contradiction was the real clue: two different
+requests, two different CSP values, same server, same moment.
+
+**Root cause, confirmed empirically, not guessed:** `docker/nginx/nginx.conf.template`'s
+`location /` (serving `index.html`, the SPA's entry point) had no
+`Cache-Control` header at all — only `ETag`/`Last-Modified`. Checked
+directly: nginx *does* correctly re-send the current CSP even on a `304
+Not Modified` conditional-GET response (verified with a real
+`If-None-Match` request), so the bug isn't in revalidation — it's that
+nothing *forces* the browser to revalidate at all. Without an explicit
+`Cache-Control`, a browser is free to reuse a heuristically-cached copy of
+`index.html` — CSP header included — for an unbounded time without ever
+contacting the server again. A config-only change (new CSP values from an
+env var) doesn't touch the built file's own mtime/ETag, so it can never
+invalidate a browser's already-cached copy on its own — the exact
+mismatch reported.
+
+**Fix:** `location /` now sends `Cache-Control: no-cache` (mandatory
+revalidation on every load — still lets the browser reuse a fast `304`,
+it just can no longer skip asking the server entirely), applied to both
+`nginx.conf.template`'s `:80`/`:443` block and
+`nginx-lan-https.conf.template`'s `:443` block. Fingerprinted JS/CSS
+assets are untouched (`expires 1y; Cache-Control: public, immutable` on
+the nested regex location) — those are safe to cache forever since a real
+content change gives them a new URL. Because `add_header` in nginx drops
+*all* inherited headers the moment a location defines *any* of its own,
+every other header the page needs (CSP, HSTS, X-Frame-Options, etc.) had
+to be redeclared inside `location /`, not just the new one — losing them
+here would have been a silent security regression, not a cosmetic one.
+
+**Verified fixed**: `curl -I` on `/` now shows `Cache-Control: no-cache`
+alongside the full, current header set; a real login (with the browser's
+exact `redirect_uri`) still succeeds end-to-end after the change.
 
 ## Running it again
 
