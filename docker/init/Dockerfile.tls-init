@@ -1,0 +1,23 @@
+# Issues one multi-SAN leaf cert from the real, already-running dev step-ca
+# for nginx's TLS termination. Built (not bind-mounted) -- same reason as
+# Dockerfile.keycloak-init in this directory: the entrypoint script must
+# survive Docker Desktop/WSL2's bind-mount permission translation for
+# non-root container users.
+FROM smallstep/step-cli:latest
+COPY --chmod=0755 docker/init/tls-init-entrypoint.sh /tls-init-entrypoint.sh
+# Docker seeds a brand-new named volume's content (including ownership)
+# from whatever already exists at the mount path inside the image -- real,
+# reproduced finding: without this, /certs lands root:root 0755 (the
+# volume's own default), and this image's non-root "step" user (uid 1000,
+# confirmed via `docker run --entrypoint id`) can read/traverse it but not
+# write, so curl's `-o /certs/root_ca.crt` fails with exit 23 ("write
+# error"). This base image's default USER is already "step" (non-root, also
+# confirmed) -- and non-root can't mkdir directly under "/" either (a
+# second real, reproduced build failure: "/" itself isn't writable by uid
+# 1000), so this needs a real, temporary USER root for the mkdir+chown,
+# switching back to "step" for ENTRYPOINT so the container still runs
+# non-root exactly like every other init container in this repo.
+USER root
+RUN mkdir -p /certs && chown step:step /certs
+USER step
+ENTRYPOINT ["sh", "/tls-init-entrypoint.sh"]

@@ -44,6 +44,40 @@ KC = "http://127.0.0.1:18082"
 REALM = "kronos"
 CLIENT_ID = "kronos-frontend"
 REDIRECT_URI = "http://localhost:5173/callback"
+# Real, reproduced regression found while re-verifying the LAN-HTTPS nginx
+# work (see poc/tls_lan_https/): the dev stack's Keycloak now pins
+# KC_HOSTNAME to the LAN HTTPS address, so a login flow started against
+# http://localhost:8080 (poc/full_ingestion_test/login.py,
+# poc/kape_ingestion_test/*.py) gets redirected mid-flow to
+# https://192.168.5.13:8443 for the interactive login-form step --
+# httpx's default `verify=True` (system trust store) doesn't know the
+# stack's own step-ca root, so that redirect failed with
+# CERTIFICATE_VERIFY_FAILED. Callers that cross into the LAN HTTPS origin
+# set this to the real root_ca.crt path (e.g. `docker cp
+# docker-tls-init-1:/certs/root_ca.crt`); callers that stay entirely on
+# plain HTTP (this file's own throwaway-Keycloak PoCs) leave it at the
+# default `True`, unaffected.
+CA_BUNDLE: str | bool = True
+
+
+def trust_dev_stack_step_ca(tls_init_container: str = "docker-tls-init-1") -> None:
+    """Fetch the real dev-stack step-ca root (docker cp from the tls-init
+    container's own output volume) and set CA_BUNDLE to it. Call this before
+    real_browser_login() when KC points at the real docker-compose.dev.yml
+    stack rather than a throwaway PoC-only Keycloak container -- see
+    CA_BUNDLE's own comment for why."""
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    global CA_BUNDLE
+    tmp_dir = tempfile.mkdtemp(prefix="kronos-step-ca-")
+    dest = f"{tmp_dir}/root_ca.crt"
+    subprocess.run(
+        ["docker", "cp", f"{tls_init_container}:/certs/root_ca.crt", dest],
+        check=True,
+        capture_output=True,
+    )
+    CA_BUNDLE = dest
 
 
 def new_pkce_pair() -> tuple[str, str]:
@@ -143,6 +177,7 @@ def extract_code_and_exchange(client: httpx.Client, redirect_resp: httpx.Respons
 
     token_resp = httpx.post(
         f"{KC}/realms/{REALM}/protocol/openid-connect/token",
+        verify=CA_BUNDLE,
         data={
             "grant_type": "authorization_code",
             "code": code,
@@ -180,7 +215,7 @@ def real_browser_login(
     new_secret alone (which is None both when no MFA step ran at all AND
     when OTP entry ran with an already-known secret -- those are very
     different outcomes to be verifying)."""
-    client = httpx.Client(follow_redirects=True)
+    client = httpx.Client(follow_redirects=True, verify=CA_BUNDLE)
     verifier, challenge = new_pkce_pair()
     resp = start_auth(client, (verifier, challenge), state=state, acr_values=acr_values)
     resp = submit_username_password(client, resp, username, password)

@@ -42,8 +42,12 @@ services:
       # http://localhost vs http://localhost:9000 in dev). MinIO's S3-style
       # PutBucketCors bucket API returns "NotImplemented" on this image —
       # CORS here is a server-level setting instead. Must match the origins
-      # in CORS_ALLOWED_ORIGINS on kronos-backend below.
-      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost,http://localhost:5173,http://localhost:4173"
+      # in CORS_ALLOWED_ORIGINS on kronos-backend below. The LAN origin
+      # (https://192.168.5.13, nginx-terminated) is the browser's actual
+      # origin even though the presigned PUT itself lands on MinIO via
+      # nginx's :9444 reverse proxy (see nginx service below) -- CORS is
+      # about the requesting page's origin, not the request's destination.
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost,http://localhost:5173,http://localhost:4173,https://192.168.5.13"
     volumes:
       - minio_dev_data:/data
     ports:
@@ -190,12 +194,24 @@ services:
       # endpoints return 404 and the healthcheck below never passes.
       KC_HEALTH_ENABLED: "true"
       # Pin Keycloak's canonical issuer/frontend URL so it's stable regardless
-      # of which Host a request arrives on (browser via localhost:8080, backend
+      # of which Host a request arrives on (browser via localhost:8080 or the
+      # LAN-facing https://192.168.5.13:8443 nginx proxy, backend
       # /auth/refresh + keycloak-init via internal keycloak:8080). Without it,
       # start-dev derives the issuer per-request, so a browser-minted refresh
-      # token (iss=localhost:8080) is rejected when the backend redeems it via
-      # keycloak:8080 -> 401 invalid_token on /auth/refresh.
-      KC_HOSTNAME: http://localhost:8080
+      # token (iss=whatever Host it used) is rejected when the backend
+      # redeems it via keycloak:8080 -> 401 invalid_token on /auth/refresh.
+      # Pointed at the LAN HTTPS address (not localhost) -- verified with a
+      # real throwaway Keycloak 26.2 container that pinning KC_HOSTNAME to a
+      # foreign https:// value does not reject requests arriving on a
+      # different Host (e.g. localhost:8080 direct); it only fixes what
+      # `iss`/`authorization_endpoint` say. Must exactly match kronos-backend's
+      # KEYCLOAK_PUBLIC_URL below (the value the backend validates `iss`
+      # against) regardless of which origin a given browser session used.
+      KC_HOSTNAME: https://192.168.5.13:8443
+      # Standard Keycloak reverse-proxy setting -- trusts X-Forwarded-* from
+      # the nginx :8443 proxy in front of it (see nginx service) instead of
+      # only ever seeing its own internal keycloak:8080 request line.
+      KC_PROXY_HEADERS: xforwarded
       # Real, reproduced finding (poc/opensearch_dashboards_sso/ work,
       # ported here): with KC_HOSTNAME pinned above, EVERY discovery-doc
       # endpoint -- including token_endpoint -- is that same fixed
@@ -334,12 +350,43 @@ services:
       DOCKER_STEPCA_INIT_DNS_NAMES: "step-ca,localhost"
       DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
       DOCKER_STEPCA_INIT_PASSWORD: ${STEP_CA_PASSWORD:-step_ca_dev_password}
-    ports: ["9443:9443"]
+    # Real bug found while wiring up tls-init below: step-ca's own ca.json
+    # ("address": ":9000", confirmed via `docker exec ... cat
+    # /home/step/config/ca.json`) listens on 9000 internally, regardless of
+    # DOCKER_STEPCA_INIT_* env vars -- the previous "9443:9443" mapping
+    # published a port nothing was listening on. Host port stays 9443 (kept
+    # distinct from MinIO's own host port 9000), now correctly routed to
+    # the container's real port 9000. The healthcheck's "curl ... || exit 0"
+    # was silently swallowing the resulting connection-refused, reporting
+    # "healthy" unconditionally -- removed so a genuine step-ca outage is
+    # no longer invisible.
+    ports: ["9443:9000"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fk https://localhost:9443/health 2>/dev/null || exit 0"]
+      test: ["CMD-SHELL", "curl -fk https://localhost:9000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # Issues one multi-SAN leaf cert (LAN IP + localhost + 127.0.0.1) from the
+  # step-ca instance above, for nginx's TLS termination -- see
+  # docs/lan-dev-access.md for why nginx alone terminates TLS for every
+  # browser-facing origin (Keycloak/MinIO/Dashboards reverse-proxied behind
+  # it) instead of each service getting its own cert. Built (not
+  # bind-mounted), same reason as keycloak-init/dashboards-tenant-init.
+  tls-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.tls-init
+    depends_on:
+      step-ca: { condition: service_healthy }
+    restart: "no"
+    environment:
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_PASSWORD: ${STEP_CA_PASSWORD:-step_ca_dev_password}
+      TLS_SAN_PRIMARY: ${KRONOS_LAN_HOST:-192.168.5.13}
+      TLS_CERT_DIR: /certs
+    volumes:
+      - tls_certs:/certs
 
   kronos-backend:
     build:
@@ -369,15 +416,23 @@ services:
       # only to sign presigned upload URLs, since the browser running on the
       # host machine cannot resolve the "minio" hostname — without this,
       # presigned URLs point at http://minio:9000/... and fail with
-      # DNS_PROBE_FINISHED_NXDOMAIN in the browser.
-      MINIO_PUBLIC_ENDPOINT: localhost:9000
+      # DNS_PROBE_FINISHED_NXDOMAIN in the browser. Now a full URL (was a
+      # bare host:port) so its scheme can differ from MINIO_USE_TLS below,
+      # which only governs the *internal* minio:9000 connection: LAN
+      # browsers reach MinIO's presigned URLs via nginx's TLS-terminated
+      # :9444 reverse proxy (see nginx service), not MinIO's own listener
+      # directly, so the internal hop stays plain HTTP while the
+      # browser-facing URL is HTTPS. src/external/startup.py's
+      # `_minio_scheme` derivation was fixed to honor an explicit scheme
+      # here rather than always reusing MINIO_USE_TLS for both endpoints.
+      MINIO_PUBLIC_ENDPOINT: https://192.168.5.13:9444
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
       # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above — same origins,
       # enforced independently by each server (backend API vs. presigned
       # MinIO uploads).
-      CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:4173"
+      CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:4173,https://192.168.5.13"
       OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
@@ -385,11 +440,26 @@ services:
       # Browser-facing (like KEYCLOAK_PUBLIC_URL below): the backend embeds
       # this directly as the Timeline tab's iframe src, so it must be a host
       # the browser — not just other containers — can resolve. Must match
-      # the nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below,
-      # and opensearch-dashboards' published port.
-      OPENSEARCH_DASHBOARDS_URL: http://localhost:5601
+      # the nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below.
+      # Points at nginx's TLS-terminated :5602 reverse proxy (see nginx
+      # service) rather than opensearch-dashboards' own plain-HTTP :5601 —
+      # an HTTP iframe embedded from an HTTPS SPA is blocked as mixed
+      # content, so this must be HTTPS whenever the SPA itself is.
+      OPENSEARCH_DASHBOARDS_URL: https://192.168.5.13:5602
       KEYCLOAK_URL: http://keycloak:8080
-      KEYCLOAK_PUBLIC_URL: http://localhost:8080
+      # Pinned to the LAN HTTPS address for both localhost- and LAN-origin
+      # sessions alike -- verified empirically (throwaway Keycloak 26.2
+      # container, KC_HOSTNAME set to a foreign https:// value) that Keycloak
+      # does not reject requests arriving on a different host/port than
+      # KC_HOSTNAME; it only fixes `iss`/`authorization_endpoint` to this
+      # value regardless of how the request arrived, while
+      # KC_HOSTNAME_BACKCHANNEL_DYNAMIC keeps `token_endpoint` resolving
+      # per-caller. A localhost session's keycloak-js still builds its own
+      # login URL directly from VITE_KEYCLOAK_URL (http://localhost:8080,
+      # a secure context by browser spec regardless of TLS) — this value
+      # only has to match whatever `iss` Keycloak actually mints, for the
+      # backend's own JWT validation, which is single-valued either way.
+      KEYCLOAK_PUBLIC_URL: https://192.168.5.13:8443
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
@@ -542,20 +612,53 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
+      # Must match KC_HOSTNAME on the keycloak service exactly (see
+      # frontend/src/keycloak.ts's resolveKeycloakUrl() for the real,
+      # reproduced reason this can't be derived client-side instead).
+      args:
+        VITE_KEYCLOAK_URL: https://${KRONOS_LAN_HOST:-192.168.5.13}:8443
     # Browser-facing origin for each service's CSP allowance — rendered into
     # the CSP header by nginx's envsubst templating (see
     # docker/nginx/nginx.conf.template). These are Docker-host-published
     # ports, reachable from the browser on the host machine; contrast with
     # the Docker-internal hostnames (e.g. opensearch-dashboards:5601) used
     # elsewhere in this file for container-to-container traffic.
+    # Each placeholder is now a *space-separated pair* -- localhost (plain
+    # HTTP, unchanged) and the LAN HTTPS origin -- substituted verbatim into
+    # nginx.conf.template's CSP source lists (e.g. "frame-src 'self'
+    # ${KEYCLOAK_PUBLIC_URL} ..."), which accept multiple space-separated
+    # origins natively. No template change needed for this.
     environment:
-      KEYCLOAK_PUBLIC_URL: http://localhost:8080
-      BACKEND_PUBLIC_URL: http://localhost:8000
-      MINIO_PUBLIC_URL: http://localhost:9000
-      OPENSEARCH_DASHBOARDS_URL: http://localhost:5601
-    ports: ["80:80"]
+      KEYCLOAK_PUBLIC_URL: "http://localhost:8080 https://192.168.5.13:8443"
+      BACKEND_PUBLIC_URL: "http://localhost:8000 https://192.168.5.13"
+      MINIO_PUBLIC_URL: "http://localhost:9000 https://192.168.5.13:9444"
+      OPENSEARCH_DASHBOARDS_URL: "http://localhost:5601 https://192.168.5.13:5602"
+    volumes:
+      - tls_certs:/etc/kronos/tls:ro
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+      - "9444:9444"
+      - "5602:5602"
+    # keycloak/minio/opensearch-dashboards added -- real, reproduced finding:
+    # nginx-lan-https.conf.template's proxy_pass targets are static hostnames
+    # nginx resolves via Docker DNS once, at config-load/startup time (not
+    # per-request), so nginx refuses to even start ("host not found in
+    # upstream") if a target container doesn't exist in Docker's embedded
+    # DNS yet -- confirmed by nginx exiting 1 on "opensearch-dashboards"
+    # before it added service_started conditions for all three.
     depends_on:
-      - kronos-backend
+      kronos-backend:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      minio:
+        condition: service_started
+      opensearch-dashboards:
+        condition: service_started
+      tls-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres_dev_data:
@@ -569,3 +672,6 @@ volumes:
   # docker/falco/docker-compose.falco.yml already uses for falco_logs
   # (COMP-8).
   kronos_app_logs:
+  # tls-init's leaf cert + root CA, mounted read-only into nginx. See
+  # docker/init/Dockerfile.tls-init / tls-init-entrypoint.sh.
+  tls_certs:

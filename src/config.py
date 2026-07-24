@@ -42,9 +42,16 @@ class Settings(BaseSettings):
     # browser — which cannot resolve that hostname — sends the request to a
     # different Host. Falls back to minio_endpoint when unset (single-
     # hostname deployments where the app and clients share a network).
+    #
+    # May be a bare "host:port" (scheme taken from minio_use_tls, the
+    # original behavior) or a full "scheme://host:port" URL to override the
+    # scheme independently of minio_use_tls — needed when the internal
+    # backend->MinIO hop stays plain HTTP but the browser reaches MinIO's
+    # presigned URLs via a TLS-terminating reverse proxy in front of it
+    # (see startup.py's _resolve_minio_public_endpoint_url()).
     minio_public_endpoint: str | None = Field(
         default=None,
-        description="Browser-facing MinIO endpoint for presigned URLs, e.g. localhost:9000",
+        description="Browser-facing MinIO endpoint for presigned URLs, e.g. localhost:9000 or https://minio.example.com",
     )
     # Canonical bucket names (Project_Specifications.md §2): quarantine is
     # "<prefix>-<org_alias>-quarantine" and evidence is "<prefix>-<org_alias>".

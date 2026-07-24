@@ -12,7 +12,15 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 
-ARG VITE_KEYCLOAK_URL=http://localhost:8080
+# Real value passed by docker-compose.dev.yml's nginx build args, matching
+# KC_HOSTNAME exactly (see frontend/src/keycloak.ts's resolveKeycloakUrl()
+# for why this can't be derived client-side per request -- Keycloak's own
+# login form always posts to one single pinned hostname regardless of
+# where the flow started, so the frontend has to start there too, for
+# every client). Empty here only matters for a standalone `docker build`
+# outside compose, where keycloak.ts's own http://localhost:8080 fallback
+# takes over.
+ARG VITE_KEYCLOAK_URL=
 ARG VITE_KEYCLOAK_REALM=kronos
 ARG VITE_KEYCLOAK_CLIENT_ID=kronos-frontend
 ARG VITE_API_URL=
@@ -45,11 +53,22 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # nginx.conf.template for why. Defaults below make the image usable
 # standalone in dev; docker-compose overrides them per environment.
 COPY docker/nginx/nginx.conf.template /etc/nginx/templates/default.conf.template
+# LAN HTTPS server blocks (:443/:8443/:9444/:5602) -- a separate template
+# file, baked in here (dev-only Dockerfile) rather than added to
+# nginx.conf.template above, which docker-compose.test.yml/prod.yml also
+# bind-mount as-is and neither provisions certs for. See that file's own
+# header comment for the full reasoning. --chmod matches this repo's own
+# established fix for non-root container users on Docker Desktop/WSL2
+# (docker/init/Dockerfile.keycloak-init) -- world-readable regardless of
+# host bind-mount translation, though this is a build-time COPY anyway, not
+# a bind mount, so it's not actually exposed to that class of bug; kept for
+# consistency and defense-in-depth.
+COPY --chmod=0644 docker/nginx/nginx-lan-https.conf.template /etc/nginx/templates/nginx-lan-https.conf.template
 ENV KEYCLOAK_PUBLIC_URL=http://localhost:8080
 ENV BACKEND_PUBLIC_URL=http://localhost:8000
 ENV MINIO_PUBLIC_URL=http://localhost:9000
 ENV OPENSEARCH_DASHBOARDS_URL=http://localhost:5601
-EXPOSE 80
+EXPOSE 80 443 8443 9444 5602
 
 # Non-root (INFRA-018): the stock image ships /etc/nginx/conf.d and
 # /var/cache/nginx/* root-owned, because it expects the master process to

@@ -11,6 +11,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _resolve_minio_public_endpoint_url(public_endpoint: str | None, internal_scheme: str) -> str | None:
+    """Build the presigned-URL client's endpoint_url from MINIO_PUBLIC_ENDPOINT.
+
+    Historically reused the internal connection's scheme (minio_use_tls) for
+    both endpoints -- wrong whenever the browser reaches MinIO's presigned
+    URLs via a TLS-terminating reverse proxy in front of it while the
+    internal backend->MinIO hop stays plain HTTP (there is no MinIO-native
+    way to serve HTTP internally and HTTPS externally from one listener).
+    A bare "host:port" value still falls back to internal_scheme, unchanged
+    from the original behavior; a full "scheme://host:port" value is used
+    as-is, letting the public scheme differ from the internal one.
+    """
+    if not public_endpoint:
+        return None
+    if "://" in public_endpoint:
+        return public_endpoint
+    return f"{internal_scheme}://{public_endpoint}"
+
+
 async def wire_dependencies_async() -> None:
     """Async variant — used by FastAPI lifespan (already in async context)."""
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
@@ -60,10 +79,8 @@ async def wire_dependencies_async() -> None:
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
         endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
-        presign_endpoint_url=(
-            f"{_minio_scheme}://{settings.minio_public_endpoint}"
-            if settings.minio_public_endpoint
-            else None
+        presign_endpoint_url=_resolve_minio_public_endpoint_url(
+            settings.minio_public_endpoint, _minio_scheme
         ),
         access_key=settings.minio_access_key.get_secret_value(),
         secret_key=settings.minio_secret_key.get_secret_value(),
@@ -177,10 +194,8 @@ def wire_dependencies_sync() -> None:
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
         endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
-        presign_endpoint_url=(
-            f"{_minio_scheme}://{settings.minio_public_endpoint}"
-            if settings.minio_public_endpoint
-            else None
+        presign_endpoint_url=_resolve_minio_public_endpoint_url(
+            settings.minio_public_endpoint, _minio_scheme
         ),
         access_key=settings.minio_access_key.get_secret_value(),
         secret_key=settings.minio_secret_key.get_secret_value(),

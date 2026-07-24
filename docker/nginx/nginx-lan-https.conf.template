@@ -1,0 +1,225 @@
+# LAN HTTPS access -- dev-only. Deliberately a SEPARATE template file from
+# nginx.conf.template, not a change to it: that file is bind-mounted as-is
+# by docker-compose.test.yml and docker-compose.prod.yml (CI's test stack
+# and a not-yet-deployed prod config, neither of which provisions the certs
+# this file needs), while THIS file is only ever baked into the dev nginx
+# image (docker/Dockerfile.frontend, dev-only -- test/prod use the stock
+# nginx:alpine image and never see this file at all). nginx's stock
+# docker-entrypoint envsubst step processes every *.template file in
+# /etc/nginx/templates/ into /etc/nginx/conf.d/, all included in the same
+# http{} context as nginx.conf.template's own output -- so `upstream
+# backend`, the `limit_req_zone`s, and `client_max_body_size` it declares
+# are already in scope here with no redeclaration needed.
+#
+# Terminates TLS in one place (here) for every browser-facing origin,
+# reverse-proxying to the existing internal plain-HTTP services -- see
+# docs/lan-dev-access.md for why (Keycloak/MinIO/Dashboards each getting
+# their own cert/TLS config was considered and rejected: MinIO has no
+# internal/external TLS split, and there's no existing Dashboards-TLS
+# pattern anywhere in this repo to build on). Cert/key issued by the
+# tls-init service (docker/init/Dockerfile.tls-init) from this stack's own
+# step-ca, SAN = the LAN IP + localhost + 127.0.0.1, one cert for every
+# port below since TLS certs are host-scoped, not port-scoped.
+
+# -----------------------------------------------------------------------
+# :443 -- the SPA + backend API/auth/SSE, HTTPS equivalent of :80 above.
+# Browsers only expose the Web Crypto API (keycloak-js PKCE) and the
+# Storage Access API (Keycloak's silent-SSO iframe) in a secure context --
+# HTTPS, or http://localhost. A non-localhost http:// origin is neither,
+# which is the root cause this whole file exists to fix. Location blocks
+# below are an intentional duplicate of :80's in nginx.conf.template, kept
+# in sync by hand (same reasoning nginx.conf.template's own now-superseded
+# commented-out prod HTTPS block already documented for this exact
+# duplication) -- a `server` block can't `include` another server block's
+# location list here without restructuring the base template, which would
+# touch the file test/prod also depend on.
+# -----------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/kronos/tls/server.crt;
+    ssl_certificate_key /etc/kronos/tls/server.key;
+    ssl_protocols       TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header Content-Security-Policy
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
+        always;
+    add_header X-Content-Type-Options        "nosniff"                            always;
+    add_header X-Frame-Options               "SAMEORIGIN"                         always;
+    add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
+    add_header Permissions-Policy            "camera=(), microphone=(), geolocation=(), payment=()" always;
+    add_header Strict-Transport-Security     "max-age=63072000; includeSubDomains; preload" always;
+
+    gzip            on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_types      text/plain text/css application/json application/javascript
+                    text/xml application/xml image/svg+xml;
+
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+
+        location ~* \.(js|css|woff2|png|jpg|svg|ico)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    location = /silent-check-sso.html {
+        root /usr/share/nginx/html;
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;
+    }
+
+    location /auth/ {
+        limit_req zone=auth burst=20 nodelay;
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+    }
+
+    location /api/ {
+        limit_req zone=api burst=60 nodelay;
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+        proxy_read_timeout 60s;
+
+        location /api/evidence/upload/ {
+            limit_req         zone=upload burst=10 nodelay;
+            proxy_pass        http://backend;
+            proxy_read_timeout 300s;
+            client_max_body_size 0;
+        }
+    }
+
+    location /api/sse/ {
+        limit_req zone=api burst=10 nodelay;
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        chunked_transfer_encoding on;
+    }
+
+    location = /healthz {
+        proxy_pass  http://backend/healthz;
+        access_log  off;
+    }
+}
+
+# -----------------------------------------------------------------------
+# :8443 -- Keycloak (browser-facing). Proxies to the existing internal
+# keycloak:8080 -- Keycloak itself is untouched (still also reachable
+# directly on its existing published :8080/HTTP, used internally and by
+# every already-verified poc/*/README.md script). KC_PROXY_HEADERS:
+# xforwarded (docker-compose.dev.yml) makes Keycloak trust the
+# X-Forwarded-* headers set below instead of only ever seeing its own
+# internal request line.
+# -----------------------------------------------------------------------
+server {
+    listen 8443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/kronos/tls/server.crt;
+    ssl_certificate_key /etc/kronos/tls/server.key;
+    ssl_protocols       TLSv1.3;
+
+    location / {
+        proxy_pass         http://keycloak:8080;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Host  $http_host;
+        proxy_set_header   X-Forwarded-Port  $server_port;
+        proxy_read_timeout 60s;
+    }
+}
+
+# -----------------------------------------------------------------------
+# :9444 -- MinIO (browser-direct presigned evidence upload/download).
+# Host MUST be forwarded unchanged, port included: MinIO's SigV4 validates
+# a presigned URL's signature against the Host header it actually receives,
+# and MINIO_PUBLIC_ENDPOINT (docker-compose.dev.yml) signs URLs against
+# "192.168.5.13:9444" -- the exact host:port. Real, reproduced bug found
+# building this: nginx's `$host` variable silently DROPS the port (it's
+# nginx's normalized hostname-only value), so `proxy_set_header Host $host`
+# forwarded "192.168.5.13" without ":9444" to MinIO -- a real presigned PUT
+# through this proxy came back 403 SignatureDoesNotMatch (verified with a
+# real boto3-signed PUT, poc/tls_lan_https/README.md). `$http_host` is the
+# exact incoming Host header, port included -- that's what belongs here (and
+# in every other server block below, for the same reason, even where it
+# isn't cryptographically load-bearing like it is here). No body-size cap
+# (evidence files can be large, streamed straight through) and a long read
+# timeout, mirroring the :443 server's /api/evidence/upload/ location above.
+# -----------------------------------------------------------------------
+server {
+    listen 9444 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/kronos/tls/server.crt;
+    ssl_certificate_key /etc/kronos/tls/server.key;
+    ssl_protocols       TLSv1.3;
+
+    client_max_body_size 0;
+
+    location / {
+        proxy_pass         http://minio:9000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+
+# -----------------------------------------------------------------------
+# :5602 -- OpenSearch Dashboards (Timeline tab iframe embed). An HTTP
+# iframe embedded from an HTTPS SPA is blocked as mixed content, so this
+# has to be HTTPS whenever the SPA itself is; Dashboards' own plain-HTTP
+# :5601 (used internally, e.g. by scripts/provision_dashboards_tenant.sh)
+# is untouched.
+# -----------------------------------------------------------------------
+server {
+    listen 5602 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/kronos/tls/server.crt;
+    ssl_certificate_key /etc/kronos/tls/server.key;
+    ssl_protocols       TLSv1.3;
+
+    location / {
+        proxy_pass         http://opensearch-dashboards:5601;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_read_timeout 60s;
+    }
+}

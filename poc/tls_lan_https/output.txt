@@ -1,0 +1,88 @@
+=== step-ca: root CA fetch + leaf cert issuance (via tls-init) ===
+tls-init: fetching root CA from https://step-ca:9000
+The root certificate has been saved in /certs/root_ca.crt.
+tls-init: root CA verified, fingerprint 81ea1eeb79e1efc4dd33c8a91c93c929565ebd9e947afd81287b2bf32798b0af
+tls-init: requesting leaf certificate for 192.168.5.13 (+ localhost, 127.0.0.1)
+[32m[32m✔[0m [1mProvisioner[0m[1m:[0m admin (JWK) [kid: br6ShjVxI8K0kubFW30VlAeuOSGDZcVqVF-hTRNSLPg]
+[32m[32m✔[0m [1mCA[0m[1m:[0m https://step-ca:9000
+[32m[32m✔[0m [1mCertificate[0m[1m:[0m /certs/server.crt
+[32m[32m✔[0m [1mPrivate Key[0m[1m:[0m /certs/server.key
+tls-init: complete -- /certs/server.crt, server.key, root_ca.crt
+tls-init: fetching root CA from https://step-ca:9000
+The root certificate has been saved in /certs/root_ca.crt.
+tls-init: root CA verified, fingerprint 81ea1eeb79e1efc4dd33c8a91c93c929565ebd9e947afd81287b2bf32798b0af
+tls-init: requesting leaf certificate for 192.168.5.13 (+ localhost, 127.0.0.1)
+[32m[32m✔[0m [1mProvisioner[0m[1m:[0m admin (JWK) [kid: br6ShjVxI8K0kubFW30VlAeuOSGDZcVqVF-hTRNSLPg]
+[32m[32m✔[0m [1mCA[0m[1m:[0m https://step-ca:9000
+[32m[32m✔[0m [1mCertificate[0m[1m:[0m /certs/server.crt
+[32m[32m✔[0m [1mPrivate Key[0m[1m:[0m /certs/server.key
+tls-init: complete -- /certs/server.crt, server.key, root_ca.crt
+tls-init: fetching root CA from https://step-ca:9000
+The root certificate has been saved in /certs/root_ca.crt.
+tls-init: root CA verified, fingerprint 81ea1eeb79e1efc4dd33c8a91c93c929565ebd9e947afd81287b2bf32798b0af
+tls-init: requesting leaf certificate for 192.168.5.13 (+ localhost, 127.0.0.1)
+[32m[32m✔[0m [1mProvisioner[0m[1m:[0m admin (JWK) [kid: br6ShjVxI8K0kubFW30VlAeuOSGDZcVqVF-hTRNSLPg]
+[32m[32m✔[0m [1mCA[0m[1m:[0m https://step-ca:9000
+[32m[32m✔[0m [1mCertificate[0m[1m:[0m /certs/server.crt
+[32m[32m✔[0m [1mPrivate Key[0m[1m:[0m /certs/server.key
+tls-init: complete -- /certs/server.crt, server.key, root_ca.crt
+tls-init: fetching root CA from https://step-ca:9000
+The root certificate has been saved in /certs/root_ca.crt.
+tls-init: root CA verified, fingerprint 81ea1eeb79e1efc4dd33c8a91c93c929565ebd9e947afd81287b2bf32798b0af
+tls-init: requesting leaf certificate for 192.168.5.13 (+ localhost, 127.0.0.1)
+[32m[32m✔[0m [1mProvisioner[0m[1m:[0m admin (JWK) [kid: br6ShjVxI8K0kubFW30VlAeuOSGDZcVqVF-hTRNSLPg]
+[32m[32m✔[0m [1mCA[0m[1m:[0m https://step-ca:9000
+[32m[32m✔[0m [1mCertificate[0m[1m:[0m /certs/server.crt
+[32m[32m✔[0m [1mPrivate Key[0m[1m:[0m /certs/server.key
+tls-init: complete -- /certs/server.crt, server.key, root_ca.crt
+
+=== nginx :443 -- SPA/backend TLS termination ===
+{ [5 bytes data]
+{ [1210 bytes data]
+{ [1 bytes data]
+{ [21 bytes data]
+{ [1098 bytes data]
+{ [78 bytes data]
+{ [52 bytes data]
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384 / X25519MLKEM768 / id-ecPublicKey
+*   subject: CN=192.168.5.13
+*   issuer: O=KronOS Internal CA; CN=KronOS Internal CA Intermediate CA
+* using HTTP/1.x
+> GET /healthz HTTP/1.1
+{ [5 bytes data]
+{ [57 bytes data]
+{ [57 bytes data]
+< HTTP/1.1 200 OK
+{ [15 bytes data]
+{"status":"ok"}
+
+=== nginx :8443 -- Keycloak reverse proxy ===
+issuer: https://192.168.5.13:8443/realms/kronos
+authorization_endpoint: https://192.168.5.13:8443/realms/kronos/protocol/openid-connect/auth
+
+=== nginx :9444 -- MinIO reverse proxy, real presigned PUT (SigV4 through the proxy) ===
+[notice] To update, run: pip install --upgrade pip
+bucket create: An error occurred (BucketAlreadyOwnedByYou) when calling the CreateBucket operation: Your previous request to create the named bucket succeeded and you already own it.
+PRESIGNED_URL: https://192.168.5.13:9444/kronos-poc-tls-test/tls-lan-https-poc-object.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260724%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260724T195423Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&X-Amz-Signature=20510d34f12b26f91ad994c1ba83fb8794df039cc8e6a99360651982ebe48c59
+PUT result: 200 OK (verified above), GET-back content matched exactly what was PUT
+
+=== nginx :5602 -- OpenSearch Dashboards reverse proxy ===
+HTTP 302 (302 = real redirect to Keycloak login)
+
+=== combined: full stack status ===
+NAME                             STATUS
+docker-celery-beat-1             Up 11 minutes
+docker-celery-worker-1           Up 11 minutes
+docker-celery-worker-plaso-1     Up 11 minutes
+docker-clamav-1                  Up 12 minutes (healthy)
+docker-keycloak-1                Up 12 minutes (healthy)
+docker-kronos-backend-1          Up 11 minutes
+docker-minio-1                   Up 12 minutes (healthy)
+docker-nginx-1                   Up About a minute
+docker-opensearch-1              Up 12 minutes (healthy)
+docker-opensearch-dashboards-1   Up 11 minutes (healthy)
+docker-postgres-1                Up 12 minutes (healthy)
+docker-redis-1                   Up 12 minutes (healthy)
+docker-step-ca-1                 Up 12 minutes (healthy)
+docker-tsa-1                     Up 12 minutes
+docker-tusd-1                    Up 11 minutes

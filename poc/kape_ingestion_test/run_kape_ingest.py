@@ -22,7 +22,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "auth_flow"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "full_ingestion_test"))
 import auth_helpers  # noqa: E402
 
-auth_helpers.KC = "http://localhost:8080"
+# Must be the canonical LAN HTTPS origin (matches KC_HOSTNAME), not
+# http://localhost:8080 -- real, reproduced finding (poc/tls_lan_https/):
+# Keycloak's login form always posts to the single pinned KC_HOSTNAME
+# origin regardless of where the flow started, so starting anywhere else
+# loses the session-restart cookie across that domain jump ("Restart
+# login cookie not found", a real 400 reproduced and root-caused, not
+# assumed). See frontend/src/keycloak.ts's resolveKeycloakUrl() for the
+# same fix applied to the real frontend.
+auth_helpers.KC = "https://192.168.5.13:8443"
+# Real, reproduced regression fix (poc/tls_lan_https/): the login form
+# now redirects mid-flow to the LAN HTTPS Keycloak origin, which needs the
+# stack's own step-ca root trusted or httpx raises CERTIFICATE_VERIFY_FAILED.
+auth_helpers.trust_dev_stack_step_ca()
 
 BACKEND = "http://localhost:8000"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -83,7 +95,10 @@ def main() -> None:
         upload = resp.json()
         evidence_id = upload["evidenceId"]
 
-        put_resp = httpx.put(upload["presignedUrl"], content=data, timeout=120)
+        # verify=auth_helpers.CA_BUNDLE: same real fix as
+        # poc/full_ingestion_test/run_ingest.py -- presignedUrl is now the
+        # LAN-HTTPS MinIO proxy, needs the step-ca root trusted.
+        put_resp = httpx.put(upload["presignedUrl"], content=data, timeout=120, verify=auth_helpers.CA_BUNDLE)
         log(f"{label} PUT to MinIO ->", put_resp.status_code)
         put_resp.raise_for_status()
 

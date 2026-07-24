@@ -14,8 +14,43 @@ import { decodeJwtPayload } from './utils/jwt'
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
+/**
+ * Keycloak's browser-facing URL. NOT derived from window.location, on
+ * purpose — a real, reproduced regression found while testing this: the
+ * server pins ONE canonical KC_HOSTNAME (docker-compose.dev.yml), and
+ * every URL Keycloak renders for the interactive login flow (the login
+ * form's own POST target, "action=...") is that literal, single value —
+ * regardless of which origin the browser used to reach the *first* page
+ * of the flow. If the SPA sent keycloak-js to a *different* origin per
+ * client (e.g. http://localhost:8080 for local access, the LAN HTTPS
+ * proxy for everyone else), the initial GET lands on that origin and sets
+ * Keycloak's session-restart cookie there — but the rendered login form
+ * then POSTs to the one-and-only KC_HOSTNAME origin instead. Cookies
+ * never cross domains, so that POST arrives with no session cookie at
+ * all, and Keycloak rejects it outright: "Restart login cookie not
+ * found." Confirmed directly (poc/tls_lan_https/): a scripted login
+ * starting on http://localhost:8080 got exactly this 400; the identical
+ * flow starting directly on the canonical https://192.168.5.13:8443
+ * origin completed successfully end-to-end.
+ *
+ * The fix is not a smarter derivation — there isn't a client-side rule
+ * that produces the right answer per-origin, because Keycloak's own
+ * answer isn't per-origin either. Every client must start the flow at
+ * the exact same KC_HOSTNAME value. VITE_KEYCLOAK_URL is a real build-time
+ * arg (docker-compose.dev.yml passes it to Dockerfile.frontend, sourced
+ * from the same KRONOS_LAN_HOST the server side's KC_HOSTNAME/tls-init
+ * SAN are built from) precisely because this has to be one fixed value,
+ * not something recomputed per request. The bare fallback below only
+ * matters for `npm run dev` against a separate, non-Docker local Keycloak
+ * setup, where localhost:8080 is that setup's own (single, consistent)
+ * KC_HOSTNAME too.
+ */
+function resolveKeycloakUrl(): string {
+  return (import.meta.env.VITE_KEYCLOAK_URL as string | undefined) || 'http://localhost:8080'
+}
+
 export const keycloak = new Keycloak({
-  url: import.meta.env.VITE_KEYCLOAK_URL as string,
+  url: resolveKeycloakUrl(),
   realm: import.meta.env.VITE_KEYCLOAK_REALM as string,
   clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID as string,
 })
