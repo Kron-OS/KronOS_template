@@ -56,7 +56,22 @@ KRONOS_LAN_HOST=10.0.0.5 docker compose -f docker/docker-compose.dev.yml up -d -
 several other places in `docker-compose.dev.yml` — `MINIO_PUBLIC_ENDPOINT`,
 `OPENSEARCH_DASHBOARDS_URL`, the nginx CSP vars, ufw rules below — still
 have the literal `192.168.5.13` hardcoded rather than reading
-`KRONOS_LAN_HOST` too. Update those to match if you change the host; this
+`KRONOS_LAN_HOST` too. **`docker/keycloak/kronos-realm.json`'s
+`kronos-frontend` client `redirectUris`/`webOrigins`/
+`post.logout.redirect.uris` also need the new address added by hand** —
+Keycloak rejects any `redirect_uri` not on that allowlist outright
+("Invalid parameter: redirect_uri"), a real bug found and fixed while
+testing this against an actual LAN client (see
+`poc/tls_lan_https/README.md`). After changing the realm file, Keycloak
+needs a real restart to pick it up (`KC_DB: dev-mem` — its dev database
+is in-memory, imported fresh on every boot), which also resets the
+org/Dashboards-tenant state living in that same in-memory DB:
+```bash
+docker compose -f docker/docker-compose.dev.yml up -d --force-recreate keycloak
+# wait for it to report healthy, then:
+docker compose -f docker/docker-compose.dev.yml up -d --force-recreate keycloak-init dashboards-tenant-init
+```
+Update those to match if you change the host; this
 wasn't fully centralized in this pass.)
 
 ## Firewall

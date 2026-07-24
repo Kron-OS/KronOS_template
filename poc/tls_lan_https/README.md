@@ -146,6 +146,50 @@ This is the same real-world flow a browser goes through — login, upload,
 autonomous processing — now proven correct end-to-end on the LAN-HTTPS
 path, not just individually-passing component checks.
 
+## Third bug found + fixed: Keycloak client rejected the LAN redirect URI
+
+**Found from a real client's browser console**, after the fixes above were
+already live: `keycloak-js` correctly built a login request with
+`redirect_uri=https://192.168.5.13/cases` (matching the LAN origin the SPA
+was actually loaded from), and Keycloak rejected it outright —
+**"We are sorry... Invalid parameter: redirect_uri"** (400 on the
+`/protocol/openid-connect/auth` request itself, before the login form ever
+rendered).
+
+**Root cause:** `docker/keycloak/kronos-realm.json`'s `kronos-frontend`
+client only ever declared `localhost`/`127.0.0.1` origins in its
+`redirectUris`/`webOrigins`/`post.logout.redirect.uris` — there was no
+LAN entry, so Keycloak's own redirect-URI allowlist check (a real,
+mandatory OAuth2 security control, not a formality) blocked the request
+before it could reach the login form at all.
+
+**Fix:** added `https://192.168.5.13/*` to `redirectUris`,
+`https://192.168.5.13` to `webOrigins`, and the matching entry to
+`post.logout.redirect.uris`, mirroring the existing `localhost` pattern
+exactly. Since `KC_DB: dev-mem` (Keycloak's dev database is in-memory),
+this realm-file change only takes effect after Keycloak itself is
+restarted (`docker compose up -d --force-recreate keycloak`) — which
+also resets the org/Dashboards-tenant state that lives in the same
+in-memory DB, so `keycloak-init`/`dashboards-tenant-init` need
+`--force-recreate` too, to re-provision them against the fresh realm.
+
+**Verified fixed** two ways: a scripted login using the exact
+`redirect_uri` the real browser sent (`https://192.168.5.13/cases`)
+succeeded; then the full `poc/full_ingestion_test/run_ingest.py` flow was
+re-run against the freshly-reprovisioned org, all 5 uploads and finalizes
+still succeeding.
+
+**A fourth report (CSP `frame-src` violation) turned out not to be a live
+bug**: the CSP header nginx serves right now already includes
+`https://192.168.5.13:8443` — checked directly (`curl -sI ... | grep
+content-security-policy`) against the exact same JS bundle hash
+(`index-C19fF7Lh.js`) the client's console referenced. Most likely a
+stale cached page load from before the LAN-HTTPS nginx config finished
+rolling out. Flagged here rather than silently assumed, since it wasn't
+independently reproduced against the current server state — if it
+recurs after a hard refresh, it needs a fresh look, not a re-assertion
+that it's "just cache."
+
 ## Running it again
 
 ```bash
