@@ -16,12 +16,14 @@ export default defineConfig(({ mode }) => {
   // -- a real regression for anyone running the frontend outside the
   // Docker build (which always supplies it as a build arg) without first
   // copying .env.example to .env. Falls back to the exact same
-  // http://localhost:8080 default frontend/keycloak.ts's own
-  // resolveKeycloakUrl() already uses when VITE_KEYCLOAK_URL is unset, so
-  // an unconfigured local `vite dev`/`vite build` behaves identically to
-  // before this change, real .env/build-arg values still take priority.
+  // https://kronos.local:8443 default frontend/src/keycloak.ts's own
+  // resolveKeycloakUrl() already uses when VITE_KEYCLOAK_URL is unset
+  // (kronos.local is the sole authorized domain, docs/lan-dev-access.md
+  // -- no localhost fallback), so an unconfigured local `vite dev`/
+  // `vite build` behaves identically to the Docker build's own default;
+  // real .env/build-arg values still take priority.
   if (!loadEnv(mode, process.cwd(), 'VITE_').VITE_KEYCLOAK_URL) {
-    process.env.VITE_KEYCLOAK_URL = 'http://localhost:8080'
+    process.env.VITE_KEYCLOAK_URL = 'https://kronos.local:8443'
   }
 
   return {

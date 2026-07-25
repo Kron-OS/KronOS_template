@@ -21,24 +21,27 @@
       confirmed correct, because THIS tag's own frame-src never granted
       the LAN Keycloak origin no matter what NGINX said.
 
-      %VITE_KEYCLOAK_URL% is Vite's own real, built-in HTML env
-      interpolation (confirmed against the installed Vite 8 source,
-      htmlEnvHook) -- resolves to the exact same value
+      kronos.local is the sole authorized domain (docs/lan-dev-access.md)
+      -- no localhost/127.0.0.1/bare-IP entries anywhere in this app's
+      origin restrictions. %VITE_KEYCLOAK_URL% is Vite's own real,
+      built-in HTML env interpolation (confirmed against the installed
+      Vite 8 source, htmlEnvHook) -- resolves to the exact same value
       docker-compose.dev.yml passes as a build arg (matching NGINX's
-      KEYCLOAK_PUBLIC_URL) for the Docker build, or whatever
-      frontend/.env sets locally for `vite dev`/`vite preview` (defaults
-      to http://localhost:8080 there too, via frontend/.env.example) --
-      one source of truth instead of a second, independently-maintained
-      hardcoded copy that can silently drift out of sync with the real
-      one. Dashboards (:5601) and MinIO/backend (:8000/:9000) origins
-      below are left as local-dev-only fallback values -- not wired to a
-      build arg the way Keycloak's is, since this tag's whole job is only
-      to keep a *non-proxied* local dev session non-broken, not to mirror
-      NGINX's real policy exactly.
+      KEYCLOAK_PUBLIC_URL), one source of truth instead of a second,
+      independently-maintained hardcoded copy that can silently drift out
+      of sync with the real one (frontend/vite.config.ts supplies the
+      https://kronos.local:8443 default when nothing else sets it, e.g. a
+      plain `vite dev`/`vite build` with no frontend/.env present).
+      Dashboards/MinIO/backend origins below are likewise kronos.local, not
+      wired to their own build args the way Keycloak's is (this tag's job
+      is only to keep a *non-proxied* local dev session non-broken, not to
+      mirror NGINX's real policy exactly) -- if you're running a fully
+      local, non-Docker `vite preview` against services that aren't
+      actually reachable at kronos.local, override these by hand.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' %VITE_KEYCLOAK_URL% http://localhost:5601; connect-src 'self' %VITE_KEYCLOAK_URL% http://localhost:8000 http://localhost:9000; object-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' %VITE_KEYCLOAK_URL% https://kronos.local:5602; connect-src 'self' %VITE_KEYCLOAK_URL% https://kronos.local https://kronos.local:9444; object-src 'none'"
     />
     <title>frontend</title>
   </head>

@@ -13,10 +13,14 @@ opensearch_security.openid.connect_url: "http://keycloak:8080/realms/kronos/.wel
 opensearch_security.openid.client_id: "opensearch-dashboards"
 opensearch_security.openid.client_secret: "opensearch-dashboards-secret"
 # Must match the real Keycloak client's registered redirectUris
-# (docker/keycloak/kronos-realm.json: ["http://localhost:5601/*"]) --
+# (docker/keycloak/kronos-realm.json: ["https://kronos.local:5602/*"]) --
 # without this, Dashboards computes its own self-referential redirect_uri
-# from server.host (0.0.0.0 by default), which Keycloak rejects.
-opensearch_security.openid.base_redirect_url: "http://localhost:5601"
+# from server.host (0.0.0.0 by default), which Keycloak rejects. Set to
+# kronos.local:5602 (nginx's TLS-terminated reverse proxy in front of
+# Dashboards' own internal :5601 -- see docker-compose.dev.yml's nginx
+# service), not Dashboards' own internal port: redirect_uri must exactly
+# match whatever origin the browser actually completed the OIDC flow at.
+opensearch_security.openid.base_redirect_url: "https://kronos.local:5602"
 # Narrowed from the plugin's own default ("openid profile email address
 # phone"): the real production kronos-realm.json has no
 # profile/email/address/phone client-scope objects at all (only the custom

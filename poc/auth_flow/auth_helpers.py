@@ -45,12 +45,12 @@ REALM = "kronos"
 CLIENT_ID = "kronos-frontend"
 REDIRECT_URI = "http://localhost:5173/callback"
 # Real, reproduced regression found while re-verifying the LAN-HTTPS nginx
-# work (see poc/tls_lan_https/): the dev stack's Keycloak now pins
-# KC_HOSTNAME to the LAN HTTPS address, so a login flow started against
-# http://localhost:8080 (poc/full_ingestion_test/login.py,
-# poc/kape_ingestion_test/*.py) gets redirected mid-flow to
-# https://192.168.5.13:8443 for the interactive login-form step --
-# httpx's default `verify=True` (system trust store) doesn't know the
+# work (see poc/tls_lan_https/): the dev stack's Keycloak pins KC_HOSTNAME
+# to https://kronos.local:8443 (the sole authorized domain,
+# docs/lan-dev-access.md), so a login flow against it
+# (poc/full_ingestion_test/login.py, poc/kape_ingestion_test/*.py) lands
+# on the interactive login-form step there -- httpx's default
+# `verify=True` (system trust store) doesn't know the
 # stack's own step-ca root, so that redirect failed with
 # CERTIFICATE_VERIFY_FAILED. Callers that cross into the LAN HTTPS origin
 # set this to the real root_ca.crt path (e.g. `docker cp

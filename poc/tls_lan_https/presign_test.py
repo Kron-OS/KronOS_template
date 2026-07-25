@@ -5,7 +5,7 @@ from botocore.config import Config
 # a client built against the PUBLIC endpoint, used only to sign URLs.
 presign_client = boto3.client(
     "s3",
-    endpoint_url="https://192.168.5.13:9444",
+    endpoint_url="https://kronos.local:9444",
     aws_access_key_id="kronos_minio",
     aws_secret_access_key="kronos_minio_dev_password",
     config=Config(signature_version="s3v4"),
@@ -22,7 +22,7 @@ key = "tls-lan-https-poc-object.txt"
 # internal-equivalent port instead, which is also 9000, plain HTTP).
 admin_client = boto3.client(
     "s3",
-    endpoint_url="http://192.168.5.13:9000",
+    endpoint_url="http://kronos.local:9000",
     aws_access_key_id="kronos_minio",
     aws_secret_access_key="kronos_minio_dev_password",
     config=Config(signature_version="s3v4"),

@@ -270,14 +270,55 @@ browser would send) succeeds end-to-end against the rebuilt image; the
 served page's meta tag and NGINX's header now agree exactly; frontend's
 33 tests, lint, and build all still pass clean.
 
+## Migration: LAN IP → `kronos.local` as the sole authorized domain
+
+Everything above was originally built and verified against the raw LAN IP
+(`192.168.5.13`) with `localhost`/`127.0.0.1` kept as a parallel,
+independently-restricted path (CSP pairs, dual Keycloak client entries,
+etc.). That dual-path design is exactly what caused two of the bugs
+above (the meta-tag/header CSP drift, and would have caused a third had
+the realm's `localhost:5173` entries also drifted). Migrated to a single
+canonical domain, `kronos.local`, everywhere an origin is restricted:
+CORS allowlists, CSP source lists, Keycloak's `redirectUris`/`webOrigins`,
+and the TLS certificate's SAN now all grant `kronos.local` exclusively —
+see `docs/lan-dev-access.md` for the full list of files touched and why.
+
+**mDNS attempted, not achieved on this host:** `.local` names are meant
+to resolve via mDNS (zero client config) — `avahi-daemon` is installed
+and running here, but publishing a static `kronos.local` entry
+(`/etc/avahi/hosts`) failed with a real `Local name collision`, even
+after restricting avahi to the one physical LAN interface and disabling
+IPv6 (ruling out a self-collision across this host's many Docker
+bridge/veth interfaces — the most common cause). Something else already
+answers for that name on the network segment; couldn't fully diagnose
+without `avahi-browse` (not installed, would need `apt install
+avahi-utils`). Reverted the avahi config changes cleanly rather than
+leave the daemon logging a permanent error. `/etc/hosts` is the fallback
+used for actual verification below, and is what `docs/lan-dev-access.md`
+documents as the primary mechanism — genuinely reliable, just not
+zero-config the way mDNS would have been.
+
+**Verified fixed** with the same real end-to-end flow as the fifth bug
+above, now entirely over `kronos.local`: fresh `down --volumes` +
+rebuild + `up -d`, all 18 services healthy on the first try, cert SAN
+confirmed to be `kronos.local` only (`openssl s_client ... | openssl x509
+-noout -text`), all four HTTPS origins respond correctly, and a full real
+run of `poc/full_ingestion_test/run_ingest.py` (login → case → 5 real
+evidence uploads through the HTTPS MinIO proxy → autonomous pipeline)
+took all 5 items to `COMPLETE`. Frontend build/lint/test all still pass,
+including the no-`.env` fallback case (confirmed the built `index.html`
+falls back to `https://kronos.local:8443`, not the old
+`http://localhost:8080`).
+
 ## Running it again
 
 ```bash
-# from a running docker-compose.dev.yml stack:
+# from a running docker-compose.dev.yml stack (kronos.local resolving,
+# see docs/lan-dev-access.md):
 docker cp docker-tls-init-1:/certs/root_ca.crt ./root_ca.crt
-curl --cacert root_ca.crt https://192.168.5.13/healthz
-curl --cacert root_ca.crt https://192.168.5.13:8443/realms/kronos/.well-known/openid-configuration
-curl -o /dev/null -w '%{http_code}\n' --cacert root_ca.crt https://192.168.5.13:5602/auth/openid/login
+curl --cacert root_ca.crt https://kronos.local/healthz
+curl --cacert root_ca.crt https://kronos.local:8443/realms/kronos/.well-known/openid-configuration
+curl -o /dev/null -w '%{http_code}\n' --cacert root_ca.crt https://kronos.local:5602/auth/openid/login
 docker run --rm --network host -v "$PWD":/work -w /work python:3.12-slim \
   sh -c "pip install -q boto3 && python3 presign_test.py"
 # then curl --upload-file <file> --cacert root_ca.crt "<PRESIGNED_URL from output>"

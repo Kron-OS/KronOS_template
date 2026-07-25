@@ -38,16 +38,19 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       # Browsers PUT evidence directly to MinIO (presigned URLs), which is
-      # cross-origin whenever the app and MinIO are on different ports (e.g.
-      # http://localhost vs http://localhost:9000 in dev). MinIO's S3-style
-      # PutBucketCors bucket API returns "NotImplemented" on this image —
-      # CORS here is a server-level setting instead. Must match the origins
-      # in CORS_ALLOWED_ORIGINS on kronos-backend below. The LAN origin
-      # (https://192.168.5.13, nginx-terminated) is the browser's actual
-      # origin even though the presigned PUT itself lands on MinIO via
-      # nginx's :9444 reverse proxy (see nginx service below) -- CORS is
-      # about the requesting page's origin, not the request's destination.
-      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost,http://localhost:5173,http://localhost:4173,https://192.168.5.13"
+      # cross-origin (different port) from the app's own origin. MinIO's
+      # S3-style PutBucketCors bucket API returns "NotImplemented" on this
+      # image -- CORS here is a server-level setting instead. Must match
+      # CORS_ALLOWED_ORIGINS on kronos-backend below. kronos.local
+      # (nginx-terminated) is the browser's actual origin even though the
+      # presigned PUT itself lands on MinIO via nginx's :9444 reverse
+      # proxy (see nginx service below) -- CORS is about the requesting
+      # page's origin, not the request's destination. kronos.local is the
+      # sole authorized domain -- see docs/lan-dev-access.md; no
+      # localhost/127.0.0.1/bare-IP entries, by design (real bug history
+      # in poc/tls_lan_https/README.md: every one of those used to be a
+      # second, independently-maintained value that drifted out of sync).
+      MINIO_API_CORS_ALLOW_ORIGIN: "https://kronos.local"
     volumes:
       - minio_dev_data:/data
     ports:
@@ -194,20 +197,22 @@ services:
       # endpoints return 404 and the healthcheck below never passes.
       KC_HEALTH_ENABLED: "true"
       # Pin Keycloak's canonical issuer/frontend URL so it's stable regardless
-      # of which Host a request arrives on (browser via localhost:8080 or the
-      # LAN-facing https://192.168.5.13:8443 nginx proxy, backend
-      # /auth/refresh + keycloak-init via internal keycloak:8080). Without it,
-      # start-dev derives the issuer per-request, so a browser-minted refresh
-      # token (iss=whatever Host it used) is rejected when the backend
-      # redeems it via keycloak:8080 -> 401 invalid_token on /auth/refresh.
-      # Pointed at the LAN HTTPS address (not localhost) -- verified with a
-      # real throwaway Keycloak 26.2 container that pinning KC_HOSTNAME to a
-      # foreign https:// value does not reject requests arriving on a
-      # different Host (e.g. localhost:8080 direct); it only fixes what
-      # `iss`/`authorization_endpoint` say. Must exactly match kronos-backend's
-      # KEYCLOAK_PUBLIC_URL below (the value the backend validates `iss`
-      # against) regardless of which origin a given browser session used.
-      KC_HOSTNAME: https://192.168.5.13:8443
+      # of which Host a request arrives on (backend /auth/refresh +
+      # keycloak-init via internal keycloak:8080 still work unaffected).
+      # Without it, start-dev derives the issuer per-request, so a
+      # browser-minted refresh token (iss=whatever Host it used) is
+      # rejected when the backend redeems it via keycloak:8080 -> 401
+      # invalid_token on /auth/refresh. kronos.local is the sole
+      # authorized domain (docs/lan-dev-access.md) -- every client starts
+      # the interactive login flow here, full stop; there is no
+      # localhost-direct special case anymore (real bug history:
+      # poc/tls_lan_https/README.md -- Keycloak's login form always POSTs
+      # to this one pinned origin regardless of where the flow started,
+      # so a client starting anywhere else loses its session-restart
+      # cookie crossing that domain boundary). Must exactly match
+      # kronos-backend's KEYCLOAK_PUBLIC_URL below (the value the backend
+      # validates `iss` against).
+      KC_HOSTNAME: https://kronos.local:8443
       # Standard Keycloak reverse-proxy setting -- trusts X-Forwarded-* from
       # the nginx :8443 proxy in front of it (see nginx service) instead of
       # only ever seeing its own internal keycloak:8080 request line.
@@ -215,13 +220,16 @@ services:
       # Real, reproduced finding (poc/opensearch_dashboards_sso/ work,
       # ported here): with KC_HOSTNAME pinned above, EVERY discovery-doc
       # endpoint -- including token_endpoint -- is that same fixed
-      # "localhost:8080" string, verbatim, regardless of who fetched the
-      # doc. That's correct for the browser-facing authorization_endpoint,
-      # but Dashboards' own server-side token-exchange call (container ->
-      # container, via its connect_url reaching "keycloak:8080") then tries
-      # to open a real TCP connection to "localhost:8080" *from inside its
-      # own container*, which means itself, not Keycloak --
-      # ECONNREFUSED, confirmed by direct reproduction. Verified directly
+      # "kronos.local:8443" string, verbatim, regardless of who fetched
+      # the doc. That's correct for the browser-facing
+      # authorization_endpoint, but Dashboards' own server-side
+      # token-exchange call (container -> container, via its connect_url
+      # reaching "keycloak:8080") then tries to open a real TCP
+      # connection to "kronos.local:8443" *from inside its own
+      # container* -- which doesn't even resolve there (kronos.local is
+      # a LAN-facing name published outside Docker's network, not in
+      # Docker's internal DNS) -- confirmed by direct reproduction.
+      # Verified directly
       # (a real, throwaway Keycloak 26.2 container, discovery doc fetched
       # both from the host and from a sibling container) that
       # hostname-backchannel-dynamic keeps issuer/authorization_endpoint
@@ -367,7 +375,7 @@ services:
       timeout: 10s
       retries: 5
 
-  # Issues one multi-SAN leaf cert (LAN IP + localhost + 127.0.0.1) from the
+  # Issues a leaf cert for kronos.local (the sole authorized domain) from the
   # step-ca instance above, for nginx's TLS termination -- see
   # docs/lan-dev-access.md for why nginx alone terminates TLS for every
   # browser-facing origin (Keycloak/MinIO/Dashboards reverse-proxied behind
@@ -383,7 +391,7 @@ services:
     environment:
       STEP_CA_URL: https://step-ca:9000
       STEP_CA_PASSWORD: ${STEP_CA_PASSWORD:-step_ca_dev_password}
-      TLS_SAN_PRIMARY: ${KRONOS_LAN_HOST:-192.168.5.13}
+      TLS_SAN_PRIMARY: ${KRONOS_LAN_HOST:-kronos.local}
       TLS_CERT_DIR: /certs
     volumes:
       - tls_certs:/certs
@@ -425,14 +433,13 @@ services:
       # browser-facing URL is HTTPS. src/external/startup.py's
       # `_minio_scheme` derivation was fixed to honor an explicit scheme
       # here rather than always reusing MINIO_USE_TLS for both endpoints.
-      MINIO_PUBLIC_ENDPOINT: https://192.168.5.13:9444
+      MINIO_PUBLIC_ENDPOINT: https://kronos.local:9444
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
-      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above — same origins,
-      # enforced independently by each server (backend API vs. presigned
-      # MinIO uploads).
-      CORS_ALLOWED_ORIGINS: "http://localhost,http://localhost:5173,http://localhost:4173,https://192.168.5.13"
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. kronos.local
+      # is the sole authorized domain (docs/lan-dev-access.md).
+      CORS_ALLOWED_ORIGINS: "https://kronos.local"
       OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: admin
@@ -445,21 +452,18 @@ services:
       # service) rather than opensearch-dashboards' own plain-HTTP :5601 —
       # an HTTP iframe embedded from an HTTPS SPA is blocked as mixed
       # content, so this must be HTTPS whenever the SPA itself is.
-      OPENSEARCH_DASHBOARDS_URL: https://192.168.5.13:5602
+      OPENSEARCH_DASHBOARDS_URL: https://kronos.local:5602
       KEYCLOAK_URL: http://keycloak:8080
-      # Pinned to the LAN HTTPS address for both localhost- and LAN-origin
-      # sessions alike -- verified empirically (throwaway Keycloak 26.2
-      # container, KC_HOSTNAME set to a foreign https:// value) that Keycloak
-      # does not reject requests arriving on a different host/port than
-      # KC_HOSTNAME; it only fixes `iss`/`authorization_endpoint` to this
-      # value regardless of how the request arrived, while
-      # KC_HOSTNAME_BACKCHANNEL_DYNAMIC keeps `token_endpoint` resolving
-      # per-caller. A localhost session's keycloak-js still builds its own
-      # login URL directly from VITE_KEYCLOAK_URL (http://localhost:8080,
-      # a secure context by browser spec regardless of TLS) — this value
-      # only has to match whatever `iss` Keycloak actually mints, for the
-      # backend's own JWT validation, which is single-valued either way.
-      KEYCLOAK_PUBLIC_URL: https://192.168.5.13:8443
+      # kronos.local is the sole authorized domain for every client --
+      # verified empirically (throwaway Keycloak 26.2 container) that
+      # Keycloak does not reject requests arriving on a different
+      # host/port than KC_HOSTNAME; it only fixes `iss`/
+      # `authorization_endpoint` to this value regardless of how the
+      # request arrived, while KC_HOSTNAME_BACKCHANNEL_DYNAMIC keeps
+      # `token_endpoint` resolving per-caller. This value only has to
+      # match whatever `iss` Keycloak actually mints, for the backend's
+      # own JWT validation.
+      KEYCLOAK_PUBLIC_URL: https://kronos.local:8443
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
@@ -616,23 +620,24 @@ services:
       # frontend/src/keycloak.ts's resolveKeycloakUrl() for the real,
       # reproduced reason this can't be derived client-side instead).
       args:
-        VITE_KEYCLOAK_URL: https://${KRONOS_LAN_HOST:-192.168.5.13}:8443
+        VITE_KEYCLOAK_URL: https://${KRONOS_LAN_HOST:-kronos.local}:8443
     # Browser-facing origin for each service's CSP allowance — rendered into
     # the CSP header by nginx's envsubst templating (see
     # docker/nginx/nginx.conf.template). These are Docker-host-published
     # ports, reachable from the browser on the host machine; contrast with
     # the Docker-internal hostnames (e.g. opensearch-dashboards:5601) used
-    # elsewhere in this file for container-to-container traffic.
-    # Each placeholder is now a *space-separated pair* -- localhost (plain
-    # HTTP, unchanged) and the LAN HTTPS origin -- substituted verbatim into
-    # nginx.conf.template's CSP source lists (e.g. "frame-src 'self'
-    # ${KEYCLOAK_PUBLIC_URL} ..."), which accept multiple space-separated
-    # origins natively. No template change needed for this.
+    # elsewhere in this file for container-to-container traffic. kronos.local
+    # is the sole authorized domain (docs/lan-dev-access.md) -- no
+    # localhost/127.0.0.1/bare-IP entries. Real bug history for why this
+    # matters (poc/tls_lan_https/README.md): every one of these used to be
+    # a second, independently-hardcoded value (here, in
+    # frontend/index.html's <meta> CSP tag, and in the Keycloak realm's
+    # client allowlists) that silently drifted out of sync with each other.
     environment:
-      KEYCLOAK_PUBLIC_URL: "http://localhost:8080 https://192.168.5.13:8443"
-      BACKEND_PUBLIC_URL: "http://localhost:8000 https://192.168.5.13"
-      MINIO_PUBLIC_URL: "http://localhost:9000 https://192.168.5.13:9444"
-      OPENSEARCH_DASHBOARDS_URL: "http://localhost:5601 https://192.168.5.13:5602"
+      KEYCLOAK_PUBLIC_URL: "https://kronos.local:8443"
+      BACKEND_PUBLIC_URL: "https://kronos.local"
+      MINIO_PUBLIC_URL: "https://kronos.local:9444"
+      OPENSEARCH_DASHBOARDS_URL: "https://kronos.local:5602"
     volumes:
       - tls_certs:/etc/kronos/tls:ro
     ports:

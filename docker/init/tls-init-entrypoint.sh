@@ -37,10 +37,16 @@ step ca root "${TLS_CERT_DIR}/root_ca.crt" \
   --force
 echo "tls-init: root CA verified, fingerprint ${ROOT_FINGERPRINT}"
 
-echo "tls-init: requesting leaf certificate for ${TLS_SAN_PRIMARY} (+ localhost, 127.0.0.1)"
+# kronos.local is the sole authorized domain (docs/lan-dev-access.md) --
+# no localhost/127.0.0.1 SANs. Every client, on the same machine or on
+# the LAN, uses this one name; see frontend/src/keycloak.ts's
+# resolveKeycloakUrl() for why a per-client localhost special case is
+# actively wrong, not just redundant (a real, reproduced Keycloak
+# session-cookie bug, poc/tls_lan_https/README.md).
+echo "tls-init: requesting leaf certificate for ${TLS_SAN_PRIMARY}"
 step ca certificate "${TLS_SAN_PRIMARY}" \
   "${TLS_CERT_DIR}/server.crt" "${TLS_CERT_DIR}/server.key" \
-  --san "${TLS_SAN_PRIMARY}" --san localhost --san 127.0.0.1 \
+  --san "${TLS_SAN_PRIMARY}" \
   --provisioner admin \
   --password-file <(printf '%s' "${STEP_CA_PASSWORD}") \
   --ca-url "${STEP_CA_URL}" \

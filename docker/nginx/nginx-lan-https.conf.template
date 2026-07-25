@@ -18,7 +18,7 @@
 # internal/external TLS split, and there's no existing Dashboards-TLS
 # pattern anywhere in this repo to build on). Cert/key issued by the
 # tls-init service (docker/init/Dockerfile.tls-init) from this stack's own
-# step-ca, SAN = the LAN IP + localhost + 127.0.0.1, one cert for every
+# step-ca, SAN = kronos.local only (the sole authorized domain), one cert for every
 # port below since TLS certs are host-scoped, not port-scoped.
 
 # -----------------------------------------------------------------------

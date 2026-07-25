@@ -69,24 +69,14 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:5173/*",
-        "http://localhost/*",
-        "http://localhost:4173/*",
-        "http://127.0.0.1/*",
-        "http://127.0.0.1:5173/*",
-        "https://192.168.5.13/*"
+        "https://kronos.local/*"
       ],
       "webOrigins": [
-        "http://localhost:5173",
-        "http://localhost",
-        "http://localhost:4173",
-        "http://127.0.0.1",
-        "http://127.0.0.1:5173",
-        "https://192.168.5.13"
+        "https://kronos.local"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost/*##http://127.0.0.1/*##http://127.0.0.1:5173/*##https://192.168.5.13/*"
+        "post.logout.redirect.uris": "https://kronos.local/*"
       },
       "protocolMappers": [
         {
@@ -125,10 +115,10 @@
       "directAccessGrantsEnabled": false,
       "secret": "opensearch-dashboards-secret",
       "redirectUris": [
-        "http://localhost:5601/*"
+        "https://kronos.local:5602/*"
       ],
       "webOrigins": [
-        "http://localhost:5601"
+        "https://kronos.local:5602"
       ]
     },
     {

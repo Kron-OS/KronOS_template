@@ -1,18 +1,17 @@
-"""Real scripted PKCE login against the live dev-stack Keycloak (localhost:8080),
-reusing poc/auth_flow/auth_helpers.py's real_browser_login. Only the KC base
-URL differs from that PoC (dev stack publishes Keycloak on localhost:8080, not
-the PoC's own throwaway 18082); every other constant (realm, client_id,
-redirect_uri) matches the real kronos-realm.json / docker-compose.dev.yml.
+"""Real scripted PKCE login against the live dev-stack Keycloak
+(https://kronos.local:8443), reusing poc/auth_flow/auth_helpers.py's
+real_browser_login. kronos.local is the sole authorized domain for this
+app (docs/lan-dev-access.md) -- KC, REDIRECT_URI, and CA trust are all
+overridden below to match; every other constant (realm, client_id) matches
+the real kronos-realm.json / docker-compose.dev.yml.
 
-Must use "localhost", NOT "127.0.0.1" (unlike the PoC this borrows from):
-confirmed by real run that dev Keycloak's KC_HOSTNAME is pinned to the literal
-string "http://localhost:8080" (docker-compose.dev.yml, needed for a separate
-refresh-token issuer-stability fix), so every login-form "action" URL Keycloak
-renders is hardcoded to host "localhost" regardless of which host the initial
-GET was sent to. Starting the flow on 127.0.0.1 sets session cookies for
-domain 127.0.0.1, which then aren't resent on the POST to the "localhost"
-form action, producing a real "Restart login cookie not found" error --
-reproduced once, fixed by switching the whole flow to "localhost".
+Real, reproduced finding this depends on (poc/tls_lan_https/README.md):
+Keycloak's login form always POSTs to the single pinned KC_HOSTNAME origin
+regardless of where the flow started -- starting anywhere else loses the
+session-restart cookie across that domain jump ("Restart login cookie not
+found", a real 400). Every client must start at the exact same canonical
+origin; see frontend/src/keycloak.ts's resolveKeycloakUrl() for the same
+fix applied to the real frontend.
 
 Prints the access token to stdout (last line) so callers can capture it; all
 other diagnostics go to stderr.
@@ -28,18 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "auth_flow"))
 
 import auth_helpers  # noqa: E402
 
-# Must be the canonical LAN HTTPS origin (matches KC_HOSTNAME), not
-# http://localhost:8080 -- real, reproduced finding (poc/tls_lan_https/):
-# Keycloak's login form always posts to the single pinned KC_HOSTNAME
-# origin regardless of where the flow started, so starting anywhere else
-# loses the session-restart cookie across that domain jump ("Restart
-# login cookie not found", a real 400 reproduced and root-caused, not
-# assumed). See frontend/src/keycloak.ts's resolveKeycloakUrl() for the
-# same fix applied to the real frontend.
-auth_helpers.KC = "https://192.168.5.13:8443"
+auth_helpers.KC = "https://kronos.local:8443"
+# Must be an origin Keycloak's kronos-frontend client actually allows
+# (docker/keycloak/kronos-realm.json's redirectUris -- kronos.local only).
+auth_helpers.REDIRECT_URI = "https://kronos.local/cases"
 # Real, reproduced regression fix (poc/tls_lan_https/): the login form
-# now redirects mid-flow to the LAN HTTPS Keycloak origin, which needs the
-# stack's own step-ca root trusted or httpx raises CERTIFICATE_VERIFY_FAILED.
+# lives on an HTTPS origin signed by the stack's own step-ca, which needs
+# to be trusted or httpx raises CERTIFICATE_VERIFY_FAILED.
 auth_helpers.trust_dev_stack_step_ca()
 
 if __name__ == "__main__":
