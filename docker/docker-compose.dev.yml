@@ -150,10 +150,21 @@ services:
     # see poc/opensearch_dashboards_sso/README.md finding #7). The plugin's
     # own env-var mechanism doesn't cover opensearch_security.* settings at
     # all (same README, finding #3), hence the file instead of more env vars.
+    # Guarded by `grep -q` before appending: opensearch_dashboards.yml lives
+    # in this container's own writable layer, which survives a plain
+    # `docker stop`/`docker start` (only `docker compose down` + `up`
+    # recreates it) -- an unguarded append re-ran on every restart, and by
+    # the second restart js-yaml crashed at boot with "duplicated mapping
+    # key", which is indistinguishable from the outside from a normal
+    # startup failure (nginx just sees a 502, since Dashboards never binds
+    # :5601). Reproduced for real: `docker start`-ing the already-crashing
+    # container showed the exact YAMLException, and the config pulled out
+    # via `docker cp` had 5 duplicate copies of the appended block.
     entrypoint: ["bash", "-c"]
     command:
       - >
-        cat /tmp/opensearch_security_openid.yml >> /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml &&
+        grep -q '^opensearch_security.auth.type:' /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml ||
+        cat /tmp/opensearch_security_openid.yml >> /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml;
         exec /usr/share/opensearch-dashboards/opensearch-dashboards-docker-entrypoint.sh opensearch-dashboards
     volumes:
       - ./opensearch-dashboards/opensearch_security_openid.yml:/tmp/opensearch_security_openid.yml:ro
@@ -167,6 +178,20 @@ services:
       # when trying to obtain the endpoints from your IdP"), confirmed by
       # directly reproducing it (started without Keycloak present).
       keycloak: { condition: service_healthy }
+    # `depends_on: condition: service_healthy` above only gates `docker
+    # compose up` -- `docker compose restart` bypasses depends_on entirely,
+    # so a plain `restart` can bring this container back before Keycloak's
+    # own healthcheck passes again. Dashboards' security plugin does one
+    # eager, non-retrying discovery-doc fetch at plugin-setup time (see the
+    # depends_on comment above); losing that race is fatal ("FATAL: Failed
+    # when trying to obtain the endpoints from your IdP") and, with no
+    # restart policy, the container then just sits Exited forever.
+    # Reproduced for real: `docker compose restart` crashed this exact way,
+    # confirmed via a real ECONNREFUSED to Keycloak's container IP in the
+    # captured log. `on-failure` makes Docker retry on its own backoff until
+    # Keycloak is reachable again, self-healing without an operator having
+    # to notice and manually `up`/`start` it.
+    restart: on-failure
     healthcheck:
       # Real, reproduced finding: /api/status itself now requires auth
       # (401) with the security-dashboards plugin genuinely enabled -- a

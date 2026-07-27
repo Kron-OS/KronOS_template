@@ -10,7 +10,7 @@ import { ErrorBanner } from './ErrorBanner'
 // registry hives, pf for prefetch, and txt for Nginx's .log/.txt gate.
 const ALLOWED_EXTENSIONS = new Set([
   'evtx', 'json', 'jsonl', 'csv', 'log', 'txt', 'gz', 'zip',
-  'sqlite', 'sqlite3', 'db', 'dat', 'hve', 'hiv', 'pf',
+  'sqlite', 'sqlite3', 'db', 'dat', 'hve', 'hiv', 'pf', 'e01', 'ex01',
 ])
 
 const BLOCKED_EXTENSIONS = new Set([
@@ -77,6 +77,16 @@ async function validateFileMagic(file: File): Promise<{ ok: boolean; reason?: st
   if (bytes[0] === 0x72 && bytes[1] === 0x65 && bytes[2] === 0x67 && bytes[3] === 0x66) {
     return { ok: true }
   }
+
+  // EWF disk image (E01/Ex01) — KAPE/forensic-imaging tool output, routed
+  // server-side through PlasoParser's dfVFS whole-image path (backend's
+  // MagicByteValidator, src/application/validation.py, already accepts this
+  // signature by magic bytes alone with no extension gate at all). This
+  // client-side check was never added when that backend support shipped
+  // (commit 44a9089), so real .E01 files were rejected here as "Unsupported
+  // extension: .e01" before ever reaching the server.
+  const ewfMagic = [0x45, 0x56, 0x46, 0x09, 0x0d, 0x0a, 0xff, 0x00]
+  if (ewfMagic.every((b, i) => bytes[i] === b)) return { ok: true }
 
   // Text-based formats (json, jsonl, csv, log, txt) — check for printable ASCII start
   if (['json', 'jsonl', 'csv', 'log', 'txt'].includes(ext)) {
@@ -231,7 +241,7 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
         >
           <span>Click to select files</span>
           <span className="text-xs text-gray-600">
-            evtx, json, jsonl, csv, log, txt, gz, zip, sqlite, dat, hve, hiv, pf
+            evtx, json, jsonl, csv, log, txt, gz, zip, sqlite, dat, hve, hiv, pf, E01
           </span>
           <input
             id="evidence-file-input"

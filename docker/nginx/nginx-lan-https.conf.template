@@ -238,5 +238,22 @@ server {
         proxy_set_header   Upgrade           $http_upgrade;
         proxy_set_header   Connection        "upgrade";
         proxy_read_timeout 60s;
+        # Real, reproduced finding: the OIDC callback
+        # (/auth/openid/login?...&code=...) sets the security-dashboards
+        # plugin's sealed session cookie(s) -- security_authentication plus
+        # the _oidc1.._oidc5 split/clear set -- which alone run ~3.9-4.0 KB
+        # of response headers, right at the edge of nginx's default
+        # proxy_buffer_size (one memory page, 4k on this platform). Verified
+        # by scripting the real analyst PKCE-less login through the live
+        # stack repeatedly and measuring the raw header bytes on the actual
+        # callback response (~3954-3976 B observed); because the sealed
+        # cookie's exact length varies slightly run-to-run (random IV/salt
+        # in the Fe26.2 seal), it intermittently crosses 4096 B and nginx
+        # then logs "upstream sent too big header" and returns a real 502 --
+        # this is what made the bug look non-deterministic. A wider buffer
+        # removes the margin entirely rather than narrowing the window.
+        proxy_buffer_size       16k;
+        proxy_buffers           4 16k;
+        proxy_busy_buffers_size 16k;
     }
 }
