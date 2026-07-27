@@ -36,6 +36,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def case_index_pattern_id(case_id: uuid.UUID) -> str:
+    """The deterministic saved-object id for a case's timeline index pattern.
+
+    Shared with cases.py's get_dashboard_url() (poc/dashboards_embed's
+    autoload follow-up) so the id this class provisions and the id the
+    embed URL points at can never drift apart.
+    """
+    return f"kronos-case-{case_id}-timeline"
+
+
 class DashboardsIndexPatternProvisioner:
     """Auto-provisions the OpenSearch Dashboards index pattern for a case's timeline."""
 
@@ -50,7 +60,7 @@ class DashboardsIndexPatternProvisioner:
         creation on a transient Dashboards outage. A real user can still
         create the pattern manually via the wizard if this never runs.
         """
-        pattern_id = f"kronos-case-{case_id}-timeline"
+        pattern_id = case_index_pattern_id(case_id)
         title = f"kronos-{org_alias}-case-{case_id}-*"
         tenant = f"kronos-{org_alias}"
         try:

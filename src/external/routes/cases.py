@@ -16,7 +16,10 @@ from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
-from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
+from src.adapter.opensearch.dashboards_client import (
+    DashboardsIndexPatternProvisioner,
+    case_index_pattern_id,
+)
 from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
@@ -302,23 +305,50 @@ async def get_dashboard_url(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     assert_case_access(tenant, case)
 
-    index_pattern = f"kronos-{case.org_alias}-case-{case_id}-*"
-    ks_filter = (
-        f"(filters:!(('$state':(store:globalState),"
-        f"meta:(alias:!n,disabled:!f,index:'{index_pattern}',"
+    # Real finding (poc/dashboards_embed/autoload_verification/): data-explorer
+    # (the app data-explorer/discover actually runs inside) uses HASH-based
+    # routing for its own Redux state -- a top-level `?_a=`/`?_g=` query
+    # param (the previous approach) is silently ignored; the app's own
+    # router overwrites it from getPreloadedState() (whatever index pattern
+    # was last viewed) before the page ever renders. The real, working
+    # state lives in the URL FRAGMENT as `#?_a=...&_g=...&_q=...`, confirmed
+    # by loading a real hand-built URL in a real logged-in browser and
+    # reading back what the app's own router settled on. `_a.metadata`
+    # (src/plugins/data_explorer/public/utils/state_management/metadata_slice.ts
+    # at tag 2.11.1) is what selects the index pattern by its real
+    # saved-object id (case_index_pattern_id(), same id
+    # DashboardsIndexPatternProvisioner provisions) — no separate `_a` key
+    # for the query/filter; that lives in `_q` instead, confirmed against
+    # the same real 2.11.1 source.
+    pattern_id = case_index_pattern_id(case_id)
+    q_state = (
+        f"(filters:!(('$state':(store:appState),"
+        f"meta:(alias:!n,disabled:!f,index:'{pattern_id}',"
         f"key:kronos.case_id,negate:!f,params:(query:'{case_id}'),type:phrase),"
         f"query:(match_phrase:(kronos.case_id:'{case_id}')))),"
-        f"time:(from:now-30d,to:now))"
+        f"query:(language:kuery,query:''))"
     )
-    params = urllib.parse.urlencode(
+    g_state = "(filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))"
+    a_state = (
+        f"(discover:(columns:!(_source),isDirty:!f,sort:!()),"
+        f"metadata:(indexPattern:'{pattern_id}',view:discover))"
+    )
+    top_params = urllib.parse.urlencode(
         {
             "embed": "true",
             "show-top-menu": "false",
             "show-query-input": "true",
             "show-time-filter": "true",
-            "_g": ks_filter,
+            # Real finding (same PoC): resolveTenant() in the security
+            # plugin's server-side tenant_resolver.ts checks a
+            # security_tenant query param BEFORE falling back to the
+            # session cookie -- setting it here makes the org's tenant
+            # resolve on the very first request, skipping the "Select your
+            # tenant" dialog real users otherwise always hit first.
+            "security_tenant": f"kronos-{case.org_alias}",
         }
     )
+    hash_state = f"_a={a_state}&_g={g_state}&_q={q_state}"
     # dashboards_url is browser-facing (see src/config.py) — load Dashboards
     # directly from its own origin rather than proxying it through nginx.
     # Dashboards emits absolute asset URLs (/ui/*, /bootstrap.js) rooted at
@@ -327,7 +357,7 @@ async def get_dashboard_url(
     # (see docker/nginx/nginx.conf.template) so the browser is allowed to
     # frame it.
     base = dashboards_url.rstrip("/")
-    url = f"{base}/app/data-explorer/discover?{params}"
+    url = f"{base}/app/data-explorer/discover?{top_params}#?{hash_state}"
     return DashboardUrlOut(url=url)
 
 
