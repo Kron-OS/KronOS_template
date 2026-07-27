@@ -101,10 +101,29 @@ def main() -> None:
                 # have no preferred_username claim -- confirmed empirically
                 # in poc/opensearch_dashboards_sso/.
                 "subject_key": "sub",
-                # roles_key=org_id reuses the exact same flat claim DLS
-                # already templates via ${attr.jwt.org_id} below -- a
-                # Dashboards openid session gets DLS enforcement for free.
-                "roles_key": "org_id",
+                # roles_key=dashboard_roles, NOT bare org_id. A prior version
+                # of this comment claimed roles_key=org_id gave "DLS
+                # enforcement for free" -- that was wrong: it conflated the
+                # DLS filter template (${attr.jwt.org_id} below, which does
+                # read the JWT directly regardless of roles_key) with the
+                # role-mapping MATCH, which needs backend_roles to intersect
+                # kronos-generic-tenant's mapping (realm role names, not org
+                # ids). A bare org_id roles_key meant every real Dashboards
+                # SSO session's backend_roles was just [org_id] -- never
+                # equal to "analyst"/"case-lead"/etc, so that role could
+                # never actually be granted (real users got 403 on every
+                # kronos-* read). dashboard_roles (kronos-dashboard-roles
+                # client scope, docker/keycloak/kronos-realm.json) merges
+                # BOTH the org_id AND the realm role names into one
+                # multivalued claim via Keycloak 26.2's own same-claim-name
+                # merge behavior (verified against real 26.2.0 source +
+                # a real Keycloak+OpenSearch run, see
+                # poc/opensearch_dashboards_dls/README.md) -- satisfies both
+                # this rolesmapping and kronos-dash-${org_alias}'s
+                # backend_roles=[org_id] mapping from one token. The org_id
+                # claim itself is untouched, so the DLS filter below is
+                # unaffected by this change.
+                "roles_key": "dashboard_roles",
                 "openid_connect_url": f"{kc_base}/realms/{kc_realm}/.well-known/openid-configuration",
             },
         },

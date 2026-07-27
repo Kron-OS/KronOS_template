@@ -95,8 +95,16 @@ Belt-and-braces: DLS on `kronos.org_id`, via one generic, org-agnostic
 OpenSearch role (`kronos-generic-tenant`) templated as
 `${attr.jwt.org_id}` — resolved per-request from each caller's own flat
 `org_id` JWT claim (`kronos-org-id` client scope), not a role created per
-org. A per-org role was tried first and found to require a nested
-`organization` JWT claim that OpenSearch's DLS templating cannot resolve;
+org. Granting the role itself requires the caller's `backend_roles` to
+intersect a realm-role-name list, which for OpenSearch Dashboards SSO
+sessions comes from a *separate* combined claim (`kronos-dashboard-roles`
+client scope → `dashboard_roles`, merging the org_id and realm roles into
+one multivalued value via Keycloak's own same-claim-name mapper merging) —
+not the bare `org_id` claim, which alone can never match a realm role name.
+See `poc/opensearch_dashboards_dls/README.md` for why this is two claims,
+not one, and how the merge is verified. A per-org role was tried first and
+found to require a nested `organization` JWT claim that OpenSearch's DLS
+templating cannot resolve;
 verified end-to-end (including new orgs/members needing zero further
 OpenSearch-side provisioning) in `poc/keycloak_opensearch_dls/`.
 

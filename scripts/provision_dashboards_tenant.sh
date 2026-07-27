@@ -17,10 +17,13 @@
 #   role, ever, templated by ${attr.jwt.org_id}), Dashboards tenant
 #   isolation genuinely needs one real tenant + one real role + one real
 #   rolesmapping per org, each pointing at that org's own org_id as the
-#   role-mapping's backend_role -- the SAME flat org_id JWT claim
-#   (kronos-org-id client scope) becomes the backend_role automatically,
-#   because the openid authc domain's roles_key is configured to point at
-#   that same claim (scripts/provision_opensearch_security.py).
+#   role-mapping's backend_role -- the org's own org_id value becomes one
+#   of the backend_roles automatically, because the openid authc domain's
+#   roles_key points at kronos-dashboard-roles' combined dashboard_roles
+#   claim (org_id + realm roles merged, see
+#   poc/opensearch_dashboards_dls/README.md), which always contains the
+#   caller's org_id regardless of which realm role(s) they also have
+#   (scripts/provision_opensearch_security.py).
 #
 # Required env:
 #   OS_BASE             OpenSearch base URL, e.g. https://opensearch:9200

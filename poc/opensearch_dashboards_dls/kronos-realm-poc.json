@@ -1,0 +1,247 @@
+{
+  "realm": "kronos",
+  "displayName": "KronOS",
+  "enabled": true,
+  "organizationsEnabled": true,
+  "registrationAllowed": false,
+  "sslRequired": "external",
+  "accessTokenLifespan": 900,
+  "passwordPolicy": "length(12) and notUsername and notEmail",
+  "roles": {
+    "realm": [
+      {
+        "name": "analyst",
+        "description": "Forensic analyst",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "case-lead",
+        "description": "Case lead",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "kronos-frontend",
+      "name": "KronOS Frontend",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost/*"],
+      "webOrigins": ["http://localhost"]
+    },
+    {
+      "clientId": "opensearch-dashboards-poc",
+      "name": "OpenSearch Dashboards (PoC)",
+      "description": "Real fix under test is scoped to ONLY this client -- kronos-dashboard-roles is NOT a default scope on kronos-frontend, proving the combined claim doesn't leak into the SPA's/backend's own tokens.",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "opensearch-dashboards-poc-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost/*"],
+      "webOrigins": ["http://localhost"],
+      "defaultClientScopes": [
+        "web-origins",
+        "kronos-roles",
+        "kronos-sub",
+        "organization",
+        "kronos-org-id",
+        "kronos-dashboard-roles"
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "kronos-roles",
+      "description": "Flattens realm roles to a top-level 'roles' claim (OpenSearch roles_key requirement).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-sub",
+      "description": "Includes sub (user ID) in all token types including userinfo",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "organization",
+      "description": "Organization context for multi-tenancy (the existing, nested-shape claim -- kept for realism, NOT used for DLS templating).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "organization-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-organization-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "organization",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "jsonType.label": "JSON",
+            "multivalued": "true",
+            "addOrganizationId": "true",
+            "addOrganizationAttributes": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-org-id",
+      "description": "Flat, top-level org_id claim backed by a plain user attribute -- what DLS templating (${attr.jwt.org_id}) actually uses, unchanged by this PoC's fix.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "org-id-attribute-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-dashboard-roles",
+      "description": "Combined org_id+roles claim for OpenSearch roles_key (see README.md).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "dashboard-roles-from-realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "dashboard_roles",
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "dashboard-roles-from-org-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "dashboard_roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "roles",
+    "profile",
+    "email",
+    "web-origins",
+    "kronos-roles",
+    "kronos-sub",
+    "organization",
+    "kronos-org-id"
+  ],
+  "users": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "username": "user-a1",
+      "email": "user-a1@kronos.dev",
+      "firstName": "User",
+      "lastName": "A1",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "DlsUserA1#2026", "temporary": false}],
+      "realmRoles": ["analyst"]
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "username": "user-a2",
+      "email": "user-a2@kronos.dev",
+      "firstName": "User",
+      "lastName": "A2",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "DlsUserA2#2026", "temporary": false}],
+      "realmRoles": ["analyst"]
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000003",
+      "username": "user-b1",
+      "email": "user-b1@kronos.dev",
+      "firstName": "User",
+      "lastName": "B1",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "DlsUserB1#2026", "temporary": false}],
+      "realmRoles": ["case-lead"]
+    }
+  ]
+}
