@@ -16,9 +16,11 @@ from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
+from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
 from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
+    get_dashboards_index_pattern_provisioner,
     get_evidence_repository,
     get_opensearch_dashboards_url,
     get_tenant_context,
@@ -117,6 +119,9 @@ async def create_case(
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    dashboards_provisioner: Annotated[
+        DashboardsIndexPatternProvisioner | None, Depends(get_dashboards_index_pattern_provisioner)
+    ] = None,
 ) -> CaseOut:
     """Create a new investigation case for the caller's org."""
     case = Case(
@@ -144,6 +149,15 @@ async def create_case(
         actor_user_id=tenant.user_id,
         details={"title": body.title},
     )
+
+    # Best-effort: without this, Discover has no saved index pattern to open
+    # and every real user lands on Dashboards' "create an index pattern
+    # first" empty state (poc/opensearch_dashboards_dls/README.md). Failures
+    # are logged, not raised — a transient Dashboards outage must not block
+    # case creation.
+    if dashboards_provisioner is not None:
+        await dashboards_provisioner.ensure_case_index_pattern(tenant.org_alias, case.case_id)
+
     return _to_case_out(case)
 
 

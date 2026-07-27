@@ -118,6 +118,15 @@ class Settings(BaseSettings):
         default=None,
         description="Browser-facing OS Dashboards base URL for timeline iframe embed, e.g. http://localhost:5601",
     )
+    # Docker-internal counterpart of opensearch_dashboards_url above, for the
+    # backend's own server-to-server saved-objects calls (index-pattern
+    # auto-provisioning, DashboardsIndexPatternProvisioner) — never
+    # browser-facing, so no TLS/nginx hop needed, e.g.
+    # http://opensearch-dashboards:5601 in dev.
+    opensearch_dashboards_internal_url: str | None = Field(
+        default=None,
+        description="Docker-internal OS Dashboards base URL for backend saved-objects provisioning",
+    )
 
     # RFC 3161 TSA
     tsa_url: str | None = Field(

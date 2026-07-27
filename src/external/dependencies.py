@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
+from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.artifact_repository import (
     ArtifactRepository,
@@ -59,6 +60,7 @@ _opensearch_client: AbstractTimelineIndex = InMemoryOpenSearchClient()
 _max_upload_bytes: int = 1_073_741_824
 _presigned_expiry: int = 900
 _opensearch_dashboards_url: str | None = None
+_dashboards_index_pattern_provisioner: DashboardsIndexPatternProvisioner | None = None
 _timestamp_service: RFC3161TimestampService | None = None
 _default_retention_days: int = 365
 _opensearch_security_enabled: bool = False
@@ -97,6 +99,10 @@ def get_artifact_repository() -> ArtifactRepository:
 
 def get_opensearch_dashboards_url() -> str | None:
     return _opensearch_dashboards_url
+
+
+def get_dashboards_index_pattern_provisioner() -> DashboardsIndexPatternProvisioner | None:
+    return _dashboards_index_pattern_provisioner
 
 
 def get_evidence_storage() -> EvidenceStorage:
@@ -378,6 +384,7 @@ def configure_dependencies(
     max_upload_bytes: int = 1_073_741_824,
     presigned_expiry_seconds: int = 3600,
     opensearch_dashboards_url: str | None = None,
+    dashboards_index_pattern_provisioner: DashboardsIndexPatternProvisioner | None = None,
     timestamp_service: RFC3161TimestampService | None = None,
     default_retention_days: int = 365,
     opensearch_security_enabled: bool = False,
@@ -388,6 +395,7 @@ def configure_dependencies(
     global _max_upload_bytes, _presigned_expiry, _case_repository
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
     global _opensearch_security_enabled, _artifact_repository
+    global _dashboards_index_pattern_provisioner
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -408,6 +416,7 @@ def configure_dependencies(
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
     _opensearch_dashboards_url = opensearch_dashboards_url
+    _dashboards_index_pattern_provisioner = dashboards_index_pattern_provisioner
     _timestamp_service = timestamp_service
     _default_retention_days = default_retention_days
     _opensearch_security_enabled = opensearch_security_enabled
@@ -419,7 +428,7 @@ def reset_dependencies() -> None:
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
-    global _artifact_repository
+    global _artifact_repository, _dashboards_index_pattern_provisioner
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -433,6 +442,7 @@ def reset_dependencies() -> None:
     _max_upload_bytes = 1_073_741_824
     _presigned_expiry = 900
     _opensearch_dashboards_url = None
+    _dashboards_index_pattern_provisioner = None
     _timestamp_service = None
     _default_retention_days = 365
     _opensearch_security_enabled = False

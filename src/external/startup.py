@@ -115,6 +115,24 @@ async def wire_dependencies_async() -> None:
 
     timestamp_service = RFC3161TimestampService(settings.tsa_url) if settings.tsa_url else None
 
+    # Auto-provisions each case's OpenSearch Dashboards index pattern on
+    # creation (DashboardsIndexPatternProvisioner) — None (no-op) when the
+    # internal Dashboards URL isn't configured, same "honestly disabled"
+    # pattern as timestamp_service above.
+    from src.adapter.opensearch.dashboards_client import (  # noqa: PLC0415
+        DashboardsIndexPatternProvisioner,
+    )
+
+    dashboards_provisioner = (
+        DashboardsIndexPatternProvisioner(
+            base_url=settings.opensearch_dashboards_internal_url,
+            admin_username=settings.opensearch_username.get_secret_value(),
+            admin_password=settings.opensearch_password.get_secret_value(),
+        )
+        if settings.opensearch_dashboards_internal_url
+        else None
+    )
+
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
@@ -126,6 +144,7 @@ async def wire_dependencies_async() -> None:
         max_upload_bytes=settings.max_upload_bytes,
         presigned_expiry_seconds=settings.presigned_url_expiry_seconds,
         opensearch_dashboards_url=settings.opensearch_dashboards_url,
+        dashboards_index_pattern_provisioner=dashboards_provisioner,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
         opensearch_security_enabled=settings.opensearch_security_enabled,

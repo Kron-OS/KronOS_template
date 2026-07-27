@@ -478,6 +478,14 @@ services:
       # an HTTP iframe embedded from an HTTPS SPA is blocked as mixed
       # content, so this must be HTTPS whenever the SPA itself is.
       OPENSEARCH_DASHBOARDS_URL: https://kronos.local:5602
+      # Docker-internal counterpart of the browser-facing URL above, for the
+      # backend's own server-to-server saved-objects calls
+      # (DashboardsIndexPatternProvisioner, src/adapter/opensearch/dashboards_client.py)
+      # -- auto-provisions each case's index pattern on creation so Discover
+      # has something to open immediately (poc/opensearch_dashboards_dls/README.md's
+      # "you need to create an index pattern first" gap). Plain HTTP, no
+      # nginx/TLS hop needed for a container-to-container call.
+      OPENSEARCH_DASHBOARDS_INTERNAL_URL: http://opensearch-dashboards:5601
       KEYCLOAK_URL: http://keycloak:8080
       # kronos.local is the sole authorized domain for every client --
       # verified empirically (throwaway Keycloak 26.2 container) that
