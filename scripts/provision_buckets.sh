@@ -10,6 +10,14 @@ MINIO_ROOT_USER="${MINIO_ROOT_USER:-kronos_minio}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-CHANGE_ME}"
 ORG_ALIAS="${ORG_ALIAS:-dev}"
 KMS_KEY="${KMS_KEY:-kronos-evidence}"
+# COMP-5: 365 days is the spec-authoritative default
+# (Project_Specifications.md §2 "Retention Period"), matching
+# src/config.py's Settings.minio_default_retention_days (also 365 as of this
+# fix — it previously disagreed at 2555/7y). This bucket-level value is only
+# the *default*; per-object retention is set explicitly at promotion time
+# (EvidenceIntakeService._promote -> Evidence.object_lock_until), which is
+# where a genuine per-case override would be threaded through in future.
+EVIDENCE_RETENTION_DAYS="${EVIDENCE_RETENTION_DAYS:-365}"
 
 echo "Provisioning buckets for org: ${ORG_ALIAS}"
 
@@ -28,7 +36,7 @@ mc encrypt set sse-kms "$KMS_KEY" "${MINIO_ALIAS}/${BUCKET_PREFIX}-${ORG_ALIAS}-
 # Evidence bucket — WORM + SSE-KMS (encrypted WORM, spec §2 + §5)
 mc mb --with-lock "${MINIO_ALIAS}/${BUCKET_PREFIX}-${ORG_ALIAS}" 2>/dev/null || echo "evidence bucket already exists"
 mc encrypt set sse-kms "$KMS_KEY" "${MINIO_ALIAS}/${BUCKET_PREFIX}-${ORG_ALIAS}" 2>/dev/null || true
-mc retention set --default COMPLIANCE 365d "${MINIO_ALIAS}/${BUCKET_PREFIX}-${ORG_ALIAS}" 2>/dev/null || true
+mc retention set --default COMPLIANCE "${EVIDENCE_RETENTION_DAYS}d" "${MINIO_ALIAS}/${BUCKET_PREFIX}-${ORG_ALIAS}" 2>/dev/null || true
 
 # SIEM cold archive — 7-year compliance retention (SEC 17a-4)
 mc mb --with-lock "${MINIO_ALIAS}/kronos-siem-archive" 2>/dev/null || echo "siem-archive bucket already exists"

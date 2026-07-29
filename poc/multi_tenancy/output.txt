@@ -1,0 +1,52 @@
+/home/reca/venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+{"event": "clamav_unreachable_dev_fallback", "level": "warning", "logger": "src.external.dependencies", "timestamp": "2026-07-21T21:25:39.210958Z", "clamd_host": "localhost", "clamd_port": 3310, "environment": "development"}
+{"event": "startup: dependencies wired (async)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-07-21T21:25:39.211097Z"}
+
+case_repository wired as: PostgresCaseRepository
+evidence_repository wired as: PostgresEvidenceRepository
+[PASS] evidence_repository is the real Postgres-backed implementation
+[PASS] case_repository is ALSO Postgres-backed (expected to FAIL today -- see README)
+{"event": "HTTP Request: GET http://localhost:18081/realms/kronos/protocol/openid-connect/certs \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.250708Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T21:25:39.291679Z", "event_id": "b5f7ff62-ce64-4f77-8178-ce69376888a9", "event_type": "case.created", "seq": 5}
+{"event": "HTTP Request: POST http://testserver/api/cases \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.292129Z"}
+
+create case (acme) -> 201 {"id":"15f0f714-b3ed-4c14-ae25-d01840a6d1d2","orgId":"64d0d9f6-e0f9-45b9-a5bc-87a744c11159","title":"Acme Incident 001","description":"PoC case for acme","reference":null,"status":"open","createdAt":"2026-07-21T21:25:39.255756+00:00","updatedAt":"2026-07-21T21:25:39.255758+00:00","createdBy":"e6aea9
+[PASS] acme case-lead can create a case in their own org
+{"event": "HTTP Request: GET http://testserver/api/cases/15f0f714-b3ed-4c14-ae25-d01840a6d1d2 \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.296889Z"}
+
+beta reads acme's case by ID -> 404 {"detail":"Case not found"}
+[PASS] beta CANNOT read acme's case by ID (expect 404, not 200) -- got 404
+{"event": "HTTP Request: DELETE http://testserver/api/cases/15f0f714-b3ed-4c14-ae25-d01840a6d1d2 \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.301100Z"}
+beta deletes acme's case -> 404 {"detail":"Case not found"}
+[PASS] beta CANNOT delete acme's case (expect 404, not 204)
+{"event": "HTTP Request: GET http://testserver/api/cases/15f0f714-b3ed-4c14-ae25-d01840a6d1d2 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.304795Z"}
+[PASS] acme's case still exists after beta's delete attempt
+{"event": "HTTP Request: GET http://testserver/api/cases \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.312248Z"}
+
+beta's case list: 200, 0 case(s)
+[PASS] acme's case_id does not appear in beta's case list
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T21:25:39.320051Z", "event_id": "d7699d98-7ca3-4439-89b1-4926da204d03", "event_type": "case.created", "seq": 3}
+{"event": "HTTP Request: POST http://testserver/api/cases \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.320388Z"}
+
+create case (beta) -> 201
+[PASS] beta case-lead can create a case in their own org
+{"event": "HTTP Request: GET http://testserver/api/cases/d9823460-c1d7-438c-8bf1-e844430ebb90 \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.324049Z"}
+[PASS] acme CANNOT read beta's case by ID either (isolation is symmetric)
+{"event": "HTTP Request: POST http://testserver/api/cases \"HTTP/1.1 403 Forbidden\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.325405Z"}
+
+analyst (wrong role) creates case -> 403
+[PASS] analyst role cannot create a case (RBAC, separate from org isolation)
+{"event": "presigned_url_generated", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-21T21:25:39.347659Z", "evidence_id": "01447881-89fb-417f-ab9c-5e98c7e8728e", "bucket": "kronos-evidence-acme-quarantine", "key": "acme/15f0f714-b3ed-4c14-ae25-d01840a6d1d2/01447881-89fb-417f-ab9c-5e98c7e8728e/acme-evidence.txt"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T21:25:39.356951Z", "event_id": "47403d4a-2264-4ce0-9261-87501dc183c2", "event_type": "evidence.upload_requested", "seq": 6}
+{"event": "upload_requested", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-21T21:25:39.357060Z", "evidence_id": "01447881-89fb-417f-ab9c-5e98c7e8728e", "org_id": "64d0d9f6-e0f9-45b9-a5bc-87a744c11159", "extra_filename": "acme-evidence.txt"}
+{"event": "HTTP Request: POST http://testserver/api/evidence/upload/request \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.357410Z"}
+
+acme requests evidence upload -> 201 {"evidenceId":"01447881-89fb-417f-ab9c-5e98c7e8728e","presignedUrl":"http://localhost:19200/kronos-evidence-acme-quarantine/acme/15f0f714-b3ed-4c14-ae25-d01840a6d1d2/01447881-89fb-417f-ab9c-5e98c7e8728e/acme-evidence.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260721%2Fus-
+{"event": "HTTP Request: GET http://testserver/api/cases/15f0f714-b3ed-4c14-ae25-d01840a6d1d2/evidence \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T21:25:39.361920Z"}
+beta lists acme's case evidence -> 404 {"detail":"Case not found"}
+[PASS] beta CANNOT list evidence under acme's case
+
+============================================================
+11 passed, 0 failed
+============================================================

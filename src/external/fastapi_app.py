@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -17,16 +18,25 @@ from src.exceptions import (
     StorageError,
     ValidationError,
 )
+from src.external.logging_config import configure_logging
 from src.external.routes import admin as admin_routes
 from src.external.routes import audit as audit_routes
 from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import evidence as evidence_routes
 from src.external.routes import sse as sse_routes
+from src.external.routes import step_up as step_up_routes
+
+# Configure structured JSON logging as early as possible (module import time)
+# so every log emitted during app startup — not just requests — is rendered
+# as JSON (COMP-8). Safe to call at import time: configure_logging() only
+# reads env vars and mutates the stdlib logging root logger/structlog global
+# config, it does not depend on FastAPI or any request-scoped state.
+configure_logging()
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Wire real database/storage dependencies on startup when env vars are set."""
     import os  # noqa: PLC0415
 
@@ -42,11 +52,15 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
     yield
 
 
+_DEFAULT_CORS_ORIGINS = ["http://localhost", "http://localhost:5173", "http://localhost:4173"]
+
+
 def create_app(
     keycloak_issuer: str | None = None,
     keycloak_audience: str = "kronos-backend",
     keycloak_jwks_url: str | None = None,
     step_up_ticket_store: Any | None = None,
+    cors_allowed_origins: list[str] | None = None,
 ) -> FastAPI:
     """Construct and configure the KronOS FastAPI application.
 
@@ -83,7 +97,7 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost", "http://localhost:5173", "http://localhost:4173"],
+        allow_origins=cors_allowed_origins or _DEFAULT_CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -95,6 +109,24 @@ def create_app(
     app.include_router(admin_routes.router)
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
+    app.include_router(step_up_routes.router)
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict[str, str]:
+        """Liveness/readiness probe target.
+
+        Deliberately dependency-free (no DB/OpenSearch/etc. check): this
+        endpoint backs BOTH the Kubernetes liveness and readiness probes
+        (charts/kronos/templates/backend/deployment.yaml) and nginx's
+        /healthz proxy (docker/nginx/nginx.conf.template) -- a liveness
+        probe that depends on an external service causes Kubernetes to
+        kill and restart an otherwise-healthy process during a transient
+        downstream outage. Real, verified gap this closes: no such route
+        existed at all before, so every one of those probes always 404'd
+        (docs/verification-pass-findings.md finding G).
+        """
+        return {"status": "ok"}
+
     _register_exception_handlers(app)
 
     return app
@@ -138,14 +170,28 @@ import os as _os  # noqa: E402
 _keycloak_internal_url = _os.getenv("KEYCLOAK_URL", "")
 _keycloak_public_url = _os.getenv("KEYCLOAK_PUBLIC_URL", _keycloak_internal_url)
 _keycloak_realm = _os.getenv("KEYCLOAK_REALM", "kronos")
-_keycloak_issuer = f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+_keycloak_issuer = (
+    f"{_keycloak_public_url}/realms/{_keycloak_realm}" if _keycloak_public_url else None
+)
 _keycloak_jwks = (
     f"{_keycloak_internal_url}/realms/{_keycloak_realm}/protocol/openid-connect/certs"
     if _keycloak_internal_url
     else None
 )
 
+# Read directly via os.getenv (not Settings()) so this module stays
+# importable without a full env — tests construct create_app() directly
+# and override as needed. Must match MINIO_API_CORS_ALLOW_ORIGIN on the
+# MinIO server (docker-compose*.yml) — same origins, enforced
+# independently by each server.
+_cors_allowed_origins = [
+    origin.strip()
+    for origin in _os.getenv("CORS_ALLOWED_ORIGINS", ",".join(_DEFAULT_CORS_ORIGINS)).split(",")
+    if origin.strip()
+]
+
 app = create_app(
     keycloak_issuer=_keycloak_issuer,
     keycloak_jwks_url=_keycloak_jwks,
+    cors_allowed_origins=_cors_allowed_origins,
 )

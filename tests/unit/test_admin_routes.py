@@ -2,17 +2,36 @@
 
 from __future__ import annotations
 
+import uuid
+from typing import Any
+
 import pytest
-from fastapi import status
+from fastapi import HTTPException, status
 from pydantic import ValidationError
 
 from src.exceptions import StorageError
 from src.external.routes.admin import (
     InviteUserIn,
     OrgUserOut,
+    _assert_user_in_org,
+    _find_user_by_email,
+    _is_org_member,
     _iso_from_epoch_millis,
     _to_http_error,
+    list_org_users,
 )
+from tests.fixtures.factories import make_tenant_context
+
+
+class _FakeResponse:
+    """Minimal stand-in for httpx.Response used to unit-test admin helpers."""
+
+    def __init__(self, status_code: int, body: Any = None) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> Any:
+        return self._body
 
 
 def test_iso_from_epoch_millis_converts_int() -> None:
@@ -130,3 +149,141 @@ def test_to_http_error_maps_other_failures_to_503() -> None:
     exc = StorageError("Keycloak Admin API returned server error", context={"status": 500})
     http_exc = _to_http_error(exc)
     assert http_exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+def test_to_http_error_maps_conflict_to_409_without_confirming_other_org() -> None:
+    # AUTH-011: the message must not confirm which org the email belongs to.
+    exc = StorageError(
+        "Email already registered to a different account",
+        context={
+            "status": 409,
+            "body": {"errorMessage": "This email is already registered to a different account."},
+        },
+    )
+    http_exc = _to_http_error(exc)
+    assert http_exc.status_code == status.HTTP_409_CONFLICT
+    assert "different account" in http_exc.detail
+
+
+# ---------------------------------------------------------------------------
+# AUTH-003: org-membership scoping for realm-role-mapping admin calls
+# ---------------------------------------------------------------------------
+
+
+async def test_is_org_member_true_when_keycloak_returns_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(200, {"id": "user-1"})
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    assert await _is_org_member(tenant, "user-1") is True
+
+
+async def test_is_org_member_false_when_keycloak_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(404, None)
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    assert await _is_org_member(tenant, "not-a-member") is False
+
+
+async def test_assert_user_in_org_raises_403_when_not_a_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(404, None)
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    with pytest.raises(HTTPException) as exc_info:
+        await _assert_user_in_org(tenant, "attacker-controlled-user-id")
+    assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+
+async def test_assert_user_in_org_passes_when_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(200, {"id": "user-1"})
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    await _assert_user_in_org(tenant, "user-1")  # must not raise
+
+
+async def test_find_user_by_email_returns_none_for_user_in_another_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression for AUTH-003/AUTH-011: a realm-wide email match that belongs
+    # to a different org must never be reused, role-assigned, or confirmed to
+    # the caller as existing.
+    tenant = make_tenant_context()
+    other_org_user_id = str(uuid.uuid4())
+
+    async def fake_request(
+        _tenant: object, method: str, path: str, *_a: object, **_kw: object
+    ) -> _FakeResponse:
+        if path.startswith("/users?"):
+            return _FakeResponse(
+                200, [{"id": other_org_user_id, "email": "someone@other-org.example"}]
+            )
+        # org-membership check
+        return _FakeResponse(404, None)
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    result = await _find_user_by_email(tenant, "someone@other-org.example")
+    assert result is None
+
+
+async def test_find_user_by_email_returns_candidate_when_member_of_caller_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+    member_user_id = str(uuid.uuid4())
+
+    async def fake_request(
+        _tenant: object, method: str, path: str, *_a: object, **_kw: object
+    ) -> _FakeResponse:
+        if path.startswith("/users?"):
+            return _FakeResponse(
+                200, [{"id": member_user_id, "email": "teammate@caller-org.example"}]
+            )
+        return _FakeResponse(200, {"id": member_user_id})
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
+    result = await _find_user_by_email(tenant, "teammate@caller-org.example")
+    assert result is not None
+    assert result["id"] == member_user_id
+
+
+# ---------------------------------------------------------------------------
+# GET /users must surface a Keycloak Admin API failure as an error, not a
+# misleadingly-empty "0 users" 200 (the frontend's "Failed to load users"
+# error banner never fired otherwise — see docs/access-management-review.md
+# §5 for the 403-on-Organizations-endpoints case that first exposed this).
+# ---------------------------------------------------------------------------
+
+
+async def test_list_org_users_propagates_keycloak_failure_as_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+
+    async def fake_list(_tenant: object) -> list[OrgUserOut]:
+        raise StorageError(
+            "Keycloak Admin API request failed",
+            context={"status": 403, "body": {"errorMessage": "Forbidden"}},
+        )
+
+    monkeypatch.setattr("src.external.routes.admin._list_keycloak_org_users", fake_list)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_org_users(tenant)
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE

@@ -6,7 +6,6 @@ Uses pyasn1 for DER parsing; falls back to openssl subprocess if unavailable.
 
 from __future__ import annotations
 
-import hashlib
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -40,10 +39,16 @@ class TSAVerifier:
         token_der: bytes,
         message: bytes,
     ) -> bool:
-        """Verify that token_der is a valid RFC 3161 token over message.
+        """Verify that token_der is a valid RFC 3161 token over sha256(message).
 
-        Uses openssl ts -verify. Returns True on success.
-        Raises RuntimeError on verification failure or missing openssl.
+        Uses ``openssl ts -verify -data`` — openssl hashes *message* itself
+        and compares that to the token's messageImprint.  Use this only when
+        you have the original pre-image; when you already hold the digest
+        that was anchored (as with a Merkle root — see ``verify_merkle_anchor``),
+        use ``verify_digest`` instead so the digest isn't hashed a second time.
+
+        Returns True on success. Raises RuntimeError on verification failure
+        or missing openssl.
         """
         with tempfile.NamedTemporaryFile(suffix=".tsr", delete=False) as tf:
             tf.write(token_der)
@@ -66,6 +71,34 @@ class TSAVerifier:
         finally:
             Path(token_path).unlink(missing_ok=True)
             Path(msg_path).unlink(missing_ok=True)
+
+    def verify_digest(self, token_der: bytes, digest_hex: str) -> bool:
+        """Verify that token_der's messageImprint equals *digest_hex* exactly.
+
+        Uses ``openssl ts -verify -digest <hex>``, which compares the given
+        hex digest directly against the token's messageImprint with no
+        additional hashing (AUDIT-08 fix) — matches how
+        ``RFC3161TimestampService.timestamp()`` embeds the raw Merkle-root
+        bytes as the messageImprint at anchor time, rather than
+        ``sha256(digest)`` which ``verify()``'s ``-data`` path would compute.
+
+        Returns True on success. Raises RuntimeError on verification failure
+        or missing openssl.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".tsr", delete=False) as tf:
+            tf.write(token_der)
+            token_path = tf.name
+
+        try:
+            cmd = ["openssl", "ts", "-verify", "-digest", digest_hex, "-in", token_path]
+            if self._tsa_cert_path:
+                cmd += ["-CAfile", self._tsa_cert_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+            if result.returncode != 0:
+                raise RuntimeError(f"TSA verification failed: {result.stderr.strip()}")
+            return True
+        finally:
+            Path(token_path).unlink(missing_ok=True)
 
     def parse_info(self, token_der: bytes) -> TSATokenInfo | None:
         """Parse basic metadata from a DER-encoded TSA response.
@@ -105,8 +138,12 @@ def verify_merkle_anchor(
 ) -> bool:
     """Verify a TSA token anchors the given Merkle root.
 
-    The message imprint must be SHA-256(merkle_root_hex.encode()).
+    ``RFC3161TimestampService.timestamp()`` (src/application/timestamping.py)
+    embeds ``bytes.fromhex(root_hash)`` directly as the messageImprint — it
+    does not hash the root again.  Verification must therefore compare
+    against that same raw digest via ``-digest``, not re-hash
+    ``merkle_root_hex`` and feed it through ``-data`` (which would make
+    openssl hash it a second time — the AUDIT-08 double-hash bug).
     """
-    expected = hashlib.sha256(merkle_root_hex.encode()).digest()
     verifier = TSAVerifier(tsa_cert_path=tsa_cert_path)
-    return verifier.verify(token_der, expected)
+    return verifier.verify_digest(token_der, merkle_root_hex)

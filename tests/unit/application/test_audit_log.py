@@ -158,6 +158,51 @@ class TestAuditLogErrors:
             await_coro(audit_service.log(AuditEventType.SYSTEM_ERROR))
 
 
+class TestConcurrentWrites:
+    """Regression test for the sequence-number/hash-chain race condition.
+
+    Before append_atomic, log() read the chain tip and inserted in two
+    separate, unsynchronized steps: concurrent callers for the same org
+    could both read the same tip and then both try to insert
+    sequence_number=N+1, producing duplicate sequence numbers and/or a
+    hash chain that forks instead of forming a single line.
+    """
+
+    def test_concurrent_logs_produce_gap_free_unique_sequence(
+        self, audit_service: AuditLogService, audit_repo: InMemoryAuditLogRepository
+    ) -> None:
+        org_id = uuid.uuid4()
+
+        async def _run() -> None:
+            await asyncio.gather(
+                *(
+                    audit_service.log(
+                        AuditEventType.SYSTEM_ERROR,
+                        org_id=org_id,
+                        details={"i": i},
+                    )
+                    for i in range(25)
+                )
+            )
+
+        await_coro(_run())
+
+        events = sorted(
+            (e for e in audit_repo.events if e.org_id == org_id),
+            key=lambda e: e.sequence_number,
+        )
+        sequence_numbers = [e.sequence_number for e in events]
+        expected = list(range(1, 26))
+        assert sequence_numbers == expected, "sequence numbers must be gap-free and unique"
+
+        # The chain must be a single unbroken line: each event's prev_row_hash
+        # must equal the previous event's row_hash (or genesis for the first).
+        prev_hash = _GENESIS_HASH
+        for event in events:
+            assert event.prev_row_hash == prev_hash
+            prev_hash = event.row_hash
+
+
 # ---------------------------------------------------------------------------
 # Asyncio compatibility helper for synchronous pytest
 # ---------------------------------------------------------------------------

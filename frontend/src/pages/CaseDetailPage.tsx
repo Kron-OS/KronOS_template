@@ -11,7 +11,8 @@ import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
-import type { Evidence, AuditEvent, SSEStatusEvent, SSEErrorEvent } from '../types'
+import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
+import type { Evidence, AuditEvent, SSEStatusEvent } from '../types'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -35,21 +36,22 @@ function EvidenceTab({ caseId }: { caseId: string }) {
     staleTime: 15_000,
   })
 
-  const handleSSEEvent = (event: SSEStatusEvent | SSEErrorEvent) => {
-    if ('status' in event) {
-      queryClient.setQueryData<{ items: Evidence[] }>(
-        ['evidence', caseId],
-        (old) => {
-          if (!old) return old
-          return {
-            ...old,
-            items: old.items.map((e) =>
-              e.id === event.evidenceId ? { ...e, state: event.status } : e,
-            ),
-          }
-        },
-      )
-    }
+  const handleSSEEvent = (event: SSEStatusEvent) => {
+    // Optimistic patch for an instant status-pill flip, immediately
+    // followed by a real refetch: the SSE payload only carries
+    // evidenceId/state, so patching just `state` in place left
+    // errorReason/retryAction/sha256/etc. stale until the next incidental
+    // refetch (window refocus, remount, or a manual reload) -- which is
+    // why status changes didn't seem to show up promptly. invalidateQueries
+    // refetches the full row from the real API right away.
+    queryClient.setQueryData<{ items: Evidence[] }>(['evidence', caseId], (old) => {
+      if (!old) return old
+      return {
+        ...old,
+        items: old.items.map((e) => (e.id === event.evidenceId ? { ...e, state: event.state } : e)),
+      }
+    })
+    void queryClient.invalidateQueries({ queryKey: ['evidence', caseId] })
   }
 
   useEvidenceSSE(caseId, handleSSEEvent)
@@ -179,6 +181,12 @@ function TimelineTab({ caseId }: { caseId: string }) {
           Upload and process evidence to view the forensic timeline.
         </p>
       </div>
+    )
+  }
+
+  if (!isTrustedDashboardsUrl(data.url)) {
+    return (
+      <ErrorBanner message="Timeline analysis is unavailable: the Dashboards URL returned by the server did not match the expected origin." />
     )
   }
 

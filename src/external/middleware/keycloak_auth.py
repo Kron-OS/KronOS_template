@@ -109,6 +109,35 @@ class KeycloakTokenValidator:
         except JWTError as exc:
             raise AuthenticationError(f"JWT signature validation failed: {exc}") from exc
 
+        # AUTH-009: python-jose's own `audience=` check (verify_aud, above) is a
+        # no-op when the token has NO "aud" claim at all -- confirmed against
+        # python-jose 3.5.0: jwt.decode(audience="kronos-backend") raises
+        # JWTClaimsError for a *wrong* aud value, but raises nothing at all
+        # when "aud" is simply absent (poc/keycloak/_aud_check2.py). A real
+        # Keycloak client without an audience mapper (e.g. the kronos-backend
+        # service-account token itself, confirmed via poc/keycloak/output.txt)
+        # mints exactly such a token, which would otherwise bypass the
+        # audience restriction entirely. Enforce it explicitly here.
+        aud_claim = claims.get("aud")
+        if isinstance(aud_claim, str):
+            aud_ok = aud_claim == self._audience
+        elif isinstance(aud_claim, list):
+            aud_ok = self._audience in aud_claim
+        else:
+            aud_ok = False
+        if not aud_ok:
+            raise AuthenticationError(
+                f"JWT audience claim missing or does not include '{self._audience}'"
+            )
+
+        # AUTH-008: explicitly verify typ=="Bearer" (spec §6 JWT validation
+        # pipeline step 3) rather than relying on the incidental fact that
+        # the frontend's audience mapper never stamps `aud` onto ID tokens —
+        # a Keycloak ID token otherwise passes every other check above.
+        typ = claims.get("typ")
+        if typ != "Bearer":
+            raise AuthenticationError(f"JWT typ claim must be 'Bearer', got '{typ!r}'")
+
         return _extract_tenant(claims)
 
     async def _resolve_key(self, kid: str) -> dict[str, Any]:
@@ -134,9 +163,7 @@ class KeycloakTokenValidator:
         except AuthenticationError:
             raise
         except Exception as exc:
-            raise AuthenticationError(
-                f"Failed to fetch JWKS from {self._jwks_url}: {exc}"
-            ) from exc
+            raise AuthenticationError(f"Failed to fetch JWKS from {self._jwks_url}: {exc}") from exc
 
 
 def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
@@ -149,19 +176,19 @@ def _extract_tenant(claims: dict[str, Any]) -> TenantContext:
     try:
         org_id = uuid.UUID(org_info["id"])
     except (KeyError, ValueError, TypeError) as exc:
-        raise AuthenticationError(
-            f"Invalid org_id in JWT organization claim: {exc}"
-        ) from exc
+        raise AuthenticationError(f"Invalid org_id in JWT organization claim: {exc}") from exc
 
     try:
         user_id = uuid.UUID(claims["sub"])
     except (KeyError, ValueError) as exc:
         raise AuthenticationError(f"Invalid or missing 'sub' claim: {exc}") from exc
 
-    # Keycloak maps realm roles to realm_access.roles (standard Keycloak claim structure).
-    # The kronos-realm.json mapper uses claim.name "realm_access.roles".
-    realm_access: dict = claims.get("realm_access", {})
-    roles = _map_roles(realm_access.get("roles", []))
+    # AUTH-006: roles must be read from the flat top-level "roles" claim, not
+    # Keycloak's default nested realm_access.roles — OpenSearch Security's
+    # roles_key cannot walk nested paths (Project_Specifications.md §1/§6).
+    # The kronos-realm.json "kronos-roles" client scope mapper emits exactly
+    # this shape (claim.name = "roles").
+    roles = _map_roles(claims.get("roles", []))
     jti: str = claims.get("jti") or str(uuid.uuid4())
     acr: str = claims.get("acr", "aal1")
 

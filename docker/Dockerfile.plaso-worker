@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+# Plaso-capable variant of docker/Dockerfile: same app image, same venv, PLUS
+# Plaso installed in that venv so the q.parse.plaso Celery consumer can
+# actually exec kronos-plaso-worker.py via FirecrackerLauncher's subprocess
+# path. This is still the dev-simplification (plain subprocess, not real
+# Firecracker/gVisor microVM isolation) documented in
+# src/external/sandbox/firecracker.py's own docstring — out of scope here.
+FROM cgr.dev/chainguard/python:latest-dev AS builder
+
+USER root
+
+WORKDIR /app
+COPY pyproject.toml .
+COPY src/ ./src/
+COPY kronos_attest/ ./kronos_attest/
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir . \
+    && /opt/venv/bin/pip install --no-cache-dir plaso==20260512
+
+RUN mkdir -p /var/log/kronos && touch /var/log/kronos/.keep
+
+FROM cgr.dev/chainguard/python:latest
+
+WORKDIR /app
+
+COPY --from=builder --chown=nonroot:nonroot /opt/venv /opt/venv
+COPY --chown=nonroot:nonroot src/ ./src/
+COPY --chown=nonroot:nonroot kronos_attest/ ./kronos_attest/
+COPY --chown=nonroot:nonroot pyproject.toml .
+COPY --chown=nonroot:nonroot docker/plaso/kronos-plaso-worker.py ./plaso-worker/kronos-plaso-worker.py
+
+COPY --from=builder --chown=nonroot:nonroot /var/log/kronos /var/log/kronos
+
+ENV PATH=/opt/venv/bin:$PATH
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PLASO_WORKER_PATH=/app/plaso-worker/kronos-plaso-worker.py
+
+USER nonroot
+
+ENTRYPOINT []
+
+CMD ["celery", "-A", "src.external.celery_app", "worker", "-Q", "q.parse.plaso", "-c", "1", "--loglevel=info"]

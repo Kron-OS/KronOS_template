@@ -1,0 +1,44 @@
+version: v1
+
+# Based on docker/kes/kes-config.yml, with two corrections found by actually
+# running this pinned KES tag (2024-06-17T15-47-05Z) -- see README.md:
+#   - keystore.vault schema fixed (repo used engine_path/key_name/retry,
+#     which don't exist in this version; real fields are engine/version/
+#     prefix for the K/V backend + transit.engine/transit.key for the wrap).
+#   - policy identity is the real kes fingerprint (sha256 of the cert's
+#     SubjectPublicKeyInfo, via `kes identity of`), not sha256 of the whole
+#     DER cert as the repo's own comment implied.
+
+address: 0.0.0.0:7373
+
+tls:
+  cert: /etc/kes/certs/server.crt
+  key: /etc/kes/certs/server.key
+  ca: /etc/kes/certs/ca.crt
+
+admin:
+  identity: disabled
+
+policy:
+  kronos-minio:
+    allow:
+      - /v1/key/create/kronos-evidence*
+      - /v1/key/generate/kronos-evidence*
+      - /v1/key/decrypt/kronos-evidence*
+      - /v1/key/bulk/decrypt/kronos-evidence*
+      - /v1/status
+    identities:
+      - "138c11dfd9c057edba4528166f86e4da383fee793e8c04d8871f3cdda85b1d77"
+
+keystore:
+  vault:
+    endpoint: http://vault:8200
+    engine: kv
+    version: v1
+    prefix: kes-keys
+    transit:
+      engine: transit
+      key: kronos-evidence
+    approle:
+      id: ${VAULT_APPROLE_ID}
+      secret: ${VAULT_APPROLE_SECRET}

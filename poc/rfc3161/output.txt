@@ -1,0 +1,54 @@
+======================================================================
+PoC: RFC3161TimestampService <-> real RFC 3161 TSA responder
+======================================================================
+rfc3161ng version (pinned >=2.1.3 in pyproject.toml): 2.1.3
+openssl: OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)
+Scratch dir: /tmp/kronos_poc_rfc3161_f4ympewr
+Built throwaway CA + TSA certificate/key + openssl ts config.
+Real local TSA responder listening on http://127.0.0.1:20318 (each POST is answered by a real `openssl ts -reply` invocation).
+
+--- Step 1: build request + POST via .timestamp() ---
+digest (sha256): 665d86a925af9c731f33de738c4617b8482bfb1f902e77fac4ec640e27ad0b12
+_build_timestamp_request() output (hex): 30390201013031300d060960864801650304020105000420665d86a925af9c731f33de738c4617b8482bfb1f902e77fac4ec640e27ad0b120101ff
+[real-tsa-server] received 59-byte POST (Content-Type=application/timestamp-query)
+[real-tsa-server] request DER (hex): 30390201013031300d060960864801650304020105000420665d86a925af9c731f33de738c4617b8482bfb1f902e77fac4ec640e27ad0b120101ff
+[real-tsa-server] openssl ts -reply exit=0 stderr='Using configuration from /tmp/kronos_poc_rfc3161_f4ympewr/tsa.cnf\nWarning: could not open file /tmp/kronos_poc_rfc3161_f4ympewr/tsaserial for reading, using serial number: 1\nResponse has been generated.'
+[real-tsa-server] response DER (hex, truncated): 308208d93003020100308208d006092a864886f70d010702a08208c1308208bd020103310f300d06096086480165030402010500308188060b2a8648...
+RFC3161TimestampService.timestamp() returned 2269 bytes of real DER TimeStampResp from the real TSA.
+token (hex, truncated): 308208d93003020100308208d006092a864886f70d010702a08208c1308208bd020103310f300d06096086480165030402010500308188060b2a864886f70d0109100104a0790477307502010106082a...
+
+--- openssl's own independent decode of the returned token ---
+Status info:
+Status: Granted.
+Status description: unspecified
+Failure info: unspecified
+
+TST info:
+Version: 1
+Policy OID: 1.2.3.4.5.6.7.8.1
+Hash Algorithm: sha256
+Message data:
+    0000 - 66 5d 86 a9 25 af 9c 73-1f 33 de 73 8c 46 17 b8   f]..%..s.3.s.F..
+    0010 - 48 2b fb 1f 90 2e 77 fa-c4 ec 64 0e 27 ad 0b 12   H+....w...d.'...
+Serial number: 0x01
+Time stamp: Jul 21 20:44:25 2026 GMT
+Accuracy: 0x01 seconds, unspecified millis, unspecified micros
+Ordering: yes
+Nonce: unspecified
+TSA: DirName:/CN=Test TSA
+Extensions:
+
+--- Step 2: verify() the real token against the real digest ---
+RFC3161TimestampService.verify() succeeded. genTime = datetime.datetime(2026, 7, 21, 20, 44, 25)
+
+--- Step 3: negative test -- verify() must REJECT wrong digest ---
+verify() correctly raised TimestampingError: TSA token digest mismatch
+
+--- Step 4: negative test -- .timestamp() against an unreachable TSA ---
+tsa_unreachable
+.timestamp() correctly raised StorageError for unreachable TSA: TSA unreachable
+
+======================================================================
+PoC PASSED: real round trip (.timestamp() -> real TSA -> .verify())
+confirmed correct, and both negative paths fail closed as designed.
+======================================================================

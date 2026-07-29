@@ -6,7 +6,8 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Annotated
+from collections.abc import AsyncIterator
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -20,30 +21,39 @@ router = APIRouter(prefix="/api/sse", tags=["sse"])
 
 # In-memory one-shot ticket store.  In production replace with Redis (TTL 60s).
 # Not safe under multiple Uvicorn workers — each process has its own dict.
-_tickets: dict[str, dict] = {}
+_tickets: dict[str, dict[str, Any]] = {}
 
 _POLL_INTERVAL_SECONDS = 5
 _MAX_STREAM_SECONDS = 300  # 5-minute ceiling per connection
+_TERMINAL_STATES = {"COMPLETE", "ERROR"}
+
+
+class SSETicketIn(BaseModel):
+    """Request DTO — field name matches the frontend TypeScript call."""
+
+    caseId: uuid.UUID
 
 
 class SSETicketResponse(BaseModel):
+    """API response DTO — field names match the frontend TypeScript SSETicket interface."""
+
     ticket: str
-    expires_in: int
+    expiresIn: int
 
 
 @router.post("/ticket", response_model=SSETicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_sse_ticket(
-    case_id: uuid.UUID,
+    body: SSETicketIn,
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
 ) -> SSETicketResponse:
     """Issue a one-shot 60-second SSE ticket scoped to a case."""
     ticket = str(uuid.uuid4())
     _tickets[ticket] = {
-        "case_id": str(case_id),
+        "case_id": str(body.caseId),
         "org_id": str(tenant.org_id),
         "expires": time.time() + 60,
     }
-    return SSETicketResponse(ticket=ticket, expires_in=60)
+    return SSETicketResponse(ticket=ticket, expiresIn=60)
 
 
 @router.get("/cases/{case_id}/evidence")
@@ -71,9 +81,8 @@ async def evidence_sse_stream(
         )
 
     org_id = uuid.UUID(ticket_data["org_id"])
-    _TERMINAL = {"COMPLETE", "ERROR"}
 
-    async def event_generator():  # type: ignore[return]
+    async def event_generator() -> AsyncIterator[str]:
         last_states: dict[str, str] = {}
         deadline = time.time() + _MAX_STREAM_SECONDS
         try:
@@ -84,13 +93,16 @@ async def evidence_sse_stream(
 
                 for ev_id, state in current.items():
                     if last_states.get(ev_id) != state:
-                        payload = json.dumps({"evidence_id": ev_id, "state": state})
+                        # camelCase to match the frontend's SSEStatusEvent
+                        # interface (same field-naming convention as every
+                        # other DTO in this codebase, e.g. EvidenceOut).
+                        payload = json.dumps({"evidenceId": ev_id, "state": state})
                         yield f"event: status\ndata: {payload}\n\n"
 
                 last_states = current
 
                 # Stop streaming once all evidence is terminal.
-                if current and all(s in _TERMINAL for s in current.values()):
+                if current and all(s in _TERMINAL_STATES for s in current.values()):
                     yield "event: done\ndata: {}\n\n"
                     return
 

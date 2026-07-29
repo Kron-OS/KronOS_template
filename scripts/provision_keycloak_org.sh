@@ -75,6 +75,28 @@ if ! curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" "$KC_BASE/admin/rea
   exit 1
 fi
 
+# Declare org_id as an admin-only-editable User Profile attribute (idempotent
+# PUT, safe to repeat every run). Required because Keycloak 26's Declarative
+# User Profile silently DROPS any attribute not declared here — confirmed
+# empirically in poc/keycloak_opensearch_dls/README.md (bug 2): without this,
+# the attribute PUT below returns 204 but org_id never actually persists.
+# This is what the kronos-org-id client scope's oidc-usermodel-attribute-mapper
+# (docker/keycloak/kronos-realm.json) turns into a flat top-level JWT claim
+# for OpenSearch DLS templating (${attr.jwt.org_id}) — see
+# poc/opensearch_jwt/option_a_flat_claim/keycloak_mapper_research.md.
+curl -sf -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "$KC_BASE/admin/realms/$KC_REALM/users/profile" \
+  -d '{
+    "attributes": [
+      {"name":"username","permissions":{"view":["admin","user"],"edit":["admin","user"]},"multivalued":false},
+      {"name":"email","required":{"roles":["user"]},"permissions":{"view":["admin","user"],"edit":["admin","user"]},"multivalued":false,"validations":{"email":{},"length":{"max":255}}},
+      {"name":"firstName","required":{"roles":["user"]},"permissions":{"view":["admin","user"],"edit":["admin","user"]},"multivalued":false},
+      {"name":"lastName","required":{"roles":["user"]},"permissions":{"view":["admin","user"],"edit":["admin","user"]},"multivalued":false},
+      {"name":"org_id","displayName":"KronOS Organization ID","permissions":{"view":["admin"],"edit":["admin"]},"multivalued":false}
+    ]
+  }' > /dev/null
+echo "Declared org_id as an admin-managed User Profile attribute."
+
 ORG_ID=$(find_org_id || true)
 
 if [ -z "$ORG_ID" ]; then
@@ -113,6 +135,32 @@ for USER_ID in $ORG_MEMBER_IDS; do
     "$KC_BASE/admin/realms/$KC_REALM/organizations/$ORG_ID/members" \
     --data-raw "\"$USER_ID\"" || true)
   echo "Linked member $USER_ID -> HTTP $STATUS"
+
+  # Flat org_id user attribute -- what the kronos-org-id client scope's
+  # oidc-usermodel-attribute-mapper turns into a flat top-level JWT claim for
+  # OpenSearch DLS templating (${attr.jwt.org_id}); the nested 'organization'
+  # claim above can't drive DLS templating (poc/opensearch_jwt/README.md
+  # result #2). PUT .../users/{id} is NOT a partial update — a body with only
+  # {"attributes": {...}} silently clears firstName/lastName/email (confirmed
+  # in poc/keycloak_opensearch_dls/README.md bug 1), so fetch the current
+  # representation and splice attributes into it rather than sending a bare
+  # diff. A fresh user has no pre-existing "attributes" key (confirmed via
+  # GET), so this text splice is correctness-preserving without a full
+  # JSON re-parse.
+  CURRENT_USER=$(curl -sf -H "Authorization: Bearer $TOKEN" "$KC_BASE/admin/realms/$KC_REALM/users/$USER_ID")
+  case "$CURRENT_USER" in
+    *'"attributes"'*)
+      MERGED_USER=$(printf '%s' "$CURRENT_USER" | sed -E 's/"attributes":\{[^}]*\}/"attributes":{"org_id":["'"$ORG_ID"'"]}/')
+      ;;
+    *)
+      MERGED_USER="${CURRENT_USER%\}},\"attributes\":{\"org_id\":[\"$ORG_ID\"]}}"
+      ;;
+  esac
+  ATTR_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    "$KC_BASE/admin/realms/$KC_REALM/users/$USER_ID" \
+    -d "$MERGED_USER" || true)
+  echo "Set org_id attribute for $USER_ID -> HTTP $ATTR_STATUS"
 done
 
 echo "provision_keycloak_org: complete"

@@ -17,8 +17,17 @@ class EvidenceRepository(ABC):
         """Persist a new evidence entity and return it."""
 
     @abstractmethod
-    async def update(self, evidence: Evidence) -> Evidence:
-        """Replace the stored evidence entity with the supplied version."""
+    async def update(
+        self, evidence: Evidence, *, expected_state: EvidenceState | None = None
+    ) -> Evidence:
+        """Replace the stored evidence entity with the supplied version.
+
+        When *expected_state* is given, the write is conditioned on the
+        persisted row currently being in that state — optimistic concurrency
+        (EVID-4) so two concurrent callers racing a FSM transition (e.g. the
+        autonomous dispatch path and a manual recovery call) cannot silently
+        clobber each other; the loser must raise instead.
+        """
 
     @abstractmethod
     async def get_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> Evidence | None:
@@ -31,6 +40,15 @@ class EvidenceRepository(ABC):
     @abstractmethod
     def stream_by_state(self, state: EvidenceState, org_id: uuid.UUID) -> AsyncIterator[Evidence]:
         """Yield all evidence in a given state for an org (used by recovery tasks)."""
+
+    @abstractmethod
+    def stream_all_by_state(self, state: EvidenceState) -> AsyncIterator[Evidence]:
+        """Yield all evidence in a given state across ALL orgs.
+
+        Used exclusively by Celery orphan-cleanup beat tasks which need to
+        identify stuck evidence platform-wide.  Never call from a request
+        handler — use the org-scoped stream_by_state instead.
+        """
 
     @abstractmethod
     async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:

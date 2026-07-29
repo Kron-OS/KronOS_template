@@ -1,0 +1,20 @@
+---
+# Referenced by docker-compose.prod.yml's opensearch service (and, since
+# poc/opensearch_dashboards_sso/, docker-compose.dev.yml's too) but never
+# actually existed in the repo before -- confirmed missing in
+# access-management-review.md's [C-2] finding ("OpenSearch has no security
+# config at all ... references ./opensearch/opensearch.yml, which does not
+# exist"). Real cluster.name/discovery.type/network.host settings are
+# already supplied per-environment via docker-compose's own `environment:`
+# blocks (OpenSearch's real entrypoint script -- confirmed by reading
+# opensearch-docker-entrypoint.sh in the pinned image -- translates any
+# `key.subkey=value` env var into a `-Ekey.subkey=value` JVM override,
+# independent of this file's contents), so this file carries only the one
+# setting that has no equivalent env-var/CLI path: enabling the security
+# plugin's own REST API to accept securityconfig writes at all. Without
+# it, PUT .../_plugins/_security/api/securityconfig/config (used to add
+# the openid authc domain and the generic DLS role -- see
+# poc/opensearch_dashboards_sso/README.md and
+# poc/keycloak_opensearch_dls/) is refused outright, confirmed by direct
+# reproduction while building that PoC.
+plugins.security.unsupported.restapi.allow_securityconfig_modification: true

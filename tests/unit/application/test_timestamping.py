@@ -7,8 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from src.application.timestamping import RFC3161TimestampService, _build_timestamp_request, _der_length
-from src.exceptions import StorageError
+from src.application.timestamping import (
+    RFC3161TimestampService,
+    _build_timestamp_request,
+    _der_length,
+)
+from src.exceptions import StorageError, TimestampingError
 
 
 class TestDerLength:
@@ -70,9 +74,7 @@ class TestRFC3161TimestampService:
     @pytest.mark.asyncio
     async def test_timestamp_raises_storage_error_on_http_error(self, svc):
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(
-            side_effect=httpx.ConnectError("Connection refused")
-        )
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -84,9 +86,7 @@ class TestRFC3161TimestampService:
     async def test_timestamp_raises_on_http_status_error(self, svc):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock(
-            side_effect=httpx.HTTPStatusError(
-                "400", request=MagicMock(), response=MagicMock()
-            )
+            side_effect=httpx.HTTPStatusError("400", request=MagicMock(), response=MagicMock())
         )
 
         mock_client = AsyncMock()
@@ -99,34 +99,110 @@ class TestRFC3161TimestampService:
                 await svc.timestamp(b"\xbb" * 32)
 
     @pytest.mark.asyncio
-    async def test_verify_without_rfc3161ng_returns_datetime(self, svc):
-        """When rfc3161ng is unavailable, verify() returns current datetime."""
+    async def test_verify_without_rfc3161ng_fails_closed(self, svc):
+        """When rfc3161ng is unavailable, verify() must raise, never fabricate success."""
+        import builtins
+        import sys
+
         token = b"\x00" * 10
         digest = b"\xaa" * 32
-        result = await svc.verify(token, digest)
-        from datetime import datetime
-        assert isinstance(result, datetime)
+
+        real_import = builtins.__import__
+
+        def _blocked_import(name, *args, **kwargs):
+            if name == "rfc3161ng":
+                raise ImportError("no module named rfc3161ng")
+            return real_import(name, *args, **kwargs)
+
+        sys.modules.pop("rfc3161ng", None)
+        with patch("builtins.__import__", side_effect=_blocked_import):
+            with pytest.raises(TimestampingError, match="rfc3161ng"):
+                await svc.verify(token, digest)
+
+    @pytest.mark.asyncio
+    async def test_verify_digest_mismatch_fails_closed(self, svc):
+        """A token whose embedded digest differs from the expected one must raise.
+
+        The fake here mirrors rfc3161ng's REAL shape (confirmed against the
+        pinned 2.1.3 install and a real openssl-issued token in
+        poc/rfc3161/run_poc.py): ``time_stamp_token.tst_info`` is a
+        *property* (attribute access, not a dict key), and the decoded
+        TSTInfo/MessageImprint are pyasn1 objects addressed by their ASN.1
+        component names (camelCase "genTime"/"messageImprint"/
+        "hashedMessage") with no ``.native`` accessor. A prior version of
+        this test used a plain dict keyed by "tst_info"/"gen_time"/
+        "message_imprint"/"hashed_message" with ``.native`` mocks -- that
+        shape doesn't exist in the real library, so it exercised a
+        `verify()` implementation bug (subscripting instead of attribute
+        access, wrong field-name casing, non-existent `.native`) without
+        ever catching it. See poc/rfc3161/README.md.
+        """
+
+        class _FakeTimeStampToken:
+            def __init__(self, tst_info: dict) -> None:
+                self._tst_info = tst_info
+
+            @property
+            def tst_info(self) -> dict:
+                return self._tst_info
+
+        mock_rfc3161ng = MagicMock()
+        mock_ts_resp = MagicMock()
+        mock_ts_resp.time_stamp_token = _FakeTimeStampToken(
+            {
+                "genTime": "20260101120000Z",
+                "messageImprint": {"hashedMessage": b"\xff" * 32},
+            }
+        )
+        mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
+        mock_rfc3161ng.api.generalizedtime_to_utc_datetime = MagicMock(
+            return_value=__import__("datetime").datetime.now(__import__("datetime").UTC)
+        )
+
+        import sys
+
+        sys.modules["rfc3161ng"] = mock_rfc3161ng
+        try:
+            with pytest.raises(TimestampingError, match="digest mismatch"):
+                await svc.verify(b"\x30\x01\x00", b"\xaa" * 32)
+        finally:
+            del sys.modules["rfc3161ng"]
 
     @pytest.mark.asyncio
     async def test_verify_with_rfc3161ng(self, svc):
-        """When rfc3161ng IS available, use it to parse the token."""
-        from datetime import datetime, UTC
+        """When rfc3161ng IS available, use it to parse the token.
+
+        See the note on ``test_verify_digest_mismatch_fails_closed`` above --
+        this fake mirrors the real rfc3161ng 2.1.3 API shape, verified
+        against a genuine openssl-issued RFC 3161 token in
+        poc/rfc3161/run_poc.py.
+        """
+        from datetime import UTC, datetime
 
         expected_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         digest = b"\xaa" * 32
 
+        class _FakeTimeStampToken:
+            def __init__(self, tst_info: dict) -> None:
+                self._tst_info = tst_info
+
+            @property
+            def tst_info(self) -> dict:
+                return self._tst_info
+
         mock_rfc3161ng = MagicMock()
         mock_ts_resp = MagicMock()
-        mock_tst = {
-            "tst_info": {
-                "gen_time": MagicMock(native=expected_time),
-                "message_imprint": {"hashed_message": MagicMock(native=digest)},
+        mock_ts_resp.time_stamp_token = _FakeTimeStampToken(
+            {
+                "genTime": "20240101120000Z",
+                "messageImprint": {"hashedMessage": digest},
             }
-        }
-        mock_ts_resp.time_stamp_token = mock_tst
+        )
         mock_rfc3161ng.decode_timestamp_response = MagicMock(return_value=mock_ts_resp)
+        mock_rfc3161ng.api.generalizedtime_to_utc_datetime = MagicMock(return_value=expected_time)
 
         import sys
+
         sys.modules["rfc3161ng"] = mock_rfc3161ng
         try:
             result = await svc.verify(b"\x30\x01\x00", digest)

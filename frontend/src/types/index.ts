@@ -43,6 +43,7 @@ export interface Evidence {
   md5: string | null
   state: EvidenceState
   errorReason: string | null
+  retryAction: 'intake' | 'parse' | null
   uploadedBy: string
   uploadedAt: string
   updatedAt: string
@@ -108,20 +109,12 @@ export interface SSETicket {
   expiresIn: number
 }
 
+// Field names match the real payload src/external/routes/sse.py's
+// event_generator() actually emits (evidenceId/state) -- verified against
+// the real backend source, not assumed from a shorthand naming.
 export interface SSEStatusEvent {
   evidenceId: string
-  status: EvidenceState
-  progress?: {
-    kind: 'bytes' | 'records'
-    done: number
-    total: number
-  }
-}
-
-export interface SSEErrorEvent {
-  evidenceId: string
-  reasonCode: string
-  retryable: boolean
+  state: EvidenceState
 }
 
 export interface DashboardUrl {

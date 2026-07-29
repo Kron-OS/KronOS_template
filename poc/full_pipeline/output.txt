@@ -1,0 +1,56 @@
+/home/reca/venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+{"event": "clamav_unreachable_dev_fallback", "level": "warning", "logger": "src.external.dependencies", "timestamp": "2026-07-21T22:20:32.802139Z", "clamd_host": "localhost", "clamd_port": 3310, "environment": "development"}
+{"event": "startup: dependencies wired (async)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-07-21T22:20:32.802278Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.850902Z", "event_id": "5780fe55-42bd-435a-8d4b-62ab2890500d", "event_type": "case.created", "seq": 1}
+{"event": "HTTP Request: POST http://testserver/api/cases \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:32.851527Z"}
+create case -> 201
+[PASS] case created
+
+sample: system.evtx, 200000 bytes, sha256=ed6ad162c5a5391f...
+{"event": "presigned_url_generated", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-21T22:20:32.876702Z", "evidence_id": "a87138f4-e685-4818-afad-2faca4dd60f8", "bucket": "kronos-evidence-pipelineorg-quarantine", "key": "pipelineorg/b506ed49-0cd6-4ba8-be18-25c17e60e33b/a87138f4-e685-4818-afad-2faca4dd60f8/system.evtx"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.884896Z", "event_id": "fd5b1393-2aed-49b8-a6b9-ea75afd262e1", "event_type": "evidence.upload_requested", "seq": 2}
+{"event": "upload_requested", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-21T22:20:32.885003Z", "evidence_id": "a87138f4-e685-4818-afad-2faca4dd60f8", "org_id": "a337a4d4-b3c0-4bea-a689-548d33181eb7", "extra_filename": "system.evtx"}
+{"event": "HTTP Request: POST http://testserver/api/evidence/upload/request \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:32.885387Z"}
+upload/request -> 201 {"evidenceId":"a87138f4-e685-4818-afad-2faca4dd60f8","presignedUrl":"http://localhost:19400/kronos-evidence-pipelineorg-quarantine/pipelineorg/b506ed49-0cd6-4ba8-be18-25c17e60e33b/a87138f4-e685-4818-a
+[PASS] upload/request succeeded (real presigned URL from real MinIO)
+{"event": "HTTP Request: PUT http://localhost:19400/kronos-evidence-pipelineorg-quarantine/pipelineorg/b506ed49-0cd6-4ba8-be18-25c17e60e33b/a87138f4-e685-4818-afad-2faca4dd60f8/system.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260721%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260721T222032Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=be524df20073850b5630b9cbd73240c3a62c3252f2de7efe10dfbf7984a99b5e \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:32.912724Z"}
+
+real PUT to MinIO presigned URL -> 200
+[PASS] real bytes landed in real MinIO quarantine bucket
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.930681Z", "event_id": "97e9107a-c497-429f-8a38-7b5acf70b8c3", "event_type": "evidence.scan_started", "seq": 3}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.943383Z", "event_id": "a3395d9f-8e01-4d6b-8567-213074eb4c2a", "event_type": "evidence.scan_completed", "seq": 4}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.958247Z", "event_id": "4df21787-0b67-49aa-9d7c-1d22e7cbd864", "event_type": "evidence.hash_computed", "seq": 5}
+{"event": "evidence_promoted", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-21T22:20:32.967496Z", "evidence_id": "a87138f4-e685-4818-afad-2faca4dd60f8", "ev_key": "pipelineorg/b506ed49-0cd6-4ba8-be18-25c17e60e33b/a87138f4-e685-4818-afad-2faca4dd60f8/system.evtx"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-21T22:20:32.978704Z", "event_id": "d9815e57-171b-433b-901d-8d04f1974f4f", "event_type": "evidence.promoted", "seq": 6}
+{"event": "evidence_received", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-21T22:20:32.978807Z", "evidence_id": "a87138f4-e685-4818-afad-2faca4dd60f8", "sha256": "ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224"}
+{"event": "parse_dispatch_enqueued", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-21T22:20:33.083269Z", "evidence_id": "a87138f4-e685-4818-afad-2faca4dd60f8", "task_id": "efc544b3-1f71-4eee-adc3-7db5caff47ea"}
+{"event": "HTTP Request: POST http://testserver/api/evidence/upload/finalize/a87138f4-e685-4818-afad-2faca4dd60f8 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:33.083810Z"}
+
+finalize -> 200 {"id":"a87138f4-e685-4818-afad-2faca4dd60f8","caseId":"b506ed49-0cd6-4ba8-be18-25c17e60e33b","filename":"system.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":"ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224","md5":"0628ab0c0093d686ab7f2ac97837c5e2","stat
+[PASS] finalize succeeded (validate+scan+hash+promote all passed for real)
+state after finalize: RECEIVED
+
+waiting for autonomous pipeline to reach COMPLETE (real Celery worker)...
+{"event": "HTTP Request: GET http://testserver/api/cases/b506ed49-0cd6-4ba8-be18-25c17e60e33b/evidence \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:33.092052Z"}
+  t=0s state=RECEIVED
+{"event": "HTTP Request: GET http://testserver/api/cases/b506ed49-0cd6-4ba8-be18-25c17e60e33b/evidence \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-21T22:20:34.098604Z"}
+  t=1s state=COMPLETE
+[PASS] evidence reached COMPLETE autonomously, no client-side trigger -- final=COMPLETE
+
+=== Verifying real OpenSearch documents ===
+{"event": "POST http://localhost:19500/kronos-*/_refresh [status:200 request:0.032s]", "level": "info", "logger": "opensearch", "timestamp": "2026-07-21T22:20:34.131984Z"}
+{"event": "POST http://localhost:19500/kronos-*/_search [status:200 request:0.006s]", "level": "info", "logger": "opensearch", "timestamp": "2026-07-21T22:20:34.138651Z"}
+OpenSearch documents with kronos.evidence_id=a87138f4-e685-4818-afad-2faca4dd60f8: 194
+[PASS] real EVTX records landed in real OpenSearch -- count=194
+[PASS] indexed doc carries correct kronos.case_id
+[PASS] indexed doc carries evtx-rs as parser -- evtx-rs
+
+=== Verifying real Postgres audit trail ===
+audit events for this evidence, in order: ['evidence.upload_requested', 'evidence.scan_started', 'evidence.scan_completed', 'evidence.hash_computed', 'evidence.promoted', 'parse.started', 'ingest.started', 'ingest.completed', 'parse.completed']
+[PASS] audit trail includes upload_requested through ingest_completed -- ['evidence.upload_requested', 'evidence.scan_started', 'evidence.scan_completed', 'evidence.hash_computed', 'evidence.promoted', 'parse.started', 'ingest.started', 'ingest.completed', 'parse.completed']
+[PASS] full org hash chain still verifies intact after real pipeline run
+
+============================================================
+10 passed, 0 failed
+============================================================

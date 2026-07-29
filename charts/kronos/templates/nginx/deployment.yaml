@@ -18,8 +18,17 @@ spec:
         app.kubernetes.io/zone: dmz
     spec:
       automountServiceAccountToken: false
+      # PSS "restricted" (namespace.yaml) requires runAsNonRoot: true on every
+      # pod in this namespace; nginx previously ran as root with no hardening
+      # at all (INFRA-006). 101:101 is the "nginx" system user/group baked
+      # into the official nginx:alpine image referenced by .Values.nginx.image
+      # below — same non-root convention the backend deployment uses with its
+      # own uid (see backend/deployment.yaml).
       securityContext:
-        runAsNonRoot: false
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -33,20 +42,32 @@ spec:
             - name: https
               containerPort: 443
               protocol: TCP
+          # /nginx-health (files/nginx.conf.template) checks nginx itself
+          # only -- deliberately NOT /healthz, which proxies to the
+          # backend and would get this pod killed by a transient backend
+          # blip even though nginx itself is fine.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /nginx-health
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /health
+              path: /nginx-health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
           resources:
             {{- toYaml .Values.nginx.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # Binding container port 80/443 as a non-root user requires this
+              # capability — dropping it too would force a listen-port change.
+              add: ["NET_BIND_SERVICE"]
           volumeMounts:
             - name: nginx-config
               mountPath: /etc/nginx/conf.d
@@ -57,6 +78,8 @@ spec:
               mountPath: /var/cache/nginx
             - name: var-run
               mountPath: /var/run
+            - name: var-log-nginx
+              mountPath: /var/log/nginx
       volumes:
         - name: nginx-config
           configMap:
@@ -66,4 +89,6 @@ spec:
         - name: var-cache-nginx
           emptyDir: {}
         - name: var-run
+          emptyDir: {}
+        - name: var-log-nginx
           emptyDir: {}

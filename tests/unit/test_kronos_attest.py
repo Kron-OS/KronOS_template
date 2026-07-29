@@ -1,11 +1,9 @@
 """Unit tests for the kronos_attest standalone package."""
+
 import hashlib
 import json
-import os
-import tempfile
 
-import pytest
-
+from kronos_attest.report import AttestationReport
 from kronos_attest.verifier import (
     GENESIS_HASH,
     ChainVerifier,
@@ -14,12 +12,11 @@ from kronos_attest.verifier import (
     compute_row_hash,
     merkle_proof,
 )
-from kronos_attest.report import AttestationReport
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_event(seq: int, prev_hash: str, **extra) -> dict:
     ev = {
@@ -54,6 +51,7 @@ def _chain(n: int) -> list[dict]:
 # compute_row_hash
 # ---------------------------------------------------------------------------
 
+
 class TestComputeRowHash:
     def test_deterministic(self):
         ev = _make_event(0, GENESIS_HASH)
@@ -79,6 +77,7 @@ class TestComputeRowHash:
 # build_merkle_root
 # ---------------------------------------------------------------------------
 
+
 class TestBuildMerkleRoot:
     def test_empty_list(self):
         root = build_merkle_root([])
@@ -87,8 +86,10 @@ class TestBuildMerkleRoot:
     def test_single_element(self):
         hashes = ["abc"]
         root = build_merkle_root(hashes)
-        # Single element: layer = [sha256("abc".encode).digest()], no iterations
-        assert root == hashlib.sha256(b"abc").hexdigest()
+        # Single element: layer = [leaf_hash("abc")], no iterations.
+        # Domain-separated (0x00 prefix, AUDIT-04) — not a bare sha256("abc").
+        assert root == hashlib.sha256(b"\x00" + b"abc").hexdigest()
+        assert root != hashlib.sha256(b"abc").hexdigest()
 
     def test_power_of_two(self):
         hashes = ["a", "b", "c", "d"]
@@ -109,6 +110,7 @@ class TestBuildMerkleRoot:
 # ---------------------------------------------------------------------------
 # merkle_proof
 # ---------------------------------------------------------------------------
+
 
 class TestMerkleProof:
     def test_proof_verifies(self):
@@ -133,6 +135,7 @@ class TestMerkleProof:
 # ---------------------------------------------------------------------------
 # ChainVerifier
 # ---------------------------------------------------------------------------
+
 
 class TestChainVerifier:
     def test_valid_chain(self):
@@ -178,6 +181,7 @@ class TestChainVerifier:
 # AttestationReport
 # ---------------------------------------------------------------------------
 
+
 class TestAttestationReport:
     def test_day_report_filters_by_date(self):
         events = _chain(3)
@@ -209,7 +213,11 @@ class TestAttestationReport:
         # Each event has different evidence_id (ev-0, ev-1, ev-2, ev-3)
         assert len(report.evidence_ids) == 4
 
-    def test_tsa_anchor_detected(self):
+    def test_anchor_event_without_tsa_token_is_not_reported_anchored(self):
+        """AUDIT-07: a same-shaped anchor event with no real TSA token must
+        NOT be reported as tsa_anchored — the old behavior string-matched
+        event_type/details.day alone, which any tampered export could fake.
+        """
         events = _chain(2)
         anchor = {
             "event_id": "anchor-uuid",
@@ -224,17 +232,19 @@ class TestAttestationReport:
         }
         events.append(anchor)
         report = AttestationReport().day_report(events, "2026-06-25")
-        assert report.tsa_anchored
-        assert report.tsa_gen_time is not None
+        assert report.tsa_anchored is False
+        assert report.tsa_gen_time is None
 
 
 # ---------------------------------------------------------------------------
 # CLI integration (via CliRunner)
 # ---------------------------------------------------------------------------
 
+
 class TestCLI:
     def test_verify_command_success(self, tmp_path):
         from click.testing import CliRunner
+
         from kronos_attest.cli import cli
 
         events = _chain(3)
@@ -242,12 +252,15 @@ class TestCLI:
         audit_log.write_text(json.dumps(events))
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["verify", "--audit-log", str(audit_log), "--event-id", events[1]["event_id"]])
+        result = runner.invoke(
+            cli, ["verify", "--audit-log", str(audit_log), "--event-id", events[1]["event_id"]]
+        )
         assert result.exit_code == 0
         assert "Chain intact" in result.output
 
     def test_verify_command_missing_event(self, tmp_path):
         from click.testing import CliRunner
+
         from kronos_attest.cli import cli
 
         events = _chain(3)
@@ -255,11 +268,14 @@ class TestCLI:
         audit_log.write_text(json.dumps(events))
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["verify", "--audit-log", str(audit_log), "--event-id", "no-such-event"])
+        result = runner.invoke(
+            cli, ["verify", "--audit-log", str(audit_log), "--event-id", "no-such-event"]
+        )
         assert result.exit_code == 1
 
     def test_merkle_root_command(self, tmp_path):
         from click.testing import CliRunner
+
         from kronos_attest.cli import cli
 
         events = _chain(2)
@@ -273,6 +289,7 @@ class TestCLI:
 
     def test_day_report_command(self, tmp_path):
         from click.testing import CliRunner
+
         from kronos_attest.cli import cli
 
         events = _chain(3)
@@ -280,7 +297,9 @@ class TestCLI:
         audit_log.write_text(json.dumps(events))
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["day-report", "--audit-log", str(audit_log), "--day", "2026-06-25"])
+        result = runner.invoke(
+            cli, ["day-report", "--audit-log", str(audit_log), "--day", "2026-06-25"]
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["event_count"] == 3

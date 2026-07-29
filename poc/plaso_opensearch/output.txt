@@ -1,0 +1,17 @@
+Loaded 5 real psort JSONL lines from /home/reca/Claude/Kronos/KronOS_template/poc/plaso/output.jsonl
+
+--- FirecrackerLauncher._stream_records() produced 5 TimelineRecords ---
+  timestamp=2013-03-10T10:11:49.281250+00:00  message=Prefetch [CMD.EXE] was executed - run count 2 path hints: \WINDOWS\SYSTEM32\CMD.
+  timestamp=2013-03-10T10:19:46.234375+00:00  message=\DEVICE\HARDDISKVOLUME1 Serial number: 0x24CB074B Origin: CMD.EXE-087B4001.pf
+  timestamp=2026-07-21T19:43:06.643055+00:00  message=OS:/mnt/evidence/CMD.EXE-087B4001.pf Type: file Owner identifier: 1000 Group ide
+  timestamp=2026-07-21T19:43:06.643055+00:00  message=OS:/mnt/evidence/CMD.EXE-087B4001.pf Type: file Owner identifier: 1000 Group ide
+  timestamp=2026-07-21T19:47:50.457003+00:00  message=OS:/mnt/evidence/CMD.EXE-087B4001.pf Type: file Owner identifier: 1000 Group ide
+
+Sanity check: any record timestamp predates 2020 (i.e. is the real forensic time, not 'now')? True
+
+--- _annotate_records() assigned document_id to 5 records ---
+
+--- bulk_index() indexed 5/5 real Plaso-derived documents ---
+--- search hit count in kronos-testorg-case-00000000-0000-0000-0000-00000000000c-201303: {'value': 2, 'relation': 'eq'} ---
+--- one indexed document's @timestamp and kronos block ---
+{'@timestamp': '2013-03-10T10:11:49.281250+00:00', 'kronos': {'evidence_id': '00000000-0000-0000-0000-000000000001', 'case_id': '00000000-0000-0000-0000-00000000000c', 'org_id': '00000000-0000-0000-0000-0000000000aa', 'org_alias': 'testorg', 'sha256': '93ec53e941b285d1d2a11e1224ab2d5c7a1b8ac493ab8dec407f518c5655ae75', 'parser': 'plaso', 'parser_version': '20260512', 'record_index': 0, 'ingest_timestamp': '2026-07-21T20:23:18.627915+00:00'}, 'message': 'Prefetch [CMD.EXE] was executed - run count 2 path hints: \\WINDOWS\\SYSTEM32\\CMD.EXE hash: 0x087B4001 volume: 1 [serial number: 0x24CB074B, device path: \\DEVICE\\HARDDISKVOLUME1]'}

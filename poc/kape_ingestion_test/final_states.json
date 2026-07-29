@@ -1,0 +1,36 @@
+[
+  {
+    "id": "06d17b84-66e7-4323-a295-7374a30e5404",
+    "caseId": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+    "filename": "kape_triage.zip",
+    "contentType": "application/zip",
+    "sizeBytes": 25589,
+    "sha256": "4bfdfdbde67bea7cab1bcb2b0aca9ad9e3dd1b49b88f5206af8612befc23f0da",
+    "md5": "eb1c4abafac594f7186c1f55bed32b63",
+    "state": "COMPLETE",
+    "errorReason": null,
+    "uploadedBy": "10000000-0000-4000-8000-000000000003",
+    "uploadedAt": "2026-07-23T12:11:40.620948+00:00",
+    "updatedAt": "2026-07-23T12:11:48.097585+00:00",
+    "rfc3161Token": null,
+    "legalHold": false,
+    "objectLockUntil": "2027-07-23T12:11:40.740671+00:00"
+  },
+  {
+    "id": "af8d1c6e-47c9-4573-aefc-3bea52eaf8a0",
+    "caseId": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+    "filename": "kape_triage.E01",
+    "contentType": "application/octet-stream",
+    "sizeBytes": 62050,
+    "sha256": "62956a1b12e8ae88ac284a97c3527699f46f257859e436893bb81963bfd62eed",
+    "md5": "fd5fafef41d3b831ddc91945f1531d79",
+    "state": "COMPLETE",
+    "errorReason": null,
+    "uploadedBy": "10000000-0000-4000-8000-000000000003",
+    "uploadedAt": "2026-07-23T12:11:40.794303+00:00",
+    "updatedAt": "2026-07-23T12:12:01.691322+00:00",
+    "rfc3161Token": null,
+    "legalHold": false,
+    "objectLockUntil": "2027-07-23T12:11:40.928038+00:00"
+  }
+]

@@ -1,0 +1,65 @@
+
+========== 1. Obtain real access token (password grant, user=analyst) ==========
+token_type=Bearer expires_in=900
+
+--- Raw decoded JWT header ---
+{
+  "alg": "RS256",
+  "typ": "JWT",
+  "kid": "O7V3c1NkbWRep8zxPxhWH8ZDsuFqdIdyR-COjM7bqK8"
+}
+
+--- Raw decoded JWT claims (as actually issued by Keycloak 26.2) ---
+{
+  "exp": 1784667714,
+  "iat": 1784666814,
+  "jti": "onrtro:ff540bcf-fca3-40b2-b113-65940b259564",
+  "iss": "http://localhost:18080/realms/kronos",
+  "aud": "kronos-backend",
+  "sub": "10000000-0000-4000-8000-000000000002",
+  "typ": "Bearer",
+  "azp": "kronos-frontend",
+  "sid": "14626270-a916-4649-a039-05fa7a893308",
+  "acr": "aal1",
+  "scope": "organization kronos-roles kronos-sub",
+  "organization": {
+    "kronos-dev": {
+      "id": "d3978cec-b72b-4319-b33c-2b7736075b62"
+    }
+  },
+  "roles": [
+    "analyst"
+  ]
+}
+
+========== 2. KeycloakTokenValidator.validate_and_extract() -- signature + claims ==========
+TenantContext returned by the real validator:
+  org_id       = d3978cec-b72b-4319-b33c-2b7736075b62
+  org_alias    = kronos-dev
+  user_id      = 10000000-0000-4000-8000-000000000002
+  username     = unknown
+  roles        = ['analyst']
+  correlation_id (jti) = onrtro:ff540bcf-fca3-40b2-b113-65940b259564
+  acr          = aal1
+
+ASSERTIONS PASSED: org_id/org_alias/user_id/roles all match raw claims.
+
+========== 3. JWKS cache miss on unknown kid -> real refresh from real JWKS endpoint ==========
+real kid in cache: True
+Correctly raised AuthenticationError for unknown kid: No JWKS key found for kid='not-a-real-kid-00000'
+Cleared cached key + fetched_at for real kid/issuer; is_stale = True
+After forced refresh, key for real kid found: True (kty=RSA, alg=RS256)
+
+========== 4. Expired token -> must fail closed ==========
+sleeping 40s to clear the 2s lifespan + 30s clock-skew leeway...
+Correctly rejected expired token: JWT has expired
+
+========== 5. Wrong-audience token (kronos-backend service account) -> must fail closed ==========
+service-account token aud claim = None (expected validator aud = 'kronos-backend')
+Correctly rejected wrong-audience token: JWT audience claim missing or does not include 'kronos-backend'
+
+========== 6. get_tenant_context() FastAPI dependency (real validator, real token) ==========
+get_tenant_context() -> user=unknown roles=['case_lead'] org_alias=kronos-dev
+ASSERTION PASSED: case-lead role correctly mapped to Role.CASE_LEAD.
+
+========== PoC complete -- all checks passed against a real Keycloak 26.2 server ==========

@@ -50,6 +50,61 @@ class TestNginxParserSupports:
         assert parser.supports("system.evtx", "application/octet-stream", b"ElfFile\x00") is False
 
 
+class TestNginxParserDetectionRobustness:
+    """Detection must not be anchored to byte 0 of the file.
+
+    Regression for the recurring "No parser found for this evidence file"
+    on a real access.log: the previous detector required the *first byte* of
+    the file to begin a log line, so any leading blank line, operator
+    annotation, or W3C/IIS "#Fields:" comment header rejected the whole file
+    even though every data line was a standard access-log entry.
+    """
+
+    _LINE = _COMBINED_HEADER
+
+    def test_leading_blank_line(self) -> None:
+        assert parser.supports("access.log", "text/plain", b"\n" + self._LINE) is True
+
+    def test_leading_whitespace(self) -> None:
+        assert parser.supports("access.log", "text/plain", b"   " + self._LINE) is True
+
+    def test_leading_comment_header(self) -> None:
+        data = b"#Software: Microsoft IIS 10.0\n#Fields: date time s-ip\n" + self._LINE
+        assert parser.supports("access.log", "text/plain", data) is True
+
+    def test_utf8_bom_prefix(self) -> None:
+        assert parser.supports("access.log", "text/plain", b"\xef\xbb\xbf" + self._LINE) is True
+
+    def test_log_line_a_few_lines_in(self) -> None:
+        data = b"junk1\njunk2\njunk3\n" + self._LINE
+        assert parser.supports("access.log", "text/plain", data) is True
+
+    def test_common_log_format_no_referrer_or_ua(self) -> None:
+        clf = b'127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326'
+        assert parser.supports("access.log", "text/plain", clf) is True
+
+    def test_still_rejects_nginx_error_log(self) -> None:
+        err = b"2024/01/15 10:00:00 [error] 12#12: *1 open() failed (2: No such file)"
+        assert parser.supports("access.log", "text/plain", err) is False
+
+    def test_still_rejects_plain_prose(self) -> None:
+        assert (
+            parser.supports("notes.txt", "text/plain", b"just some notes\nnothing here\n") is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_detection_implies_parseable(self) -> None:
+        # A file that only starts parsing a few lines in must still yield the
+        # data lines — detection accepting it must guarantee parse() extracts.
+        data = b"#header comment\n\n" + _COMBINED_HEADER + b"\n"
+        assert parser.supports("access.log", "text/plain", data) is True
+        records = await _drain(
+            parser.parse(_bytes_stream(data), make_evidence(), make_tenant_context())
+        )
+        assert len(records) == 1
+        assert records[0].extra.get("source.ip") == "192.168.1.1"
+
+
 class TestNginxParserParse:
     @pytest.mark.asyncio
     async def test_parses_five_records(self) -> None:

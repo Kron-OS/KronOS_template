@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from src.application.parsing import ForensicParser, ParserType
 from src.domain.evidence import Evidence
@@ -79,14 +79,19 @@ class FastEvtxParser(ForensicParser):
                     extra={"error": str(raw_record)},
                 )
                 continue
+            # records_json() has no type stubs (untyped "evtx" package), so
+            # mypy can't narrow past the isinstance check above on its own;
+            # every non-RuntimeError item is a real parsed dict per the
+            # library's own documented contract.
+            record_dict = cast("dict[str, Any]", raw_record)
             try:
-                record = self._to_timeline_record(raw_record, idx, evidence)
+                record = self._to_timeline_record(record_dict, idx, evidence)
                 yield record
                 idx += 1
             except Exception:
                 logger.debug(
                     "evtx_parser: skipping malformed record",
-                    extra={"record_id": raw_record.get("event_record_id")},
+                    extra={"record_id": record_dict.get("event_record_id")},
                 )
 
     # ------------------------------------------------------------------

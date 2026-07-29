@@ -1,4 +1,13 @@
-"""OpenSearch query builder: injects mandatory tenant isolation into every query."""
+"""OpenSearch query builder: injects mandatory tenant isolation into every query.
+
+Not currently wired into any route -- real OpenSearch isolation today is
+enforced server-side via DLS on the flat JWT org_id claim (see
+poc/opensearch_jwt/, poc/keycloak_opensearch_dls/,
+docs/subsystems/multi-tenancy.md), not by an application-layer filter. This
+class is scaffolding for a future direct backend search API that would
+query OpenSearch on the user's behalf; see
+reviews/Static_Compliance_Pentest_Review.md AUDIT-15.
+"""
 
 from __future__ import annotations
 

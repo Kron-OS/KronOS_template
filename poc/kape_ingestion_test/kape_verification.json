@@ -1,0 +1,31 @@
+{
+  "case_id": "fc6b270b-bdab-407b-9c94-cbaba56b65d4",
+  "total_documents": 631,
+  "by_parser": {
+    "chrome-history": 3,
+    "evtx-rs": 194,
+    "nginx": 15,
+    "plaso": 419
+  },
+  "zip_source_paths_found": [
+    "C/Users/jdoe/AppData/Local/Google/Chrome/User Data/Default/History",
+    "C/Windows/Prefetch/CMD.EXE-087B4001.pf",
+    "C/Windows/System32/winevt/Logs/System.evtx",
+    "C/inetpub/logs/LogFiles/W3SVC1/u_ex260723.log"
+  ],
+  "zip_source_paths_expected_present": true,
+  "e01_source_paths_found": [
+    "C",
+    "C/Windows",
+    "C/Windows/Prefetch",
+    "C/Windows/Prefetch/CMD.EXE-087B4001.pf",
+    "C/Windows/System32",
+    "C/Windows/System32/winevt",
+    "C/Windows/System32/winevt/Logs",
+    "C/Windows/System32/winevt/Logs/System.evtx"
+  ],
+  "e01_source_paths_expected_present": true,
+  "flagged_parsing_errors": [],
+  "container_sha256_mismatches": [],
+  "verdict": "PASS"
+}

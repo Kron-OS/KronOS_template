@@ -1,4 +1,12 @@
-"""Query isolation guard: ensures all data access is scoped to the tenant's org."""
+"""Query isolation guard: ensures all data access is scoped to the tenant's org.
+
+Not currently wired into any route -- real Postgres isolation today is
+enforced directly in each repository's WHERE clause (e.g.
+PostgresCaseRepository.get_by_id). This class is scaffolding for a future
+direct backend search API that would fetch resources without an org_id
+already baked into the query; see reviews/Static_Compliance_Pentest_Review.md
+AUDIT-15.
+"""
 
 from __future__ import annotations
 

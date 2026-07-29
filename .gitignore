@@ -16,3 +16,14 @@ htmlcov/
 .ruff_cache/
 *.sqlite3
 *.db
+
+# SSH keys — never commit private/public keypairs (e.g. sandbox access keys)
+id_ed25519*
+id_rsa*
+*.pem
+
+# Extracted dev step-ca root cert (regenerated fresh by tls-init on every
+# `docker compose up`, see docs/lan-dev-access.md) — never a secret (it's
+# a public root cert, not a key) but ephemeral, per-stack-instance output.
+/kronos-dev-root-ca.crt
+

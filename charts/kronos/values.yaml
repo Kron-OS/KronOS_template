@@ -134,7 +134,11 @@ celery:
       concurrency: 1
     index:
       replicas: 2
-      queues: "q.index"
+      # q.intake (process_intake: validate/scan/hash/promote) grouped here
+      # with q.index (dispatch/finalize/beat orchestration) -- same
+      # lightweight, non-CPU-bound class as those, distinct from the
+      # actual parsing work on q.parse.fast/q.parse.plaso.
+      queues: "q.index,q.intake"
       concurrency: 8
 
 gvisorRuntimeClass: "gvisor"
@@ -185,6 +189,13 @@ nginx:
     repository: nginx
     tag: alpine
   replicaCount: 2
+  # Browser-facing origins for the CSP header's connect-src (see
+  # templates/nginx/configmap.yaml). Default empty, matching
+  # docker-compose.prod.yml's own default: neither the backend nor MinIO is
+  # published directly to browsers in this chart's ingress topology (nginx
+  # is the sole DMZ-facing entry point), so both collapse to nothing.
+  backendPublicUrl: ""
+  minioPublicUrl: ""
   resources:
     requests:
       cpu: "100m"

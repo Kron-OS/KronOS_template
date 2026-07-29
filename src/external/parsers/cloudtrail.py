@@ -37,10 +37,14 @@ class CloudTrailParser(ForensicParser):
         return ParserType.FAST
 
     def supports(self, filename: str, content_type: str, header_bytes: bytes) -> bool:
-        """Accept .json/.jsonl files that contain a 'Records' key in the first 8 KB."""
+        """Accept .json/.jsonl files with a 'Records' wrapper, or NDJSON rows
+        shaped like AWS's own CloudTrail Lake/S3-export format (each line a
+        flat envelope with a "CloudTrailEvent" field holding the real event
+        as a JSON-encoded string, rather than a top-level "Records" array).
+        """
         if _ext(filename) not in {".json", ".jsonl"}:
             return False
-        return b'"Records"' in header_bytes
+        return b'"Records"' in header_bytes or b'"CloudTrailEvent"' in header_bytes
 
     async def parse(
         self,
@@ -72,7 +76,7 @@ class CloudTrailParser(ForensicParser):
         try:
             data = json.loads(text)
             if isinstance(data, dict) and "Records" in data:
-                return list(data["Records"])
+                return [self._unwrap_cloudtrail_event(r) for r in data["Records"]]
         except json.JSONDecodeError:
             pass
 
@@ -85,10 +89,33 @@ class CloudTrailParser(ForensicParser):
             try:
                 obj = json.loads(line)
                 if isinstance(obj, dict):
-                    records.append(obj)
+                    records.append(self._unwrap_cloudtrail_event(obj))
             except json.JSONDecodeError:
                 logger.debug("cloudtrail_parser: skipping non-JSON line")
         return records
+
+    @staticmethod
+    def _unwrap_cloudtrail_event(record: dict[str, Any]) -> dict[str, Any]:
+        """Unwrap AWS's CloudTrail Lake/S3-export envelope, if present.
+
+        That export shape wraps the real event — the one with the
+        lowercase-camelCase fields (eventName, eventSource, eventTime, ...)
+        this module reads — as a JSON-encoded string under a top-level
+        "CloudTrailEvent" key, alongside PascalCase summary fields (EventId,
+        EventName, ...) that _to_timeline_record doesn't look at. Without
+        this, every field read in _to_timeline_record silently misses
+        (case-sensitive dict lookups), producing timestamp-less, actor-less
+        records instead of failing loudly.
+        """
+        nested = record.get("CloudTrailEvent")
+        if isinstance(nested, str):
+            try:
+                unwrapped = json.loads(nested)
+            except json.JSONDecodeError:
+                return record
+            if isinstance(unwrapped, dict):
+                return unwrapped
+        return record
 
     def _to_timeline_record(
         self, ct: dict[str, Any], idx: int, evidence: Evidence

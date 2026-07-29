@@ -74,3 +74,13 @@ export async function getDashboardUrl(caseId: string): Promise<{ url: string }> 
 export async function deleteEvidence(id: string): Promise<void> {
   await apiClient.delete(`/api/evidence/${id}`)
 }
+
+export async function retryIntake(evidenceId: string): Promise<Evidence> {
+  const res = await apiClient.post<Evidence>(`/api/evidence/${evidenceId}/retry-intake`)
+  return res.data
+}
+
+export async function retryParse(evidenceId: string): Promise<Evidence> {
+  const res = await apiClient.post<Evidence>(`/api/evidence/${evidenceId}/retry-parse`)
+  return res.data
+}

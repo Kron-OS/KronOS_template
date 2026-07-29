@@ -4,6 +4,45 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      FE-7: CSP fallback for non-proxied dev environments (e.g. `vite preview`
+      on :4173, run without NGINX in front of it). This is NOT the real
+      policy — NGINX sets the authoritative header (docker/nginx/nginx.conf.template)
+      with deployment-specific origins substituted in and `frame-ancestors`
+      (which a <meta> tag cannot set at all).
+
+      Real, reproduced bug: this used to hardcode "http://localhost:8080"
+      literally. CSP enforcement ANDs every policy present on a page
+      together -- a resource must be allowed by ALL of them, not just one
+      -- so this static, build-time-fixed value silently overrode NGINX's
+      own (correct, dynamic) header for anyone it didn't cover: a real LAN
+      client kept getting a hard frame-src block on Keycloak's
+      3p-cookies/step1.html even after NGINX's header was independently
+      confirmed correct, because THIS tag's own frame-src never granted
+      the LAN Keycloak origin no matter what NGINX said.
+
+      kronos.local is the sole authorized domain (docs/lan-dev-access.md)
+      -- no localhost/127.0.0.1/bare-IP entries anywhere in this app's
+      origin restrictions. %VITE_KEYCLOAK_URL% is Vite's own real,
+      built-in HTML env interpolation (confirmed against the installed
+      Vite 8 source, htmlEnvHook) -- resolves to the exact same value
+      docker-compose.dev.yml passes as a build arg (matching NGINX's
+      KEYCLOAK_PUBLIC_URL), one source of truth instead of a second,
+      independently-maintained hardcoded copy that can silently drift out
+      of sync with the real one (frontend/vite.config.ts supplies the
+      https://kronos.local:8443 default when nothing else sets it, e.g. a
+      plain `vite dev`/`vite build` with no frontend/.env present).
+      Dashboards/MinIO/backend origins below are likewise kronos.local, not
+      wired to their own build args the way Keycloak's is (this tag's job
+      is only to keep a *non-proxied* local dev session non-broken, not to
+      mirror NGINX's real policy exactly) -- if you're running a fully
+      local, non-Docker `vite preview` against services that aren't
+      actually reachable at kronos.local, override these by hand.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' %VITE_KEYCLOAK_URL% https://kronos.local:5602; connect-src 'self' %VITE_KEYCLOAK_URL% https://kronos.local https://kronos.local:9444; object-src 'none'"
+    />
     <title>frontend</title>
   </head>
   <body>

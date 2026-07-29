@@ -14,8 +14,21 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # Allow DNS resolution
-    - ports:
+    # Allow DNS resolution — scoped to kube-dns only (INFRA-009). The
+    # previous rule had no `to:` selector at all, letting App-zone pods
+    # resolve DNS against any destination on port 53/UDP+TCP, a potential
+    # exfiltration/tunneling channel. kube-system + k8s-app: kube-dns is the
+    # standard label convention for CoreDNS/kube-dns on EKS/GKE/AKS/kubeadm;
+    # adjust the namespaceSelector/podSelector if your CNI/cluster uses a
+    # different DNS provider or labeling convention.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
         - protocol: UDP
           port: 53
         - protocol: TCP

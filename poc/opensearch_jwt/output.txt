@@ -1,0 +1,27 @@
+336bfee6859b24e835f2a0c36347d31db890beb709ee7a9e91f9fae1c9209150
+kronos-poc-osjwt-opensearch
+eb2658304fb25eca6f613f2282daad94971e65792f77bb9832bfe6458c47a955
+Provisioned org osjwt: 013a5d1d-ec22-48e7-994a-93feb73152d4
+{"status":"OK","message":"'config' updated."}
+JWT auth domain configured. Running run_poc.py...
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19800 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+real token: sub=10000000-0000-4000-8000-000000000002 roles=['analyst'] org_id=013a5d1d-ec22-48e7-994a-93feb73152d4
+[PASS] real token carries the org_id needed for this PoC
+
+authinfo -> 200 {"user":"User [name=10000000-0000-4000-8000-000000000002, backend_roles=[analyst], requestedTenant=null]","user_name":"10000000-0000-4000-8000-000000000002","user_requested_tenant":null,"remote_address":"172.20.0.1:57066","backend_roles":["analyst"],"custom_attribute_names":["attr.jwt.iss","attr.jwt
+[PASS] real JWT authenticates to real OpenSearch (not 401)
+[PASS] backend_roles correctly extracted from the flat 'roles' claim
+[PASS] nested 'organization' claim IS exposed as a custom attribute name
+[PASS] real ensure_tenant_role() succeeds with security genuinely enabled (400 in dev-disabled mode -- see poc/opensearch/README.md)
+[PASS] the real role's DLS filter is scoped to this exact org_id -- {"term": {"kronos.org_id": "013a5d1d-ec22-48e7-994a-93feb73152d4"}}
+[PASS] GAP CONFIRMED: ensure_tenant_role() alone does not grant the role to any user (no rolesmapping call exists in src/) -- user's effective roles don't include it yet -- ['own_index']
+[PASS] after manually completing the missing mapping, the user's roles DO include the tenant role -- ['own_index', 'kronos-tenant-013a5d1d-ec22-48e7-994a-93feb73152d4']
+[PASS] both real docs indexed via the real bulk_index()
+
+real DLS-scoped search as analyst -> {'value': 1, 'relation': 'eq'} hit(s): {'doc-mine'}
+[PASS] DLS correctly returns ONLY the user's own-org document -- {'doc-mine'}
+
+============================================================
+10 passed, 0 failed
+============================================================

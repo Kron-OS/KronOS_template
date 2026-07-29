@@ -40,18 +40,33 @@ class S3EvidenceStorage(EvidenceStorage):
         evidence_bucket_prefix: str,
         retention_days: int = 2555,
         use_tls: bool = True,
+        presign_endpoint_url: str | None = None,
     ) -> None:
+        client_config = Config(
+            signature_version="s3v4",
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"max_attempts": 3},
+        )
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            config=Config(
-                signature_version="s3v4",
-                connect_timeout=10,
-                read_timeout=60,
-                retries={"max_attempts": 3},
-            ),
+            config=client_config,
+        )
+        # Dedicated client used only to build+sign presigned URLs, never to
+        # actually connect anywhere. SigV4 presigning signs the target Host,
+        # so it must be built against the URL the *client* (browser) will
+        # hit — which may differ from the internal endpoint the backend uses
+        # to reach MinIO directly (e.g. "minio:9000" inside Docker vs.
+        # "localhost:9000" from the host running the browser).
+        self._presign_client = boto3.client(
+            "s3",
+            endpoint_url=presign_endpoint_url or endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=client_config,
         )
         self._quarantine_prefix = quarantine_bucket_prefix
         self._evidence_prefix = evidence_bucket_prefix
@@ -67,8 +82,13 @@ class S3EvidenceStorage(EvidenceStorage):
     ) -> PresignedUploadResponse:
         bucket = self._quarantine_bucket(evidence.metadata.org_alias)
         key = self._object_key(evidence)
+        # Buckets are per-org and orgs are created dynamically (via Keycloak),
+        # so there is no fixed set to provision at process startup — ensure
+        # the bucket lazily, on first use, instead. Idempotent: a no-op once
+        # the bucket exists (single head_bucket call).
+        await self.ensure_quarantine_bucket(evidence.metadata.org_alias)
         url = await self._run(
-            self._client.generate_presigned_url,
+            self._presign_client.generate_presigned_url,
             "put_object",
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=expires_in_seconds,
@@ -96,6 +116,7 @@ class S3EvidenceStorage(EvidenceStorage):
         ev_bucket = self._evidence_bucket(evidence.metadata.org_alias)
         ev_key = self._object_key(evidence)
 
+        await self.ensure_evidence_bucket(evidence.metadata.org_alias)
         try:
             await self._run(
                 self._client.copy_object,
@@ -141,8 +162,33 @@ class S3EvidenceStorage(EvidenceStorage):
                 context={"object_key": object_key, "error": str(exc)},
             ) from exc
 
+    def bucket_for(self, object_key: str, *, bucket: BucketKind = "evidence") -> str:
+        return self._bucket_for(object_key, bucket)
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: BucketKind = "evidence"
+    ) -> None:
+        bucket_name = self._bucket_for(object_key, bucket)
+        try:
+            await self._run(
+                self._client.put_object_legal_hold,
+                Bucket=bucket_name,
+                Key=object_key,
+                LegalHold={"Status": "ON" if hold else "OFF"},
+            )
+        except ClientError as exc:
+            raise StorageError(
+                "Failed to set legal hold",
+                context={"object_key": object_key, "hold": hold, "error": str(exc)},
+            ) from exc
+        logger.info(
+            "legal_hold_updated",
+            extra={"object_key": object_key, "bucket": bucket_name, "hold": hold},
+        )
+
     # ------------------------------------------------------------------
-    # Bucket management helpers (called at startup)
+    # Bucket management helpers (called lazily, on first use per org — see
+    # request_presigned_upload / promote_to_evidence_bucket)
     # ------------------------------------------------------------------
 
     async def ensure_quarantine_bucket(self, org_alias: str) -> None:
@@ -196,8 +242,48 @@ class S3EvidenceStorage(EvidenceStorage):
             kwargs: dict[str, Any] = {"Bucket": bucket}
             if object_lock:
                 kwargs["ObjectLockEnabledForBucket"] = True
-            await self._run(self._client.create_bucket, **kwargs)
+            try:
+                await self._run(self._client.create_bucket, **kwargs)
+            except self._client.exceptions.BucketAlreadyOwnedByYou:
+                # head_bucket -> create_bucket is a check-then-act race: every
+                # evidence.upload_request for an org whose bucket doesn't
+                # exist yet calls this, and a batch upload fires several of
+                # those requests concurrently. All of them see the 404 from
+                # head_bucket before any of them has created the bucket, so
+                # all but the first create_bucket call land here — the
+                # bucket already exists (created by whichever request won
+                # the race), which is exactly the state this method is
+                # trying to reach. Previously unhandled, this surfaced as an
+                # unhandled BucketAlreadyOwnedByYou -> 500 (occasionally a
+                # 502 from nginx if the backend connection reset mid-response)
+                # on POST /api/evidence/upload/request for every request in
+                # the batch except the one that won.
+                logger.debug(
+                    "bucket_already_exists_race",
+                    extra={"bucket": bucket, "object_lock": object_lock},
+                )
+                return
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
+            if object_lock:
+                # WORM enforcement (Project_Specifications.md §2/§5): without a
+                # default retention rule, Object Lock is merely *available* on
+                # the bucket but nothing actually blocks deletion/overwrite.
+                # SSE-KMS encryption is layered on separately via KES/Vault
+                # (scripts/provision_buckets.sh) where that infrastructure is
+                # deployed; this only guarantees the WORM property.
+                await self._run(
+                    self._client.put_object_lock_configuration,
+                    Bucket=bucket,
+                    ObjectLockConfiguration={
+                        "ObjectLockEnabled": "Enabled",
+                        "Rule": {
+                            "DefaultRetention": {
+                                "Mode": "COMPLIANCE",
+                                "Days": self._retention_days,
+                            }
+                        },
+                    },
+                )
 
     async def _s3_stream(self, bucket: str, key: str, chunk_size: int) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()

@@ -63,6 +63,13 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme}
       MINIO_KMS_SECRET_KEY: ${MINIO_KMS_KEY:-}
+      # Browsers PUT evidence directly to MinIO via presigned URLs; this is
+      # cross-origin CORS, enforced server-side (MinIO's bucket-level
+      # PutBucketCors API isn't implemented — this env var is the actual
+      # supported mechanism). Must match kronos-backend's CORS_ALLOWED_
+      # ORIGINS below. MinIO isn't published externally in this compose
+      # file yet (see MINIO_PUBLIC_ENDPOINT), so this is a no-op until it is.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-https://${KEYCLOAK_HOSTNAME}}
     volumes:
       - minio_data:/data
 
@@ -75,7 +82,19 @@ services:
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
     volumes:
       - opensearch_data:/usr/share/opensearch/data
-      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      # NOT :ro -- real, reproduced finding (docker-compose.dev.yml's own
+      # opensearch service has the full account): the security plugin's
+      # bundled demo installer (install_demo_configuration.sh, runs at
+      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true, which
+      # this file does not set) APPENDS its own transport-SSL cert paths
+      # into this same file; a read-only mount makes that append fail and
+      # the security plugin crash-loops on missing cert paths. This file
+      # itself (docker/opensearch/opensearch.yml) previously didn't exist
+      # at all (access-management-review.md [C-2]) and now does, but this
+      # mount is still relying on the bundled *demo* self-signed certs, not
+      # real production TLS material -- tracked as a real, still-open gap,
+      # not fixed here.
+      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
 
   keycloak:
     # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
@@ -99,13 +118,17 @@ services:
   # Keycloak 26.2 rejects with "Can not update organization group".
   # Assumes the realm is already provisioned. ORG_MEMBER_IDS is empty in prod:
   # real users join the org through the IdP / org domain, not by seeded ids.
+  # Built (not bind-mounted) -- see docker/init/Dockerfile.keycloak-init for
+  # why: curlimages/curl runs as non-root, and Docker Desktop/WSL2's
+  # bind-mount layer doesn't reliably grant non-root container users read
+  # access to host files, even when the real host file mode is 0755.
   keycloak-init:
-    image: curlimages/curl:latest
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
     restart: "no"
     depends_on:
       - keycloak
-    volumes:
-      - ../scripts/provision_keycloak_org.sh:/provision_keycloak_org.sh:ro
     environment:
       KC_BASE: http://keycloak:8080
       KC_REALM: kronos
@@ -115,7 +138,6 @@ services:
       ORG_ALIAS: ${KRONOS_ORG_ALIAS:-kronos}
       ORG_DESCRIPTION: KronOS production organization
       ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
-    entrypoint: ["sh", "/provision_keycloak_org.sh"]
 
   clamav:
     image: clamav/clamav:stable
@@ -141,8 +163,20 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # Browser-facing origin for each service's CSP allowance, rendered into
+    # the CSP header by nginx's envsubst templating (see
+    # docker/nginx/nginx.conf.template and the matching note on
+    # kronos-backend's OPENSEARCH_DASHBOARDS_URL above). Set these to real
+    # public hostnames for this deployment — BACKEND_PUBLIC_URL/
+    # MINIO_PUBLIC_URL default empty (omitted from the CSP) since this
+    # compose file doesn't publish those ports directly to the browser.
+    environment:
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-}
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - kronos-backend
@@ -159,9 +193,20 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       # MINIO_ENDPOINT is host:port only — startup.py prepends the scheme from MINIO_USE_TLS.
       MINIO_ENDPOINT: minio:9000
+      # MinIO is not published outside the compose network here, so evidence
+      # upload/finalize is not usable from a real browser until this is set
+      # to a host the browser can reach (e.g. an MinIO ingress/LB hostname) —
+      # presigned URLs are signed against this host (SigV4 signs Host), so it
+      # cannot just be swapped after the fact. See MINIO_PUBLIC_ENDPOINT in
+      # src/config.py / src/adapter/storage/s3.py.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-minio:9000}
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. Defaults to the
+      # Keycloak hostname as a best-guess prod domain — override with the
+      # real frontend origin(s) if they differ (comma-separated).
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${KEYCLOAK_HOSTNAME}}
       OPENSEARCH_URL: http://opensearch:9200
       # Non-superuser service account (a superuser bypasses OpenSearch DLS).
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
@@ -172,6 +217,13 @@ services:
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      # Browser-facing OpenSearch Dashboards origin (e.g.
+      # https://os.kronos.example) for the Timeline tab's iframe embed.
+      # No OpenSearch Dashboards service is deployed by this compose file —
+      # leave unset to disable the feature (503), or point it at wherever
+      # Dashboards is actually reachable from the browser. Must match the
+      # nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below.
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
       TSA_URL: http://tsa:318
@@ -202,6 +254,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Real, reproduced finding (poc/evidence_intake_async/): this was
+      # missing here even though kronos-backend has it -- process_intake
+      # (validate/scan/hash/promote) now runs in THIS worker, not the
+      # backend request thread, so an unreachable clamd here is what
+      # actually matters. configure_clamav_from_settings() hard-fails
+      # worker startup in production if clamd is unreachable (EVID-6) --
+      # better a loud crash than silently scanning nothing.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
       MINIO_ENDPOINT: minio:9000
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
@@ -221,7 +282,7 @@ services:
     depends_on:
       - redis
       - postgres
-    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
     deploy:
       replicas: 2
       resources:

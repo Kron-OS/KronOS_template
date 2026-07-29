@@ -1,10 +1,26 @@
-FROM node:20-alpine AS builder
+# Builder stage rebased onto Chainguard/Wolfi (INFRA-005). "-dev" variant has
+# the shell + npm needed to build; mirrors docker/plaso/Dockerfile, this
+# project's reference pattern for Chainguard images.
+FROM cgr.dev/chainguard/node:latest-dev AS builder
+# Chainguard images run as the built-in "nonroot" user by default — even the
+# "-dev" variants — so WORKDIR/npm ci below would fail writing under
+# root-owned /app without this. Safe here: this is a discarded builder stage
+# in a multi-stage build; the runtime stage below still runs as USER nginx.
+USER root
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 
-ARG VITE_KEYCLOAK_URL=http://localhost:8080
+# Real value passed by docker-compose.dev.yml's nginx build args, matching
+# KC_HOSTNAME exactly (see frontend/src/keycloak.ts's resolveKeycloakUrl()
+# for why this can't be derived client-side per request -- Keycloak's own
+# login form always posts to one single pinned hostname regardless of
+# where the flow started, so the frontend has to start there too, for
+# every client). Empty here only matters for a standalone `docker build`
+# outside compose, where keycloak.ts's own http://localhost:8080 fallback
+# takes over.
+ARG VITE_KEYCLOAK_URL=
 ARG VITE_KEYCLOAK_REALM=kronos
 ARG VITE_KEYCLOAK_CLIENT_ID=kronos-frontend
 ARG VITE_API_URL=
@@ -16,7 +32,79 @@ ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
 
+# Runtime stage intentionally NOT rebased onto cgr.dev/chainguard/nginx here
+# (unlike the builder stage above): that image (a) defaults to listening on
+# 8080, not 80, and (b) only ships the docker-entrypoint envsubst-on-templates
+# behaviour this image depends on (see the COPY below) in its "-dev" variant,
+# not the minimal runtime one. Making the swap correctly requires updating the
+# listen directive in docker/nginx/nginx.conf.template and the host port
+# mapping in docker-compose.dev.yml — both owned by a different, parallel
+# workstream in this multi-agent effort (frontend/auth), not this one
+# (INFRA/CI). Changing only the base image here would silently break the CSP
+# templating and/or the dev stack's networking, i.e. regress a security
+# control instead of fixing one — flagged for the orchestrator to coordinate
+# across worktrees rather than guessed at here. USER below still fixes
+# INFRA-018 (previously no USER directive at all — nginx master ran as root).
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY docker/nginx/nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+# .template here (not conf.d/default.conf directly) so nginx's own
+# docker-entrypoint envsubst step renders the ${KEYCLOAK_PUBLIC_URL} etc.
+# placeholders in the CSP header from container env vars at startup — see
+# nginx.conf.template for why. Defaults below make the image usable
+# standalone in dev; docker-compose overrides them per environment.
+COPY docker/nginx/nginx.conf.template /etc/nginx/templates/default.conf.template
+# LAN HTTPS server blocks (:443/:8443/:9444/:5602) -- a separate template
+# file, baked in here (dev-only Dockerfile) rather than added to
+# nginx.conf.template above, which docker-compose.test.yml/prod.yml also
+# bind-mount as-is and neither provisions certs for. See that file's own
+# header comment for the full reasoning. --chmod matches this repo's own
+# established fix for non-root container users on Docker Desktop/WSL2
+# (docker/init/Dockerfile.keycloak-init) -- world-readable regardless of
+# host bind-mount translation, though this is a build-time COPY anyway, not
+# a bind mount, so it's not actually exposed to that class of bug; kept for
+# consistency and defense-in-depth.
+COPY --chmod=0644 docker/nginx/nginx-lan-https.conf.template /etc/nginx/templates/nginx-lan-https.conf.template
+ENV KEYCLOAK_PUBLIC_URL=http://localhost:8080
+ENV BACKEND_PUBLIC_URL=http://localhost:8000
+ENV MINIO_PUBLIC_URL=http://localhost:9000
+ENV OPENSEARCH_DASHBOARDS_URL=http://localhost:5601
+EXPOSE 80 443 8443 9444 5602
+
+# Non-root (INFRA-018): the stock image ships /etc/nginx/conf.d and
+# /var/cache/nginx/* root-owned, because it expects the master process to
+# start as root and drop privileges via the `user nginx;` directive in
+# nginx.conf. We instead start the master process itself as non-root, so
+# docker-entrypoint.sh's non-root detection only *skips* its own chown
+# attempt (which would fail anyway) — it does not perform one for us. These
+# paths must be made writable by uid 101 ourselves, or both
+# 20-envsubst-on-templates.sh (rendering the CSP template into conf.d) and
+# nginx's worker temp-dir creation fail at startup with "Permission denied".
+# uid 101 ("nginx", built into this image) can still bind port 80 without
+# any of this — that's a separate Linux capability (NET_BIND_SERVICE, in
+# Docker's default capability set), unaffected by file ownership.
+#
+# /run (== /var/run) isn't writable by uid 101 either, so the stock
+# nginx.conf's `pid /var/run/nginx.pid;` directive fails once the master
+# process tries to write it. Two earlier attempts to fix this both failed:
+#   1. `-g "pid /tmp/nginx.pid;"` on the CMD line — rejected as a *duplicate*
+#      pid directive, because -g injects an ADDITIONAL top-level directive
+#      rather than replacing the one already in nginx.conf.
+#   2. `sed -i -E 's#...\s...#...#'` to rewrite the directive in place — this
+#      image is Alpine, whose sed is BusyBox sed, which does NOT support the
+#      GNU `\s` extension (only POSIX classes like [[:space:]]). The pattern
+#      matched nothing, sed exited 0 without changing anything, and nginx kept
+#      the root-owned default path — the `open() "/run/nginx.pid" failed
+#      (13: Permission denied)` error.
+# Correct fix: a BusyBox-compatible, path-agnostic sed (matches any `pid`
+# directive regardless of /run vs /var/run), followed by a `grep` guard so
+# that if the substitution ever silently fails to match again, the *build*
+# fails loudly here instead of the container failing at runtime.
+RUN mkdir -p /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp \
+        /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp \
+    && chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d /var/log/nginx \
+    && sed -i 's#^[[:space:]]*pid[[:space:]].*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
+    && grep -qx 'pid /tmp/nginx.pid;' /etc/nginx/nginx.conf
+
+USER nginx
+
+CMD ["nginx", "-g", "daemon off;"]

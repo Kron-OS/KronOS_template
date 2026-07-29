@@ -12,6 +12,16 @@ from tests.fixtures.factories import make_tenant_context
 
 class TestInMemoryTaskQueue:
     @pytest.mark.asyncio
+    async def test_enqueue_dispatch_records_task(self) -> None:
+        queue = InMemoryTaskQueue()
+        tenant = make_tenant_context()
+        eid = uuid.uuid4()
+        await queue.enqueue_dispatch(eid, tenant)
+        assert len(queue.enqueued) == 1
+        assert queue.enqueued[0][0] == "dispatch"
+        assert queue.enqueued[0][1] == eid
+
+    @pytest.mark.asyncio
     async def test_enqueue_fast_records_task(self) -> None:
         queue = InMemoryTaskQueue()
         tenant = make_tenant_context()

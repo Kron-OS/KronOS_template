@@ -118,6 +118,30 @@ class TestTimelineIngestionService:
         # Document should still be stored with a generated ID.
         assert self.os_client.total_documents() == 1
 
+    async def test_generic_tenant_role_skipped_when_security_disabled(self) -> None:
+        await self.svc.ingest_records(_records(), self.tenant, self.evidence_id)
+        assert self.os_client.generic_tenant_role_created is False
+
+    async def test_generic_tenant_role_created_once_when_security_enabled(self) -> None:
+        """Verified design (poc/keycloak_opensearch_dls/): ONE generic,
+        org-agnostic role, created once ever -- not per-org. A second
+        ingest_records() call (even for a different org) must not call
+        ensure_generic_tenant_role() again.
+        """
+        svc = TimelineIngestionService(
+            opensearch=self.os_client,
+            audit_log=self.audit,
+            batch_size=10,
+            security_enabled=True,
+        )
+        await svc.ingest_records(_records(make_timeline_record()), self.tenant, self.evidence_id)
+        assert self.os_client.generic_tenant_role_created is True
+
+        self.os_client.generic_tenant_role_created = False
+        other_tenant = make_tenant_context()
+        await svc.ingest_records(_records(make_timeline_record()), other_tenant, self.evidence_id)
+        assert self.os_client.generic_tenant_role_created is False
+
     async def test_documents_from_different_months_go_to_different_indices(self) -> None:
         from src.domain.timeline import KronosProvenance, TimelineRecord
 

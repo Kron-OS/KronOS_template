@@ -3,25 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
-from datetime import UTC, datetime
 from typing import Any
-
-import pytest
 
 from kronos_attest.report import AttestationReport
 from kronos_attest.verifier import (
     GENESIS_HASH,
-    ChainBreak,
-    ChainVerificationResult,
     ChainVerifier,
     MerkleVerifier,
     build_merkle_root,
     compute_row_hash,
     merkle_proof,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,7 +117,8 @@ class TestMerkleVerifier:
     def test_single_leaf_root(self) -> None:
         h = "abc123"
         root = build_merkle_root([h])
-        assert root == hashlib.sha256(h.encode()).hexdigest()
+        # Domain-separated leaf hash (0x00 prefix, AUDIT-04), not bare sha256.
+        assert root == hashlib.sha256(b"\x00" + h.encode()).hexdigest()
 
     def test_even_leaves(self) -> None:
         hashes = ["a" * 64, "b" * 64, "c" * 64, "d" * 64]
@@ -185,14 +179,15 @@ class TestDayReport:
         assert report.event_count == 3
         assert report.chain_valid is True
 
-    def test_tsa_anchor_detected(self) -> None:
+    def test_anchor_event_without_tsa_token_is_not_reported_anchored(self) -> None:
+        """AUDIT-07: no real tsa_token present -> not cryptographically anchored."""
         events = _make_chain(2)
         tsa_event = _make_event(99, event_type="audit.merkle_anchored", day="2026-06-24")
-        tsa_event["details"] = {"day": "2026-06-24", "merkle_root": "abcd"}
+        tsa_event["details"] = {"day": "2026-06-24", "root_hash": "abcd"}
         events.append(tsa_event)
         reporter = AttestationReport()
         report = reporter.day_report(events + [tsa_event], "2026-06-24")
-        assert report.tsa_anchored is True
+        assert report.tsa_anchored is False
 
 
 class TestCaseReport:

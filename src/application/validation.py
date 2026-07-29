@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from abc import ABC, abstractmethod
 
 from src.exceptions import ValidationError
+
+# The ZIP central-directory entry every JAR is required to carry.
+_JAR_MANIFEST_ENTRY = "META-INF/MANIFEST.MF"
 
 # ---------------------------------------------------------------------------
 # Blocklisted file extensions (executables / scripts)
@@ -22,10 +27,21 @@ BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
 _MAGIC_TABLE: list[tuple[int, bytes, str]] = [
     # Windows Event Log (EVTX)
     (0, b"ElfFile\x00", "evtx"),
-    # Prefetch
+    # Prefetch (MAM-compressed container)
     (0, b"MAM\x04", "prefetch"),
+    # Prefetch (uncompressed): 4-byte format-version field then "SCCA" at
+    # offset 4 -- real-world prefetch is frequently not MAM-compressed
+    # (confirmed against a real Windows 10 sample, PlasoParser already
+    # accepts this exact signature; this table was missing it, silently
+    # 422-rejecting a valid artefact before the parser ever saw it).
+    (4, b"SCCA", "prefetch-scca"),
     # SQLite (browser artefacts)
     (0, b"SQLite format 3\x00", "sqlite"),
+    # EWF disk image (E01/Ex01) -- KAPE/forensic-imaging tool output. Verified
+    # against a real image built with ewfacquirestream 20140816 (see
+    # tests/fixtures/samples/real/kape/NOTICE.md); PlasoParser already routes
+    # this magic to Plaso's dfVFS-based whole-image parsing.
+    (0, b"EVF\x09\x0d\x0a\xff\x00", "ewf"),
     # GZIP (compressed logs, journald)
     (0, b"\x1f\x8b", "gzip"),
     # ZIP (container for many log formats)
@@ -117,6 +133,52 @@ class MagicByteValidator(EvidenceValidator):
         )
 
 
+class ZipJarDisguiseValidator(EvidenceValidator):
+    """Reject a ZIP-signature file whose central directory is really a JAR.
+
+    A blocklisted ``.jar`` renamed to ``.zip`` (or any other extension)
+    carries an identical ``PK\\x03\\x04`` magic signature to a generic ZIP
+    (EVID-5) — extension and magic-byte checks alone cannot tell them apart.
+    This inspects the ZIP central directory for ``META-INF/MANIFEST.MF``,
+    the entry every JAR is required to carry, and rejects the file
+    regardless of its declared extension.
+
+    Best-effort by construction: it only sees the header buffer the caller
+    supplies (bounded, not the whole object — evidence files are allowed up
+    to ~1 GB and validation must not require buffering that much before the
+    AV scan runs).  A ZIP whose central directory doesn't fit inside that
+    buffer cannot be inspected this way and is passed through to the
+    (independent, full-file) ClamAV scan as defence in depth.
+    """
+
+    def validate(
+        self,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        header_bytes: bytes,
+    ) -> None:
+        if not header_bytes.startswith(b"PK\x03\x04") and not header_bytes.startswith(
+            b"PK\x05\x06"
+        ):
+            return  # not a zip-signature file
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(header_bytes)) as zf:
+                names = zf.namelist()
+        except zipfile.BadZipFile:
+            # Buffer doesn't contain a complete/valid ZIP structure (either
+            # truncated because the file is larger than the header buffer,
+            # or genuinely corrupt) — nothing conclusive to check here.
+            return
+
+        if _JAR_MANIFEST_ENTRY in names:
+            raise ValidationError(
+                "File is a Java archive (JAR) disguised with a non-.jar extension",
+                context={"filename": filename, "extension": _extension(filename)},
+            )
+
+
 class FileSizeValidator(EvidenceValidator):
     """Reject files that exceed the configured maximum size."""
 
@@ -182,4 +244,5 @@ def default_validator_chain(max_upload_bytes: int) -> ValidatorChain:
         ExtensionValidator(),
         FileSizeValidator(max_upload_bytes),
         MagicByteValidator(),
+        ZipJarDisguiseValidator(),
     )

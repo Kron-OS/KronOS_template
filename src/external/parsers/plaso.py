@@ -1,7 +1,8 @@
 """PlasoParser: heavy forensic parser using Plaso in a Firecracker microVM.
 
 Supports: Windows Registry (REGF), Prefetch, SRUM, SQLite artifacts,
-Amcache, systemd journald, and EML email archives.
+Amcache, systemd journald, EML email archives, and EWF (E01/Ex01) disk
+images (whole-image fallback via Plaso's own dfVFS-based auto-detection).
 """
 
 from __future__ import annotations
@@ -20,9 +21,26 @@ logger = logging.getLogger(__name__)
 
 # Magic bytes for formats Plaso specialises in.
 _REGF_MAGIC = b"regf"
-_PREFETCH_MAGIC = b"MAM"  # Prefetch files start with MAM\x04 or MAM\x08
+_PREFETCH_MAM_MAGIC = b"MAM"  # MAM-compressed prefetch: starts with MAM\x04 or MAM\x08
+# Uncompressed prefetch: a 4-byte format-version field followed directly by
+# the "SCCA" signature at offset 4 (e.g. Windows 10 version 17 files are
+# \x11\x00\x00\x00SCCA...). Real-world prefetch is frequently *not*
+# MAM-compressed — e.g. compression disabled, or already decompressed by
+# whatever forensic tool extracted it — and MAM-only detection rejected
+# those files outright ("No parser found for this evidence file"); verified
+# against a real Windows 10 prefetch sample (see
+# tests/fixtures/samples/real/, sourced from Plaso's own test corpus).
+_PREFETCH_SCCA_MAGIC = b"SCCA"
 _SQLITE_MAGIC = b"SQLite format 3"
 _EVTX_MAGIC = b"ElfFile\x00"  # Already handled by FastEvtxParser
+# EWF (E01/Ex01) disk image signature. Verified against a real image built
+# with ewfacquirestream 20140816 (see tests/fixtures/samples/real/kape/
+# NOTICE.md): log2timeline auto-detects an EWF path argument as a "storage
+# media image" via dfVFS (already a real Plaso dependency, confirmed present
+# in docker/Dockerfile.plaso-worker's venv) and walks every partition/
+# filesystem inside it directly -- no separate DiskImageExtractor needed,
+# same subprocess invocation as every other PlasoParser artifact.
+_EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
 
 
 class PlasoParser(ForensicParser):
@@ -50,7 +68,7 @@ class PlasoParser(ForensicParser):
 
     @property
     def parser_version(self) -> str:
-        return "20240101"
+        return "20260512"
 
     @property
     def parser_type(self) -> ParserType:
@@ -66,8 +84,10 @@ class PlasoParser(ForensicParser):
         if header_bytes.startswith(_REGF_MAGIC):
             return True
 
-        # Prefetch files
-        if len(header_bytes) >= 4 and header_bytes[:3] == b"MAM":
+        # Prefetch files: MAM-compressed container, or uncompressed SCCA.
+        if header_bytes[:3] == _PREFETCH_MAM_MAGIC:
+            return True
+        if header_bytes[4:8] == _PREFETCH_SCCA_MAGIC:
             return True
 
         # SQLite databases (SRUM, Amcache, browser history, etc.)
@@ -76,6 +96,10 @@ class PlasoParser(ForensicParser):
 
         # journald binary journals
         if header_bytes.startswith(b"\xbe\xb9\xb0\xd9\x70\x14\x1e\x2d"):
+            return True
+
+        # EWF disk image (E01/Ex01) -- whole-image fallback, see _EWF_MAGIC.
+        if header_bytes.startswith(_EWF_MAGIC):
             return True
 
         ext = Path(filename).suffix.lstrip(".").lower()
@@ -103,7 +127,11 @@ class PlasoParser(ForensicParser):
             extra={"evidence_id": str(evidence.evidence_id), "path": tmp_path},
         )
 
-        launcher = FirecrackerLauncher()
+        from src.config import Settings  # noqa: PLC0415
+
+        settings = Settings()
+        worker_path = Path(settings.plaso_worker_path) if settings.plaso_worker_path else None
+        launcher = FirecrackerLauncher(worker_path=worker_path)
         records = await launcher.run(
             evidence_path=tmp_path,
             evidence_id=str(evidence.evidence_id),

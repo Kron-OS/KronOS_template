@@ -191,7 +191,7 @@ Secrets have **no defaults** — a missing required var fails fast at startup.
 | `MAX_UPLOAD_BYTES`, `PRESIGNED_URL_EXPIRY_SECONDS` | – | intake limits |
 | `STEP_UP_TICKET_STORE` | – | `memory` (default, single replica) or `redis` (shared across replicas — **required when running >1 backend replica**) |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH`, `TLS_CA_PATH` | – | internal mTLS |
-| `OPENSEARCH_DASHBOARDS_URL` | – | timeline iframe embed |
+| `OPENSEARCH_DASHBOARDS_URL` | – | browser-facing OS Dashboards origin for the timeline iframe embed (e.g. `http://localhost:5601` in dev, `https://os.example.com` in prod) — leave unset to disable the feature |
 
 Never commit `.env`. In production, source secrets from Vault / Kubernetes
 Secrets / Docker secrets — not from files in the image.
@@ -221,7 +221,7 @@ ORG_ALIAS=<org> ./../scripts/provision_buckets.sh
 Production hardening checklist (cross-referenced to the audit):
 
 - Enable TLS: uncomment the `:443` TLS 1.3 server block in
-  `docker/nginx/nginx.conf` and mount certs from step-ca (audit **L-2**).
+  `docker/nginx/nginx.conf.template` and mount certs from step-ca (audit **L-2**).
 - Fix the NGINX upstream to `kronos-backend:8000` (audit **H-1**).
 - Build a runtime-only image and run as a user that can read its deps
   (audit **H-2**, **M-5**).

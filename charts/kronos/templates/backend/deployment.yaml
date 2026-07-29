@@ -41,9 +41,13 @@ spec:
           envFrom:
             - secretRef:
                 name: kronos-app-secrets
+          # /healthz (src/external/fastapi_app.py) is deliberately
+          # dependency-free -- no DB/OpenSearch check -- so a transient
+          # downstream outage never causes Kubernetes to kill and restart
+          # an otherwise-healthy backend process.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 30
             periodSeconds: 10
@@ -51,7 +55,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 5

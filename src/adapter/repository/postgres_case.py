@@ -9,6 +9,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from src.adapter.repository._schema_lock import acquire_schema_creation_lock
 from src.adapter.repository.case_repository import CaseRepository
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.exceptions import StorageError
@@ -27,6 +28,15 @@ cases_table = sa.Table(
     sa.Column("reference_number", sa.String(255)),
     sa.Column("classification", sa.String(64), nullable=False, server_default="UNCLASSIFIED"),
     sa.Column("status", sa.String(32), nullable=False, server_default="open"),
+    # AUTH-007: case-lead/analyst/read-only access is scoped to cases they
+    # lead or are a member of; without persisting this, every case-scoped
+    # access check would fall back to "any org member" regardless of role.
+    sa.Column(
+        "member_user_ids",
+        sa.ARRAY(sa.UUID(as_uuid=True)),
+        nullable=False,
+        server_default="{}",
+    ),
     sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False),
 )
@@ -41,7 +51,10 @@ class PostgresCaseRepository(CaseRepository):
     @classmethod
     async def create_tables(cls, engine: AsyncEngine) -> None:
         async with engine.begin() as conn:
-            await conn.run_sync(_metadata.create_all)
+            await acquire_schema_creation_lock(conn)
+            await conn.run_sync(
+                lambda sync_conn: _metadata.create_all(bind=sync_conn, checkfirst=True)
+            )
 
     async def save(self, case: Case) -> Case:
         async with self._engine.begin() as conn:
@@ -73,9 +86,9 @@ class PostgresCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         async with self._engine.connect() as conn:
             count_row = await conn.execute(
-                sa.select(sa.func.count()).select_from(cases_table).where(
-                    cases_table.c.org_id == org_id
-                )
+                sa.select(sa.func.count())
+                .select_from(cases_table)
+                .where(cases_table.c.org_id == org_id)
             )
             total: int = count_row.scalar_one()
 
@@ -131,6 +144,7 @@ class PostgresCaseRepository(CaseRepository):
             "reference_number": case.metadata.reference_number,
             "classification": case.metadata.classification,
             "status": case.status.value,
+            "member_user_ids": list(case.member_user_ids),
             "created_at": case.created_at,
             "updated_at": case.updated_at,
         }
@@ -149,6 +163,7 @@ class PostgresCaseRepository(CaseRepository):
                 classification=row["classification"] or "UNCLASSIFIED",
             ),
             status=CaseStatus(row["status"]),
+            member_user_ids=frozenset(row.get("member_user_ids") or []),
             created_at=_ensure_utc(row["created_at"]),
             updated_at=_ensure_utc(row["updated_at"]),
         )

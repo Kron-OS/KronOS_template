@@ -1,0 +1,21 @@
+{
+  "http_enabled": true,
+  "transport_enabled": false,
+  "order": 0,
+  "http_authenticator": {
+    "challenge": false,
+    "type": "jwt",
+    "config": {
+      "signing_key": "<RAW base64, NO PEM headers, NO newlines -- see README for why>",
+      "jwt_header": "Authorization",
+      "jwt_clock_skew_tolerance_seconds": 30,
+      "roles_key": "roles",
+      "subject_key": "sub"
+    }
+  },
+  "authentication_backend": {
+    "type": "noop",
+    "config": {}
+  },
+  "description": "Authenticate via Json Web Token (Keycloak RS256), verified in poc/opensearch_jwt/"
+}

@@ -1,0 +1,13 @@
+=== 1. Baseline: 10 MB clean stream (well under the 100 MB limit) ===
+[PASS] 10 MB stream scans clean with no error -- ScanResult(is_clean=True, threat_name=None)
+
+=== 2. Real reported scenario: 239 MB stream (exceeds clamd's 100 MB StreamMaxLength) ===
+[FAIL] raises some exception (did NOT scan cleanly) -- no exception raised
+[FAIL] reproduces the EXACT reported error type (BrokenPipeError)
+[FAIL] NOT a StorageError with a clear message -- confirms scan_stream has no graceful handling of clamd's early close, matching the raw, uncaught traceback style seen in the reported intake_failed:BrokenPipeError
+
+=== 3. Confirm determinism: retrying the same size fails identically ===
+[FAIL] second attempt also fails (not flaky) -- unexpectedly succeeded
+
+1 passed, 4 failed
+FAILURES: ['raises some exception (did NOT scan cleanly)', 'reproduces the EXACT reported error type (BrokenPipeError)', "NOT a StorageError with a clear message -- confirms scan_stream has no graceful handling of clamd's early close, matching the raw, uncaught traceback style seen in the reported intake_failed:BrokenPipeError", 'second attempt also fails (not flaky)']

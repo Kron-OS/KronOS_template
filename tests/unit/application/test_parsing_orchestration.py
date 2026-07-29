@@ -19,7 +19,7 @@ from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import ParsingError, ValidationError
+from src.exceptions import EvidenceStateConflictError, ParsingError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
 from tests.fixtures.factories import make_evidence_metadata, make_tenant_context
 
@@ -230,6 +230,33 @@ class TestStartParsing:
             await orchestrator.start_parsing(evidence.evidence_id, tenant)
 
     @pytest.mark.asyncio
+    async def test_start_parsing_no_parser_transitions_to_error(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        # dispatch_parse (celery_app.py) has no exception handling of its own
+        # — without persisting ERROR here, a "no parser found" failure left
+        # the evidence stuck in RECEIVED forever with no audit trail, even
+        # though the Celery task itself crashed and got logged.
+        evidence = await _seed_received_evidence(evidence_repo, local_storage, tenant)
+        registry = ParserRegistry()  # empty — no parser registered
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+        )
+        with pytest.raises(ParsingError, match="No parser found"):
+            await orchestrator.start_parsing(evidence.evidence_id, tenant)
+
+        persisted = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert persisted is not None
+        assert persisted.state == EvidenceState.ERROR
+        assert persisted.error_reason == "no_parser_found"
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED in types
+
+    @pytest.mark.asyncio
     async def test_start_parsing_wrong_state_raises(
         self, evidence_repo, local_storage, audit_repo, task_queue, tenant
     ) -> None:
@@ -239,8 +266,117 @@ class TestStartParsing:
         orchestrator = _make_orchestrator(
             evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
         )
-        with pytest.raises(ValidationError, match="expected RECEIVED"):
+        with pytest.raises(EvidenceStateConflictError, match="expected RECEIVED"):
             await orchestrator.start_parsing(evidence.evidence_id, tenant)
+
+
+# ---------------------------------------------------------------------------
+# Tests: retry_parse
+# ---------------------------------------------------------------------------
+
+
+async def _seed_parse_error_evidence(
+    evidence_repo: InMemoryEvidenceRepository,
+    local_storage: LocalEvidenceStorage,
+    tenant: TenantContext,
+    error_reason: str = "ingest_failed",
+    data: bytes = _CLOUDTRAIL_BYTES,
+) -> Evidence:
+    """Create ERROR evidence with a parse-stage reason, object still in the
+    evidence bucket (intake already succeeded; only parsing/indexing failed)."""
+    meta = make_evidence_metadata(org_id=tenant.org_id)
+    evidence_key = f"{meta.org_alias}/{meta.case_id}/{uuid.uuid4()}"
+    local_storage.write_evidence(evidence_key, data)
+    evidence = Evidence(
+        metadata=meta,
+        state=EvidenceState.PARSING,
+        sha256="a" * 64,
+        minio_evidence_key=evidence_key,
+    ).with_error(error_reason)
+    await evidence_repo.save(evidence)
+    return evidence
+
+
+class TestRetryParse:
+    @pytest.mark.asyncio
+    async def test_retry_parse_transitions_to_parsing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        result = await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert result.state == EvidenceState.PARSING
+        assert result.error_reason is None
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_enqueues_fast_task(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert len(task_queue.enqueued) == 1
+        assert task_queue.enqueued[0][0] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_enqueues_heavy_task(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _HeavyParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert len(task_queue.enqueued) == 1
+        assert task_queue.enqueued[0][0] == "heavy"
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_logs_parse_started_with_retry_flag(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        started = next(
+            e for e in audit_repo.events if e.event_type == AuditEventType.PARSE_STARTED
+        )
+        assert started.details.get("retry") is True
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_wrong_state_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_received_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(EvidenceStateConflictError, match="expected ERROR"):
+            await orchestrator.retry_parse(evidence.evidence_id, tenant)
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_end_to_end_reaches_complete(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Full loop: ERROR (parse-stage) -> retry_parse -> PARSING ->
+        execute_parse (simulating the re-enqueued Celery task) -> COMPLETE,
+        against the same still-promoted evidence-bucket object -- no
+        re-upload, no re-scan."""
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        count = await orchestrator.execute_parse(evidence.evidence_id, tenant)
+        assert count == 2
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +470,115 @@ class TestExecuteParse:
             await orchestrator.execute_parse(evidence.evidence_id, tenant)
         types = [e.event_type for e in audit_repo.events]
         assert AuditEventType.PARSE_FAILED in types
+
+    @pytest.mark.asyncio
+    async def test_execute_parse_non_final_attempt_leaves_evidence_parsing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Regression: a Celery retry re-runs execute_parse with the evidence
+        still in PARSING (its own precondition). If a non-final failure
+        transitioned evidence to the terminal ERROR state, that retry would
+        immediately blow up with EvidenceStateConflictError instead of trying
+        again — turning a transient failure (e.g. OpenSearch briefly
+        returning 503 right after stack startup) into a permanently stuck,
+        confusingly-logged evidence. Non-final attempts must leave evidence
+        in PARSING so the retry's state check still passes.
+        """
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FailingParser()
+        )
+        with pytest.raises(ParsingError):
+            await orchestrator.execute_parse(evidence.evidence_id, tenant, is_final_attempt=False)
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.PARSING
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED not in types
+
+    @pytest.mark.asyncio
+    async def test_execute_parse_final_attempt_transitions_to_error(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FailingParser()
+        )
+        with pytest.raises(ParsingError):
+            await orchestrator.execute_parse(evidence.evidence_id, tenant, is_final_attempt=True)
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.ERROR
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.PARSE_FAILED in types
+
+    @pytest.mark.asyncio
+    async def test_indexes_under_evidence_org_alias_not_task_placeholder(
+        self, evidence_repo, local_storage, audit_repo, task_queue
+    ) -> None:
+        """Records must route to the evidence's real per-tenant index.
+
+        The Celery parse task rebuilds a tenant with org_alias="system" (its
+        payload carries only org_id/user_id). Without reconciliation, every
+        org's evidence landed in a single kronos-system-case-* index. The
+        authoritative alias is on the immutable evidence metadata; execute_parse
+        must use it so records route to kronos-<realorg>-case-*.
+        """
+        from src.adapter.opensearch.client import InMemoryOpenSearchClient
+        from src.application.timeline_ingest import TimelineIngestionService
+        from src.domain.evidence import EvidenceMetadata
+        from src.domain.user import Role
+
+        org_id = uuid.uuid4()
+        # Evidence captured at upload for org "acmecorp".
+        evidence_key = f"acmecorp/case/{uuid.uuid4()}"
+        local_storage.write_evidence(evidence_key, _CLOUDTRAIL_BYTES)
+        meta = EvidenceMetadata(
+            original_filename="trail.json",
+            content_type="application/json",
+            size_bytes=len(_CLOUDTRAIL_BYTES),
+            uploader_user_id=uuid.uuid4(),
+            case_id=uuid.uuid4(),
+            org_id=org_id,
+            org_alias="acmecorp",
+        )
+        evidence = Evidence(
+            metadata=meta,
+            state=EvidenceState.PARSING,
+            sha256="a" * 64,
+            minio_evidence_key=evidence_key,
+        )
+        await evidence_repo.save(evidence)
+
+        # The task-built tenant: same org_id, but the placeholder alias.
+        task_tenant = TenantContext(
+            org_id=org_id,
+            org_alias="system",
+            user_id=uuid.uuid4(),
+            username="celery-worker",
+            roles=frozenset({Role.ANALYST}),
+            correlation_id=str(uuid.uuid4()),
+        )
+
+        opensearch = InMemoryOpenSearchClient()
+        ingest = TimelineIngestionService(opensearch, AuditLogService(audit_repo))
+        registry = ParserRegistry()
+        registry.register(_FakeCloudTrailParser())
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+            timeline_ingest=ingest,
+        )
+
+        await orchestrator.execute_parse(evidence.evidence_id, task_tenant)
+
+        indices = opensearch.all_indices()
+        assert indices, "no documents were indexed"
+        assert all(idx.startswith("kronos-acmecorp-case-") for idx in indices), indices
+        assert not any("system" in idx for idx in indices)
 
     @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:

@@ -1,0 +1,486 @@
+{
+  "realm": "kronos",
+  "displayName": "KronOS",
+  "displayNameHtml": "<b>KronOS</b>",
+  "enabled": true,
+  "organizationsEnabled": true,
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "sslRequired": "external",
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 7200,
+  "ssoSessionMaxLifespan": 86400,
+  "offlineSessionIdleTimeout": 7200,
+  "attributes": {
+    "acr.loa.map": "{\"aal1\":1,\"aal2\":2}"
+  },
+  "refreshTokenMaxReuse": 0,
+  "revokeRefreshToken": true,
+  "browserFlow": "browser-stepup",
+  "roles": {
+    "realm": [
+      {
+        "name": "org-admin",
+        "description": "Organization administrator \u2014 full control over org users, cases, and settings",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "case-lead",
+        "description": "Case lead investigator \u2014 can create cases and manage evidence",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "analyst",
+        "description": "Forensic analyst \u2014 can upload evidence and view timelines",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "read-only",
+        "description": "Read-only viewer \u2014 can view cases, evidence, and timelines",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "kronos-frontend",
+      "name": "KronOS Frontend",
+      "description": "KronOS frontend single-page application",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost/*",
+        "http://localhost:4173/*",
+        "http://127.0.0.1/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://localhost",
+        "http://localhost:4173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost/*##http://127.0.0.1/*##http://127.0.0.1:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "kronos-backend-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "kronos-backend",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "kronos-backend",
+      "name": "KronOS Backend",
+      "description": "KronOS FastAPI backend service account. AUTH-001: scoped to manage-users/view-users/manage-realm/view-realm only (see docs/access-management-review.md AUTH-001 section); never grant realm-admin.",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "secret": "kronos-backend-secret",
+      "authorizationServicesEnabled": true
+    },
+    {
+      "clientId": "opensearch-dashboards",
+      "name": "OpenSearch Dashboards",
+      "description": "OpenSearch Dashboards OIDC client for timeline embed",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "secret": "opensearch-dashboards-secret",
+      "redirectUris": [
+        "http://localhost:5601/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5601"
+      ]
+    },
+    {
+      "clientId": "kronos-attest",
+      "name": "KronOS Attest CLI",
+      "description": "Read-only CLI client for offline audit verification (verifies exported files; never contacts Keycloak)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "acr",
+      "description": "OIDC scope adding the acr claim. Defined explicitly because an explicit clientScopes array suppresses Keycloak's built-in defaults; required for step-up (acr=aal2).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-roles",
+      "description": "Flattens realm roles to a top-level 'roles' claim (AUTH-006). Mandatory because OpenSearch Security's roles_key cannot walk the default nested realm_access.roles path (Project_Specifications.md \u00a71/\u00a76).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-sub",
+      "description": "Includes sub (user ID) in all token types including userinfo",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "organization",
+      "description": "Organization context for multi-tenancy",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "organization-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-organization-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "organization",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "jsonType.label": "JSON",
+            "multivalued": "true",
+            "addOrganizationId": "true",
+            "addOrganizationAttributes": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kronos-org-id",
+      "description": "Flat, top-level org_id claim (see scripts/provision_keycloak_org.sh) -- OpenSearch DLS templating cannot resolve the nested 'organization' claim (poc/opensearch_jwt/).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "org-id-attribute-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "browser-stepup",
+      "description": "Browser-based authentication with conditional step-up MFA (RFC 9470, acr_values=aal2).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "authenticator": "identity-provider-redirector",
+          "requirement": "ALTERNATIVE",
+          "priority": 25,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
+          "flowAlias": "browser-stepup forms",
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-stepup forms",
+      "description": "Username/password, then conditional MFA depending on the requested ACR level.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "flowAlias": "browser-stepup level1",
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 30,
+          "flowAlias": "browser-stepup conditional-mfa",
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-stepup conditional-mfa",
+      "description": "Enforces TOTP when the auth request asks for aal2 (level 2 in acr.loa.map).",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticatorConfig": "browser-stepup loa-2"
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": true,
+          "autheticatorFlow": false
+        }
+      ]
+    },
+    {
+      "alias": "browser-stepup level1",
+      "description": "Establishes baseline aal1 (Condition-LoA level=1 + username/password) before the level-2 subflow runs.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false,
+          "authenticatorConfig": "browser-stepup loa-1"
+        },
+        {
+          "authenticator": "auth-username-password-form",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "browser-stepup loa-2",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
+      }
+    },
+    {
+      "alias": "browser-stepup loa-1",
+      "config": {
+        "loa-condition-level": "1",
+        "loa-max-age": "86400"
+      }
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "roles",
+    "profile",
+    "email",
+    "web-origins",
+    "acr",
+    "kronos-roles",
+    "kronos-sub",
+    "organization",
+    "kronos-org-id"
+  ],
+  "defaultOptionalClientScopes": [
+    "offline_access",
+    "address",
+    "phone",
+    "microprofile-jwt"
+  ],
+  "users": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "username": "admin",
+      "email": "admin@kronos.dev",
+      "firstName": "Admin",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DevAdmin#2026",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "org-admin"
+      ],
+      "requiredActions": [
+        "CONFIGURE_TOTP"
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "username": "analyst",
+      "email": "analyst@kronos.dev",
+      "firstName": "Test",
+      "lastName": "Analyst",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DevAnalyst#2026",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "analyst"
+      ],
+      "requiredActions": []
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "username": "case-lead",
+      "email": "caselead@kronos.dev",
+      "firstName": "Case",
+      "lastName": "Lead",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DevCaseLead#2026",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "case-lead"
+      ],
+      "requiredActions": []
+    },
+    {
+      "username": "service-account-kronos-backend",
+      "enabled": true,
+      "serviceAccountClientId": "kronos-backend",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "manage-realm",
+          "view-realm"
+        ]
+      }
+    }
+  ],
+  "passwordPolicy": "length(12) and notUsername and notEmail",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "smtpServer": {}
+}

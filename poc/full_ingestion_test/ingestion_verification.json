@@ -1,0 +1,13 @@
+{
+  "case_id": "0e0a062f-a99e-4b06-a0ef-8642cf82f314",
+  "total_documents": 223,
+  "by_parser": {
+    "chrome-history": 3,
+    "cloudtrail": 6,
+    "evtx-rs": 194,
+    "nginx": 15,
+    "plaso": 5
+  },
+  "flagged_parsing_errors": [],
+  "verdict": "PASS"
+}

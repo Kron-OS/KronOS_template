@@ -45,6 +45,14 @@ class _StubStorage(EvidenceStorage):
     async def object_exists(self, object_key: str, *, bucket: str = "quarantine") -> bool:
         return True
 
+    def bucket_for(self, object_key: str, *, bucket: str = "evidence") -> str:
+        return f"stub-{bucket}"
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: str = "evidence"
+    ) -> None:
+        pass
+
 
 class TestDIContainer:
     def setup_method(self) -> None:

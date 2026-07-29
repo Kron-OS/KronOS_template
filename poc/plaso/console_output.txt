@@ -1,0 +1,80 @@
+INFO Starting Plaso parse: /mnt/evidence/CMD.EXE-087B4001.pf
+INFO Running log2timeline: /opt/plaso-venv/bin/log2timeline --quiet --status_view none --storage-file /tmp/tmpmi1ywdr0.plaso /mnt/evidence/CMD.EXE-087B4001.pf
+INFO Running psort: /opt/plaso-venv/bin/psort --quiet -o json_line -w /tmp/tmpdwhelyds.jsonl /tmp/tmpmi1ywdr0.plaso
+INFO Plaso parse complete: 5 events
+--- record count ---
+5
+--- first record ---
+{
+    "__container_type__": "event",
+    "__type__": "AttributeContainer",
+    "data_type": "windows:prefetch:execution",
+    "date_time": {
+        "__class_name__": "Filetime",
+        "__type__": "DateTimeValues",
+        "timestamp": 130073839092812500
+    },
+    "display_name": "OS:/mnt/evidence/CMD.EXE-087B4001.pf",
+    "executable": "CMD.EXE",
+    "filename": "/mnt/evidence/CMD.EXE-087B4001.pf",
+    "inode": "-",
+    "mapped_files": [
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\NTDLL.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\KERNEL32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\UNICODE.NLS",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\LOCALE.NLS",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\SORTTBLS.NLS",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\MSVCRT.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\CMD.EXE",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\USER32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\GDI32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\SHIMENG.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\APPPATCH\\SYSMAIN.SDB",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\APPPATCH\\ACGENRAL.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\ADVAPI32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\RPCRT4.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\WINMM.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\OLE32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\OLEAUT32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\MSACM32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\VERSION.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\SHELL32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\SHLWAPI.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\USERENV.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\UXTHEME.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\CTYPE.NLS",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\SORTKEY.NLS",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\WINSXS\\X86_MICROSOFT.WINDOWS.COMMON-CONTROLS_6595B64144CCF1DF_6.0.2600.2180_X-WW_A84F1FF9\\COMCTL32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\WINDOWSSHELL.MANIFEST",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\SYSTEM32\\COMCTL32.DLL",
+        "\\DEVICE\\HARDDISKVOLUME1\\D50FF1E628137B1A251B47AB9466\\UPDATE\\UPDATE.EXE.MANIFEST",
+        "\\DEVICE\\HARDDISKVOLUME1\\$MFT",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\IE7\\SPUNINST\\SPUNINST.EXE.MANIFEST",
+        "\\DEVICE\\HARDDISKVOLUME1\\D50FF1E628137B1A251B47AB9466\\UPDATE\\IERESETICONS.EXE",
+        "\\DEVICE\\HARDDISKVOLUME1\\WINDOWS\\IE7\\SPUNINST\\IERESETICONS.EXE"
+    ],
+    "message": "Prefetch [CMD.EXE] was executed - run count 2 path hints: \\WINDOWS\\SYSTEM32\\CMD.EXE hash: 0x087B4001 volume: 1 [serial number: 0x24CB074B, device path: \\DEVICE\\HARDDISKVOLUME1]",
+    "number_of_volumes": 1,
+    "parser": "prefetch",
+    "path_hints": [
+        "\\WINDOWS\\SYSTEM32\\CMD.EXE"
+    ],
+    "pathspec": {
+        "__type__": "PathSpec",
+        "location": "/mnt/evidence/CMD.EXE-087B4001.pf",
+        "type_indicator": "OS"
+    },
+    "prefetch_hash": 142295041,
+    "run_count": 2,
+    "sha256_hash": "93ec53e941b285d1d2a11e1224ab2d5c7a1b8ac493ab8dec407f518c5655ae75",
+    "timestamp": 1362910309281250,
+    "timestamp_desc": "Last Time Executed",
+    "version": 17,
+    "volume_device_paths": [
+        "\\DEVICE\\HARDDISKVOLUME1"
+    ],
+    "volume_serial_numbers": [
+        617285451
+    ],
+    "datetime": 1362910309281250
+}

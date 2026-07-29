@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
 from src.application.text_chunker import TextChunker
 from src.external.parsers.plaso import PlasoParser
-
 
 # ---------------------------------------------------------------------------
 # PlasoParser
@@ -21,6 +18,7 @@ class TestPlasoParser:
 
     def test_parser_type_heavy(self) -> None:
         from src.application.parsing import ParserType
+
         assert PlasoParser().parser_type == ParserType.HEAVY
 
     def test_supports_regf(self) -> None:

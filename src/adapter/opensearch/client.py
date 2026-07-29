@@ -7,6 +7,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+# Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE role, ONE static
+# mapping to every KronOS realm role (hyphenated -- see
+# src/external/middleware/keycloak_auth.py's _ROLE_MAP), created once, ever.
+# DLS (${attr.jwt.org_id}) is what actually restricts each query to its own
+# org, not this mapping, so mapping broadly here is correct, not an over-grant.
+_GENERIC_TENANT_ROLE_NAME = "kronos-generic-tenant"
+_GENERIC_TENANT_BACKEND_ROLES = ["org-admin", "case-lead", "analyst", "read-only"]
+
 
 class AbstractTimelineIndex(ABC):
     """Port for OpenSearch bulk-indexing operations."""
@@ -31,8 +39,23 @@ class AbstractTimelineIndex(ABC):
         """Create or update the ISM rollover policy for kronos-* indices."""
 
     @abstractmethod
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        """Create or update the per-tenant DLS security role."""
+    async def ensure_generic_tenant_role(self) -> None:
+        """Create the one generic, org-agnostic DLS security role + its static mapping.
+
+        Called once ever, not per-org: DLS is templated from the caller's
+        own JWT (``${attr.jwt.org_id}``) at query time, so a single role
+        with a single static role-mapping (to every KronOS realm role)
+        correctly isolates every org, including orgs and members created
+        after this call — verified in
+        ``poc/keycloak_opensearch_dls/`` (steps 3-4). This replaces the
+        previous per-org ``ensure_tenant_role(org_id, org_alias)``, which
+        created a new role per org but never mapped any user/backend_role
+        to it (see ``poc/opensearch_jwt/README.md`` result #3).
+        """
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Release any network resources (aiohttp session, etc.)."""
 
 
 class OpenSearchClient(AbstractTimelineIndex):
@@ -45,6 +68,7 @@ class OpenSearchClient(AbstractTimelineIndex):
         http_auth: tuple[str, str] | None = None,
         use_ssl: bool = True,
         verify_certs: bool = True,
+        timeout: int = 60,
     ) -> None:
         from opensearchpy import AsyncOpenSearch  # noqa: PLC0415
 
@@ -53,6 +77,20 @@ class OpenSearchClient(AbstractTimelineIndex):
             http_auth=http_auth,
             use_ssl=use_ssl,
             verify_certs=verify_certs,
+            # opensearch-py's own default is a 10s connection/read timeout
+            # with retry_on_timeout=False — too tight for a _bulk request
+            # under concurrent load (several Celery workers indexing at
+            # once) against a resource-constrained node: observed a real
+            # request finish at 9.1-9.3s and the very next one killed
+            # client-side at 10.35s, which then cascaded into a Celery
+            # retry landing on an already-ERROR evidence row
+            # (EvidenceStateConflictError). A slow-but-alive cluster isn't
+            # the same failure as an unreachable one; give bulk requests
+            # real headroom and let the client retry a timeout once before
+            # surfacing it as a StorageError.
+            timeout=timeout,
+            max_retries=2,
+            retry_on_timeout=True,
         )
 
     async def bulk_index(self, documents: list[tuple[str, str, dict[str, Any]]]) -> int:
@@ -78,23 +116,37 @@ class OpenSearchClient(AbstractTimelineIndex):
         )
 
     async def ensure_ism_policy(self) -> None:
+        """Create the ISM rollover policy, tolerating "already exists".
+
+        TimelineIngestionService builds a fresh instance (and so calls this)
+        on every single Celery ingest task — see celery_runtime.py's
+        per-task-loop-scoped resources. PUT on an *existing* ISM policy
+        without ``if_seq_no``/``if_primary_term`` always 409s in OpenSearch,
+        so without this the very first ingest after the policy exists (i.e.
+        every ingest after the first one ever) raised ConflictError and
+        failed the whole parse.
+        """
+        from opensearchpy.exceptions import ConflictError  # noqa: PLC0415
+
         policy_path = Path(__file__).parent / "ism_policy.json"
         with policy_path.open() as fh:
             policy = json.load(fh)
-        await self._client.transport.perform_request(
-            "PUT",
-            "/_plugins/_ism/policies/kronos-rollover",
-            body=policy,
-        )
+        try:
+            await self._client.transport.perform_request(
+                "PUT",
+                "/_plugins/_ism/policies/kronos-rollover",
+                body=policy,
+            )
+        except ConflictError:
+            pass
 
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        role_name = f"kronos-tenant-{org_id}"
+    async def ensure_generic_tenant_role(self) -> None:
         role_body = {
             "cluster_permissions": [],
             "index_permissions": [
                 {
-                    "index_patterns": [f"kronos-{org_alias.lower()}-*"],
-                    "dls": json.dumps({"term": {"kronos.org_id": org_id}}),
+                    "index_patterns": ["kronos-*"],
+                    "dls": json.dumps({"term": {"kronos.org_id": "${attr.jwt.org_id}"}}),
                     "allowed_actions": [
                         "read",
                         "indices:data/read/search",
@@ -105,9 +157,17 @@ class OpenSearchClient(AbstractTimelineIndex):
         }
         await self._client.transport.perform_request(
             "PUT",
-            f"/_plugins/_security/api/roles/{role_name}",
+            f"/_plugins/_security/api/roles/{_GENERIC_TENANT_ROLE_NAME}",
             body=role_body,
         )
+        await self._client.transport.perform_request(
+            "PUT",
+            f"/_plugins/_security/api/rolesmapping/{_GENERIC_TENANT_ROLE_NAME}",
+            body={"backend_roles": _GENERIC_TENANT_BACKEND_ROLES},
+        )
+
+    async def close(self) -> None:
+        await self._client.close()
 
 
 class InMemoryOpenSearchClient(AbstractTimelineIndex):
@@ -116,7 +176,7 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
     def __init__(self) -> None:
         self._indices: dict[str, dict[str, dict[str, Any]]] = {}
         self.bulk_calls: list[list[tuple[str, str, dict[str, Any]]]] = []
-        self.roles_created: dict[str, dict[str, Any]] = {}
+        self.generic_tenant_role_created: bool = False
         self.template_set: bool = False
         self.ism_set: bool = False
 
@@ -132,8 +192,11 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
     async def ensure_ism_policy(self) -> None:
         self.ism_set = True
 
-    async def ensure_tenant_role(self, org_id: str, org_alias: str) -> None:
-        self.roles_created[org_id] = {"org_alias": org_alias}
+    async def ensure_generic_tenant_role(self) -> None:
+        self.generic_tenant_role_created = True
+
+    async def close(self) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # Test-inspection helpers

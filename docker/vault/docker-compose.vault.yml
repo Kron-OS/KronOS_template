@@ -38,12 +38,22 @@ services:
         set -e
         vault secrets enable transit 2>/dev/null || echo "transit already enabled"
         vault write -f transit/keys/kronos-evidence type=aes256-gcm96 2>/dev/null || echo "key already exists"
+        # KES's Vault keystore (this pinned KES tag, configured with
+        # keystore.vault.version: v1 in kes-config.yml) is a K/V v1-backed
+        # keystore -- transit/* alone isn't enough, KES also needs CRUD on
+        # the flat kv/ path (KV v1 paths are NOT prefixed with data/
+        # metadata/ the way KV v2 is) its wrapped keystore entries live
+        # under. Confirmed by actually running this pinned KES version:
+        # with only transit/* granted, KES answers /v1/status but every
+        # real key operation 403s. See poc/vault_kes_minio/README.md gap #2.
+        vault secrets enable -path=kv -version=1 kv 2>/dev/null || echo "kv already enabled"
         vault policy write kronos-kes - <<'POLICY'
         path "transit/keys/kronos-evidence" { capabilities = ["read"] }
         path "transit/encrypt/kronos-evidence" { capabilities = ["update"] }
         path "transit/decrypt/kronos-evidence" { capabilities = ["update"] }
         path "transit/generate-data-key/kronos-evidence" { capabilities = ["update"] }
         path "transit/datakey/plaintext/kronos-evidence" { capabilities = ["update"] }
+        path "kv/kes-keys/*" { capabilities = ["create", "read", "update", "delete", "list"] }
         POLICY
         vault auth enable approle 2>/dev/null || echo "approle already enabled"
         vault write auth/approle/role/kronos-kes \

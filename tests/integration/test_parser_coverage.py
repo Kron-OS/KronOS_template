@@ -145,7 +145,7 @@ async def test_nginx_parser_identifies_access_logs() -> None:
     parser = NginxParser()
 
     # Common nginx access log format
-    nginx_log = b"192.168.1.1 - - [25/Jun/2026:12:34:56 +0000] \"GET / HTTP/1.1\" 200 1234"
+    nginx_log = b'192.168.1.1 - - [25/Jun/2026:12:34:56 +0000] "GET / HTTP/1.1" 200 1234'
     result = parser.supports("access.log", "text/plain", nginx_log)
     assert result is True
 
@@ -201,7 +201,7 @@ def test_magic_byte_validator_rejects_unknown_format() -> None:
     validator = MagicByteValidator()
 
     # Unknown format with bad extension
-    unknown_data = b"\xDE\xAD\xBE\xEF" + b"\x00" * 100
+    unknown_data = b"\xde\xad\xbe\xef" + b"\x00" * 100
     with pytest.raises(ValidationError):
         validator.validate("test.bin", "application/octet-stream", len(unknown_data), unknown_data)
 
@@ -234,7 +234,7 @@ def test_validator_chain_stops_at_first_failure() -> None:
     chain = ValidatorChain(validator1, validator2)
 
     # File with unknown magic (will fail at first validator)
-    bad_data = b"\xDE\xAD\xBE\xEF" + b"x" * 200
+    bad_data = b"\xde\xad\xbe\xef" + b"x" * 200
 
     with pytest.raises(ValidationError):
         chain.validate("test.bin", "application/octet-stream", len(bad_data), bad_data)

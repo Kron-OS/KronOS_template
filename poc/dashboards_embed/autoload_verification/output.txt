@@ -1,0 +1,26 @@
+/home/reca/venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+{"event": "HTTP Request: GET http://testserver/api/cases/e46e5c72-56bf-42a9-8cb9-9f0ba70153d0/dashboard-url \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-27T20:49:35.957963Z"}
+[PASS] real route still returns 200
+URL: https://dashboards.kronos.example/app/data-explorer/discover?embed=true&show-top-menu=false&show-query-input=true&show-time-filter=true&security_tenant=kronos-acmecorp#?_a=(discover:(columns:!(_source),isDirty:!f,sort:!()),metadata:(indexPattern:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',view:discover))&_g=(filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))&_q=(filters:!(('$state':(store:appState),meta:(alias:!n,disabled:!f,index:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',key:kronos.case_id,negate:!f,params:(query:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0'),type:phrase),query:(match_phrase:(kronos.case_id:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0')))),query:(language:kuery,query:''))
+[PASS] security_tenant is a TOP-LEVEL query param (real security-dashboards-plugin's tenant_resolver.ts checks this before falling back to the session cookie, resolving the org's tenant on the very first request) -- ['kronos-acmecorp']
+[PASS] top-level query string has NO _a/_g/_q -- those must live in the fragment or data-explorer's own router silently overwrites them
+[PASS] URL has a fragment (#?...) -- ?_a=(discover:(columns:!(_source),isDirty:!f,sort:!()),metadata:(indexPattern:'k
+[PASS] fragment has _a
+[PASS] fragment has _g
+[PASS] fragment has _q
+[PASS] _a.metadata.indexPattern references the REAL deterministic saved-object id DashboardsIndexPatternProvisioner provisions (case_index_pattern_id()) -- confirmed via metadata_slice.ts at tag 2.11.1: indexPattern is what data-explorer reads to select the active index pattern, regardless of which view is shown -- (discover:(columns:!(_source),isDirty:!f,sort:!()),metadata:(indexPattern:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',view:discover))
+[PASS] _a sets view:discover
+[PASS] _q carries the case_id filter (not _a -- confirmed via a real browser reading back data-explorer's own default _q shape) -- (filters:!(('$state':(store:appState),meta:(alias:!n,disabled:!f,index:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',key:kronos.case_id,negate:!f,params:(query:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0'),type:phrase),query:(match_phrase:(kronos.case_id:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0')))),query:(language:kuery,query:''))
+[PASS] _g carries the time range, not the filter -- (filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))
+
+11 passed, 0 failed
+
+### Decoding the real _a/_g/_q RISON blobs with the real pinned rison-node@1.0.2 ###
+_a input: (discover:(columns:!(_source),isDirty:!f,sort:!()),metadata:(indexPattern:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',view:discover))
+_a DECODED OK: {"discover":{"columns":["_source"],"isDirty":false,"sort":[]},"metadata":{"indexPattern":"kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline","view":"discover"}}
+_g input: (filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))
+_g DECODED OK: {"filters":[],"refreshInterval":{"pause":true,"value":0},"time":{"from":"now-30d","to":"now"}}
+_q input: (filters:!(('$state':(store:appState),meta:(alias:!n,disabled:!f,index:'kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline',key:kronos.case_id,negate:!f,params:(query:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0'),type:phrase),query:(match_phrase:(kronos.case_id:'e46e5c72-56bf-42a9-8cb9-9f0ba70153d0')))),query:(language:kuery,query:''))
+_q DECODED OK: {"filters":[{"$state":{"store":"appState"},"meta":{"alias":null,"disabled":false,"index":"kronos-case-e46e5c72-56bf-42a9-8cb9-9f0ba70153d0-timeline","key":"kronos.case_id","negate":false,"params":{"query":"e46e5c72-56bf-42a9-8cb9-9f0ba70153d0"},"type":"phrase"},"query":{"match_phrase":{"kronos.case_id":"e46e5c72-56bf-42a9-8cb9-9f0ba70153d0"}}}],"query":{"language":"kuery","query":""}}
+real rison-node@1.0.2 decode exit code: 0

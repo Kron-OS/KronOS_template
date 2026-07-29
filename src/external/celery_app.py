@@ -1,9 +1,11 @@
 """Celery application and full parse DAG task definitions.
 
 Task graph:
-  dispatch_parse (beat/API) → parse_artefact_fast | parse_artefact_heavy
+  process_intake (API finalize_upload / retry-intake) → validate/scan/hash/promote
+    → dispatch_parse (auto-enqueued by _promote()) → parse_artefact_fast | parse_artefact_heavy
     → finalize_evidence
   abort_orphan_uploads   (beat, hourly) — timeout stuck UPLOADING evidence
+  abort_orphan_intake    (beat, hourly) — timeout stuck SCANNING/HASHING evidence
   abort_orphan_parses    (beat, hourly) — timeout stuck PARSING evidence
   anchor_audit_log       (beat, daily)  — Merkle-root all events, TSA-anchor
 """
@@ -12,13 +14,26 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import TYPE_CHECKING, Any
 
 from celery import Celery
 from celery.schedules import crontab
 
 from src.config import Settings
+from src.domain.user import TenantContext
+from src.exceptions import EvidenceStateConflictError
+from src.external.logging_config import configure_logging
 
-_settings = Settings()
+if TYPE_CHECKING:
+    from src.external.celery_runtime import TaskResources
+
+# Configure structured JSON logging as early as possible (module import
+# time), mirroring fastapi_app.py, so Celery worker/beat logs reach the same
+# JSON pipeline the app server does (COMP-8) — Celery's own logging setup
+# would otherwise override the root logger with its default formatter.
+configure_logging()
+
+_settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
 logger = logging.getLogger(__name__)
 
 celery_app = Celery(
@@ -32,30 +47,42 @@ from celery.signals import worker_init  # noqa: E402
 
 @worker_init.connect
 def _on_worker_init(**_kwargs: object) -> None:
-    """Wire real dependencies when a Celery worker process starts."""
+    """Wire real dependencies when a Celery worker process starts.
+
+    Does NOT swallow wiring failures. This used to catch every exception and
+    log a warning, which let the worker finish booting — and start accepting
+    tasks — even when wire_dependencies_sync() died partway through (e.g. a
+    transient DB error while creating tables) and never reached
+    configure_dependencies(). Every task dispatched to that worker then
+    failed deep in execution with a confusing "EvidenceStorage is not
+    configured" instead of the real, immediate cause. Re-raising here makes
+    Celery abort worker startup so the failure is loud and the process
+    restarts instead of running in a silently broken state.
+    """
     import os  # noqa: PLC0415
 
     if os.getenv("DATABASE_URL"):
-        try:
-            from src.external.startup import wire_dependencies_sync  # noqa: PLC0415
+        from src.external.startup import wire_dependencies_sync  # noqa: PLC0415
 
+        try:
             wire_dependencies_sync()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("celery worker startup wiring failed: %s", exc)
+        except Exception:
+            logger.exception("celery worker startup wiring failed; refusing to start")
+            raise
 
 
 celery_app.conf.update(
     task_routes={
+        "kronos.process_intake": {"queue": "q.intake"},
         "kronos.dispatch_parse": {"queue": "q.index"},
         "kronos.parse_artefact_fast": {"queue": "q.parse.fast"},
         "kronos.parse_artefact_heavy": {"queue": "q.parse.plaso"},
         "kronos.finalize_evidence": {"queue": "q.index"},
         "kronos.abort_orphan_uploads": {"queue": "q.index"},
+        "kronos.abort_orphan_intake": {"queue": "q.index"},
+        "kronos.auto_dispatch_received": {"queue": "q.index"},
         "kronos.abort_orphan_parses": {"queue": "q.index"},
         "kronos.anchor_audit_log": {"queue": "q.index"},
-        # Legacy aliases — also routed to correct queues.
-        "kronos.parse_fast": {"queue": "q.parse.fast"},
-        "kronos.parse_heavy": {"queue": "q.parse.plaso"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -65,11 +92,19 @@ celery_app.conf.update(
     beat_schedule={
         "abort-orphan-uploads": {
             "task": "kronos.abort_orphan_uploads",
-            "schedule": crontab(minute=0),  # every hour
+            "schedule": crontab(minute=0),  # every hour at :00
+        },
+        "auto-dispatch-received": {
+            "task": "kronos.auto_dispatch_received",
+            "schedule": crontab(minute=15),  # every hour at :15 — re-enqueues stuck RECEIVED
         },
         "abort-orphan-parses": {
             "task": "kronos.abort_orphan_parses",
             "schedule": crontab(minute=30),  # every hour at :30
+        },
+        "abort-orphan-intake": {
+            "task": "kronos.abort_orphan_intake",
+            "schedule": crontab(minute=45),  # every hour at :45 — SCANNING/HASHING orphans
         },
         "anchor-audit-log": {
             "task": "kronos.anchor_audit_log",
@@ -81,27 +116,63 @@ celery_app.conf.update(
 
 
 # ---------------------------------------------------------------------------
-# Helper: build dependencies without FastAPI context
+# Helper: build tenant context
 # ---------------------------------------------------------------------------
 
 
-def _deps():  # type: ignore[return]
-    """Return (orchestration_svc, audit_svc) for use in Celery workers."""
-    from src.external.dependencies import (  # noqa: PLC0415
-        _build_orchestration_service,
-        get_audit_log_repository,
-        get_audit_log_service,
-    )
-
-    audit = get_audit_log_service(get_audit_log_repository())
-    orch = _build_orchestration_service()
-    return orch, audit
-
-
-def _tenant(org_id: str, user_id: str):  # type: ignore[return]
+def _tenant(org_id: str, user_id: str) -> TenantContext:
     from src.external.dependencies import _build_tenant_from_task  # noqa: PLC0415
 
     return _build_tenant_from_task(org_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# process_intake: validate/scan/hash/promote (was inline in finalize_upload)
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="kronos.process_intake",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    queue="q.intake",
+)
+def process_intake(self: object, evidence_id: str, *, org_id: str, user_id: str) -> str:
+    """Validate/scan/hash/promote a just-uploaded artefact, off the FastAPI thread.
+
+    Real bug this fixes: the old finalize_upload ran this synchronously on
+    the request thread; any exception it didn't already anticipate left
+    evidence permanently orphaned in SCANNING/HASHING (see
+    EvidenceIntakeService.process_intake's own docstring for the full
+    account). That method always lands on ERROR with a categorized reason
+    on any failure (see domain.evidence.is_retryable_error_reason) --
+    ValidationError means a terminal reason (retrying the same bytes can
+    never produce a different verdict, e.g. infected/hash_mismatch), so
+    only genuinely retryable failures (storage/scanner connectivity, etc.)
+    get a Celery-level retry here; ERROR is itself a valid re-entry point
+    (evidence.py's ERROR -> SCANNING transition) so a retry just re-runs
+    the whole pipeline against the same still-quarantined object.
+    """
+    from src.exceptions import ValidationError as _ValidationError  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources: TaskResources) -> str:
+        evidence = await resources.intake_service.process_intake(uuid.UUID(evidence_id), tenant)
+        return str(evidence.state.value)
+
+    try:
+        return run_evidence_coro(_work)
+    except _ValidationError as exc:
+        logger.error(
+            "process_intake_terminal", extra={"evidence_id": evidence_id, "error": str(exc)}
+        )
+        return "ERROR"
+    except Exception as exc:
+        logger.error("process_intake_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +180,7 @@ def _tenant(org_id: str, user_id: str):  # type: ignore[return]
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.dispatch_parse", bind=True, max_retries=0)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.dispatch_parse", bind=True, max_retries=0)
 def dispatch_parse(
     self: object,
     evidence_id: str,
@@ -122,13 +193,17 @@ def dispatch_parse(
 
     Returns the evidence_id so downstream tasks can look it up.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
 
-    asyncio.run(orch.start_parsing(uuid.UUID(evidence_id), tenant))
-    logger.info("dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type})
+    async def _work(resources: TaskResources) -> None:
+        await resources.orchestration_service.start_parsing(uuid.UUID(evidence_id), tenant)
+
+    run_evidence_coro(_work)
+    logger.info(
+        "dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type}
+    )
     return evidence_id
 
 
@@ -137,33 +212,53 @@ def dispatch_parse(
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     name="kronos.parse_artefact_fast",
     bind=True,
     max_retries=3,
     default_retry_delay=30,
     queue="q.parse.fast",
 )
-def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> dict:  # type: ignore[return]
+def parse_artefact_fast(
+    self: object, evidence_id: str, *, org_id: str, user_id: str
+) -> dict[str, Any]:
     """Fast parse task — runs in gVisor sandbox.
 
     Returns {evidence_id, record_count} for finalize_evidence.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
+    # self.request.retries is 0 on the first execution and increments on each
+    # self.retry() call, so this is True exactly when calling self.retry()
+    # below would exhaust the budget (raise MaxRetriesExceededError) rather
+    # than schedule another attempt — i.e. this really is the last chance to
+    # parse this evidence. Only then should the orchestration layer flip
+    # evidence to the terminal ERROR state; see execute_parse's docstring.
+    is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
+
+    async def _work(resources: TaskResources) -> int:
+        return await resources.orchestration_service.execute_parse(
+            uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
+        )
+
     try:
-        count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
+        count = run_evidence_coro(_work)
         result = {"evidence_id": evidence_id, "record_count": count}
         finalize_evidence.apply_async(
             kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
             queue="q.index",
         )
         return result
+    except EvidenceStateConflictError as exc:
+        logger.error(
+            "parse_state_conflict",
+            extra={"evidence_id": evidence_id, "error": str(exc)},
+        )
+        raise
     except Exception as exc:
         logger.error("parse_fast_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +266,7 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     name="kronos.parse_artefact_heavy",
     bind=True,
     max_retries=2,
@@ -180,26 +275,42 @@ def parse_artefact_fast(self: object, evidence_id: str, *, org_id: str, user_id:
     time_limit=600,
     soft_time_limit=540,
 )
-def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id: str) -> dict:  # type: ignore[return]
+def parse_artefact_heavy(
+    self: object, evidence_id: str, *, org_id: str, user_id: str
+) -> dict[str, Any]:
     """Heavy parse task — delegates to Plaso via FirecrackerLauncher.
 
     Returns {evidence_id, record_count} for finalize_evidence.
     """
-    import asyncio  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     tenant = _tenant(org_id, user_id)
-    orch, _ = _deps()
+    # See parse_artefact_fast's identical comment: only the true last attempt
+    # should flip evidence to the terminal ERROR state.
+    is_final_attempt = self.request.retries >= self.max_retries  # type: ignore[attr-defined]
+
+    async def _work(resources: TaskResources) -> int:
+        return await resources.orchestration_service.execute_parse(
+            uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
+        )
+
     try:
-        count = asyncio.run(orch.execute_parse(uuid.UUID(evidence_id), tenant))
+        count = run_evidence_coro(_work)
         result = {"evidence_id": evidence_id, "record_count": count}
         finalize_evidence.apply_async(
             kwargs={"parse_result": result, "org_id": org_id, "user_id": user_id},
             queue="q.index",
         )
         return result
+    except EvidenceStateConflictError as exc:
+        logger.error(
+            "parse_state_conflict",
+            extra={"evidence_id": evidence_id, "error": str(exc)},
+        )
+        raise
     except Exception as exc:
         logger.error("parse_heavy_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +318,10 @@ def parse_artefact_heavy(self: object, evidence_id: str, *, org_id: str, user_id
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.finalize_evidence", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.finalize_evidence", bind=True, max_retries=3)
 def finalize_evidence(
     self: object,
-    parse_result: dict,
+    parse_result: dict[str, Any],
     *,
     org_id: str,
     user_id: str,
@@ -219,32 +330,32 @@ def finalize_evidence(
 
     Chained after parse_artefact_* so it runs only on success.
     """
-    import asyncio  # noqa: PLC0415
-
     from src.domain.audit import AuditEventType  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     evidence_id = parse_result.get("evidence_id", "")
     record_count = parse_result.get("record_count", 0)
 
-    try:
-        audit = get_audit_log_service(get_audit_log_repository())
-        tenant = _tenant(org_id, user_id)
-        asyncio.run(
-            audit.log(
-                AuditEventType.INGEST_COMPLETED,
-                org_id=tenant.org_id,
-                actor_user_id=tenant.user_id,
-                details={"evidence_id": evidence_id, "record_count": record_count},
-            )
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources: TaskResources) -> None:
+        await resources.audit_log_service.log(
+            AuditEventType.INGEST_COMPLETED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            details={"evidence_id": evidence_id, "record_count": record_count},
         )
-        logger.info("finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count})
+
+    try:
+        run_evidence_coro(_work)
+        logger.info(
+            "finalize_evidence_done", extra={"evidence_id": evidence_id, "records": record_count}
+        )
     except Exception as exc:
-        logger.error("finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)})
-        raise self.retry(exc=exc)  # type: ignore[attr-defined]
+        logger.error(
+            "finalize_evidence_failed", extra={"evidence_id": evidence_id, "error": str(exc)}
+        )
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -252,41 +363,33 @@ def finalize_evidence(
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.abort_orphan_uploads", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.abort_orphan_uploads", bind=True, max_retries=1)
 def abort_orphan_uploads(self: object) -> int:
     """Transition evidence stuck in UPLOADING for >2 h to ERROR.
 
     Returns count of aborted items.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
 
     from src.domain.audit import AuditEventType  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-        get_evidence_repository,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(hours=2)
 
-    # Cross-org scanning requires a Postgres query (not available in unit tests).
-    # In production the PostgresEvidenceRepository implements stream_all_by_state.
     try:
-        repo = get_evidence_repository()
-        audit = get_audit_log_service(get_audit_log_repository())
 
-        async def _run() -> int:
+        async def _work(resources: TaskResources) -> int:
             count = 0
-            if not hasattr(repo, "stream_all_by_state"):
-                logger.warning("abort_orphan_uploads: repo lacks stream_all_by_state; skipping")
-                return 0
-            async for ev in repo.stream_all_by_state(EvidenceState.UPLOADING):  # type: ignore[attr-defined]
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.UPLOADING
+            ):
                 if ev.created_at < cutoff:
                     aborted = ev.with_error("upload_timeout")
-                    await repo.update(aborted)
-                    await audit.log(
+                    await resources.evidence_repository.update(aborted)
+                    await resources.audit_log_service.log(
                         AuditEventType.EVIDENCE_ERROR,
                         org_id=ev.metadata.org_id,
                         evidence_id=ev.evidence_id,
@@ -295,11 +398,63 @@ def abort_orphan_uploads(self: object) -> int:
                     count += 1
             return count
 
-        count = asyncio.run(_run())
-    except RuntimeError:
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
         count = 0
         logger.warning("abort_orphan_uploads: repository not configured; skipping")
     logger.info("abort_orphan_uploads_done", extra={"aborted": count})
+    return count
+
+
+# ---------------------------------------------------------------------------
+# abort_orphan_intake: hourly cleanup of stuck SCANNING/HASHING evidence
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.abort_orphan_intake", bind=True, max_retries=1)
+def abort_orphan_intake(self: object) -> int:
+    """Transition evidence stuck in SCANNING or HASHING for >30 min to ERROR.
+
+    Defense-in-depth safety net: process_intake's own broad exception
+    handling already lands on ERROR on any failure (see its docstring), so
+    this should rarely find anything — but a worker crash mid-task (killed,
+    OOM, node lost) can still leave evidence orphaned here with no exception
+    ever raised to catch. Same shape as abort_orphan_uploads/_parses.
+    Returns count of aborted items.
+    """
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from src.domain.audit import AuditEventType  # noqa: PLC0415
+    from src.domain.evidence import EvidenceState  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=30)
+
+    try:
+
+        async def _work(resources: TaskResources) -> int:
+            count = 0
+            for state in (EvidenceState.SCANNING, EvidenceState.HASHING):
+                async for ev in resources.evidence_repository.stream_all_by_state(state):
+                    if ev.updated_at < cutoff:
+                        aborted = ev.with_error("intake_timeout")
+                        await resources.evidence_repository.update(aborted, expected_state=state)
+                        await resources.audit_log_service.log(
+                            AuditEventType.EVIDENCE_ERROR,
+                            org_id=ev.metadata.org_id,
+                            evidence_id=ev.evidence_id,
+                            details={"reason": "intake_timeout", "cutoff": cutoff.isoformat()},
+                        )
+                        count += 1
+            return count
+
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
+        count = 0
+        logger.warning("abort_orphan_intake: repository not configured; skipping")
+    logger.info("abort_orphan_intake_done", extra={"aborted": count})
     return count
 
 
@@ -308,39 +463,33 @@ def abort_orphan_uploads(self: object) -> int:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.abort_orphan_parses", bind=True, max_retries=1)  # type: ignore[untyped-decorator]
+@celery_app.task(name="kronos.abort_orphan_parses", bind=True, max_retries=1)
 def abort_orphan_parses(self: object) -> int:
     """Transition evidence stuck in PARSING for >3 h to ERROR.
 
     Returns count of aborted items.
     """
-    import asyncio  # noqa: PLC0415
     from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
 
     from src.domain.audit import AuditEventType  # noqa: PLC0415
     from src.domain.evidence import EvidenceState  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-        get_evidence_repository,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
 
     cutoff = datetime.now(UTC) - timedelta(hours=3)
 
     try:
-        repo = get_evidence_repository()
-        audit = get_audit_log_service(get_audit_log_repository())
 
-        async def _run() -> int:
+        async def _work(resources: TaskResources) -> int:
             count = 0
-            if not hasattr(repo, "stream_all_by_state"):
-                logger.warning("abort_orphan_parses: repo lacks stream_all_by_state; skipping")
-                return 0
-            async for ev in repo.stream_all_by_state(EvidenceState.PARSING):  # type: ignore[attr-defined]
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.PARSING
+            ):
                 if ev.updated_at < cutoff:
                     aborted = ev.with_error("parse_timeout")
-                    await repo.update(aborted)
-                    await audit.log(
+                    await resources.evidence_repository.update(aborted)
+                    await resources.audit_log_service.log(
                         AuditEventType.PARSE_FAILED,
                         org_id=ev.metadata.org_id,
                         evidence_id=ev.evidence_id,
@@ -349,11 +498,66 @@ def abort_orphan_parses(self: object) -> int:
                     count += 1
             return count
 
-        count = asyncio.run(_run())
-    except RuntimeError:
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
         count = 0
         logger.warning("abort_orphan_parses: repository not configured; skipping")
     logger.info("abort_orphan_parses_done", extra={"aborted": count})
+    return count
+
+
+# ---------------------------------------------------------------------------
+# auto_dispatch_received: hourly re-enqueue of evidence stuck in RECEIVED
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.auto_dispatch_received", bind=True, max_retries=1)
+def auto_dispatch_received(self: object) -> int:
+    """Re-enqueue dispatch_parse for evidence stuck in RECEIVED longer than 5 min.
+
+    Safety net for cases where the initial auto-dispatch in EvidenceIntakeService
+    failed (e.g., broker unreachable at upload time).  Runs every hour at :15.
+    Returns count of re-dispatched items.
+    """
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.domain.evidence import EvidenceState  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=5)
+
+    try:
+        queue = CeleryTaskQueue()
+
+        async def _work(resources: TaskResources) -> int:
+            count = 0
+            async for ev in resources.evidence_repository.stream_all_by_state(
+                EvidenceState.RECEIVED
+            ):
+                if ev.updated_at < cutoff:
+                    tenant = _tenant(str(ev.metadata.org_id), str(ev.metadata.uploader_user_id))
+                    try:
+                        await queue.enqueue_dispatch(ev.evidence_id, tenant)
+                        count += 1
+                        logger.info(
+                            "auto_dispatch_reenqueued",
+                            extra={"evidence_id": str(ev.evidence_id)},
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "auto_dispatch_enqueue_failed",
+                            extra={"evidence_id": str(ev.evidence_id), "error": str(exc)},
+                        )
+            return count
+
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
+        count = 0
+        logger.warning("auto_dispatch_received: repository not configured; skipping")
+    logger.info("auto_dispatch_received_done", extra={"dispatched": count})
     return count
 
 
@@ -362,84 +566,58 @@ def abort_orphan_parses(self: object) -> int:
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(name="kronos.anchor_audit_log", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def anchor_audit_log(self: object) -> str:
-    """Compute daily Merkle root of all audit events and anchor via TSA.
+@celery_app.task(name="kronos.anchor_audit_log", bind=True, max_retries=3)
+def anchor_audit_log(self: object) -> dict[str, str]:
+    """Anchor yesterday's audit log: one Merkle root + TSA anchor per active org.
 
-    Returns hex Merkle root.
+    The hash chain (and its sequence_number) is per-org (see
+    ``AuditLogRepository.append_atomic``), so a "day" Merkle root only makes
+    sense computed over one org's events at a time.  This task:
+
+      1. Uses ``list_by_date_range`` (AUDIT-01) — the one legitimate
+         cross-org query, restricted to this system beat task per
+         CLAUDE.md §E.5 — to discover which orgs had activity yesterday.
+      2. Calls ``AuditLogService.anchor_day()`` (AUDIT-03) once per org —
+         the single code path that builds the canonical Merkle root, calls
+         the RFC 3161 TSA, and persists the anchor — instead of
+         reimplementing Merkle-building inline and never calling the TSA.
+
+    Returns ``{org_id: root_hash}`` for every org anchored.
     """
-    import asyncio  # noqa: PLC0415
-    import hashlib  # noqa: PLC0415
-    from datetime import UTC, date, datetime, timedelta  # noqa: PLC0415
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
 
-    from src.domain.audit import AuditEventType  # noqa: PLC0415
-    from src.external.dependencies import (  # noqa: PLC0415
-        get_audit_log_repository,
-        get_audit_log_service,
-    )
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+    from src.external.dependencies import get_timestamp_service  # noqa: PLC0415
 
-    async def _run() -> str:
-        repo = get_audit_log_repository()
-        audit_svc = get_audit_log_service(repo)
+    async def _work(resources: TaskResources) -> dict[str, str]:
+        timestamp_service = get_timestamp_service()
 
-        yesterday = date.today() - timedelta(days=1)
+        # UTC date, not local server date (date.today()): every audit event's
+        # occurred_at is UTC (AuditLogService.log()'s datetime.now(UTC)
+        # default), and the merkle-proof route scopes anchors by
+        # occurred_at.date() (UTC). date.today() uses the server's local
+        # timezone, which is wrong by exactly one day for roughly 2 hours
+        # around local midnight on any server ahead of UTC (e.g. CEST,
+        # UTC+2) — reproduced directly (poc/full_pipeline/README.md) and
+        # fixed here.
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
         day_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=UTC)
         day_end = day_start + timedelta(days=1)
 
-        events = await repo.list_by_date_range(day_start, day_end)
-        if not events:
-            root = hashlib.sha256(b"empty").hexdigest()
-        else:
-            layer: list[bytes] = [
-                hashlib.sha256((e.row_hash or "").encode()).digest() for e in events
-            ]
-            while len(layer) > 1:
-                if len(layer) % 2 == 1:
-                    layer.append(layer[-1])
-                layer = [
-                    hashlib.sha256(layer[i] + layer[i + 1]).digest()
-                    for i in range(0, len(layer), 2)
-                ]
-            root = layer[0].hex()
+        events = await resources.audit_log_repository.list_by_date_range(day_start, day_end)
+        org_ids = sorted({e.org_id for e in events if e.org_id is not None}, key=str)
 
-        import uuid as _uuid  # noqa: PLC0415
-        # System actor sentinel — no real user, no org scope for cross-org anchor.
-        _SYSTEM_ACTOR = _uuid.UUID("00000000-0000-0000-0000-000000000001")
-        await audit_svc.log(
-            AuditEventType.AUDIT_MERKLE_ANCHORED,
-            actor_user_id=_SYSTEM_ACTOR,
-            details={
-                "merkle_root": root,
-                "event_count": len(events),
-                "day": yesterday.isoformat(),
-            },
+        roots: dict[str, str] = {}
+        for org_id in org_ids:
+            root = await resources.audit_log_service.anchor_day(
+                yesterday, org_id, timestamp_service
+            )
+            roots[str(org_id)] = root
+
+        logger.info(
+            "audit_log_anchored",
+            extra={"day": yesterday.isoformat(), "orgs_anchored": len(roots)},
         )
-        logger.info("audit_log_anchored", extra={"merkle_root": root, "events": len(events)})
-        return root
+        return roots
 
-    return asyncio.run(_run())
-
-
-# ---------------------------------------------------------------------------
-# Legacy aliases (for backward compat with tasks queued before this refactor)
-# ---------------------------------------------------------------------------
-
-
-@celery_app.task(name="kronos.parse_fast", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def parse_evidence_fast(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias — re-dispatches via Celery (does not call directly)."""
-    result = parse_artefact_fast.apply(
-        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
-    )
-    data = result.get() if hasattr(result, "get") else {}
-    return data.get("record_count", 0) if isinstance(data, dict) else 0
-
-
-@celery_app.task(name="kronos.parse_heavy", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
-def parse_evidence_heavy(self: object, evidence_id: str, *, org_id: str, user_id: str) -> int:
-    """Legacy alias — re-dispatches via Celery (does not call directly)."""
-    result = parse_artefact_heavy.apply(
-        kwargs={"evidence_id": evidence_id, "org_id": org_id, "user_id": user_id}
-    )
-    data = result.get() if hasattr(result, "get") else {}
-    return data.get("record_count", 0) if isinstance(data, dict) else 0
+    return run_evidence_coro(_work)

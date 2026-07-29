@@ -11,6 +11,7 @@ import pytest
 
 from src.application.parsing import ForensicParser, ParserType
 from src.application.parsing_orchestration import _make_document_id
+from src.domain.artifact import StructuredArtifact
 from src.domain.evidence import Evidence
 from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
@@ -74,6 +75,34 @@ class EmptyParser(FakeParser):
 
     def __init__(self) -> None:
         super().__init__(record_count=0, accept_ext=".empty")
+
+
+class FakeArtifactModule(FakeParser):
+    """A module that opts into the new extract_artifacts() capability --
+    the real-world shape a future VolatilityModule would take (yields both
+    TimelineRecord via parse() AND StructuredArtifact via
+    extract_artifacts(), see reviews/Data_Source_Module_System.md)."""
+
+    async def extract_artifacts(  # type: ignore[override]
+        self,
+        stream: AsyncIterator[bytes],
+        evidence: Evidence,
+        tenant: TenantContext,
+    ) -> AsyncIterator[StructuredArtifact]:
+        yield StructuredArtifact(
+            kind="test.pstree",
+            content={"pid": 4, "children": [{"pid": 812, "children": []}]},
+            kronos=KronosProvenance(
+                evidence_id=evidence.evidence_id,
+                case_id=evidence.metadata.case_id,
+                org_id=evidence.metadata.org_id,
+                sha256=evidence.sha256 or "",
+                parser=self.parser_name,
+                parser_version=self.parser_version,
+                record_index=0,
+                ingest_timestamp=datetime.now(UTC),
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +169,60 @@ class TestFakeParser:
         tenant = make_tenant_context()
         records = await _drain(parser.parse(_empty_stream(), evidence, tenant))
         assert records == []
+
+
+class TestExtractArtifacts:
+    """extract_artifacts() -- the module-system generalization
+    (reviews/Data_Source_Module_System.md). Default must be a true no-op
+    for every parser that doesn't override it (zero migration cost)."""
+
+    @pytest.mark.asyncio
+    async def test_default_yields_nothing_for_existing_parsers(self) -> None:
+        parser = FakeParser(record_count=3)
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+        artifacts = [
+            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
+        ]
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_default_does_not_affect_parse(self) -> None:
+        # A parser that never overrides extract_artifacts() must keep
+        # producing exactly the same parse() output as before this method
+        # existed -- this is the whole "zero migration cost" claim.
+        parser = FakeParser(record_count=5)
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+        records = await _drain(parser.parse(_empty_stream(), evidence, tenant))
+        assert len(records) == 5
+
+    @pytest.mark.asyncio
+    async def test_opted_in_module_yields_structured_artifact(self) -> None:
+        parser = FakeArtifactModule(record_count=1)
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+        artifacts = [
+            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
+        ]
+        assert len(artifacts) == 1
+        assert artifacts[0].kind == "test.pstree"
+        assert artifacts[0].content["pid"] == 4
+        assert artifacts[0].kronos.evidence_id == evidence.evidence_id
+
+    @pytest.mark.asyncio
+    async def test_opted_in_module_still_yields_timeline_records_too(self) -> None:
+        # A single module can produce BOTH shapes -- the core design point
+        # (one module, mixed output), not a parallel class hierarchy.
+        parser = FakeArtifactModule(record_count=2)
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+        records = await _drain(parser.parse(_empty_stream(), evidence, tenant))
+        artifacts = [
+            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
+        ]
+        assert len(records) == 2
+        assert len(artifacts) == 1
 
 
 class TestDocumentId:

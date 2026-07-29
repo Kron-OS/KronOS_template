@@ -10,6 +10,10 @@ See ``docs/SECURITY_AUDIT.md`` for the write-ups.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import MagicMock
+
+import boto3
+from botocore.exceptions import ClientError
 
 from src.adapter.storage.s3 import S3EvidenceStorage
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
@@ -80,3 +84,153 @@ def test_default_prefix_matches_provisioned_buckets() -> None:
     storage = _make_storage("kronos-evidence", "kronos-evidence")
     assert storage._quarantine_bucket("acme") == _PROVISIONED_QUARANTINE
     assert storage._evidence_bucket("acme") == _PROVISIONED_EVIDENCE
+
+
+# ---------------------------------------------------------------------------
+# Lazy bucket provisioning: nothing in the app lifecycle ever called
+# ensure_quarantine_bucket/ensure_evidence_bucket, so on a fresh MinIO neither
+# bucket existed and every upload failed once the presigned URL was actually
+# used. Buckets are per-org and orgs are created dynamically via Keycloak, so
+# there's no fixed list to provision at startup — request_presigned_upload
+# and promote_to_evidence_bucket now ensure their bucket exists first.
+# ---------------------------------------------------------------------------
+
+
+def _not_found() -> ClientError:
+    return ClientError(
+        error_response={"Error": {"Code": "404", "Message": "Not Found"}},
+        operation_name="HeadBucket",
+    )
+
+
+def _mock_clients(storage: S3EvidenceStorage, *, bucket_exists: bool) -> MagicMock:
+    """Replace storage's internal boto3 clients with a single MagicMock.
+
+    Returns the mock so call assertions can be made against it; head_bucket
+    raises 404 unless *bucket_exists*, simulating a fresh MinIO instance.
+    """
+    mock_client = MagicMock()
+    if not bucket_exists:
+        mock_client.head_bucket.side_effect = _not_found()
+    mock_client.generate_presigned_url.return_value = "http://localhost:9000/signed"
+    storage._client = mock_client
+    storage._presign_client = mock_client
+    return mock_client
+
+
+async def test_request_presigned_upload_creates_missing_quarantine_bucket() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.head_bucket.assert_called_once_with(Bucket="kronos-evidence-acme-quarantine")
+    mock_client.create_bucket.assert_called_once_with(Bucket="kronos-evidence-acme-quarantine")
+    # Quarantine has no Object Lock — no retention configuration call.
+    mock_client.put_object_lock_configuration.assert_not_called()
+
+
+async def test_request_presigned_upload_skips_creation_when_bucket_exists() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.head_bucket.assert_called_once_with(Bucket="kronos-evidence-acme-quarantine")
+    mock_client.create_bucket.assert_not_called()
+
+
+async def test_promote_creates_missing_evidence_bucket_with_worm_retention() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.head_bucket.assert_called_once_with(Bucket="kronos-evidence-acme")
+    mock_client.create_bucket.assert_called_once_with(
+        Bucket="kronos-evidence-acme", ObjectLockEnabledForBucket=True
+    )
+    # WORM: Object Lock alone doesn't block writes without a default retention rule.
+    mock_client.put_object_lock_configuration.assert_called_once()
+    _, kwargs = mock_client.put_object_lock_configuration.call_args
+    assert kwargs["Bucket"] == "kronos-evidence-acme"
+    assert kwargs["ObjectLockConfiguration"]["Rule"]["DefaultRetention"]["Mode"] == "COMPLIANCE"
+    mock_client.copy_object.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-upload bucket-creation race: head_bucket -> create_bucket is a
+# check-then-act pair. A batch upload fires several
+# POST /api/evidence/upload/request calls concurrently for the same org, and
+# when its bucket doesn't exist yet, every one of them observes the 404 from
+# head_bucket before any of them has finished create_bucket, so all but the
+# race winner get BucketAlreadyOwnedByYou back. That must be treated as
+# success (the bucket exists, which is the desired end state), not propagated
+# as a 500.
+# ---------------------------------------------------------------------------
+
+
+# botocore generates exception classes per-client at construction time (no
+# network I/O involved), so a throwaway client gives us real, instantiable
+# exception types — unlike a bare MagicMock attribute access, these actually
+# satisfy an `except self._client.exceptions.X:` clause. Built once at import
+# time and reused across tests.
+_REAL_EXCEPTIONS = boto3.client(
+    "s3",
+    endpoint_url="http://minio:9000",
+    aws_access_key_id="key",
+    aws_secret_access_key="secret",
+).exceptions
+
+
+def _bucket_already_owned_by_you() -> Exception:
+    return _REAL_EXCEPTIONS.BucketAlreadyOwnedByYou(
+        {
+            "Error": {
+                "Code": "BucketAlreadyOwnedByYou",
+                "Message": (
+                    "Your previous request to create the named bucket "
+                    "succeeded and you already own it."
+                ),
+            }
+        },
+        "CreateBucket",
+    )
+
+
+async def test_ensure_bucket_tolerates_concurrent_creation_race() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    mock_client.exceptions = _REAL_EXCEPTIONS
+    mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    ev = _evidence("acme")
+
+    # Must not raise: losing the create_bucket race is not a failure.
+    await storage.request_presigned_upload(ev)
+
+    mock_client.create_bucket.assert_called_once_with(Bucket="kronos-evidence-acme-quarantine")
+    # The race loser never sets up retention — the winner already did (or will).
+    mock_client.put_object_lock_configuration.assert_not_called()
+
+
+async def test_ensure_evidence_bucket_tolerates_concurrent_creation_race() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    mock_client.exceptions = _REAL_EXCEPTIONS
+    mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    # Must not raise, and must still proceed to copy the object into the
+    # (now-existing, created by the race winner) evidence bucket.
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.create_bucket.assert_called_once_with(
+        Bucket="kronos-evidence-acme", ObjectLockEnabledForBucket=True
+    )
+    mock_client.put_object_lock_configuration.assert_not_called()
+    mock_client.copy_object.assert_called_once()

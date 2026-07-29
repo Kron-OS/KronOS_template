@@ -1,0 +1,63 @@
+=== Real OpenSearch 2.11.1, security enabled ===
+3987a1d6b7c4d98a6029de3481645f71c2f66f94d9edcdadc23da5c15fca7a5b
+kronos-poc-osddls-opensearch
+=== Real Keycloak 26.2 with the combined-claim realm ===
+48c743242bb65ee1344a0a4397404f14cad7dbf92b49118be639c0c51826e0b9
+  still waiting for http://localhost:18086/realms/kronos/.well-known/openid-configuration (5/40, 15s)...
+Declared org_id as an admin-managed User Profile attribute.
+=== Provisioning two real orgs (org A: 2 analysts, org B: 1 case-lead) ===
+provision_keycloak_org: realm=kronos org=kronos-osddls-a base=http://localhost:18086
+Creating organization kronos-osddls-a
+create organization -> HTTP 201
+Organization ID: ab6b40f1-d706-4861-91bd-bbc495daaa68
+Linked member 20000000-0000-4000-8000-000000000001 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000001 -> HTTP 204
+Linked member 20000000-0000-4000-8000-000000000002 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000002 -> HTTP 204
+provision_keycloak_org: complete
+provision_keycloak_org: realm=kronos org=kronos-osddls-b base=http://localhost:18086
+Creating organization kronos-osddls-b
+create organization -> HTTP 201
+Organization ID: efa3e355-7e50-4b30-b894-b8d0c4b86d2b
+Linked member 20000000-0000-4000-8000-000000000003 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000003 -> HTTP 204
+provision_keycloak_org: complete
+=== Wiring OpenSearch: JWT authc domain (roles_key=dashboard_roles) + both real rolesmappings ===
+{"status":"OK","message":"'config' updated."}
+kronos-generic-tenant role + mapping ensured (unchanged from production).
+org A id=ab6b40f1-d706-4861-91bd-bbc495daaa68  org B id=efa3e355-7e50-4b30-b894-b8d0c4b86d2b
+kronos-dash-kronos-osddls-a ensured (tenant=kronos-kronos-osddls-a, backend_role=ab6b40f1-d706-4861-91bd-bbc495daaa68).
+kronos-dash-kronos-osddls-b ensured (tenant=kronos-kronos-osddls-b, backend_role=efa3e355-7e50-4b30-b894-b8d0c4b86d2b).
+=== Seeding two real documents, one per org, into a kronos-* test index ===
+Seeded.
+
+Keycloak + OpenSearch ready. Running run_poc.py...
+Org A id: ab6b40f1-d706-4861-91bd-bbc495daaa68
+Org B id: efa3e355-7e50-4b30-b894-b8d0c4b86d2b
+user-a1 dashboard_roles claim: ['ab6b40f1-d706-4861-91bd-bbc495daaa68', 'analyst']
+[PASS] user-a1's dashboard_roles contains their real org_id -- {'analyst', 'ab6b40f1-d706-4861-91bd-bbc495daaa68'}
+[PASS] user-a1's dashboard_roles ALSO contains their realm role 'analyst' -- {'analyst', 'ab6b40f1-d706-4861-91bd-bbc495daaa68'}
+[PASS] user-a1's dashboard_roles has exactly 2 elements (no duplicates/loss) -- {'analyst', 'ab6b40f1-d706-4861-91bd-bbc495daaa68'}
+[PASS] org_id claim (separate, DLS-templated) is unaffected/still present -- ab6b40f1-d706-4861-91bd-bbc495daaa68
+user-a1 OpenSearch authinfo backend_roles: ['analyst', 'ab6b40f1-d706-4861-91bd-bbc495daaa68']
+user-a1 OpenSearch authinfo roles: ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-a']
+[PASS] user-a1 granted kronos-generic-tenant (DLS/read role) -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-a']
+[PASS] user-a1 granted kronos-dash-kronos-osddls-a (their OWN org's tenant role) -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-a']
+[PASS] user-a1 NOT granted org B's tenant role -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-a']
+user-a1 search results: ['org A secret event']
+[PASS] user-a1 search returns EXACTLY 1 doc (their own org's, DLS-filtered) -- ['org A secret event']
+[PASS] user-a1 sees ONLY org A's document, not org B's -- ['org A secret event']
+user-b1 dashboard_roles claim: ['case-lead', 'efa3e355-7e50-4b30-b894-b8d0c4b86d2b']
+[PASS] user-b1's dashboard_roles contains their real org_id -- {'efa3e355-7e50-4b30-b894-b8d0c4b86d2b', 'case-lead'}
+[PASS] user-b1's dashboard_roles ALSO contains their realm role 'case-lead' (different role than user-a1) -- {'efa3e355-7e50-4b30-b894-b8d0c4b86d2b', 'case-lead'}
+user-b1 OpenSearch authinfo roles: ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-b']
+[PASS] user-b1 granted kronos-generic-tenant via the 'case-lead' element (not just 'analyst') -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-b']
+[PASS] user-b1 granted kronos-dash-kronos-osddls-b (their OWN org's tenant role) -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-b']
+[PASS] user-b1 NOT granted org A's tenant role -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-osddls-b']
+user-b1 search results: ['org B secret event']
+[PASS] user-b1 search returns EXACTLY 1 doc (their own org's) -- ['org B secret event']
+[PASS] user-b1 sees ONLY org B's document, not org A's -- ['org B secret event']
+[PASS] kronos-frontend's own token has NO dashboard_roles claim (scope correctly isolated to the Dashboards client only) -- ['exp', 'iat', 'jti', 'iss', 'sub', 'typ', 'azp', 'sid', 'scope', 'org_id', 'organization', 'roles']
+[PASS] kronos-frontend's token still has the normal flat 'roles' claim, unaffected -- ['analyst']
+
+18 passed, 0 failed

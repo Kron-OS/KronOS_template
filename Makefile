@@ -128,12 +128,21 @@ attest-verify-case:
 
 # Full reset of the dev stack: stop containers, delete the compose named volumes
 # (postgres/minio/opensearch/clamav/step-ca data) and the default network, drop
-# orphan containers, then rebuild all images from scratch. Use this after a
-# schema or realm change that left stale state behind. WARNING: deletes all
-# local dev data in those volumes.
+# orphan containers, then rebuild images. Use this after a schema or realm
+# change that left stale state behind. WARNING: deletes all local dev data in
+# those volumes.
+#
+# Deliberately NOT --no-cache: the staleness this target fixes lives in the
+# named volumes (Postgres/MinIO/OpenSearch/etc. data), not in image layers.
+# Docker's build cache is already content-addressed per instruction/COPY, so
+# a normal `build` still picks up any Dockerfile or dependency change
+# correctly. --no-cache instead forced every layer (including the slow
+# system/pip installs) to redo from scratch on every `make clean`, and did
+# so redundantly for kronos-backend/celery-worker/celery-beat, which build
+# the exact same Dockerfile.
 clean: clean-cache
 	docker compose -f docker/docker-compose.dev.yml down --volumes --remove-orphans
-	docker compose -f docker/docker-compose.dev.yml build --no-cache
+	docker compose -f docker/docker-compose.dev.yml build
 
 # Local build artefacts and Python/tool caches only (no Docker side effects).
 clean-cache:

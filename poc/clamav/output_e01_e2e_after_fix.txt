@@ -1,0 +1,12 @@
+Building a real 239.3 MB fake .E01 file at /tmp/kronos_poc_forensic2.E01 ...
+[PASS] real file built on disk at the exact reported size
+[PASS] real case created -- 201
+[PASS] upload/request accepts the real 5 GiB-under file size -- 201
+Uploading the real 239 MB file to MinIO (this will take a moment) ...
+[PASS] real PUT of the full 239 MB file to MinIO succeeds -- 200
+[PASS] finalize accepted (202 hand-off) -- 202
+Polling evidence state through the real autonomous pipeline ...
+[PASS] evidence reaches RECEIVED/PARSING/COMPLETE, NOT ERROR/intake_failed:BrokenPipeError (the exact reported bug) -- state=PARSING errorReason=None
+[PASS] real SHA-256 was computed -- dd2cb696241fbbd74947741d6a9cf982e0ae5431715d9c9f45dc21d1dd4c4ea3
+
+7 passed, 0 failed

@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEventType
 from src.domain.user import Role, TenantContext
 from src.exceptions import StorageError
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/org", tags=["admin"])
 
 _ADMIN_ROLES = (Role.ORG_ADMIN,)
+_ACR_LEVEL = {"aal1": 1, "aal2": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +89,14 @@ class UpdateRoleIn(BaseModel):
 
 
 class OrgSettingsOut(BaseModel):
-    retention_days: int
-    legal_hold_default: bool
+    """API response DTO — field names match the frontend TypeScript OrgSettings interface."""
+
+    retentionDays: int
+    legalHoldDefault: bool
 
 
 class UpdateSettingsIn(BaseModel):
-    retention_days: int = Field(ge=1, le=3650)
+    retentionDays: int = Field(ge=1, le=3650)
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +111,12 @@ async def list_org_users(
     """List all users in the caller's org. Proxied to Keycloak Admin REST API."""
     try:
         users = await _list_keycloak_org_users(tenant)
-    except StorageError:
-        return OrgUsersResponse(items=[], total=0)
+    except StorageError as exc:
+        # A Keycloak Admin API failure (auth, permissions, connectivity) is
+        # not "this org has zero users" — returning an empty 200 here hid
+        # the real error behind a misleading empty state instead of the
+        # frontend's existing "Failed to load users" error banner.
+        raise _to_http_error(exc) from exc
     return OrgUsersResponse(items=users, total=len(users))
 
 
@@ -116,24 +124,32 @@ async def list_org_users(
 async def invite_user(
     body: InviteUserIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
-) -> dict:
-    """Create a user, assign their role, and add them to the caller's org.
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> dict[str, Any]:
+    """Create a user, add them to the caller's org, and assign their role.
 
     This is a direct-create flow (no email): Keycloak has no SMTP configured
     in dev, so rather than send an invitation link the org-admin sets the
     user's name and initial password directly and shares it out of band. The
     new user must change this password on first login (UPDATE_PASSWORD). If
-    a user with this email already exists, they are reused and simply added
-    to the org with the requested role (their name/password are untouched).
+    a user with this email already exists **and already belongs to the
+    caller's org**, they are reused and simply re-assigned the requested role
+    (their name/password are untouched). An email that already exists under a
+    *different* org is never reused, re-roled, or acknowledged as existing
+    (AUTH-003/AUTH-011) — see ``_find_user_by_email``.
+
+    Org membership is established (``_add_org_member``) *before* any
+    realm-role-mapping call, so ``_assign_realm_role`` never touches a user
+    who isn't confirmed as a member of ``tenant.org_id`` (AUTH-003).
     """
     _assert_aal2(tenant)
     try:
         user_id, created = await _create_or_get_user(
             tenant, body.email, body.firstName, body.lastName, body.password
         )
-        await _assign_realm_role(tenant, user_id, body.role)
         await _add_org_member(tenant, user_id)
+        await _assert_user_in_org(tenant, user_id)
+        await _assign_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise _to_http_error(exc) from exc
 
@@ -166,11 +182,12 @@ async def update_user_role(
     user_id: str,
     body: UpdateRoleIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> OrgUserOut:
     """Change a user's role within the org."""
     _assert_aal2(tenant)
     try:
+        await _assert_user_in_org(tenant, user_id)
         await _set_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise _to_http_error(exc) from exc
@@ -188,7 +205,7 @@ async def update_user_role(
 async def remove_user(
     user_id: str,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> None:
     """Remove a user from the org."""
     _assert_aal2(tenant)
@@ -217,10 +234,10 @@ async def get_org_settings(
     """Return org-level retention and legal-hold defaults."""
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     return OrgSettingsOut(
-        retention_days=settings.minio_default_retention_days,
-        legal_hold_default=False,
+        retentionDays=settings.minio_default_retention_days,
+        legalHoldDefault=False,
     )
 
 
@@ -228,7 +245,7 @@ async def get_org_settings(
 async def update_org_settings(
     body: UpdateSettingsIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
-    audit_svc=Depends(get_audit_log_service),
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> OrgSettingsOut:
     """Update org retention defaults (stored in-org metadata)."""
     _assert_aal2(tenant)
@@ -236,9 +253,9 @@ async def update_org_settings(
         AuditEventType.ORG_SETTINGS_UPDATED,
         org_id=tenant.org_id,
         actor_user_id=tenant.user_id,
-        details={"retention_days": body.retention_days},
+        details={"retention_days": body.retentionDays},
     )
-    return OrgSettingsOut(retention_days=body.retention_days, legal_hold_default=False)
+    return OrgSettingsOut(retentionDays=body.retentionDays, legalHoldDefault=False)
 
 
 # ---------------------------------------------------------------------------
@@ -268,27 +285,38 @@ def _to_http_error(exc: StorageError) -> HTTPException:
 
     400 (bad request body — e.g. a password-policy violation Keycloak itself
     rejects) surfaces as 422 with Keycloak's own error message so the admin
-    can correct their input. Anything else means the Admin API is down or
+    can correct their input. 409 (email already registered to an account
+    outside the caller's org — see ``_find_user_by_email``) surfaces as a
+    plain 409 with a message that does not confirm which org the email
+    belongs to (AUTH-011). Anything else means the Admin API is down or
     misbehaving, which is a 503.
     """
-    if exc.context.get("status") == 400:
+    status_code = exc.context.get("status")
+    if status_code == 400:
         message = _keycloak_error_message(exc.context.get("body"))
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=message or "Keycloak rejected the request (check the password policy)",
+        )
+    if status_code == 409:
+        message = _keycloak_error_message(exc.context.get("body"))
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=message or "This email is already registered to a different account",
         )
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
 
 def _assert_aal2(tenant: TenantContext) -> None:
     """Raise 401 step-up challenge if the token doesn't satisfy aal2."""
-    _ACR_LEVEL = {"aal1": 1, "aal2": 2}
     if _ACR_LEVEL.get(tenant.acr, 0) < 2:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Step-up authentication required for this operation",
             headers={
-                "WWW-Authenticate": 'Bearer error="insufficient_user_authentication", acr_values="aal2"'
+                "WWW-Authenticate": (
+                    'Bearer error="insufficient_user_authentication", acr_values="aal2"'
+                )
             },
         )
 
@@ -297,7 +325,7 @@ async def _get_service_account_token(tenant: TenantContext) -> str:
     """Obtain a Keycloak service-account token for Admin REST API calls."""
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     token_url = (
         f"{settings.keycloak_url}/realms/{settings.keycloak_realm}"
         f"/protocol/openid-connect/token"
@@ -316,7 +344,7 @@ async def _get_service_account_token(tenant: TenantContext) -> str:
             "Failed to obtain Keycloak service-account token",
             context={"status": resp.status_code},
         )
-    return resp.json()["access_token"]  # type: ignore[no-any-return]
+    return resp.json()["access_token"]
 
 
 # Realm roles the org-admin page is allowed to assign/manage.
@@ -338,7 +366,7 @@ async def _keycloak_admin_request(
     """
     from src.config import Settings  # noqa: PLC0415
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     try:
         token = await _get_service_account_token(tenant)
     except (httpx.HTTPError, StorageError) as exc:
@@ -385,8 +413,11 @@ async def _create_or_get_user(
 ) -> tuple[str, bool]:
     """Create a Keycloak user for *email* (idempotent); return (user_id, created).
 
-    *created* is False when a user with this email already existed and was
-    reused instead — in that case their name and password are left untouched.
+    *created* is False when a user with this email already existed **and
+    already belonged to the caller's org** and was reused instead — in that
+    case their name and password are left untouched. A 409 whose existing
+    account is *not* a member of the caller's org is surfaced as a generic
+    conflict, never reused or attributed to another tenant (AUTH-003/AUTH-011).
     """
     representation = {
         "username": email,
@@ -404,19 +435,79 @@ async def _create_or_get_user(
         location = resp.headers.get("location", "")
         return location.rstrip("/").rsplit("/", 1)[-1], True
 
-    # 409 Conflict: a user with this email/username already exists — reuse it.
+    # 409 Conflict: a user with this email/username already exists somewhere in
+    # the realm. Only reuse it if it's already a member of the caller's org.
     existing = await _find_user_by_email(tenant, email)
     if existing is None:
-        raise StorageError("User already exists but could not be located", context={"email": email})
+        raise StorageError(
+            "Email already registered to a different account",
+            context={
+                "status": 409,
+                "body": {
+                    "errorMessage": (
+                        "This email is already registered to a different account. "
+                        "Contact an administrator if you believe this is an error."
+                    )
+                },
+            },
+        )
     return str(existing["id"]), False
 
 
-async def _find_user_by_email(tenant: TenantContext, email: str) -> dict | None:
-    """Return the Keycloak user with an exact email match, or None."""
+async def _find_user_by_email(tenant: TenantContext, email: str) -> dict[str, Any] | None:
+    """Return the Keycloak user with an exact email match, scoped to the caller's org.
+
+    A realm-wide email search would let any org-admin discover — and, via
+    ``_create_or_get_user``'s reuse path, silently attach a role to — an
+    account that belongs to a completely different tenant (AUTH-003). It
+    would also let them enumerate account existence outside their own org
+    (AUTH-011). So this only returns a match that is already confirmed as a
+    member of ``tenant.org_id``; a match belonging to any other org (or no
+    org) is treated identically to "no such user".
+    """
     query = urllib.parse.urlencode({"email": email, "exact": "true"})
     resp = await _keycloak_admin_request(tenant, "GET", f"/users?{query}", None)
     users = resp.json()
-    return users[0] if isinstance(users, list) and users else None
+    if not (isinstance(users, list) and users):
+        return None
+    candidate = users[0]
+    user_id = str(candidate.get("id", ""))
+    if not user_id or not await _is_org_member(tenant, user_id):
+        return None
+    return candidate
+
+
+async def _is_org_member(tenant: TenantContext, user_id: str) -> bool:
+    """Return True if *user_id* is a member of ``tenant.org_id``.
+
+    Uses the same org-membership endpoint ``remove_user`` already relies on
+    for its (correctly) org-scoped delete, just as a read instead of a
+    DELETE: 200 means the user is a member, 404 means they are not.
+    """
+    resp = await _keycloak_admin_request(
+        tenant,
+        "GET",
+        f"/organizations/{tenant.org_id}/members/{user_id}",
+        None,
+        allow=(404,),
+    )
+    return resp.status_code == 200
+
+
+async def _assert_user_in_org(tenant: TenantContext, user_id: str) -> None:
+    """Raise 403 unless *user_id* is a member of the caller's org.
+
+    This is the mandatory guard before any realm-role-mapping Admin API call
+    (AUTH-003): those endpoints are realm-wide and have no built-in org
+    scoping, so without this check any org-admin could grant or revoke any
+    realm role — including org-admin itself — on a user in a different
+    tenant.
+    """
+    if not await _is_org_member(tenant, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Target user is not a member of your organization",
+        )
 
 
 async def _assign_realm_role(tenant: TenantContext, user_id: str, role_name: str) -> None:
