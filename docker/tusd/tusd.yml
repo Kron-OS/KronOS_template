@@ -1,0 +1,35 @@
+# tusd configuration for KronOS resumable evidence uploads.
+# tusd implements the tus.io resumable upload protocol.
+# Uploads land in MinIO quarantine bucket via S3 backend.
+
+host: 0.0.0.0
+port: 1080
+
+# S3/MinIO backend — credentials come from environment variables:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+s3_bucket: kronos-quarantine
+s3_endpoint: http://minio:9000
+s3_prefix: uploads/
+s3_disable_content_hashes: false
+
+# Maximum upload size: 10 GiB
+max_size: 10737418240
+
+# CORS origins — restrict to known frontend + backend
+cors_origins:
+  - http://localhost:5173
+  - https://kronos.internal
+
+# Hooks — POST to backend after upload completion to trigger finalize_upload.
+hooks_http: http://kronos-backend:8000/internal/tusd-hook
+hooks_enabled_events: post-finish,post-terminate
+hooks_http_forward_headers:
+  - Authorization
+  - X-KronOS-Evidence-Id
+  - X-KronOS-Org-Id
+
+# Base path for upload endpoints
+base_path: /files/
+
+# TLS — handled by NGINX upstream; tusd listens on plain HTTP.
+# Set tls_certificate and tls_key for direct TLS in production.

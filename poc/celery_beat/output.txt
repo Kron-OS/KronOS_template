@@ -1,0 +1,70 @@
+b181fb8ca0ff55ed8deed8aa95c9fe14acfb9c1c7eaca994011acbc27257f720
+55835854c57d7f493fff5970fd3fbfe1bd2604e264eb1c724185d4299a7f56a4
+Postgres + Redis ready
+Environment configured. Running run_poc.py...
+clamav_unreachable_dev_fallback
+wire_dependencies_sync() completed (real DI container wired, tables created)
+seeded stale_uploading: evidence_id=4213cb9f-af85-420f-b83b-a2da64027b10 created_at=2026-07-22 15:39:04.457953+00:00 updated_at=2026-07-22 15:39:04.457953+00:00
+seeded fresh_uploading: evidence_id=c21ade81-e862-46cf-958f-6f5c99bab8c4 created_at=2026-07-22 18:29:04.457953+00:00 updated_at=2026-07-22 18:29:04.457953+00:00
+seeded stale_parsing: evidence_id=82d5188e-7856-43c3-bbe5-920d1c61fb1a created_at=2026-07-22 13:39:04.457953+00:00 updated_at=2026-07-22 14:39:04.457953+00:00
+seeded fresh_parsing: evidence_id=455556f2-856e-4f99-90f4-3ce2093efdfd created_at=2026-07-22 17:39:04.457953+00:00 updated_at=2026-07-22 18:29:04.457953+00:00
+seeded stale_received: evidence_id=78e88b45-297c-4e74-9623-090344255ccf created_at=2026-07-22 17:39:04.457953+00:00 updated_at=2026-07-22 18:29:04.457953+00:00
+seeded fresh_received: evidence_id=a7091d80-1a21-47fc-8c46-8697b209d14e created_at=2026-07-22 18:38:04.457953+00:00 updated_at=2026-07-22 18:38:04.457953+00:00
+seeded audit events: org_a=02e486b1-7708-4b1a-9d55-0e2c2ae492a5 org_b=f87f9554-86ee-41f3-b473-24583b744cb9 (yesterday), org_today_only=b8606c41-97ca-452a-a46b-392a9b075509 (today)
+real openssl-ts TSA responder listening on http://127.0.0.1:20318
+
+========== abort_orphan_uploads() ==========
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:04.968087Z", "event_id": "d1a39e3d-463a-4f69-b81b-229ee7a9af6e", "event_type": "evidence.error", "seq": 1}
+{"event": "abort_orphan_uploads_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-07-22T18:39:04.972021Z", "aborted": 1}
+-> aborted 1
+
+========== abort_orphan_parses() ==========
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:05.082935Z", "event_id": "93c00b47-97f2-4b90-803a-a4cc896e9b76", "event_type": "parse.failed", "seq": 2}
+{"event": "abort_orphan_parses_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-07-22T18:39:05.086517Z", "aborted": 1}
+-> aborted 1
+
+========== auto_dispatch_received() ==========
+{"event": "auto_dispatch_reenqueued", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-07-22T18:39:05.154707Z", "evidence_id": "78e88b45-297c-4e74-9623-090344255ccf"}
+{"event": "auto_dispatch_received_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-07-22T18:39:05.158313Z", "dispatched": 1}
+-> dispatched 1
+
+========== anchor_audit_log() ==========
+[real-tsa-server] received 59-byte POST (Content-Type=application/timestamp-query)
+[real-tsa-server] request DER (hex): 30390201013031300d06096086480165030402010500042054fd75b771b5431415879241d57ed312052159808200fd6381de2a569d2bebbe0101ff
+[real-tsa-server] openssl ts -reply exit=0 stderr='Using configuration from /tmp/kronos_poc_celery_beat_tsa/tsa.cnf\nWarning: could not open file /tmp/kronos_poc_celery_beat_tsa/tsaserial for reading, using serial number: 1\nResponse has been generated.'
+[real-tsa-server] response DER (hex, truncated): 308208d93003020100308208d006092a864886f70d010702a08208c1308208bd020103310f300d06096086480165030402010500308188060b2a8648...
+{"event": "HTTP Request: POST http://127.0.0.1:20318/ \"HTTP/1.0 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T18:39:05.264755Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:05.344467Z", "event_id": "6913c6ed-5111-40d6-a9d8-724a2da8263d", "event_type": "audit.merkle_anchored", "seq": 2}
+{"event": "audit_merkle_anchored", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:05.344605Z", "date": "2026-07-21", "root_hash": "54fd75b771b5431415879241d57ed312052159808200fd6381de2a569d2bebbe"}
+[real-tsa-server] received 59-byte POST (Content-Type=application/timestamp-query)
+[real-tsa-server] request DER (hex): 30390201013031300d060960864801650304020105000420be289ac31f558b53d149e16f6aca4298b653b3ce0d7d8535fe5ba7d5c77110610101ff
+[real-tsa-server] openssl ts -reply exit=0 stderr='Using configuration from /tmp/kronos_poc_celery_beat_tsa/tsa.cnf\nResponse has been generated.\n40B74901257E0000:error:0700006C:configuration file routines:NCONF_get_string:no value:../crypto/conf/conf_lib.c:316:group=tsa_config1 name=other_policies'
+[real-tsa-server] response DER (hex, truncated): 308208d93003020100308208d006092a864886f70d010702a08208c1308208bd020103310f300d06096086480165030402010500308188060b2a8648...
+{"event": "HTTP Request: POST http://127.0.0.1:20318/ \"HTTP/1.0 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T18:39:05.393677Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:05.465834Z", "event_id": "0a238544-d47c-46b4-95a5-1fa015db8d60", "event_type": "audit.merkle_anchored", "seq": 2}
+{"event": "audit_merkle_anchored", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T18:39:05.465935Z", "date": "2026-07-21", "root_hash": "be289ac31f558b53d149e16f6aca4298b653b3ce0d7d8535fe5ba7d5c7711061"}
+{"event": "audit_log_anchored", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-07-22T18:39:05.466013Z", "day": "2026-07-21", "orgs_anchored": 2}
+-> {'02e486b1-7708-4b1a-9d55-0e2c2ae492a5': '54fd75b771b5431415879241d57ed312052159808200fd6381de2a569d2bebbe', 'f87f9554-86ee-41f3-b473-24583b744cb9': 'be289ac31f558b53d149e16f6aca4298b653b3ce0d7d8535fe5ba7d5c7711061'}
+
+========== Verification ==========
+[PASS] abort_orphan_uploads reported exactly 1 aborted (the stale row only) -- 1
+[PASS] abort_orphan_parses reported exactly 1 aborted (the stale row only) -- 1
+[PASS] auto_dispatch_received reported exactly 1 dispatched (the stale row only) -- 1
+[PASS] real stale UPLOADING row is now ERROR in real Postgres
+[PASS] real stale UPLOADING row's error_reason is 'upload_timeout'
+[PASS] real fresh UPLOADING control row was NOT touched (still UPLOADING)
+[PASS] real stale PARSING row is now ERROR in real Postgres
+[PASS] real stale PARSING row's error_reason is 'parse_timeout'
+[PASS] real fresh PARSING control row was NOT touched (still PARSING)
+real Redis LLEN q.index = 1
+[PASS] auto_dispatch_received's re-enqueue produced a REAL message on the real Redis broker (q.index) -- 1
+[PASS] anchor_audit_log anchored exactly the 2 orgs with real 'yesterday' activity -- {'02e486b1-7708-4b1a-9d55-0e2c2ae492a5', 'f87f9554-86ee-41f3-b473-24583b744cb9'}
+[PASS] today-only control org was correctly EXCLUDED from yesterday's anchor
+[PASS] real anchor row persisted in Postgres for org A
+[PASS] org A's persisted root hash matches anchor_audit_log()'s return value
+[PASS] org A's anchor has a REAL TSA token stored (not None) -- 2269 bytes
+[PASS] org A's hash chain verifies intact after anchoring
+
+============================================================
+16 passed, 0 failed
+============================================================

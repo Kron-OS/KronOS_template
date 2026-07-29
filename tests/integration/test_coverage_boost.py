@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -27,8 +27,7 @@ from fastapi.testclient import TestClient
 from src.domain.user import Role, TenantContext
 from src.exceptions import AuthorizationError, ValidationError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
-from tests.fixtures.factories import make_evidence_metadata
-
+from tests.fixtures.factories import make_case, make_evidence_metadata
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -350,7 +349,7 @@ class _NoopStorage:
 
         return PresignedUploadResponse("http://fake/upload", "key/test", expires_in_seconds)
 
-    async def stream_object(self, object_key, chunk_size=65536):
+    async def stream_object(self, object_key, chunk_size=65536, *, bucket="quarantine"):
         yield b"\x00" * 16
 
     async def promote_to_evidence_bucket(self, quarantine_key, evidence):
@@ -359,7 +358,7 @@ class _NoopStorage:
     async def delete_from_quarantine(self, quarantine_key):
         pass
 
-    async def object_exists(self, object_key):
+    async def object_exists(self, object_key, *, bucket="quarantine"):
         return True
 
 
@@ -652,7 +651,7 @@ async def test_timeline_ingest_returns_record_count() -> None:
     tenant = _make_tenant()
 
     async def _records():
-        for i in range(5):
+        for _i in range(5):
             record = _make_record(org_id=tenant.org_id)
             # Give each record the right org alias and a unique index
             yield record
@@ -719,9 +718,7 @@ async def test_timeline_ingest_batch_flush() -> None:
     audit_log = AuditLogService(audit_repo)
     opensearch = InMemoryOpenSearchClient()
     # Tiny batch size to force multiple flushes
-    service = TimelineIngestionService(
-        opensearch=opensearch, audit_log=audit_log, batch_size=3
-    )
+    service = TimelineIngestionService(opensearch=opensearch, audit_log=audit_log, batch_size=3)
 
     tenant = _make_tenant()
 
@@ -841,9 +838,7 @@ async def test_get_tenant_context_with_valid_validator() -> None:
     mock_credentials = MagicMock(spec=HTTPAuthorizationCredentials)
     mock_credentials.credentials = "fake.jwt.token"
 
-    tenant = await get_tenant_context(
-        request=mock_request, credentials=mock_credentials
-    )
+    tenant = await get_tenant_context(request=mock_request, credentials=mock_credentials)
     assert tenant.org_id == expected_tenant.org_id
     mock_validator.validate_and_extract.assert_called_once_with("fake.jwt.token")
 
@@ -887,17 +882,20 @@ def _reset_deps_fixture():
 
 @pytest.fixture
 def _app_with_deps():
+    from src.adapter.repository.case_repository import InMemoryCaseRepository
     from src.external.dependencies import configure_dependencies
     from src.external.fastapi_app import create_app
     from src.external.middleware.step_up_auth import StepUpAuth
 
     audit_repo = InMemoryAuditLogRepository()
     evidence_repo = InMemoryEvidenceRepository()
+    case_repo = InMemoryCaseRepository()
     storage = _NoopStorage()
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
         evidence_storage=storage,
+        case_repository=case_repo,
     )
     app = create_app()
     step_up = StepUpAuth()
@@ -907,35 +905,40 @@ def _app_with_deps():
     tenant = _make_tenant(roles=frozenset({Role.ORG_ADMIN}), acr="aal2")
     app.dependency_overrides[get_tenant_context] = lambda: tenant
     app.dependency_overrides[get_step_up_auth] = lambda: step_up
-    return app, audit_repo, evidence_repo, step_up, tenant
+    return app, audit_repo, evidence_repo, case_repo, step_up, tenant
 
 
 def test_upload_request_returns_presigned_url(_app_with_deps) -> None:
     """POST /api/evidence/upload/request returns 201 with upload URL."""
-    app, _, _, _, _ = _app_with_deps
+    import asyncio
+
+    app, _, _, case_repo, _, tenant = _app_with_deps
+    case = make_case(org_id=tenant.org_id)
+    asyncio.run(case_repo.save(case))
+
     with TestClient(app) as client:
         resp = client.post(
             "/api/evidence/upload/request",
             json={
                 "filename": "test.evtx",
-                "content_type": "application/x-evtx",
-                "size_bytes": 1024,
-                "case_id": str(uuid.uuid4()),
+                "contentType": "application/x-evtx",
+                "sizeBytes": 1024,
+                "caseId": str(case.case_id),
             },
         )
     assert resp.status_code == 201
     data = resp.json()
-    assert "presigned_url" in data
-    assert "evidence_id" in data
+    assert "presignedUrl" in data
+    assert "evidenceId" in data
 
 
 def test_upload_request_missing_fields_returns_422(_app_with_deps) -> None:
     """POST /api/evidence/upload/request returns 422 when required fields are missing."""
-    app, _, _, _, _ = _app_with_deps
+    app, _, _, _, _, _ = _app_with_deps
     with TestClient(app) as client:
         resp = client.post(
             "/api/evidence/upload/request",
-            json={"filename": "test.evtx"},  # missing content_type, size_bytes, case_id
+            json={"filename": "test.evtx"},  # missing contentType, sizeBytes, caseId
         )
     assert resp.status_code == 422
 
@@ -946,7 +949,7 @@ def test_parse_start_422_for_evidence_no_storage_key(_app_with_deps) -> None:
 
     from src.domain.evidence import Evidence, EvidenceState
 
-    app, _, evidence_repo, _, tenant = _app_with_deps
+    app, _, evidence_repo, _, _, tenant = _app_with_deps
 
     ev = Evidence(
         metadata=make_evidence_metadata(org_id=tenant.org_id),
@@ -962,7 +965,7 @@ def test_parse_start_422_for_evidence_no_storage_key(_app_with_deps) -> None:
 
 def test_parse_start_422_for_unknown_evidence(_app_with_deps) -> None:
     """POST /api/evidence/parse/start/{id} returns 422 for unknown evidence (ValidationError)."""
-    app, _, _, _, _ = _app_with_deps
+    app, _, _, _, _, _ = _app_with_deps
     with TestClient(app) as client:
         resp = client.post(f"/api/evidence/parse/start/{uuid.uuid4()}")
     assert resp.status_code == 422

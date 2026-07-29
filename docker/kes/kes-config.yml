@@ -1,0 +1,67 @@
+version: v1
+
+# KES — MinIO Key Encryption Service
+# Stateless shim between MinIO and Vault Transit engine.
+# MinIO sends DEK-wrap requests; KES forwards to Vault; master key never leaves Vault.
+
+address: 0.0.0.0:7373
+
+tls:
+  cert: /etc/kes/certs/server.crt
+  key: /etc/kes/certs/server.key
+  # CA bundle for mTLS client verification (MinIO presents its cert)
+  ca: /etc/kes/certs/ca.crt
+
+# Admin identity is disabled — access controlled by policy identities only
+admin:
+  identity: disabled
+
+# Policy: MinIO is allowed to use the kronos-evidence master key
+policy:
+  kronos-minio:
+    allow:
+      - /v1/key/create/kronos-evidence*
+      - /v1/key/generate/kronos-evidence*
+      - /v1/key/decrypt/kronos-evidence*
+      - /v1/key/bulk/decrypt/kronos-evidence*
+      - /v1/status
+    # MinIO's mTLS certificate identity: SHA-256 of the certificate's
+    # SubjectPublicKeyInfo (confirmed against this pinned KES tag's own
+    # `kes identity of <cert>` — NOT sha256 of the whole DER certificate,
+    # which gives a different, non-matching value. See poc/vault_kes_minio/
+    # README.md gap #4.
+    # Replace with actual MinIO cert fingerprint in production.
+    # No "${VAR:-default}" shell-style fallback here: KES's own config
+    # templating doesn't support it (confirmed by actually running this
+    # pinned tag — it errors "referenced env. variable 'X:-default' not
+    # found", treating the whole `${...}` body as one literal var name).
+    # docker-compose.kes.yml's own `${MINIO_TLS_IDENTITY:-_}` is a
+    # *docker-compose* substitution, evaluated before the container ever
+    # starts, so this env var is always set by the time KES reads it here.
+    identities:
+      - "${MINIO_TLS_IDENTITY}"
+
+keystore:
+  # This KES version's Vault integration is a K/V-backed keystore (engine/
+  # version/prefix select the K/V mount); Transit is only an optional
+  # wrap-at-rest layer for entries stored there, not the primary KMS
+  # backend. Confirmed by actually running this pinned tag — the previous
+  # transit-only config (engine_path/key_name) isn't a field this version
+  # recognizes and fails at startup. See poc/vault_kes_minio/README.md gap #1.
+  vault:
+    endpoint: http://vault:8200
+    engine: kv
+    version: v1
+    prefix: kes-keys
+    transit:
+      engine: transit
+      key: kronos-evidence
+      # Vault AppRole credentials (injected via environment)
+    # Same note as the identity field above: no "${VAR:-default}" here
+    # either, for the same reason. docker-compose.kes.yml's own
+    # "${VAULT_APPROLE_ID:-}" already guarantees these are set (possibly
+    # empty) in the container's environment before KES starts.
+    approle:
+      id: ${VAULT_APPROLE_ID}
+      secret: ${VAULT_APPROLE_SECRET}
+      retry: 15s

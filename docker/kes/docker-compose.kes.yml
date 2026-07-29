@@ -1,0 +1,33 @@
+version: "3.9"
+
+# KES sidecar — bridges MinIO and Vault.
+# Requires Vault to be running and initialised (vault-init completed).
+# Include: docker compose -f docker-compose.dev.yml \
+#            -f docker/vault/docker-compose.vault.yml \
+#            -f docker/kes/docker-compose.kes.yml up
+
+services:
+  kes:
+    image: minio/kes:2024-06-17T15-47-05Z
+    restart: unless-stopped
+    command: server --config /etc/kes/kes-config.yml
+    environment:
+      VAULT_APPROLE_ID: ${VAULT_APPROLE_ID:-}
+      VAULT_APPROLE_SECRET: ${VAULT_APPROLE_SECRET:-}
+      MINIO_TLS_IDENTITY: ${MINIO_TLS_IDENTITY:-_}
+    volumes:
+      - ./kes/kes-config.yml:/etc/kes/kes-config.yml:ro
+      - kes_certs:/etc/kes/certs
+    ports:
+      - "7373:7373"
+    depends_on:
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsk https://localhost:7373/v1/status 2>/dev/null || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  kes_certs:

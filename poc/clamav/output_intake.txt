@@ -1,0 +1,15 @@
+=== Clean file through the real intake pipeline ===
+state=RECEIVED, exc=None
+[PASS] clean file reaches RECEIVED (scan passed for real)
+
+=== Real EICAR through the real intake pipeline ===
+state=ERROR, error_reason=infected:Eicar-Test-Signature, exc=File is infected: Eicar-Test-Signature
+[PASS] EICAR upload is rejected with ValidationError
+[PASS] evidence lands in ERROR state -- ERROR
+[PASS] error_reason records the real threat name -- infected:Eicar-Test-Signature
+audit trail for the infected evidence: ['evidence.upload_requested', 'evidence.scan_started', 'evidence.scan_failed']
+[PASS] real EVIDENCE_SCAN_FAILED audit event logged
+
+============================================================
+5 passed, 0 failed
+============================================================

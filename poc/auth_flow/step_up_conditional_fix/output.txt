@@ -1,0 +1,20 @@
+a2c71c03144d8099279b62214d78f787b1d211a1d5f5c1208fb65f63ed1e6cd5
+Keycloak ready with the candidate FIXED realm (level-1 + level-2 conditional subflows).
+========== 1. Plain login, no acr_values requested (analyst) ==========
+acr claim: 'aal1', mfa_path='none'
+[PASS] plain login with NO acr_values requested did NOT trigger any real TOTP setup/entry page -- mfa_path='none'
+[PASS] resulting real token's acr claim is 'aal1', not 'aal2' -- aal1
+
+========== 2. Step-up login, acr_values=aal2 requested (case-lead, first time) ==========
+acr claim: 'aal2', mfa_path='setup'
+[PASS] step-up login WITH acr_values=aal2 DID go through real CONFIGURE_TOTP setup -- mfa_path='setup'
+[PASS] resulting real token's acr claim is 'aal2' -- aal2
+
+========== 3. Plain login (no acr_values), same user now HAS a TOTP credential ==========
+acr claim: 'aal1', mfa_path='none'
+[PASS] a user who HAS a real TOTP credential, logging in with NO acr_values requested, is still NOT forced through real OTP entry -- mfa_path='none'
+[PASS] resulting real token's acr claim is 'aal1' even though the user has TOTP set up -- aal1
+
+============================================================
+6 passed, 0 failed
+============================================================

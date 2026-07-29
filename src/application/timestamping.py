@@ -1,0 +1,128 @@
+"""RFC 3161 trusted timestamping service."""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+
+import httpx
+
+from src.exceptions import StorageError, TimestampingError
+
+logger = logging.getLogger(__name__)
+
+# OID for SHA-256 in an AlgorithmIdentifier (used in minimal DER TimeStampReq).
+_SHA256_OID = b"\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01\x05\x00"
+
+
+def _build_timestamp_request(digest: bytes) -> bytes:
+    """Build a minimal DER-encoded RFC 3161 TimeStampReq for SHA-256 digest.
+
+    Structure:
+      TimeStampReq ::= SEQUENCE {
+        version      INTEGER { v1(1) },
+        messageImprint MessageImprint,
+        nonce        INTEGER OPTIONAL,
+        certReq      BOOLEAN DEFAULT FALSE
+      }
+      MessageImprint ::= SEQUENCE {
+        hashAlgorithm AlgorithmIdentifier,
+        hashedMessage OCTET STRING
+      }
+    """
+    # OCTET STRING wrapping digest
+    octet_content = b"\x04" + _der_length(len(digest)) + digest
+    # MessageImprint = SEQUENCE { AlgorithmIdentifier, OCTET STRING }
+    msg_imprint_body = _SHA256_OID + octet_content
+    msg_imprint = b"\x30" + _der_length(len(msg_imprint_body)) + msg_imprint_body
+    # version INTEGER = 1
+    version = b"\x02\x01\x01"
+    # certReq BOOLEAN TRUE
+    cert_req = b"\x01\x01\xff"
+    body = version + msg_imprint + cert_req
+    return b"\x30" + _der_length(len(body)) + body
+
+
+def _der_length(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    length_bytes = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(length_bytes)]) + length_bytes
+
+
+class RFC3161TimestampService:
+    """Calls a RFC 3161 TSA to anchor evidence hashes and audit Merkle roots."""
+
+    def __init__(self, tsa_url: str) -> None:
+        self._tsa_url = tsa_url
+
+    async def timestamp(self, digest: bytes, hash_alg: str = "sha256") -> bytes:
+        """POST a TimeStampReq to the TSA. Returns DER-encoded TimeStampToken bytes."""
+        ts_req = _build_timestamp_request(digest)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    self._tsa_url,
+                    content=ts_req,
+                    headers={"Content-Type": "application/timestamp-query"},
+                )
+                resp.raise_for_status()
+                return resp.content
+        except httpx.HTTPError as exc:
+            logger.warning("tsa_unreachable", extra={"url": self._tsa_url, "error": str(exc)})
+            raise StorageError(
+                "TSA unreachable",
+                context={"tsa_url": self._tsa_url, "error": str(exc)},
+            ) from exc
+
+    async def verify(self, token: bytes, digest: bytes) -> datetime:
+        """Parse the TimeStampToken and verify it was issued over *digest*.
+
+        Returns the token's genTime on success.  Fails closed: any problem
+        parsing the token, a missing ``rfc3161ng`` dependency, or a digest
+        mismatch raises ``TimestampingError`` rather than fabricating a
+        timestamp — a forensic timestamp control must never silently invent
+        success (see AUDIT-06 / COMP-3).
+        """
+        try:
+            import rfc3161ng  # noqa: PLC0415
+        except ImportError as exc:
+            logger.error("rfc3161ng_not_installed", extra={"digest": digest.hex()})
+            raise TimestampingError(
+                "rfc3161ng is required to verify RFC 3161 timestamp tokens; "
+                "refusing to fabricate a verification result",
+                context={"digest": digest.hex()},
+            ) from exc
+
+        try:
+            ts_response = rfc3161ng.decode_timestamp_response(token)
+            tst = ts_response.time_stamp_token
+            # `tst` is an rfc3161ng.types.TimeStampToken (a CMS ContentInfo
+            # wrapper): tst_info is a *property* that lazily decodes the
+            # embedded TSTInfo, not a dict key. The decoded TSTInfo/
+            # MessageImprint are pyasn1 objects (this library does not use
+            # asn1crypto), so fields are addressed by their ASN.1 componentType
+            # names (camelCase: "genTime", "messageImprint", "hashedMessage")
+            # and have no `.native` accessor — GeneralizedTime must go through
+            # rfc3161ng's own string-to-datetime helper, OctetString through
+            # bytes().
+            tst_info = tst.tst_info
+            gen_time = rfc3161ng.api.generalizedtime_to_utc_datetime(str(tst_info["genTime"]))
+            embedded_digest = bytes(tst_info["messageImprint"]["hashedMessage"])
+        except Exception as exc:
+            raise TimestampingError(
+                "Failed to parse RFC 3161 TimeStampToken",
+                context={"error": str(exc)},
+            ) from exc
+
+        if embedded_digest != digest:
+            raise TimestampingError(
+                "TSA token digest mismatch",
+                context={"expected": digest.hex(), "got": embedded_digest.hex()},
+            )
+        if not isinstance(gen_time, datetime):
+            raise TimestampingError(
+                "TSA token genTime is not a valid timestamp",
+                context={"gen_time": repr(gen_time)},
+            )
+        return gen_time

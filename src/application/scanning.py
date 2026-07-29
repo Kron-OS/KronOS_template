@@ -64,7 +64,35 @@ class ClamAVScanner(AntivirusScanner):
             async for chunk in stream:
                 for i in range(0, len(chunk), self.CHUNK_SIZE):
                     part = chunk[i : i + self.CHUNK_SIZE]
-                    writer.write(struct.pack("!I", len(part)) + part)
+                    try:
+                        writer.write(struct.pack("!I", len(part)) + part)
+                        await writer.drain()
+                    except (BrokenPipeError, ConnectionResetError) as exc:
+                        # clamd closes the connection the instant a stream
+                        # exceeds its configured StreamMaxLength/MaxFileSize
+                        # -- confirmed against a real clamd container (a real
+                        # 239 MB upload against the image's compiled-in
+                        # 100 MB default raised exactly this, with no
+                        # graceful handling at all, see
+                        # poc/clamav/run_poc_large_file.py). Reconciling
+                        # Settings.max_upload_bytes with clamd's real limit
+                        # (docker-compose.dev.yml CLAMD_CONF_StreamMaxLength/
+                        # MaxFileSize/MaxScanSize) should make this
+                        # unreachable in normal operation -- this is
+                        # defense-in-depth for the two drifting apart again,
+                        # turning a raw, opaque BrokenPipeError into a clear,
+                        # correctly-attributed StorageError instead.
+                        try:
+                            response = await asyncio.wait_for(reader.read(4096), timeout=2)
+                            detail = response.decode("utf-8", errors="replace").strip()
+                        except Exception:  # noqa: BLE001
+                            detail = "<no response>"
+                        raise StorageError(
+                            "clamd closed the connection while streaming — the "
+                            "file likely exceeds clamd's configured "
+                            "StreamMaxLength/MaxFileSize",
+                            context={"clamd_response": detail},
+                        ) from exc
 
             # Terminate the stream.
             writer.write(struct.pack("!I", 0))

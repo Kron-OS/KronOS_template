@@ -1,0 +1,21 @@
+d0bd812209feeaf3d9a0949888ea158fabce426bf3a061637a5b491fca365654
+kronos-poc-osjwt2-opensearch
+{"status":"OK","message":"'config' updated."}
+OpenSearch ready with generic templated-DLS role. Running run_poc.py...
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19900 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+authinfo (user A) -> 200 {"user":"User [name=user-a-sub, backend_roles=[analyst], requestedTenant=null]","user_name":"user-a-sub","user_requested_tenant":null,"remote_address":"172.20.0.1:37856","backend_roles":["analyst"],"custom_attribute_names":["attr.jwt.iss","attr.jwt.roles","attr.jwt.sub","attr.jwt.aud","attr.jwt.exp"
+[PASS] real hand-signed JWT authenticates to real OpenSearch
+[PASS] flat 'org_id' claim IS exposed as a custom attribute
+[PASS] both real docs indexed via the real bulk_index()
+
+user A (org-aaaa-1111) sees: {'doc-org-a'}
+[PASS] user A sees ONLY org A's doc -- {'doc-org-a'}
+user B (org-bbbb-2222) sees: {'doc-org-b'}
+[PASS] user B sees ONLY org B's doc -- {'doc-org-b'}
+user A2 (org-aaaa-1111, NEVER individually provisioned) sees: {'doc-org-a'}
+[PASS] a brand-new, never-provisioned second member of org A is ALSO correctly isolated -- with zero new OpenSearch-side backend calls (no new role, no new mapping) -- {'doc-org-a'}
+
+============================================================
+6 passed, 0 failed
+============================================================

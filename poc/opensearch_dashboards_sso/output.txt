@@ -1,0 +1,53 @@
+provision_keycloak_org: realm=kronos org=dashsso-org-a base=http://localhost:8080
+Declared org_id as an admin-managed User Profile attribute.
+Organization dashsso-org-a already exists (id=bf85a3bc-1d33-4182-a512-94e9c15cc1f4)
+Organization ID: bf85a3bc-1d33-4182-a512-94e9c15cc1f4
+Linked member 10000000-0000-4000-8000-000000000002 -> HTTP 409
+Set org_id attribute for 10000000-0000-4000-8000-000000000002 -> HTTP 204
+provision_keycloak_org: complete
+provision_keycloak_org: realm=kronos org=dashsso-org-b base=http://localhost:8080
+Declared org_id as an admin-managed User Profile attribute.
+Organization dashsso-org-b already exists (id=5935a001-7d75-43e8-92b2-45300f1e4f22)
+Organization ID: 5935a001-7d75-43e8-92b2-45300f1e4f22
+Linked member 10000000-0000-4000-8000-000000000003 -> HTTP 409
+Set org_id attribute for 10000000-0000-4000-8000-000000000003 -> HTTP 204
+provision_keycloak_org: complete
+provision_dashboards_tenant: org=dashsso-org-a org_id=bf85a3bc-1d33-4182-a512-94e9c15cc1f4 tenant=kronos-dashsso-org-a
+Tenant kronos-dashsso-org-a ensured.
+Role kronos-dash-dashsso-org-a ensured.
+Rolesmapping kronos-dash-dashsso-org-a -> backend_role bf85a3bc-1d33-4182-a512-94e9c15cc1f4 ensured.
+provision_dashboards_tenant: complete
+provision_dashboards_tenant: org=dashsso-org-b org_id=5935a001-7d75-43e8-92b2-45300f1e4f22 tenant=kronos-dashsso-org-b
+Tenant kronos-dashsso-org-b ensured.
+Role kronos-dash-dashsso-org-b ensured.
+Rolesmapping kronos-dash-dashsso-org-b -> backend_role 5935a001-7d75-43e8-92b2-45300f1e4f22 ensured.
+provision_dashboards_tenant: complete
+========== 0. Provisioning: 2 real orgs, 2 real Dashboards tenants ==========
+org A (analyst): bf85a3bc-1d33-4182-a512-94e9c15cc1f4
+org B (case-lead): 5935a001-7d75-43e8-92b2-45300f1e4f22
+
+========== 1. Direct OpenSearch authinfo check (openid authc domain) ==========
+analyst authinfo: user_name='10000000-0000-4000-8000-000000000002' backend_roles=['bf85a3bc-1d33-4182-a512-94e9c15cc1f4']
+[PASS] analyst's real backend_roles include their real org_id (roles_key=org_id resolved) -- ['bf85a3bc-1d33-4182-a512-94e9c15cc1f4']
+[PASS] analyst's subject resolved from the JWT's sub claim (subject_key=sub) -- 10000000-0000-4000-8000-000000000002
+
+========== 2. Real Dashboards openid login (full redirect chain) ==========
+[PASS] analyst's real openid login through Dashboards completed (session cookie set)
+[PASS] case-lead's real openid login through Dashboards completed (session cookie set)
+
+========== 3. Real cross-org saved-object isolation via OIDC sessions ==========
+create as analyst (org A) -> 200 {"type":"index-pattern","id":"dashsso-pattern-a","attributes":{"title":"kronos-demo-index-a","timeFieldName":"@timestamp"},"references":[],"migrationVersion":{"index-pattern":"7.6.0"},"updated_at":"20
+create as case-lead (org B) -> 200 {"type":"index-pattern","id":"dashsso-pattern-b","attributes":{"title":"kronos-demo-index-b","timeFieldName":"@timestamp"},"references":[],"migrationVersion":{"index-pattern":"7.6.0"},"updated_at":"20
+[PASS] analyst created a real saved object in their own real OIDC-authenticated tenant
+[PASS] case-lead created a real saved object in their own real OIDC-authenticated tenant
+[PASS] analyst cannot see org B's saved object via their own OIDC tenant (404) -- 404
+[PASS] case-lead cannot see org A's saved object via their own OIDC tenant (404) -- 404
+analyst's _find lists: {'dashsso-pattern-a'}
+case-lead's _find lists: {'dashsso-pattern-b'}
+[PASS] analyst's real listing shows ONLY their own object -- {'dashsso-pattern-a'}
+[PASS] case-lead's real listing shows ONLY their own object -- {'dashsso-pattern-b'}
+[PASS] case-lead explicitly requesting org A's tenant (no real role grant) is denied, not silently served -- 500
+
+============================================================
+11 passed, 0 failed
+============================================================

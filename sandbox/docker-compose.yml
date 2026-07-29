@@ -1,0 +1,87 @@
+# KronOS sandbox — a hardened, network-isolated box to exercise the whole
+# pipeline (parsers, Plaso heavy path, tests, lint/type) and attach to from
+# outside via SSH / the Claude Code CLI.
+#
+#   cp sandbox/.env.example sandbox/.env   # then paste your SSH public key
+#   docker compose -f sandbox/docker-compose.yml up -d --build
+#   ssh -p 50923 root@127.0.0.1            # or: docker exec -it kronos-sandbox bash
+#
+# Isolation summary:
+#   - mounts ONLY this repo (nothing else on your machine is visible), with the
+#     sandbox/ directory (the box's own isolation config) mounted read-only so
+#     the workload can read but never rewrite the blueprint of its own cage;
+#   - uses Sysbox runtime for full root access inside with host isolation, and
+#     to run systemd as PID 1 (ssh.service, docker.service, kronos-* units);
+#   - a start-up firewall (kronos-firewall.service) blocks the local network
+#     (LAN/host/other containers) while still allowing the public internet and
+#     inbound SSH — ssh.service and docker.service both `Requires=` it.
+
+name: kronos-sandbox
+
+services:
+  sandbox:
+    build:
+      # Repo root, so the image can install project deps from pyproject.toml.
+      context: ..
+      dockerfile: sandbox/Dockerfile
+    image: kronos-sandbox:dev
+    container_name: kronos-sandbox
+    hostname: kronos-sandbox
+    env_file:
+      - .env
+    ports:
+      # SSH. Bound to host loopback by default so the box is NOT exposed on your
+      # LAN. To reach it from another machine, prefer an SSH tunnel; only change
+      # this to "50923:22" if you understand you're exposing it on the host's
+      # network interfaces.
+      - "50923:22"
+    volumes:
+      # The ONLY host path mounted: this repository. No other repo is visible.
+      - ..:/root/kronos:rw
+      # The sandbox's own definition is mounted READ-ONLY. The workload can read
+      # it (so an agent inside is not confused by a missing/empty file) but
+      # cannot edit the box's isolation config from inside and have that persist
+      # to the host or take effect on the next `docker compose up`. The longer
+      # path wins over the rw repo mount above, so only sandbox/ turns read-only.
+      - ../sandbox:/root/kronos/sandbox:ro
+      # Persistent home so Claude Code creds / shell history survive restarts.
+      # (Layered under the repo mount above; the more specific path wins.)
+      - sandbox_home:/root
+      # Dedicated volume for SSH state (authorized_keys + persistent host keys
+      # under ~/.ssh/hostkeys). Kept separate from the home volume so the box's
+      # SSH identity — and thus its host-key fingerprint — survives even a
+      # `docker volume rm` of sandbox_home. Layered over /root, so it wins for
+      # /root/.ssh specifically.
+      - sandbox_ssh:/root/.ssh
+    networks:
+      - sandbox_net
+
+    # --- Sysbox isolation ---
+    # Sysbox provides a rootful container with its own kernel view (user namespaces),
+    # so you get root access inside (for iptables, sshd chroot, etc.) without
+    # exposing host root privileges. No manual cap_drop/cap_add needed.
+    runtime: sysbox-runc
+
+    tmpfs:
+      # Writable scratch that plaso/pytest need, kept off any persistent layer.
+      - /tmp:exec,mode=1777,size=2g
+    pids_limit: 4096
+    mem_limit: 6g
+    restart: unless-stopped
+
+networks:
+  sandbox_net:
+    driver: bridge
+    # internet allowed at the network layer; the in-container firewall blocks
+    # the LAN. For a FULL air-gap (no internet either), set this to true — but
+    # note published ports stop working, so attach via `docker exec` instead.
+    internal: false
+    ipam:
+      config:
+        # A deliberately uncommon subnet, unlikely to collide with a home/office
+        # LAN, so the firewall's private-range blocks don't fight real routing.
+        - subnet: 172.31.253.0/24
+
+volumes:
+  sandbox_home:
+  sandbox_ssh:

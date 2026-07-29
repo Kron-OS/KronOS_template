@@ -1,0 +1,85 @@
+/home/reca/venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+=== Real scripted PKCE + TOTP login (case-lead) ===
+{"event": "HTTP Request: GET http://127.0.0.1:18082/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&response_type=code&scope=openid&code_challenge=ZnTybmJrAkc-O3QvBe0Ugfc_mxQBUjekUC65-J-vp3c&code_challenge_method=S256&state=poc-auth-flow \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:31.489048Z"}
+{"event": "HTTP Request: POST http://127.0.0.1:18082/realms/kronos/login-actions/authenticate?session_code=0Zcf5A9jSePnjAC9SyAwTpx1-8_AJZNEscWem3Ub6ow&execution=266c09da-6209-42e8-a945-ccdb5a990fbb&client_id=kronos-frontend&tab_id=rEC_045vDMM&client_data=eyJydSI6Imh0dHA6Ly9sb2NhbGhvc3Q6NTE3My9jYWxsYmFjayIsInJ0IjoiY29kZSIsInN0IjoicG9jLWF1dGgtZmxvdyJ9 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:31.558863Z"}
+{"event": "HTTP Request: POST http://127.0.0.1:18082/realms/kronos/login-actions/authenticate?session_code=2x6mDECq8zG3k-TOX2EVAHdKbGLTQKZH5mEyvwBrlgU&execution=a6f0c29c-45e1-42cc-9a2d-54e20c0bf6c2&client_id=kronos-frontend&tab_id=rEC_045vDMM&client_data=eyJydSI6Imh0dHA6Ly9sb2NhbGhvc3Q6NTE3My9jYWxsYmFjayIsInJ0IjoiY29kZSIsInN0IjoicG9jLWF1dGgtZmxvdyJ9 \"HTTP/1.1 302 Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:31.578895Z"}
+{"event": "HTTP Request: POST http://127.0.0.1:18082/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:31.601143Z"}
+real token claims: acr=aal2 roles=['case-lead'] iss=http://127.0.0.1:18082/realms/kronos
+[PASS] real PKCE flow produced a real access token
+[PASS] token has a real signature (3-part JWT)
+{"event": "clamav_unreachable_dev_fallback", "level": "warning", "logger": "src.external.dependencies", "timestamp": "2026-07-22T07:26:32.141703Z", "clamd_host": "localhost", "clamd_port": 3310, "environment": "development"}
+{"event": "startup: dependencies wired (async)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-07-22T07:26:32.141838Z"}
+
+=== Create a real case + evidence to attempt deleting ===
+{"event": "HTTP Request: GET http://127.0.0.1:18082/realms/kronos/protocol/openid-connect/certs \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:32.167884Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.198924Z", "event_id": "8adaaed6-fd41-4996-a2ee-b1f64c5b020d", "event_type": "case.created", "seq": 1}
+{"event": "HTTP Request: POST http://testserver/api/cases \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:32.199336Z"}
+[PASS] case created with real token -- 201 {"id":"aa8dd75c-1821-4793-bb74-7305beba157c","orgId":"9ec89c9e-a4f9-4a0a-8761-b77cce4a7a5e","title":"Auth-flow PoC case","description":null,"reference":null,"status":"open","createdAt":"2026-07-22T07:
+{"event": "bucket_created", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-22T07:26:32.227070Z", "bucket": "kronos-evidence-authflow-quarantine", "object_lock": false}
+{"event": "presigned_url_generated", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-22T07:26:32.228447Z", "evidence_id": "00d1eb11-2f21-479a-9e4f-9d0af458ac85", "bucket": "kronos-evidence-authflow-quarantine", "key": "authflow/aa8dd75c-1821-4793-bb74-7305beba157c/00d1eb11-2f21-479a-9e4f-9d0af458ac85/x.txt"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.236834Z", "event_id": "cea34a4a-d2b3-4b4e-8dd0-72bf38ff43f1", "event_type": "evidence.upload_requested", "seq": 2}
+{"event": "upload_requested", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-22T07:26:32.236937Z", "evidence_id": "00d1eb11-2f21-479a-9e4f-9d0af458ac85", "org_id": "9ec89c9e-a4f9-4a0a-8761-b77cce4a7a5e", "extra_filename": "x.txt"}
+{"event": "HTTP Request: POST http://testserver/api/evidence/upload/request \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:32.237316Z"}
+[PASS] evidence upload requested with real token -- 201
+{"event": "HTTP Request: PUT http://localhost:19700/kronos-evidence-authflow-quarantine/authflow/aa8dd75c-1821-4793-bb74-7305beba157c/00d1eb11-2f21-479a-9e4f-9d0af458ac85/x.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260722%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260722T072632Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=e9a31ddec59b2d46862436bb7c30145d74ae1151ccdc50436dd5e9106b9ba921 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:32.246360Z"}
+[PASS] real bytes PUT to real MinIO
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.261774Z", "event_id": "5c4e5927-bcbf-4324-8fb0-ed3a59962050", "event_type": "evidence.scan_started", "seq": 3}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.272852Z", "event_id": "3c2821ae-c637-4ab6-aed4-efcd3737373e", "event_type": "evidence.scan_completed", "seq": 4}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.284582Z", "event_id": "8163f835-183c-48d4-b896-68800aa59592", "event_type": "evidence.hash_computed", "seq": 5}
+{"event": "bucket_created", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-22T07:26:32.290487Z", "bucket": "kronos-evidence-authflow", "object_lock": true}
+{"event": "evidence_promoted", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-07-22T07:26:32.300714Z", "evidence_id": "00d1eb11-2f21-479a-9e4f-9d0af458ac85", "ev_key": "authflow/aa8dd75c-1821-4793-bb74-7305beba157c/00d1eb11-2f21-479a-9e4f-9d0af458ac85/x.txt"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:32.310187Z", "event_id": "a8b00f7f-9a63-4fe9-898b-a2e8465d942e", "event_type": "evidence.promoted", "seq": 6}
+{"event": "evidence_received", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-07-22T07:26:32.310279Z", "evidence_id": "00d1eb11-2f21-479a-9e4f-9d0af458ac85", "sha256": "a22ae4f83248fb43415404da410560378910398baf65f234d8de8cde3538351d"}
+{"event": "Connection to Redis lost: Retry (0/20) now.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:32.415303Z"}
+{"event": "Connection to Redis lost: Retry (1/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:32.416054Z"}
+{"event": "Connection to Redis lost: Retry (2/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:33.419841Z"}
+{"event": "Connection to Redis lost: Retry (3/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:34.423716Z"}
+{"event": "Connection to Redis lost: Retry (4/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:35.427803Z"}
+{"event": "Connection to Redis lost: Retry (5/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:36.431686Z"}
+{"event": "Connection to Redis lost: Retry (6/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:37.433768Z"}
+{"event": "Connection to Redis lost: Retry (7/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:38.437740Z"}
+{"event": "Connection to Redis lost: Retry (8/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:39.441837Z"}
+{"event": "Connection to Redis lost: Retry (9/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:40.445868Z"}
+{"event": "Connection to Redis lost: Retry (10/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:41.449837Z"}
+{"event": "Connection to Redis lost: Retry (11/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:42.453756Z"}
+{"event": "Connection to Redis lost: Retry (12/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:43.457679Z"}
+{"event": "Connection to Redis lost: Retry (13/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:44.461784Z"}
+{"event": "Connection to Redis lost: Retry (14/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:45.465665Z"}
+{"event": "Connection to Redis lost: Retry (15/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:46.467545Z"}
+{"event": "Connection to Redis lost: Retry (16/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:47.471200Z"}
+{"event": "Connection to Redis lost: Retry (17/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:48.475089Z"}
+{"event": "Connection to Redis lost: Retry (18/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:49.479167Z"}
+{"event": "Connection to Redis lost: Retry (19/20) in 1.00 second.", "level": "error", "logger": "celery.backends.redis", "timestamp": "2026-07-22T07:26:50.483252Z"}
+{"event": "\nRetry limit exceeded while trying to reconnect to the Celery result store\nbackend. The Celery application must be restarted.\n", "level": "critical", "logger": "celery.backends.asynchronous", "timestamp": "2026-07-22T07:26:51.487241Z"}
+{"event": "parse_dispatch_failed", "level": "warning", "logger": "src.application.evidence_intake", "timestamp": "2026-07-22T07:26:51.487771Z", "evidence_id": "00d1eb11-2f21-479a-9e4f-9d0af458ac85", "error": "\nRetry limit exceeded while trying to reconnect to the Celery result store\nbackend. The Celery application must be restarted.\n"}
+{"event": "HTTP Request: POST http://testserver/api/evidence/upload/finalize/00d1eb11-2f21-479a-9e4f-9d0af458ac85 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:51.488336Z"}
+[PASS] finalize succeeded (real validate+scan+hash+promote) -- {"id":"00d1eb11-2f21-479a-9e4f-9d0af458ac85","caseId":"aa8dd75c-1821-4793-bb74-7305beba157c","filename":"x.txt","contentType":"text/plain","sizeBytes":10,"sha256":"a22ae4f83248fb43415404da410560378910
+
+=== DELETE without a step-up ticket: must 401 with RFC 9470 challenge ===
+{"event": "HTTP Request: DELETE http://testserver/api/evidence/00d1eb11-2f21-479a-9e4f-9d0af458ac85 \"HTTP/1.1 401 Unauthorized\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:51.496139Z"}
+DELETE (no ticket) -> 401, WWW-Authenticate=Bearer error="insufficient_user_authentication"
+[PASS] DELETE without ticket is rejected
+[PASS] WWW-Authenticate carries the RFC 9470 step-up challenge
+
+=== The previously-missing route: POST /api/step-up/ticket ===
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-07-22T07:26:51.513038Z", "ticket_id": "4b13daf6-2d30-4390-852b-05ba514ee43f", "operation": "evidence.delete"}
+{"event": "HTTP Request: POST http://testserver/api/step-up/ticket \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:51.513400Z"}
+issue ticket -> 201 {"ticketId":"4b13daf6-2d30-4390-852b-05ba514ee43f"}
+[PASS] step-up ticket route now exists and issues a real ticket (was 404 before the fix)
+
+=== DELETE WITH the real ticket ===
+{"event": "step_up_ticket_consumed", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-07-22T07:26:51.521003Z", "ticket_id": "4b13daf6-2d30-4390-852b-05ba514ee43f", "operation": "evidence.delete"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-07-22T07:26:51.534109Z", "event_id": "49e84a76-3d24-4ffd-bdfe-bc6ef61cc068", "event_type": "evidence.delete_denied", "seq": 7}
+{"event": "HTTP Request: DELETE http://testserver/api/evidence/00d1eb11-2f21-479a-9e4f-9d0af458ac85 \"HTTP/1.1 409 Conflict\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:51.534605Z"}
+DELETE (with real ticket) -> 409 {"detail":"Evidence retention period has not expired"}
+[PASS] ticket-gated DELETE passes the step-up layer (no longer 401) -- got 409: {"detail":"Evidence retention period has not expired"}
+
+=== Replay the SAME ticket a second time: must be rejected ===
+{"event": "HTTP Request: DELETE http://testserver/api/evidence/00d1eb11-2f21-479a-9e4f-9d0af458ac85 \"HTTP/1.1 401 Unauthorized\"", "level": "info", "logger": "httpx", "timestamp": "2026-07-22T07:26:51.542583Z"}
+DELETE (ticket replay) -> 401 {"detail":"Step-up ticket is invalid or already used"}
+[PASS] replayed (already-consumed) ticket is rejected with 401
+
+============================================================
+11 passed, 0 failed
+============================================================

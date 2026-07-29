@@ -1,0 +1,301 @@
+version: "3.9"
+# Production configuration — requires external secrets management
+# Set KRONOS_DB_PASSWORD, KRONOS_MINIO_SECRET, etc. via environment or Docker secrets
+
+services:
+  vault:
+    image: hashicorp/vault:1.17
+    cap_add: [IPC_LOCK]
+    # WARNING: -dev mode is in-memory, auto-unsealed and root-token only.
+    # It is NOT suitable for production: the transit 'kronos-evidence' master key
+    # is lost on restart, making previously-encrypted evidence undecryptable.
+    # Production MUST run a sealed Vault server with persistent storage backend.
+    # See docs/access-management-review.md [M-2].
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_TOKEN:-changeme}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports: ["8200:8200"]
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kes:
+    image: minio/kes:latest
+    depends_on:
+      vault: { condition: service_healthy }
+    volumes:
+      - ./kes/config.yaml:/etc/kes/config.yaml:ro
+      - ./certs:/certs:ro
+    command: server --config /etc/kes/config.yaml
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kronos
+      POSTGRES_USER: kronos
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check so dependents don't start during the
+      # first-time initdb bootstrap (socket-only) before :5432 is listening.
+      # start_period covers first-init, during which the TCP check legitimately
+      # fails — otherwise retries are exhausted before the server is ready.
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 90s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme}
+      MINIO_KMS_SECRET_KEY: ${MINIO_KMS_KEY:-}
+      # Browsers PUT evidence directly to MinIO via presigned URLs; this is
+      # cross-origin CORS, enforced server-side (MinIO's bucket-level
+      # PutBucketCors API isn't implemented — this env var is the actual
+      # supported mechanism). Must match kronos-backend's CORS_ALLOWED_
+      # ORIGINS below. MinIO isn't published externally in this compose
+      # file yet (see MINIO_PUBLIC_ENDPOINT), so this is a no-op until it is.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-https://${KEYCLOAK_HOSTNAME}}
+    volumes:
+      - minio_data:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    environment:
+      - cluster.name=kronos-prod
+      - node.name=kronos-node-1
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+      # NOT :ro -- real, reproduced finding (docker-compose.dev.yml's own
+      # opensearch service has the full account): the security plugin's
+      # bundled demo installer (install_demo_configuration.sh, runs at
+      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true, which
+      # this file does not set) APPENDS its own transport-SSL cert paths
+      # into this same file; a read-only mount makes that append fail and
+      # the security plugin crash-loops on missing cert paths. This file
+      # itself (docker/opensearch/opensearch.yml) previously didn't exist
+      # at all (access-management-review.md [C-2]) and now does, but this
+      # mount is still relying on the bundled *demo* self-signed certs, not
+      # real production TLS material -- tracked as a real, still-open gap,
+      # not fixed here.
+      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
+
+  keycloak:
+    # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
+    # backend's _extract_tenant requires only lands in 26.1+. Keep in sync with dev.
+    image: quay.io/keycloak/keycloak:26.2
+    command: start
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/kronos
+      KC_DB_USERNAME: kronos
+      KC_DB_PASSWORD: ${KRONOS_DB_PASSWORD}
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-keycloak.kronos.example}
+      KC_HTTPS_CERTIFICATE_FILE: /certs/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /certs/keycloak.key
+      KC_FEATURES: organization,token-exchange,fgap-v2
+    volumes:
+      - ./certs:/certs:ro
+
+  # Ensures the KronOS organization exists via the Admin REST API (the same
+  # approach as dev) — never via a realm-import organizations block, which
+  # Keycloak 26.2 rejects with "Can not update organization group".
+  # Assumes the realm is already provisioned. ORG_MEMBER_IDS is empty in prod:
+  # real users join the org through the IdP / org domain, not by seeded ids.
+  # Built (not bind-mounted) -- see docker/init/Dockerfile.keycloak-init for
+  # why: curlimages/curl runs as non-root, and Docker Desktop/WSL2's
+  # bind-mount layer doesn't reliably grant non-root container users read
+  # access to host files, even when the real host file mode is 0755.
+  keycloak-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
+    restart: "no"
+    depends_on:
+      - keycloak
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: ${KEYCLOAK_ADMIN:-admin}
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      ORG_NAME: ${KRONOS_ORG_NAME:-KronOS}
+      ORG_ALIAS: ${KRONOS_ORG_ALIAS:-kronos}
+      ORG_DESCRIPTION: KronOS production organization
+      ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
+
+  clamav:
+    image: clamav/clamav:stable
+    ports: ["3310:3310"]
+    volumes:
+      - clamav_db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  tsa:
+    image: freetsa/freetsa:latest
+    ports: ["318:318"]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    # Browser-facing origin for each service's CSP allowance, rendered into
+    # the CSP header by nginx's envsubst templating (see
+    # docker/nginx/nginx.conf.template and the matching note on
+    # kronos-backend's OPENSEARCH_DASHBOARDS_URL above). Set these to real
+    # public hostnames for this deployment — BACKEND_PUBLIC_URL/
+    # MINIO_PUBLIC_URL default empty (omitted from the CSP) since this
+    # compose file doesn't publish those ports directly to the browser.
+    environment:
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-}
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - kronos-backend
+
+  kronos-backend:
+    image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    # NOTE: Every var below maps to a required field in src/config.py (Settings).
+    # Settings() has no defaults for these — a missing/renamed var crashes boot.
+    # SECURITY TODO (see docs/access-management-review.md):
+    #   - MINIO_ACCESS_KEY/SECRET_KEY must be a *scoped service account*, not root.
+    #   - tusd must use a separate put-only service account, not the backend's.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # MINIO_ENDPOINT is host:port only — startup.py prepends the scheme from MINIO_USE_TLS.
+      MINIO_ENDPOINT: minio:9000
+      # MinIO is not published outside the compose network here, so evidence
+      # upload/finalize is not usable from a real browser until this is set
+      # to a host the browser can reach (e.g. an MinIO ingress/LB hostname) —
+      # presigned URLs are signed against this host (SigV4 signs Host), so it
+      # cannot just be swapped after the fact. See MINIO_PUBLIC_ENDPOINT in
+      # src/config.py / src/adapter/storage/s3.py.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-minio:9000}
+      MINIO_USE_TLS: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. Defaults to the
+      # Keycloak hostname as a best-guess prod domain — override with the
+      # real frontend origin(s) if they differ (comma-separated).
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${KEYCLOAK_HOSTNAME}}
+      OPENSEARCH_URL: http://opensearch:9200
+      # Non-superuser service account (a superuser bypasses OpenSearch DLS).
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # KEYCLOAK_URL = internal URL used to fetch JWKS; KEYCLOAK_PUBLIC_URL = issuer in the token.
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      # Browser-facing OpenSearch Dashboards origin (e.g.
+      # https://os.kronos.example) for the Timeline tab's iframe embed.
+      # No OpenSearch Dashboards service is deployed by this compose file —
+      # leave unset to disable the feature (503), or point it at wherever
+      # Dashboards is actually reachable from the browser. Must match the
+      # nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below.
+      OPENSEARCH_DASHBOARDS_URL: ${OPENSEARCH_DASHBOARDS_URL:-}
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      TSA_URL: http://tsa:318
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      # Shared step-up ticket store — required because this service runs 2
+      # replicas (audit M-4). The app bootstrap passes
+      # build_step_up_ticket_store(settings) into create_app().
+      STEP_UP_TICKET_STORE: redis
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512m
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  celery-worker:
+    image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    # celery_app.py instantiates Settings() at import — the same required
+    # fields as the backend must be present or the worker crashes on boot.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Real, reproduced finding (poc/evidence_intake_async/): this was
+      # missing here even though kronos-backend has it -- process_intake
+      # (validate/scan/hash/promote) now runs in THIS worker, not the
+      # backend request thread, so an unreachable clamd here is what
+      # actually matters. configure_clamav_from_settings() hard-fails
+      # worker startup in production if clamd is unreachable (EVID-6) --
+      # better a loud crash than silently scanning nothing.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_TLS: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    depends_on:
+      - redis
+      - postgres
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1g
+
+secrets:
+  db_password:
+    external: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  opensearch_data:
+  clamav_db:

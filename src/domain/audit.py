@@ -23,7 +23,10 @@ class AuditEventType(StrEnum):
     EVIDENCE_HASH_MISMATCH = "evidence.hash_mismatch"
     EVIDENCE_PROMOTED = "evidence.promoted"
     EVIDENCE_DELETED = "evidence.deleted"
+    EVIDENCE_DELETE_DENIED = "evidence.delete_denied"
     EVIDENCE_ERROR = "evidence.error"
+    EVIDENCE_LEGAL_HOLD_SET = "evidence.legal_hold_set"
+    EVIDENCE_LEGAL_HOLD_CLEARED = "evidence.legal_hold_cleared"
 
     # Parsing
     PARSE_STARTED = "parse.started"
@@ -34,6 +37,12 @@ class AuditEventType(StrEnum):
     INGEST_STARTED = "ingest.started"
     INGEST_COMPLETED = "ingest.completed"
     INGEST_FAILED = "ingest.failed"
+
+    # Structured (non-timeline) artifact ingestion -- see
+    # reviews/Data_Source_Module_System.md
+    ARTIFACT_INGEST_STARTED = "artifact_ingest.started"
+    ARTIFACT_INGEST_COMPLETED = "artifact_ingest.completed"
+    ARTIFACT_INGEST_FAILED = "artifact_ingest.failed"
 
     # Authentication & authorization
     AUTH_LOGIN = "auth.login"
@@ -50,6 +59,16 @@ class AuditEventType(StrEnum):
     # Audit integrity
     AUDIT_HASH_CHAIN_VERIFIED = "audit.hash_chain_verified"
     AUDIT_HASH_CHAIN_TAMPERED = "audit.hash_chain_tampered"
+    AUDIT_MERKLE_ANCHORED = "audit.merkle_anchored"
+
+    # RFC 3161 timestamping
+    EVIDENCE_TSA_ANCHORED = "evidence.tsa_anchored"
+
+    # Org administration
+    ORG_USER_INVITED = "org.user_invited"
+    ORG_USER_ROLE_CHANGED = "org.user_role_changed"
+    ORG_USER_REMOVED = "org.user_removed"
+    ORG_SETTINGS_UPDATED = "org.settings_updated"
 
     # Generic
     SYSTEM_ERROR = "system.error"

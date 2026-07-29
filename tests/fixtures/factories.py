@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
+from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
@@ -126,6 +128,29 @@ def make_timeline_record(
             org_id=uuid.uuid4(),
             sha256="a" * 64,
             parser="evtx-rs",
+            parser_version="1.0.0",
+            record_index=record_index,
+            ingest_timestamp=datetime.now(UTC),
+        ),
+    )
+
+
+def make_structured_artifact(
+    evidence_id: uuid.UUID | None = None,
+    org_id: uuid.UUID | None = None,
+    kind: str = "test.pstree",
+    content: dict[str, Any] | None = None,
+    record_index: int = 0,
+) -> StructuredArtifact:
+    return StructuredArtifact(
+        kind=kind,
+        content=content or {"pid": 1, "children": []},
+        kronos=KronosProvenance(
+            evidence_id=evidence_id or uuid.uuid4(),
+            case_id=uuid.uuid4(),
+            org_id=org_id or uuid.uuid4(),
+            sha256="a" * 64,
+            parser="volatility",
             parser_version="1.0.0",
             record_index=record_index,
             ingest_timestamp=datetime.now(UTC),

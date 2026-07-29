@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
+from src.adapter.storage.storage import BucketKind, EvidenceStorage, PresignedUploadResponse
 from src.domain.evidence import Evidence
 from src.exceptions import StorageError
 
@@ -24,6 +24,7 @@ class LocalEvidenceStorage(EvidenceStorage):
         self._base.mkdir(parents=True, exist_ok=True)
         self._quarantine: dict[str, Path] = {}
         self._evidence: dict[str, Path] = {}
+        self._legal_holds: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # EvidenceStorage interface
@@ -43,12 +44,19 @@ class LocalEvidenceStorage(EvidenceStorage):
             expires_in_seconds=expires_in_seconds,
         )
 
-    async def stream_object(self, object_key: str, chunk_size: int = 65536) -> AsyncIterator[bytes]:
-        path = self._quarantine.get(object_key) or self._evidence.get(object_key)
+    async def stream_object(
+        self,
+        object_key: str,
+        chunk_size: int = 65536,
+        *,
+        bucket: BucketKind = "quarantine",
+    ) -> AsyncIterator[bytes]:
+        store = self._evidence if bucket == "evidence" else self._quarantine
+        path = store.get(object_key)
         if path is None or not path.exists():
             raise StorageError(
                 f"Object not found: {object_key}",
-                context={"object_key": object_key},
+                context={"object_key": object_key, "bucket": bucket},
             )
         return self._file_stream(path, chunk_size)
 
@@ -71,9 +79,23 @@ class LocalEvidenceStorage(EvidenceStorage):
         if path and path.exists():
             path.unlink()
 
-    async def object_exists(self, object_key: str) -> bool:
-        path = self._quarantine.get(object_key) or self._evidence.get(object_key)
+    async def object_exists(self, object_key: str, *, bucket: BucketKind = "quarantine") -> bool:
+        store = self._evidence if bucket == "evidence" else self._quarantine
+        path = store.get(object_key)
         return path is not None and path.exists()
+
+    def bucket_for(self, object_key: str, *, bucket: BucketKind = "evidence") -> str:
+        org_alias = object_key.split("/")[0] if object_key else "unknown"
+        return f"local-{bucket}-{org_alias}"
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: BucketKind = "evidence"
+    ) -> None:
+        self._legal_holds[object_key] = hold
+
+    def is_legal_hold_set(self, object_key: str) -> bool:
+        """Test helper: return the in-memory legal-hold flag for *object_key*."""
+        return self._legal_holds.get(object_key, False)
 
     # ------------------------------------------------------------------
     # Test helpers

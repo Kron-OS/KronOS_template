@@ -1,0 +1,106 @@
+---
+# KronOS Falco Runtime Detection Rules
+# Loaded alongside the default Falco ruleset.
+# Alerts are forwarded via the JSON output plugin → Fluent Bit → Wazuh.
+
+- list: kronos_parser_images
+  items: [kronos-evtx-worker, kronos-plaso-worker]
+
+- list: kronos_backend_images
+  items: [kronos-backend, kronos-celery-worker]
+
+- list: allowed_outbound_ips
+  items: []   # filled by provision script for each environment
+
+# -----------------------------------------------------------------------
+# Macro helpers
+# -----------------------------------------------------------------------
+- macro: in_kronos_parser
+  condition: container.image.repository in (kronos_parser_images)
+
+- macro: in_kronos_backend
+  condition: container.image.repository in (kronos_backend_images)
+
+# -----------------------------------------------------------------------
+# RULE 1: Unexpected outbound network from parser sandbox
+# Parsers must be fully network-isolated (gVisor / Firecracker).
+# Any outbound connection indicates sandbox escape or C2 channel.
+# -----------------------------------------------------------------------
+- rule: KronOS Parser Unexpected Network Egress
+  desc: Parser sandbox container made unexpected outbound connection
+  condition: >
+    outbound and in_kronos_parser
+  output: >
+    Parser sandbox established outbound connection
+    (proc=%proc.name container=%container.id image=%container.image.repository
+    fd=%fd.name user=%user.name)
+  priority: CRITICAL
+  tags: [kronos, sandbox, network, mitre_ta0011]
+
+# -----------------------------------------------------------------------
+# RULE 2: Unexpected binary executed in parser container
+# Parsers should only run evtx-dump, python3, or the worker entrypoint.
+# -----------------------------------------------------------------------
+- rule: KronOS Parser Suspicious Exec
+  desc: Unexpected process spawned inside parser container
+  condition: >
+    spawned_process and in_kronos_parser
+    and not proc.name in (evtx-dump, python3, python, sh, bash)
+  output: >
+    Suspicious process in parser container
+    (proc=%proc.name parent=%proc.pname cmdline=%proc.cmdline
+    container=%container.id image=%container.image.repository)
+  priority: WARNING
+  tags: [kronos, sandbox, exec, mitre_ta0059]
+
+# -----------------------------------------------------------------------
+# RULE 3: Write to evidence bucket mount outside sanctioned paths
+# Backend may only write to /tmp and /var/kronos/staging — not /etc, /proc, etc.
+# -----------------------------------------------------------------------
+- rule: KronOS Unexpected Filesystem Write
+  desc: Backend or parser container writing outside sanctioned paths
+  condition: >
+    open_write and in_kronos_backend
+    and not fd.name startswith /tmp
+    and not fd.name startswith /var/kronos
+    and not fd.name startswith /dev/null
+  output: >
+    Unexpected write outside sandbox paths
+    (proc=%proc.name file=%fd.name container=%container.id
+    image=%container.image.repository user=%user.name)
+  priority: ERROR
+  tags: [kronos, storage, write, mitre_ta0005]
+
+# -----------------------------------------------------------------------
+# RULE 4: Privilege escalation attempt in any KronOS container
+# -----------------------------------------------------------------------
+- rule: KronOS Container Privilege Escalation
+  desc: setuid or capability use in KronOS container
+  condition: >
+    (evt.type = setuid or evt.type = setgid)
+    and container.image.repository contains "kronos"
+    and not user.name = root
+  output: >
+    Privilege escalation in KronOS container
+    (proc=%proc.name evt=%evt.type container=%container.id
+    image=%container.image.repository user=%user.name)
+  priority: CRITICAL
+  tags: [kronos, privesc, mitre_ta0004]
+
+# -----------------------------------------------------------------------
+# RULE 5: mTLS cert file read by unexpected process
+# Only the KronOS backend process should read TLS private keys.
+# -----------------------------------------------------------------------
+- rule: KronOS Unexpected TLS Key Access
+  desc: Unexpected process reading KronOS TLS private key material
+  condition: >
+    open_read
+    and fd.name contains ".key"
+    and container.image.repository contains "kronos"
+    and not proc.name in (python3, python, gunicorn, uvicorn)
+  output: >
+    Unexpected TLS key access
+    (proc=%proc.name file=%fd.name container=%container.id
+    image=%container.image.repository)
+  priority: ERROR
+  tags: [kronos, tls, key_material, mitre_ta0006]

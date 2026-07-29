@@ -1,0 +1,247 @@
+"""Concrete dependency wiring from environment / Settings.
+
+Called once at process startup — both from the FastAPI lifespan and from the
+Celery worker_init signal.  Keeps configure_dependencies() calls in one place.
+"""
+
+from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_minio_public_endpoint_url(public_endpoint: str | None, internal_scheme: str) -> str | None:
+    """Build the presigned-URL client's endpoint_url from MINIO_PUBLIC_ENDPOINT.
+
+    Historically reused the internal connection's scheme (minio_use_tls) for
+    both endpoints -- wrong whenever the browser reaches MinIO's presigned
+    URLs via a TLS-terminating reverse proxy in front of it while the
+    internal backend->MinIO hop stays plain HTTP (there is no MinIO-native
+    way to serve HTTP internally and HTTPS externally from one listener).
+    A bare "host:port" value still falls back to internal_scheme, unchanged
+    from the original behavior; a full "scheme://host:port" value is used
+    as-is, letting the public scheme differ from the internal one.
+    """
+    if not public_endpoint:
+        return None
+    if "://" in public_endpoint:
+        return public_endpoint
+    return f"{internal_scheme}://{public_endpoint}"
+
+
+async def wire_dependencies_async() -> None:
+    """Async variant — used by FastAPI lifespan (already in async context)."""
+    from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+
+    from src.adapter.opensearch.client import (
+        OpenSearchClient as OpenSearchTimelineIndex,  # noqa: PLC0415
+    )
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
+        PostgresArtifactRepository,
+    )
+    from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
+        PostgresAuditLogRepository,
+    )
+    from src.adapter.repository.postgres_case import PostgresCaseRepository  # noqa: PLC0415
+    from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
+        PostgresEvidenceRepository,
+    )
+    from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
+    from src.config import Settings  # noqa: PLC0415
+    from src.external.dependencies import (  # noqa: PLC0415
+        build_step_up_ticket_store,
+        configure_clamav_from_settings,
+        configure_dependencies,
+        configure_step_up_auth,
+    )
+
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+
+    engine = create_async_engine(
+        settings.database_url.get_secret_value(),
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+    )
+
+    audit_repo = PostgresAuditLogRepository(engine)
+    evidence_repo = PostgresEvidenceRepository(engine)
+    case_repo = PostgresCaseRepository(engine)
+    artifact_repo = PostgresArtifactRepository(engine)
+
+    await PostgresAuditLogRepository.create_tables(engine)
+    await PostgresEvidenceRepository.create_tables(engine)
+    await PostgresCaseRepository.create_tables(engine)
+    await PostgresArtifactRepository.create_tables(engine)
+
+    _minio_scheme = "https" if settings.minio_use_tls else "http"
+    storage = S3EvidenceStorage(
+        endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
+        presign_endpoint_url=_resolve_minio_public_endpoint_url(
+            settings.minio_public_endpoint, _minio_scheme
+        ),
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        quarantine_bucket_prefix=settings.minio_quarantine_bucket_prefix,
+        evidence_bucket_prefix=settings.minio_evidence_bucket_prefix,
+        retention_days=settings.minio_default_retention_days,
+        use_tls=settings.minio_use_tls,
+    )
+
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    _parsed = urlparse(settings.opensearch_url)
+    _os_use_ssl = _parsed.scheme == "https"
+    opensearch = OpenSearchTimelineIndex(
+        hosts=[{"host": _parsed.hostname, "port": _parsed.port or (443 if _os_use_ssl else 9200)}],
+        http_auth=(
+            settings.opensearch_username.get_secret_value(),
+            settings.opensearch_password.get_secret_value(),
+        ),
+        use_ssl=_os_use_ssl,
+        verify_certs=False,
+    )
+
+    task_queue = CeleryTaskQueue()
+
+    step_up_store = build_step_up_ticket_store(settings)
+    configure_step_up_auth(step_up_store)
+
+    # RFC 3161 TSA client (EVID-3 / AUDIT-06) — None when tsa_url is unset,
+    # which honestly disables timestamping rather than fabricating tokens.
+    from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
+
+    timestamp_service = RFC3161TimestampService(settings.tsa_url) if settings.tsa_url else None
+
+    # Auto-provisions each case's OpenSearch Dashboards index pattern on
+    # creation (DashboardsIndexPatternProvisioner) — None (no-op) when the
+    # internal Dashboards URL isn't configured, same "honestly disabled"
+    # pattern as timestamp_service above.
+    from src.adapter.opensearch.dashboards_client import (  # noqa: PLC0415
+        DashboardsIndexPatternProvisioner,
+    )
+
+    dashboards_provisioner = (
+        DashboardsIndexPatternProvisioner(
+            base_url=settings.opensearch_dashboards_internal_url,
+            admin_username=settings.opensearch_username.get_secret_value(),
+            admin_password=settings.opensearch_password.get_secret_value(),
+        )
+        if settings.opensearch_dashboards_internal_url
+        else None
+    )
+
+    configure_dependencies(
+        audit_log_repository=audit_repo,
+        evidence_repository=evidence_repo,
+        case_repository=case_repo,
+        artifact_repository=artifact_repo,
+        evidence_storage=storage,
+        task_queue=task_queue,
+        opensearch_client=opensearch,
+        max_upload_bytes=settings.max_upload_bytes,
+        presigned_expiry_seconds=settings.presigned_url_expiry_seconds,
+        opensearch_dashboards_url=settings.opensearch_dashboards_url,
+        dashboards_index_pattern_provisioner=dashboards_provisioner,
+        timestamp_service=timestamp_service,
+        default_retention_days=settings.minio_default_retention_days,
+        opensearch_security_enabled=settings.opensearch_security_enabled,
+    )
+    configure_clamav_from_settings()
+
+    logger.info("startup: dependencies wired (async)")
+
+
+def wire_dependencies_sync() -> None:
+    """Sync variant — used by Celery worker_init signal (sync context).
+
+    Wires only the NON-loop-bound singletons (S3 storage via boto3+thread
+    executor, CeleryTaskQueue, step-up ticket store, RFC3161 timestamp
+    client, ClamAV scanner) into the DI container, and runs create_tables()
+    once via a throwaway NullPool engine + throwaway loop that is fully
+    disposed before this function returns.
+
+    Deliberately does NOT configure a pooled asyncpg engine, Postgres
+    repositories, or an AsyncOpenSearch client as process-wide singletons
+    here: those are loop-bound, and Celery tasks each run in their own
+    short-lived event loop via asyncio.run(). Reusing a loop-bound
+    engine/client across those separate loops is exactly what caused
+    "Future attached to a different loop" / "Event loop is closed" — see
+    src/external/celery_runtime.py, which builds fresh instances inside
+    each task's own loop instead.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
+        PostgresArtifactRepository,
+    )
+    from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
+        PostgresAuditLogRepository,
+    )
+    from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
+        PostgresEvidenceRepository,
+    )
+    from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
+    from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
+    from src.config import Settings  # noqa: PLC0415
+    from src.external.dependencies import (  # noqa: PLC0415
+        build_step_up_ticket_store,
+        configure_clamav_from_settings,
+        configure_dependencies,
+        configure_step_up_auth,
+    )
+
+    settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+
+    async def _create_tables() -> None:
+        from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+        from sqlalchemy.pool import NullPool  # noqa: PLC0415
+
+        engine = create_async_engine(settings.database_url.get_secret_value(), poolclass=NullPool)
+        try:
+            await PostgresAuditLogRepository.create_tables(engine)
+            await PostgresEvidenceRepository.create_tables(engine)
+            await PostgresArtifactRepository.create_tables(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_create_tables())
+
+    _minio_scheme = "https" if settings.minio_use_tls else "http"
+    storage = S3EvidenceStorage(
+        endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
+        presign_endpoint_url=_resolve_minio_public_endpoint_url(
+            settings.minio_public_endpoint, _minio_scheme
+        ),
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        quarantine_bucket_prefix=settings.minio_quarantine_bucket_prefix,
+        evidence_bucket_prefix=settings.minio_evidence_bucket_prefix,
+        retention_days=settings.minio_default_retention_days,
+        use_tls=settings.minio_use_tls,
+    )
+
+    task_queue = CeleryTaskQueue()
+    step_up_store = build_step_up_ticket_store(settings)
+    configure_step_up_auth(step_up_store)
+
+    timestamp_service = RFC3161TimestampService(settings.tsa_url) if settings.tsa_url else None
+
+    configure_dependencies(
+        audit_log_repository=None,
+        evidence_repository=None,
+        evidence_storage=storage,
+        task_queue=task_queue,
+        max_upload_bytes=settings.max_upload_bytes,
+        presigned_expiry_seconds=settings.presigned_url_expiry_seconds,
+        opensearch_dashboards_url=settings.opensearch_dashboards_url,
+        timestamp_service=timestamp_service,
+        default_retention_days=settings.minio_default_retention_days,
+        opensearch_security_enabled=settings.opensearch_security_enabled,
+    )
+    configure_clamav_from_settings()
+
+    logger.info("startup: dependencies wired (sync/celery)")

@@ -66,6 +66,32 @@ class TestClamAVScanner:
                 await scanner.scan_stream(_stream(b"data"))
 
     @pytest.mark.asyncio
+    async def test_broken_pipe_during_write_raises_clear_storage_error(self) -> None:
+        """Real, reproduced bug (poc/clamav/run_poc_large_file.py): clamd
+        closes the connection the instant a stream exceeds its configured
+        StreamMaxLength/MaxFileSize, and the raw write loop used to let a
+        bare BrokenPipeError propagate uncaught -- a real 239 MB upload hit
+        exactly this. Must now surface as a StorageError with a clear,
+        actionable message instead."""
+        reader, writer = _make_mock_connection(b"INSTREAM: Size limit reached.\0")
+        writer.write = MagicMock(
+            side_effect=[None, BrokenPipeError("[Errno 32] Broken pipe")]
+        )
+        with patch("asyncio.open_connection", return_value=(reader, writer)):
+            scanner = ClamAVScanner()
+            with pytest.raises(StorageError, match="exceeds clamd's configured"):
+                await scanner.scan_stream(_stream(b"x" * 100))
+
+    @pytest.mark.asyncio
+    async def test_connection_reset_during_write_raises_clear_storage_error(self) -> None:
+        reader, writer = _make_mock_connection(b"")
+        writer.write = MagicMock(side_effect=[None, ConnectionResetError("reset")])
+        with patch("asyncio.open_connection", return_value=(reader, writer)):
+            scanner = ClamAVScanner()
+            with pytest.raises(StorageError, match="exceeds clamd's configured"):
+                await scanner.scan_stream(_stream(b"x" * 100))
+
+    @pytest.mark.asyncio
     async def test_instream_protocol_sent(self) -> None:
         reader, writer = _make_mock_connection(b"stream: OK\0")
         with patch("asyncio.open_connection", return_value=(reader, writer)):

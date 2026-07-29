@@ -1,0 +1,105 @@
+
+======================================================================
+1. request_presigned_upload -> lazily creates quarantine bucket
+======================================================================
+quarantine bucket: kronos-quarantine-testorg-quarantine
+evidence bucket:   kronos-evidence-testorg
+presigned URL: http://127.0.0.1:19100/kronos-quarantine-testorg-quarantine/testorg/fae18691-1787-4250-bf98-b9b6791cb996/3e6ae...
+object_key: testorg/fae18691-1787-4250-bf98-b9b6791cb996/3e6ae335-9701-424b-b240-11681ad57d16/test.evtx
+
+======================================================================
+2. Real HTTP PUT of bytes to the presigned URL
+======================================================================
+real HTTP PUT status: 200
+
+======================================================================
+3. object_exists() on the quarantine key (default bucket='quarantine')
+======================================================================
+object_exists(quarantine_key) = True
+
+======================================================================
+4. Verify quarantine bucket has NO Object Lock (out-of-band check)
+======================================================================
+Confirmed (expected): ObjectLockConfigurationNotFoundError - quarantine bucket has no lock config
+
+======================================================================
+5. promote_to_evidence_bucket() -> lazily creates evidence bucket w/ Object Lock
+======================================================================
+promoted to evidence key: testorg/fae18691-1787-4250-bf98-b9b6791cb996/3e6ae335-9701-424b-b240-11681ad57d16/test.evtx
+
+======================================================================
+6. Verify evidence bucket really has Object Lock + COMPLIANCE default retention
+======================================================================
+ObjectLockConfiguration: {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': 'COMPLIANCE', 'Days': 1}}}
+PASS: evidence bucket has Object Lock ENABLED with COMPLIANCE default retention (1 day(s))
+
+======================================================================
+7. THE KEY QUESTION: did the promoted (copy_object'd) object actually inherit the bucket's default retention, or does MinIO's CopyObject skip default-retention inheritance the way some S3-compatible stores do?
+======================================================================
+get_object_retention(promoted object) = {'Mode': 'COMPLIANCE', 'RetainUntilDate': datetime.datetime(2026, 7, 22, 20, 45, 12, 804000, tzinfo=tzutc())}
+PASS: promoted object really carries COMPLIANCE retention until 2026-07-22 20:45:12.804000+00:00 (real MinIO response, not assumed)
+
+======================================================================
+8. object_exists()/stream_object() with bucket='evidence' (post-promotion contract used by parsing_orchestration.py against evidence.minio_evidence_key) -- run BEFORE any destructive delete tests below
+======================================================================
+object_exists(ev_key, bucket='evidence') = True
+stream_object(ev_key, bucket='evidence') read 48 bytes; matches originally uploaded payload: True
+
+======================================================================
+9. delete_from_quarantine() -- confirm quarantine copy actually removed
+======================================================================
+PASS: quarantine object confirmed gone after delete_from_quarantine
+
+======================================================================
+10. Bucket versioning check -- Object Lock requires versioning; does create_bucket(ObjectLockEnabledForBucket=True) really auto-enable it on MinIO?
+======================================================================
+get_bucket_versioning(evidence bucket) = Enabled
+PASS: MinIO auto-enabled versioning for the Object-Lock bucket (matches AWS S3 semantics: ObjectLockEnabledForBucket=True implies versioning).
+retained version id of the promoted object: 66311926-fda5-4f01-a737-57c513804eff
+
+======================================================================
+11. Unqualified delete_object() (no VersionId) -- versioned-bucket semantics predict this only adds a delete marker, it must NOT destroy the locked version (this is a deliberately destructive probe against the object created above; everything of interest was already verified in steps 8-9)
+======================================================================
+versions surviving after unqualified delete: ['66311926-fda5-4f01-a737-57c513804eff']
+Confirmed: unqualified delete only added a delete-marker; the retained, compliance-locked version is untouched (expected S3 versioned-bucket behavior, not a bug in itself).
+
+======================================================================
+12. THE HIGH-VALUE CHECK: try to permanently delete the SPECIFIC locked VersionId -- this is the real test of compliance-mode WORM enforcement
+======================================================================
+delete_object(VersionId=<locked>) REJECTED by real MinIO: InvalidRequest: Object is WORM protected and cannot be overwritten
+PASS: MinIO's compliance-mode retention genuinely blocks permanent removal of the specific locked version before its RetainUntilDate.
+
+======================================================================
+13. Confirm the locked version's bytes are still byte-for-byte intact/fetchable
+======================================================================
+fetched 48 bytes via VersionId; matches original upload: True
+
+======================================================================
+14. set_legal_hold() -- on a SECOND, untouched evidence object (evidence #1's 'latest' pointer is now a delete-marker from step 11's destructive probe, which would make put_object_legal_hold target the marker instead of a real object -- that's a test-ordering artifact, not an app bug, so use a clean object here)
+======================================================================
+second evidence object promoted: testorg/12740e5c-0736-47da-8959-3b7cedd8333d/2114f272-aff9-4257-a179-511b12d4d50a/test.evtx
+get_object_legal_hold after set_legal_hold(True) = {'Status': 'ON'}
+PASS: legal hold really set to ON in real MinIO
+
+======================================================================
+15. With legal hold ON: confirm delete of this version is rejected (independent of / in addition to compliance retention)
+======================================================================
+delete_object(VersionId=<v2>) REJECTED with legal hold ON: InvalidRequest: Object is WORM protected and cannot be overwritten
+
+======================================================================
+16. Clear legal hold (set_legal_hold(False)) and verify
+======================================================================
+get_object_legal_hold after set_legal_hold(False) = {'Status': 'OFF'}
+PASS: legal hold cleared in real MinIO
+
+======================================================================
+17. bucket_for() sanity check (used for chain-of-custody audit entries)
+======================================================================
+bucket_for(ev_key, bucket='evidence') = kronos-evidence-testorg
+
+======================================================================
+SUMMARY
+======================================================================
+retention actually inherited by promoted (copy_object) evidence object: True
+delete of the exact locked VersionId blocked under COMPLIANCE retention: True
+legal hold independently blocks delete of the exact version: True

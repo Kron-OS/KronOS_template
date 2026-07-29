@@ -1,0 +1,51 @@
+fd8596197580e7f66041bba8d01dd756bfeb0264c6253f1c201bc4e7e860b8dd
+kronos-poc-kcosdls4-opensearch
+ad665a05c320ba3568ed1bad394f61ddc407f43f9c40a8f7448a9381453e2a9a
+Declared org_id as an admin-managed User Profile attribute.
+provision_keycloak_org: realm=kronos org=kronos-dls-a base=http://localhost:18085
+Creating organization kronos-dls-a
+create organization -> HTTP 201
+Organization ID: 2184a13a-9b40-4bdc-bd2f-eb6c769d22d0
+Linked member 20000000-0000-4000-8000-000000000001 -> HTTP 201
+Set org_id attribute for 20000000-0000-4000-8000-000000000001 -> HTTP 204
+provision_keycloak_org: complete
+{"status":"OK","message":"'config' updated."}
+
+############################################################
+# MARKER: OpenSearch is now fully configured. Everything    #
+# below this line touches Keycloak ONLY -- no further calls #
+# to any /_plugins/_security/* endpoint happen in this run. #
+############################################################
+
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19930 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+========== 1. Baseline: pre-existing user-a1 in org A ==========
+user-a1 org_id = 2184a13a-9b40-4bdc-bd2f-eb6c769d22d0
+[PASS] pre-existing user-a1 has the flat org_id claim
+[PASS] real doc indexed via the real bulk_index()
+[PASS] user-a1 sees org A's doc (baseline, before the new member exists) -- {'doc-org-a'}
+
+========== 2. Brand-new user created + linked to the EXISTING org (Keycloak-only, no OpenSearch calls) ==========
+create user-a3-latecomer -> HTTP 201
+[PASS] brand-new Keycloak user created successfully (never existed before this run)
+real generated user id (from Location header) = 41762943-c3a2-4d46-a6c3-a7d0e0e46dca
+assign 'analyst' realm role -> HTTP 204
+[PASS] 'analyst' realm role explicitly assigned to the brand-new user
+provision_keycloak_org: realm=kronos org=kronos-dls-a base=http://localhost:18085
+Organization kronos-dls-a already exists (id=2184a13a-9b40-4bdc-bd2f-eb6c769d22d0)
+Organization ID: 2184a13a-9b40-4bdc-bd2f-eb6c769d22d0
+Linked member 41762943-c3a2-4d46-a6c3-a7d0e0e46dca -> HTTP 201
+Set org_id attribute for 41762943-c3a2-4d46-a6c3-a7d0e0e46dca -> HTTP 204
+provision_keycloak_org: complete
+
+[PASS] provisioning script found the org ALREADY EXISTS (not created again) and only linked the new member -- Organization kronos-dls-a already exists (id=2184a13a-9b40-4bdc-bd2f-eb6c769d22d0)
+
+========== 3. Real login + real DLS isolation for the brand-new member ==========
+user-a3-latecomer org_id = 2184a13a-9b40-4bdc-bd2f-eb6c769d22d0
+[PASS] brand-new user's REAL JWT carries the SAME flat org_id as the org's original member -- 2184a13a-9b40-4bdc-bd2f-eb6c769d22d0
+user-a3-latecomer sees: {'doc-org-a'}
+[PASS] brand-new member is correctly DLS-isolated to org A's doc -- with ZERO OpenSearch-side calls made for them (no new role, no new mapping, nothing past the MARKER in run_poc.sh) -- {'doc-org-a'}
+
+============================================================
+8 passed, 0 failed
+============================================================

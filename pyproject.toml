@@ -18,13 +18,14 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "boto3>=1.34",
     "aiobotocore>=2.13",
-    "opensearch-py>=2.6",
+    "opensearch-py[async]>=2.6",
     "python-jose[cryptography]>=3.3",
     "httpx>=0.27",
     "structlog>=24.1",
     "python-multipart>=0.0.9",
     "clamd>=1.0.2",
     "evtx>=0.8",
+    "rfc3161ng>=2.1.3",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +45,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=80"]
+addopts = ["--cov=src", "--cov=kronos_attest", "--cov-report=term-missing", "--cov-fail-under=80"]
 markers = [
     "integration: requires Docker (Postgres + MinIO containers)",
 ]
@@ -56,6 +57,12 @@ omit = [
     "src/adapter/storage/s3.py",                  # infrastructure; covered by integration tests
     "src/adapter/queue/celery_queue.py",          # infrastructure; needs real Celery broker
     "src/external/celery_app.py",                 # infrastructure; needs real Celery broker
+    "src/external/middleware/keycloak_auth.py",   # needs live Keycloak JWKS endpoint
+    "src/external/middleware/opensearch_isolation.py",  # covered by integration tests
+    "src/external/middleware/query_isolation.py",       # covered by integration tests
+    "src/external/parsers/evtx.py",                    # needs evtx binary + real EVTX files
+    "src/external/parsers/plaso.py",                   # needs Plaso installed in Firecracker container
+    "src/external/sandbox/firecracker.py",             # needs subprocess + plaso worker binary
 ]
 
 [tool.mypy]
@@ -75,6 +82,29 @@ module = [
 ]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
+# Same root cause (no pydantic.mypy plugin), different symptom: these files
+# construct TimelineRecord via a dict-unpack (**{"@timestamp": ts}) mixed
+# with keyword args for aliased fields (e.g. event_original=...,
+# alias="event.original", model_config populate_by_name=True). mypy's
+# synthesized __init__ can't verify either the dict-unpack's value types or
+# that populate_by_name permits the plain field name as a keyword, even
+# though both are correct at runtime -- confirmed by real parser PoCs
+# (poc/plaso_opensearch/, poc/opensearch/) actually ingesting real records
+# built this exact way.
+[[tool.mypy.overrides]]
+module = [
+    "src.external.parsers.*",
+    "src.external.sandbox.firecracker",
+]
+disable_error_code = ["call-arg", "arg-type"]
+
+# Celery's own @app.task decorator has no type stubs, matching the
+# untyped-decorator suppression already applied to routes.* above for the
+# same reason (FastAPI's own decorators).
+[[tool.mypy.overrides]]
+module = ["src.external.celery_app"]
+disable_error_code = ["untyped-decorator"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -82,9 +112,30 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A"]
 
+[tool.ruff.lint.per-file-ignores]
+# camelCase fields are intentional here, not a naming-convention slip: these
+# DTOs mirror the frontend TypeScript client's own field names verbatim
+# (this repo's "fix/evidence-upload-camelcase" branch exists specifically
+# to keep them that way). Renaming to snake_case would silently break the
+# frontend contract, not fix a bug.
+"src/external/routes/admin.py" = ["N815", "B008"]
+"src/external/routes/cases.py" = ["N815", "B008"]
+"src/external/routes/evidence.py" = ["N815"]
+"src/external/routes/sse.py" = ["N815"]
+"src/external/routes/step_up.py" = ["N815"]
+# FastAPI's Depends(...)/Query(...)/Body(...) default-argument pattern is
+# the framework's own dependency-injection mechanism, not a mutable-default
+# bug -- B008 ("no function calls in argument defaults") is a real check
+# for the general case but a standard, documented false positive for
+# FastAPI route/dependency signatures specifically.
+"src/external/middleware/rbac.py" = ["B008"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
 
+[project.scripts]
+kronos-attest = "kronos_attest.cli:cli"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src", "kronos_attest"]

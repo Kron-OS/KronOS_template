@@ -24,7 +24,13 @@ class _StubStorage(EvidenceStorage):
     ) -> PresignedUploadResponse:
         return PresignedUploadResponse("http://stub", "key", expires_in_seconds)
 
-    async def stream_object(self, object_key: str, chunk_size: int = 65536) -> AsyncIterator[bytes]:  # type: ignore[override]
+    async def stream_object(  # type: ignore[override]
+        self,
+        object_key: str,
+        chunk_size: int = 65536,
+        *,
+        bucket: str = "quarantine",
+    ) -> AsyncIterator[bytes]:
         async def _gen() -> AsyncIterator[bytes]:
             yield b"stub"
 
@@ -36,8 +42,16 @@ class _StubStorage(EvidenceStorage):
     async def delete_from_quarantine(self, quarantine_key: str) -> None:
         pass
 
-    async def object_exists(self, object_key: str) -> bool:
+    async def object_exists(self, object_key: str, *, bucket: str = "quarantine") -> bool:
         return True
+
+    def bucket_for(self, object_key: str, *, bucket: str = "evidence") -> str:
+        return f"stub-{bucket}"
+
+    async def set_legal_hold(
+        self, object_key: str, hold: bool, *, bucket: str = "evidence"
+    ) -> None:
+        pass
 
 
 class TestDIContainer:

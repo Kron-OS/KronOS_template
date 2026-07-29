@@ -1,0 +1,248 @@
+upstream backend {
+    # Must match the backend service/DNS name. In docker-compose the service is
+    # "kronos-backend"; on Kubernetes set this to the backend Service name.
+    server kronos-backend:8000;
+    keepalive 32;
+}
+
+# Rate limiting zones — applied per IP address
+limit_req_zone $binary_remote_addr zone=api:10m    rate=30r/s;
+limit_req_zone $binary_remote_addr zone=upload:10m rate=5r/s;
+limit_req_zone $binary_remote_addr zone=auth:10m   rate=10r/s;
+
+# Body size defaults (override per-location as needed)
+client_max_body_size 10m;
+
+server {
+    listen 80;
+    server_name _;
+
+    # -----------------------------------------------------------------------
+    # Security headers — applied globally, overridden where needed
+    # -----------------------------------------------------------------------
+    # This file is processed by nginx's docker-entrypoint envsubst step
+    # (it lives at /etc/nginx/templates/*.template in the image), which
+    # substitutes the ${...} placeholders below from container environment
+    # variables before nginx starts. Each placeholder is a *browser-facing*
+    # origin for a service that differs between dev (localhost:<port>) and
+    # prod (its own subdomain) — see KEYCLOAK_PUBLIC_URL/BACKEND_PUBLIC_URL/
+    # MINIO_PUBLIC_URL/OPENSEARCH_DASHBOARDS_URL in docker-compose.*.yml and
+    # src/config.py. A var that is PRESENT but empty substitutes to an empty
+    # string, which is safe (collapses to a harmless extra space) -- verified
+    # in poc/nginx/. But a var that is genuinely UNSET (never passed to the
+    # container at all) is NOT substituted -- the real docker-entrypoint
+    # script only knows about variable names actually present in its own
+    # environment -- and the leftover literal "${VARNAME}" then makes
+    # nginx's OWN config parser try to resolve it as an nginx variable,
+    # which does not exist, and nginx refuses to start at all
+    # ("nginx: [emerg] unknown \"...\" variable" -- confirmed for real in
+    # poc/nginx/README.md). docker-compose*.yml's `${VAR:-}` syntax always
+    # defines all four vars (defaulting to empty), which is what actually
+    # keeps this safe here -- any invocation that doesn't guarantee that
+    # will crash nginx on startup, not silently degrade.
+    #
+    # script-src deliberately omits 'unsafe-inline' (a Vite production build emits
+    # no inline scripts); 'unsafe-inline' is kept only for style-src, which
+    # Tailwind/runtime theming still requires.
+    # connect-src includes MINIO_PUBLIC_URL because evidence uploads PUT
+    # directly from the browser to a presigned MinIO URL — without it the
+    # browser silently blocks the request client-side (status 0, no network
+    # activity at all) before it's ever sent.
+    # frame-src includes OPENSEARCH_DASHBOARDS_URL because the Timeline tab
+    # embeds OpenSearch Dashboards directly from its own public origin (not
+    # proxied through this nginx — Dashboards' own absolute asset URLs
+    # (/ui/*, /bootstrap.js) only resolve correctly when it's loaded from its
+    # own root, not from a subpath like /dashboards/).
+    add_header Content-Security-Policy
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
+        always;
+    add_header X-Content-Type-Options        "nosniff"                            always;
+    add_header X-Frame-Options               "SAMEORIGIN"                         always;
+    add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
+    add_header Permissions-Policy            "camera=(), microphone=(), geolocation=(), payment=()" always;
+    # HSTS — 2-year max-age with preload (only effective over HTTPS; harmless on HTTP)
+    add_header Strict-Transport-Security     "max-age=63072000; includeSubDomains; preload" always;
+
+    # Gzip
+    gzip            on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_types      text/plain text/css application/json application/javascript
+                    text/xml application/xml image/svg+xml;
+
+    # -----------------------------------------------------------------------
+    # Frontend SPA — serve pre-built static assets
+    # -----------------------------------------------------------------------
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+
+        # Real, reproduced bug: index.html previously had no Cache-Control
+        # at all (only ETag/Last-Modified), so a browser could reuse a
+        # heuristically-cached copy of the SPA shell indefinitely without
+        # ever revalidating with the server -- config-only changes here
+        # (CSP header values, PUBLIC_URL vars, etc.) don't touch the built
+        # file's own mtime/ETag, so they'd never invalidate a cached copy
+        # on their own. Confirmed a client stuck on a stale CSP long after
+        # the server-side value was fixed and independently verified
+        # correct via direct curl. `no-cache` (not `no-store`): still lets
+        # the browser send a fast conditional GET and reuse a 304, it just
+        # can no longer skip asking the server entirely.
+        #
+        # nginx's add_header inheritance quirk (same one documented on
+        # /silent-check-sso.html below): defining ANY add_header at this
+        # level stops ALL server-level ones from applying here, so every
+        # header this page actually needs has to be redeclared, not just
+        # appended -- losing CSP/HSTS/etc. on the SPA's own entry point
+        # would be a real regression, not a cosmetic one.
+        add_header Cache-Control "no-cache" always;
+        add_header Content-Security-Policy
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' ${KEYCLOAK_PUBLIC_URL} ${OPENSEARCH_DASHBOARDS_URL}; frame-ancestors 'self'; connect-src 'self' ${KEYCLOAK_PUBLIC_URL} ${BACKEND_PUBLIC_URL} ${MINIO_PUBLIC_URL}; object-src 'none'"
+            always;
+        add_header X-Content-Type-Options        "nosniff"                            always;
+        add_header X-Frame-Options               "SAMEORIGIN"                         always;
+        add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
+        add_header Permissions-Policy            "camera=(), microphone=(), geolocation=(), payment=()" always;
+        add_header Strict-Transport-Security     "max-age=63072000; includeSubDomains; preload" always;
+
+        # Immutable assets (Vite fingerprints filenames with content hash)
+        # -- a real content-hash change *does* change the URL, so these can
+        # safely be cached forever with no revalidation at all.
+        location ~* \.(js|css|woff2|png|jpg|svg|ico)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # Silent SSO iframe — keycloak-js uses this for session check; must be frameable
+    # by the Keycloak origin.  We set a CSP frame-ancestors directive instead of
+    # X-Frame-Options because "ALLOWALL" is not a valid RFC value and is ignored
+    # by Chrome 89+.  X-Frame-Options is intentionally omitted here; the global
+    # SAMEORIGIN header from the outer server block is not inherited for named
+    # locations, so only the explicit CSP below applies.
+    location = /silent-check-sso.html {
+        root /usr/share/nginx/html;
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;
+    }
+
+    # -----------------------------------------------------------------------
+    # Auth proxy — token refresh via HttpOnly cookie
+    # -----------------------------------------------------------------------
+    location /auth/ {
+        limit_req zone=auth burst=20 nodelay;
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+    }
+
+    # -----------------------------------------------------------------------
+    # Backend API
+    # -----------------------------------------------------------------------
+    location /api/ {
+        limit_req zone=api burst=60 nodelay;
+
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+        proxy_read_timeout 60s;
+
+        # Evidence upload — tighter rate limit, no body-size cap (streaming)
+        location /api/evidence/upload/ {
+            limit_req         zone=upload burst=10 nodelay;
+            proxy_pass        http://backend;
+            proxy_read_timeout 300s;
+            client_max_body_size 0;
+        }
+    }
+
+    # -----------------------------------------------------------------------
+    # SSE endpoint — must NOT buffer (breaks server-sent events)
+    # -----------------------------------------------------------------------
+    location /api/sse/ {
+        limit_req zone=api burst=10 nodelay;
+        proxy_pass         http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        chunked_transfer_encoding on;
+    }
+
+    # -----------------------------------------------------------------------
+    # Health checks — no auth, no rate limit, no access log
+    # -----------------------------------------------------------------------
+    # Full-stack check (nginx + backend both reachable) -- for external
+    # uptime monitoring against the public nginx origin. src/external/fastapi_app.py
+    # now serves a real /healthz route (previously this proxied to a route
+    # that never existed anywhere in the backend -- always 404'd).
+    location = /healthz {
+        proxy_pass  http://backend/healthz;
+        access_log  off;
+    }
+
+    # nginx-only check -- deliberately does NOT proxy anywhere. Used as
+    # THIS pod's own Kubernetes liveness/readiness probe target
+    # (charts/kronos/templates/nginx/deployment.yaml): probing /healthz
+    # instead would make nginx's own pod get killed by a transient backend
+    # blip even though nginx itself is perfectly healthy.
+    location = /nginx-health {
+        access_log  off;
+        return 200  "ok\n";
+    }
+}
+
+# -----------------------------------------------------------------------
+# Production HTTPS server — uncomment and adjust for production deployment.
+# Requires TLS certificates from step-ca (or cert-manager on Kubernetes).
+# -----------------------------------------------------------------------
+# server {
+#     listen 443 ssl;
+#     server_name kronos.example.com;
+#
+#     ssl_certificate     /etc/kronos/tls/cert.pem;
+#     ssl_certificate_key /etc/kronos/tls/key.pem;
+#     ssl_trusted_certificate /etc/kronos/tls/ca.pem;
+#
+#     ssl_protocols       TLSv1.3;
+#     # No ssl_ciphers line: real, reproduced finding while building
+#     # docker/nginx/nginx-lan-https.conf.template (this block's dev-mode
+#     # equivalent) -- ssl_ciphers is the legacy OpenSSL cipher-list format
+#     # for TLS <=1.2; TLS 1.3 ciphersuite names like TLS_AES_128_GCM_SHA256
+#     # aren't valid entries there and nginx refuses to start at all
+#     # ("SSL_CTX_set_cipher_list(...) failed: no cipher match") if you list
+#     # them anyway. TLS 1.3 ciphersuites are negotiated separately; nginx's
+#     # OpenSSL-linked build already defaults to a secure set with no
+#     # directive needed here.
+#     ssl_prefer_server_ciphers off;
+#     ssl_session_cache   shared:SSL:10m;
+#     ssl_session_timeout 1d;
+#     ssl_session_tickets off;
+#
+#     # OCSP stapling
+#     ssl_stapling        on;
+#     ssl_stapling_verify on;
+#     resolver            1.1.1.1 8.8.8.8 valid=300s;
+#
+#     # All other location blocks identical to HTTP server above
+#     # (copy-paste and keep in sync, or use include)
+# }
+#
+# # Redirect all HTTP to HTTPS
+# server {
+#     listen 80;
+#     server_name kronos.example.com;
+#     return 301 https://$host$request_uri;
+# }

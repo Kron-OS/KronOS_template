@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kronos.fullname" . }}-celery-beat
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: celery-beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kronos.name" . }}-celery-beat
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "kronos.name" . }}-celery-beat
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: celery-beat
+        app.kubernetes.io/zone: app
+    spec:
+      serviceAccountName: {{ include "kronos.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-beat
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - celery
+            - -A
+            - src.external.celery_app
+            - beat
+            - --loglevel=info
+            - --schedule=/tmp/celerybeat-schedule
+          env:
+            {{- include "kronos.commonEnv" . | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          resources:
+            {{- toYaml .Values.resources.celeryBeat | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: schedule
+              mountPath: /tmp
+      volumes:
+        - name: schedule
+          emptyDir: {}

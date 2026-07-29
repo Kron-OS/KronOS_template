@@ -1,0 +1,15 @@
+[Unit]
+Description=KronOS sandbox egress firewall (blocks LAN, allows internet + inbound SSH)
+DefaultDependencies=no
+Requires=kronos-boot.service
+After=kronos-boot.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/run/kronos-sandbox.env
+ExecStart=/usr/local/bin/kronos-firewall-guard.sh
+
+[Install]
+WantedBy=sysinit.target

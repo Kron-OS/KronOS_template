@@ -1,0 +1,205 @@
+global:
+  imageRegistry: ""
+  storageClass: ""
+  imagePullSecrets: []
+
+image:
+  repository: ghcr.io/kron-os/kronos-backend
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+resources:
+  backend:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  celeryFast:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  celeryPlaso:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+  celeryIndex:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  celeryBeat:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "200m"
+      memory: "512Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  host: kronos.example.com
+  tls: true
+  certManager:
+    enabled: true
+    issuerName: step-ca-issuer
+    issuerKind: ClusterIssuer
+
+service:
+  type: ClusterIP
+  port: 8000
+
+keycloak:
+  url: https://auth.kronos.example.com
+  realm: kronos
+  clientId: kronos-backend
+  existingSecret: kronos-keycloak-secret
+  secretKey: client-secret
+  # Ensure the KronOS organization exists via the Admin REST API (post-install
+  # hook Job). Orgs are NEVER created via a realm-import block — Keycloak 26.2
+  # rejects that with "Can not update organization group". Opt-in; the realm
+  # must already exist. The pod needs egress to keycloak.url.
+  provisionOrg:
+    enabled: false
+    image: curlimages/curl:latest
+    backoffLimit: 6
+    # Secret holding master-realm admin creds, keys: admin-user / admin-password
+    adminSecret: kronos-keycloak-admin
+    org:
+      name: KronOS
+      alias: kronos
+      description: KronOS organization
+      domain: ""        # optional; created as a verified org domain when set
+      memberIds: ""     # optional space-separated user UUIDs to link as members
+
+opensearch:
+  url: https://opensearch:9200
+  dashboardsUrl: https://dashboards.kronos.example.com
+  existingSecret: kronos-opensearch-secret
+
+minio:
+  endpoint: minio:9000
+  useTls: true
+  existingSecret: kronos-minio-secret
+
+vault:
+  addr: https://vault:8200
+  role: kronos-backend
+  agentInject: true
+
+# Step-up (RFC 9470) ticket store. Use "redis" whenever replicaCount > 1 so
+# tickets are shared across backend pods (audit M-4); "memory" is single-pod only.
+stepUp:
+  ticketStore: redis
+
+celery:
+  workers:
+    fast:
+      replicas: 2
+      queues: "q.parse.fast"
+      concurrency: 4
+    plaso:
+      replicas: 1
+      queues: "q.parse.plaso"
+      concurrency: 1
+    index:
+      replicas: 2
+      # q.intake (process_intake: validate/scan/hash/promote) grouped here
+      # with q.index (dispatch/finalize/beat orchestration) -- same
+      # lightweight, non-CPU-bound class as those, distinct from the
+      # actual parsing work on q.parse.fast/q.parse.plaso.
+      queues: "q.index,q.intake"
+      concurrency: 8
+
+gvisorRuntimeClass: "gvisor"
+firecrackerRuntimeClass: "firecracker"
+
+networkPolicies:
+  enabled: true
+
+postgresql:
+  enabled: true
+  auth:
+    database: kronos
+    username: kronos
+    existingSecret: kronos-postgres-secret
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    existingSecret: kronos-redis-secret
+    existingSecretPasswordKey: redis-password
+  master:
+    persistence:
+      size: 8Gi
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+nginx:
+  image:
+    repository: nginx
+    tag: alpine
+  replicaCount: 2
+  # Browser-facing origins for the CSP header's connect-src (see
+  # templates/nginx/configmap.yaml). Default empty, matching
+  # docker-compose.prod.yml's own default: neither the backend nor MinIO is
+  # published directly to browsers in this chart's ingress topology (nginx
+  # is the sole DMZ-facing entry point), so both collapse to nothing.
+  backendPublicUrl: ""
+  minioPublicUrl: ""
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

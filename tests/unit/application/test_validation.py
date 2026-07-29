@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+from pathlib import Path
+
 import pytest
 
 from src.application.validation import (
@@ -10,6 +14,7 @@ from src.application.validation import (
     FileSizeValidator,
     MagicByteValidator,
     ValidatorChain,
+    ZipJarDisguiseValidator,
     default_validator_chain,
 )
 from src.exceptions import ValidationError
@@ -24,6 +29,7 @@ PDF_HEADER = b"%PDF-1.4\n" + b"\x00" * 100
 GZIP_HEADER = b"\x1f\x8b" + b"\x00" * 100
 ZIP_HEADER = b"PK\x03\x04" + b"\x00" * 100
 PREFETCH_HEADER = b"MAM\x04" + b"\x00" * 100
+REAL_SAMPLES = Path(__file__).parents[2] / "fixtures" / "samples" / "real"
 UNKNOWN_BINARY = b"\xff\xfe\x00\x01" * 100  # unrecognised binary
 
 
@@ -89,6 +95,29 @@ class TestMagicByteValidator:
     def test_accepts_gzip(self) -> None:
         self.validator.validate("log.gz", "application/octet-stream", 1024, GZIP_HEADER)
 
+    def test_accepts_mam_compressed_prefetch(self) -> None:
+        self.validator.validate(
+            "SVCHOST.EXE-1234.pf", "application/octet-stream", 1024, PREFETCH_HEADER
+        )
+
+    def test_accepts_uncompressed_scca_prefetch_real_sample(self) -> None:
+        """Real bug found in poc/full_ingestion_test/: this validator only
+        recognized MAM-compressed Prefetch, rejecting a genuine uncompressed
+        Windows 10 Prefetch sample (SCCA signature at offset 4) that
+        PlasoParser already supports -- finalize_upload 422'd before the
+        parser ever ran. Uses the real sample, not a hand-crafted header."""
+        header = (REAL_SAMPLES / "CMD.EXE-087B4001.pf").read_bytes()[:16]
+        self.validator.validate("CMD.EXE-087B4001.pf", "application/octet-stream", 11986, header)
+
+    def test_accepts_ewf_e01_real_sample(self) -> None:
+        """A KAPE-style disk image (E01) must pass intake validation so it
+        can reach PlasoParser's dfVFS-based whole-image routing -- uses a
+        real EWF image built with ewfacquirestream (see
+        tests/fixtures/samples/real/kape/NOTICE.md), not a hand-crafted
+        header."""
+        header = (REAL_SAMPLES / "kape" / "kape_triage.E01").read_bytes()[:16]
+        self.validator.validate("kape_triage.E01", "application/octet-stream", 47764, header)
+
     def test_accepts_pdf(self) -> None:
         self.validator.validate("report.pdf", "application/octet-stream", 1024, PDF_HEADER)
 
@@ -108,6 +137,57 @@ class TestMagicByteValidator:
     def test_rejects_empty_binary(self) -> None:
         with pytest.raises(ValidationError, match="empty"):
             self.validator.validate("empty.evtx", "application/octet-stream", 0, b"")
+
+
+def _build_zip_fixture(entries: dict[str, bytes]) -> bytes:
+    """Build a minimal real ZIP file (in memory) with the given entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+class TestZipJarDisguiseValidator:
+    validator = ZipJarDisguiseValidator()
+
+    def test_rejects_jar_renamed_to_zip(self) -> None:
+        """EVID-5: a minimal crafted JAR-like zip fixture (has the mandatory
+        META-INF/MANIFEST.MF entry every JAR carries) must be rejected even
+        though its declared extension is .zip and its magic bytes are the
+        same PK\\x03\\x04 signature as a generic ZIP."""
+        jar_bytes = _build_zip_fixture(
+            {
+                "META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\nMain-Class: Evil\n",
+                "Evil.class": b"\xca\xfe\xba\xbe" + b"\x00" * 32,
+            }
+        )
+        with pytest.raises(ValidationError, match="Java archive"):
+            self.validator.validate(
+                "totally-a-zip.zip", "application/zip", len(jar_bytes), jar_bytes
+            )
+
+    def test_rejects_jar_disguised_with_arbitrary_extension(self) -> None:
+        jar_bytes = _build_zip_fixture({"META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\n"})
+        with pytest.raises(ValidationError, match="Java archive"):
+            self.validator.validate(
+                "evidence.log", "application/octet-stream", len(jar_bytes), jar_bytes
+            )
+
+    def test_accepts_genuine_zip_without_manifest(self) -> None:
+        zip_bytes = _build_zip_fixture({"logs/access.log": b"1.2.3.4 - - [x]\n"})
+        self.validator.validate("archive.zip", "application/zip", len(zip_bytes), zip_bytes)
+
+    def test_ignores_non_zip_files(self) -> None:
+        self.validator.validate("sys.evtx", "application/octet-stream", 1024, EVTX_HEADER)
+
+    def test_best_effort_passes_truncated_zip_buffer(self) -> None:
+        """A ZIP whose central directory doesn't fit in the supplied buffer
+        (simulating a large file where only the header was read) can't be
+        inspected this way — must pass through, not raise or crash."""
+        zip_bytes = _build_zip_fixture({"META-INF/MANIFEST.MF": b"Manifest-Version: 1.0\n"})
+        truncated = zip_bytes[:10]  # keeps the PK\x03\x04 signature, drops the rest
+        self.validator.validate("archive.zip", "application/zip", len(zip_bytes), truncated)
 
 
 class TestValidatorChain:

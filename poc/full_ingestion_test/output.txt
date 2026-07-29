@@ -1,0 +1,96 @@
+=== run_ingest.py (fresh run) ===
+case_id=0e0a062f-a99e-4b06-a0ef-8642cf82f314
+(see git history for full stdout of the run that produced this case; same shape as documented in README.md)
+
+=== poll to completion ===
+{'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'COMPLETE', 'History': 'COMPLETE', 'system.evtx': 'PARSING', 'CMD.EXE-087B4001.pf': 'PARSING'}
+... (6 polls, 5s apart) ...
+{'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'COMPLETE', 'History': 'COMPLETE', 'system.evtx': 'COMPLETE', 'CMD.EXE-087B4001.pf': 'COMPLETE'}
+
+=== _cat/indices ===
+health status index                                                              uuid                   pri rep docs.count docs.deleted store.size pri.store.size
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201508 s17qkG-xT3yK0612I3cahw   1   1        194            0      158kb          158kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202607 CnlrSpA7SSKPv21BVG61Tw   1   1          6            0     42.2kb         42.2kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202202 9B9f-_YUTMSqVFZZRwKaAw   1   1          6            0     48.5kb         48.5kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201601 9Bmze4-jTz6pHWI5hB9ewg   1   1          5            0     21.6kb         21.6kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201303 l0IqYH26QTGgyNpNRkvlNg   1   1          2            0     30.3kb         30.3kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-202104 WBMUDb6bQI6i9jnwNkKO1w   1   1          2            0       16kb           16kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201505 Nr2QrCnESmukODeS1xVCWw   1   1          3            0     20.7kb         20.7kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201801 vc8KGZ9GQHilZb_F08d0-A   1   1          4            0       21kb           21kb
+yellow open   kronos-kronos-dev-case-0e0a062f-a99e-4b06-a0ef-8642cf82f314-201911 abQ6dFsHSD2mV0gXKbUJmw   1   1          1            0     14.5kb         14.5kb
+
+=== kronos.parser terms agg ===
+{
+    "took": 7,
+    "timed_out": false,
+    "_shards": {
+        "total": 9,
+        "successful": 9,
+        "skipped": 0,
+        "failed": 0
+    },
+    "hits": {
+        "total": {
+            "value": 223,
+            "relation": "eq"
+        },
+        "max_score": null,
+        "hits": []
+    },
+    "aggregations": {
+        "case_ids": {
+            "doc_count_error_upper_bound": 0,
+            "sum_other_doc_count": 0,
+            "buckets": [
+                {
+                    "key": "0e0a062f-a99e-4b06-a0ef-8642cf82f314",
+                    "doc_count": 223
+                }
+            ]
+        },
+        "org_ids": {
+            "doc_count_error_upper_bound": 0,
+            "sum_other_doc_count": 0,
+            "buckets": [
+                {
+                    "key": "f541df34-91f6-45cb-b763-ba4c6e441700",
+                    "doc_count": 223
+                }
+            ]
+        },
+        "by_parser": {
+            "doc_count_error_upper_bound": 0,
+            "sum_other_doc_count": 0,
+            "buckets": [
+                {
+                    "key": "evtx-rs",
+                    "doc_count": 194
+                },
+                {
+                    "key": "nginx",
+                    "doc_count": 15
+                },
+                {
+                    "key": "cloudtrail",
+                    "doc_count": 6
+                },
+                {
+                    "key": "plaso",
+                    "doc_count": 5
+                },
+                {
+                    "key": "chrome-history",
+                    "doc_count": 3
+                }
+            ]
+        }
+    }
+}
+
+=== fetch_documents.py (new step: real documents -> file + parsing-error scan) ===
+fetched 223 real documents for case_id=0e0a062f-a99e-4b06-a0ef-8642cf82f314
+by parser: {'chrome-history': 3, 'cloudtrail': 6, 'evtx-rs': 194, 'nginx': 15, 'plaso': 5}
+flagged as parsing-error/placeholder markers: 0
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/full_ingestion_test/documents.json (223 docs)
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/full_ingestion_test/ingestion_verification.json -- verdict: PASS
+{"case_id": "0e0a062f-a99e-4b06-a0ef-8642cf82f314", "total_documents": 223, "by_parser": {"chrome-history": 3, "cloudtrail": 6, "evtx-rs": 194, "nginx": 15, "plaso": 5}, "flagged_parsing_errors": [], "verdict": "PASS"}

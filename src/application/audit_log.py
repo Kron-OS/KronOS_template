@@ -8,11 +8,12 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.domain.audit import AuditEvent, AuditEventType
+from src.domain.merkle import build_merkle_root as _build_merkle_root_over_hashes
 from src.exceptions import AuditLogError
 
 logger = logging.getLogger(__name__)
@@ -78,34 +79,41 @@ class AuditLogService:
         if org_id is None and actor_user_id is None:
             raise AuditLogError("org_id or actor_user_id must be provided for audit tracing")
 
-        prev_hash: str
-        seq: int
-        if org_id is not None:
-            latest_hash = await self._repository.get_latest_hash(org_id)
-            latest_seq = await self._repository.get_latest_sequence(org_id)
-            prev_hash = latest_hash if latest_hash else _GENESIS_HASH
+        def _build(prev_hash: str | None, latest_seq: int) -> AuditEvent:
+            resolved_prev_hash = prev_hash if prev_hash else _GENESIS_HASH
             seq = latest_seq + 1
-        else:
-            prev_hash = _GENESIS_HASH
-            seq = 1
-
-        partial = AuditEvent(
-            event_type=event_type,
-            actor_user_id=actor_user_id,
-            actor_username=actor_username,
-            org_id=org_id,
-            case_id=case_id,
-            evidence_id=evidence_id,
-            details=details or {},
-            occurred_at=occurred_at or datetime.now(UTC),
-            sequence_number=seq,
-            prev_row_hash=prev_hash,
-        )
-        row_hash = compute_row_hash(prev_hash, partial)
-        event = partial.model_copy(update={"row_hash": row_hash})
+            partial = AuditEvent(
+                event_type=event_type,
+                actor_user_id=actor_user_id,
+                actor_username=actor_username,
+                org_id=org_id,
+                case_id=case_id,
+                evidence_id=evidence_id,
+                details=details or {},
+                occurred_at=occurred_at or datetime.now(UTC),
+                sequence_number=seq,
+                prev_row_hash=resolved_prev_hash,
+            )
+            row_hash = compute_row_hash(resolved_prev_hash, partial)
+            finalized: AuditEvent = partial.model_copy(update={"row_hash": row_hash})
+            return finalized
 
         try:
-            persisted = await self._repository.append(event)
+            if org_id is not None:
+                # append_atomic holds a per-org lock across the tip read,
+                # event build, and insert — this is what prevents two
+                # concurrent callers from ever computing the same
+                # (prev_hash, sequence_number) pair for one org (see A.2/A.6
+                # in CLAUDE.md: the audit log is a compliance guarantee, not
+                # best-effort logging).
+                persisted = await self._repository.append_atomic(org_id, _build)
+            else:
+                # No org_id means this event isn't part of any org's chain
+                # (e.g. system-level events keyed only by actor_user_id), so
+                # there is no shared tip to serialize against.
+                persisted = await self._repository.append(_build(None, 0))
+        except AuditLogError:
+            raise
         except Exception as exc:
             raise AuditLogError(
                 "Failed to persist audit event",
@@ -117,7 +125,7 @@ class AuditLogService:
             extra={
                 "event_id": str(persisted.event_id),
                 "event_type": event_type.value,
-                "seq": seq,
+                "seq": persisted.sequence_number,
             },
         )
         return persisted
@@ -169,15 +177,91 @@ class AuditLogService:
 
         Returns (True, None) if chain is intact.
         Returns (False, detail_message) if a break is detected.
+
+        NOTE: uses the running tracked prev_hash, NOT the stored prev_row_hash field.
+        This prevents an attacker who can write to the DB from bypassing verification
+        by adjusting the stored prev_row_hash to match tampered content.
         """
         prev_hash = _GENESIS_HASH
-        async for event in self._repository.stream_by_case(org_id):
-            expected = compute_row_hash(event.prev_row_hash or _GENESIS_HASH, event)
+        async for event in self._repository.stream_by_org(org_id):
+            expected = compute_row_hash(prev_hash, event)
             if event.row_hash != expected:
                 detail = (
                     f"Hash mismatch at seq={event.sequence_number} " f"event_id={event.event_id}"
                 )
                 logger.warning("audit_chain_tampered", extra={"detail": detail})
                 return False, detail
-            prev_hash = event.row_hash  # noqa: F841 — kept for readability
+            prev_hash = event.row_hash or prev_hash
         return True, None
+
+    async def anchor_day(
+        self,
+        anchor_date: date,
+        org_id: uuid.UUID,
+        timestamp_service: Any | None = None,
+    ) -> str:
+        """Compute the Merkle root of the day's audit events and anchor it.
+
+        Collects all events for org_id on anchor_date, computes the Merkle root,
+        optionally calls the RFC 3161 TSA, then persists the anchor and emits
+        AUDIT_MERKLE_ANCHORED.
+
+        ``AUDIT_MERKLE_ANCHORED`` events themselves are excluded from the leaf
+        set: the anchor event is *about* the day's events, not a member of
+        them — including it would make the root self-referential (its own
+        row_hash would need to already be known before it could be computed),
+        and would also make a same-day re-anchor produce a different root
+        each time purely from its own bookkeeping event accumulating.
+
+        Returns the hex Merkle root hash.
+        """
+        from src.adapter.repository.audit_log import AnchorRepository  # noqa: PLC0415
+
+        events: list[AuditEvent] = []
+        async for event in self._repository.stream_by_org(org_id):
+            if (
+                event.occurred_at.date() == anchor_date
+                and event.event_type != AuditEventType.AUDIT_MERKLE_ANCHORED
+            ):
+                events.append(event)
+
+        root_hash = build_merkle_root(events)
+
+        tsa_token: bytes | None = None
+        if timestamp_service is not None:
+            try:
+                tsa_token = await timestamp_service.timestamp(bytes.fromhex(root_hash))
+            except Exception as exc:
+                logger.warning("tsa_anchor_failed", extra={"error": str(exc)})
+
+        if isinstance(self._repository, AnchorRepository):
+            await self._repository.save_anchor(anchor_date, root_hash, tsa_token, org_id=org_id)
+
+        await self.log(
+            AuditEventType.AUDIT_MERKLE_ANCHORED,
+            org_id=org_id,
+            details={
+                "date": anchor_date.isoformat(),
+                "root_hash": root_hash,
+                "event_count": len(events),
+                # Embedded so an offline JSON export (kronos-attest) can verify
+                # the TSA signature without live DB/anchor-table access.
+                "tsa_token": tsa_token.hex() if tsa_token else None,
+            },
+        )
+        logger.info(
+            "audit_merkle_anchored", extra={"date": str(anchor_date), "root_hash": root_hash}
+        )
+        return root_hash
+
+
+def build_merkle_root(events: list[AuditEvent]) -> str:
+    """Build the canonical Merkle root over events sorted by sequence_number.
+
+    Delegates to ``src.domain.merkle.build_merkle_root`` (RFC 6962-style
+    domain separation + promotion of unpaired nodes — AUDIT-04) so there is
+    exactly one Merkle algorithm across the backend.
+    """
+    sorted_events = sorted(events, key=lambda e: e.sequence_number)
+    row_hashes = [e.row_hash or "" for e in sorted_events]
+    return _build_merkle_root_over_hashes(row_hashes)

@@ -1,0 +1,13 @@
+[Unit]
+Description=KronOS sandbox provisioning (SSH host keys, authorized_keys, shell, claude config)
+Requires=kronos-boot.service
+After=kronos-boot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/run/kronos-sandbox.env
+ExecStart=/usr/local/bin/kronos-provision.sh
+
+[Install]
+WantedBy=multi-user.target

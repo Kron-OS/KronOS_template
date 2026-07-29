@@ -1,0 +1,30 @@
+version: "3.9"
+
+# Internal PKI — step-ca issues 24h workload certs via ACME.
+# Include in dev stack: docker compose -f docker-compose.dev.yml -f docker/pki/docker-compose.pki.yml up
+
+services:
+  step-ca:
+    image: smallstep/step-ca:0.26.0
+    restart: unless-stopped
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "KronOS Internal CA"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "step-ca,localhost"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
+      DOCKER_STEPCA_INIT_ACME: "true"
+      CA_PASSWORD: ${CA_PASSWORD:-kronos-ca-password}
+    volumes:
+      - step_ca_data:/home/step
+      - ./pki/bootstrap.sh:/usr/local/bin/kronos-ca-init.sh:ro
+      - ./pki/step-ca-config.json:/home/step/config/ca.json:ro
+    ports:
+      - "9000:9000"
+    command: /usr/local/bin/kronos-ca-init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "step ca health --ca-url https://localhost:9000 2>/dev/null || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  step_ca_data:

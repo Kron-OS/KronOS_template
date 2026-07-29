@@ -1,0 +1,24 @@
+clamav_unreachable_dev_fallback
+=== Test 1: clean file ===
+scan_stream(clean bytes) -> is_clean=True threat=None
+[PASS] real ClamAV reports a clean file as clean
+
+=== Test 2: real EICAR test string ===
+scan_stream(EICAR) -> is_clean=False threat=Eicar-Test-Signature
+[PASS] real ClamAV detects the EICAR test string as infected
+[PASS] threat_name mentions EICAR (case-insensitive) -- Eicar-Test-Signature
+
+=== Test 3: EICAR split across multiple async chunks ===
+[PASS] real ClamAV detects EICAR even when streamed in small chunks
+
+=== Test 4: configure_clamav_from_settings() real gating behavior ===
+dev + reachable clamd -> wired scanner type: ClamAVScanner
+[PASS] dev env + reachable real clamd wires the real ClamAVScanner (not NoOp)
+dev + unreachable clamd -> wired scanner type: NoOpScanner
+[PASS] dev env + unreachable clamd falls back to NoOpScanner (permissive, as designed)
+production + unreachable clamd -> raised StorageError: ClamAV is unreachable at startup; refusing to start in production with malware scanning silently disabled
+[PASS] production env + unreachable clamd FAILS CLOSED (raises, doesn't silently downgrade)
+
+============================================================
+7 passed, 0 failed
+============================================================

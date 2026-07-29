@@ -1,0 +1,146 @@
+== Step 1: enqueue via real CeleryTaskQueue methods ==
+  dispatch_parse: task_id=32c18e2e-fae9-4f46-b35e-561c3cd75ce0
+  parse_artefact_fast: task_id=8b51af28-4722-40b4-9e63-b5b237319e35
+  parse_artefact_heavy: task_id=9562a7f4-5316-4b86-b8cd-cd89a280ccdb
+
+== Step 2: broker-side confirmation via control.inspect() ==
+  active(): {'kronos-poc-worker@reca-dk': []}
+  reserved(): {'kronos-poc-worker@reca-dk': []}
+
+== Step 3: poll real result backend for terminal state ==
+  dispatch_parse (32c18e2e-fae9-4f46-b35e-561c3cd75ce0): final_state_seen='FAILURE' detail=FAILURE: ValidationError('Evidence not found')
+  parse_artefact_fast (8b51af28-4722-40b4-9e63-b5b237319e35): final_state_seen='RETRY' detail=(still pending after 60s poll)
+  parse_artefact_heavy (9562a7f4-5316-4b86-b8cd-cd89a280ccdb): final_state_seen='RETRY' detail=(still pending after 60s poll)
+dispatch_parse FAILURE ValidationError('Evidence not found')
+parse_artefact_fast FAILURE ParsingError('Evidence not found')
+parse_artefact_heavy RETRY ParsingError('Evidence not found')
+
+=== full worker.log (see poc/celery_redis/worker.log) ===
+{"event": "clamav_unreachable_dev_fallback", "level": "warning", "logger": "src.external.dependencies", "timestamp": "2026-07-21T20:43:36.063597Z", "clamd_host": "localhost", "clamd_port": 3310, "environment": "test"}
+{"event": "startup: dependencies wired (sync/celery)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-07-21T20:43:36.063734Z"}
+ 
+ -------------- kronos-poc-worker@reca-dk v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-7.0.0-27-generic-x86_64-with-glibc2.43 2026-07-21 22:43:36
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         kronos:0x7e013599c830
+- ** ---------- .> transport:   redis://localhost:16379/1
+- ** ---------- .> results:     redis://localhost:16379/2
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> q.index          exchange=q.index(direct) key=q.index
+                .> q.parse.fast     exchange=q.parse.fast(direct) key=q.parse.fast
+                .> q.parse.plaso    exchange=q.parse.plaso(direct) key=q.parse.plaso
+
+[tasks]
+  . kronos.abort_orphan_parses
+  . kronos.abort_orphan_uploads
+  . kronos.anchor_audit_log
+  . kronos.auto_dispatch_received
+  . kronos.dispatch_parse
+  . kronos.finalize_evidence
+  . kronos.parse_artefact_fast
+  . kronos.parse_artefact_heavy
+
+[2026-07-21 22:43:36,351: INFO/MainProcess] Connected to redis://localhost:16379/1
+[2026-07-21 22:43:36,354: INFO/MainProcess] mingle: searching for neighbors
+[2026-07-21 22:43:37,366: INFO/MainProcess] mingle: all alone
+[2026-07-21 22:43:37,460: INFO/MainProcess] kronos-poc-worker@reca-dk ready.
+[2026-07-21 22:44:07,451: INFO/MainProcess] Task kronos.dispatch_parse[32c18e2e-fae9-4f46-b35e-561c3cd75ce0] received
+[2026-07-21 22:44:07,453: INFO/MainProcess] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] received
+[2026-07-21 22:44:07,459: INFO/MainProcess] Task kronos.parse_artefact_heavy[9562a7f4-5316-4b86-b8cd-cd89a280ccdb] received
+[2026-07-21 22:44:07,612: ERROR/ForkPoolWorker-2] parse_fast_failed
+[2026-07-21 22:44:07,620: INFO/MainProcess] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] received
+[2026-07-21 22:44:07,624: ERROR/ForkPoolWorker-1] Task kronos.dispatch_parse[32c18e2e-fae9-4f46-b35e-561c3cd75ce0] raised unexpected: ValidationError('Evidence not found')
+Traceback (most recent call last):
+  File "/home/reca/venv/lib/python3.14/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/reca/venv/lib/python3.14/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_app.py", line 141, in dispatch_parse
+    run_evidence_coro(_work)
+    ~~~~~~~~~~~~~~~~~^^^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_runtime.py", line 112, in run_evidence_coro
+    return asyncio.run(_runner())
+           ~~~~~~~~~~~^^^^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_runtime.py", line 107, in _runner
+    return await work(resources)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_app.py", line 139, in _work
+    await resources.orchestration_service.start_parsing(uuid.UUID(evidence_id), tenant)
+  File "/home/reca/Claude/Kronos/KronOS_template/src/application/parsing_orchestration.py", line 81, in start_parsing
+    raise ValidationError(
+    ...<2 lines>...
+    )
+src.exceptions.ValidationError: Evidence not found
+[2026-07-21 22:44:07,626: INFO/ForkPoolWorker-2] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] retry: Retry in 30s: ParsingError('Evidence not found')
+[2026-07-21 22:44:07,668: ERROR/ForkPoolWorker-1] parse_heavy_failed
+[2026-07-21 22:44:07,689: INFO/MainProcess] Task kronos.parse_artefact_heavy[9562a7f4-5316-4b86-b8cd-cd89a280ccdb] received
+[2026-07-21 22:44:07,698: INFO/ForkPoolWorker-1] Task kronos.parse_artefact_heavy[9562a7f4-5316-4b86-b8cd-cd89a280ccdb] retry: Retry in 120s: ParsingError('Evidence not found')
+[2026-07-21 22:44:37,697: ERROR/ForkPoolWorker-1] parse_fast_failed
+[2026-07-21 22:44:37,744: INFO/MainProcess] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] received
+[2026-07-21 22:44:37,747: INFO/ForkPoolWorker-1] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] retry: Retry in 30s: ParsingError('Evidence not found')
+[2026-07-21 22:45:07,743: ERROR/ForkPoolWorker-1] parse_fast_failed
+[2026-07-21 22:45:07,745: INFO/MainProcess] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] received
+[2026-07-21 22:45:07,747: INFO/ForkPoolWorker-1] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] retry: Retry in 30s: ParsingError('Evidence not found')
+[2026-07-21 22:45:37,825: ERROR/ForkPoolWorker-1] parse_fast_failed
+[2026-07-21 22:45:37,829: ERROR/ForkPoolWorker-1] Task kronos.parse_artefact_fast[8b51af28-4722-40b4-9e63-b5b237319e35] raised unexpected: ParsingError('Evidence not found')
+Traceback (most recent call last):
+  File "/home/reca/venv/lib/python3.14/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/reca/venv/lib/python3.14/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_app.py", line 197, in parse_artefact_fast
+    raise self.retry(exc=exc)  # type: ignore[attr-defined]
+          ~~~~~~~~~~^^^^^^^^^
+  File "/home/reca/venv/lib/python3.14/site-packages/celery/app/task.py", line 769, in retry
+    raise_with_context(exc)
+    ~~~~~~~~~~~~~~~~~~^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_app.py", line 182, in parse_artefact_fast
+    count = run_evidence_coro(_work)
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_runtime.py", line 112, in run_evidence_coro
+    return asyncio.run(_runner())
+           ~~~~~~~~~~~^^^^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_runtime.py", line 107, in _runner
+    return await work(resources)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/external/celery_app.py", line 177, in _work
+    return await resources.orchestration_service.execute_parse(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        uuid.UUID(evidence_id), tenant, is_final_attempt=is_final_attempt
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/reca/Claude/Kronos/KronOS_template/src/application/parsing_orchestration.py", line 173, in execute_parse
+    raise ParsingError(
+    ...<2 lines>...
+    )
+src.exceptions.ParsingError: Evidence not found
+[2026-07-21 22:46:07,716: ERROR/ForkPoolWorker-1] parse_heavy_failed
+[2026-07-21 22:46:07,717: INFO/MainProcess] Task kronos.parse_artefact_heavy[9562a7f4-5316-4b86-b8cd-cd89a280ccdb] received
+[2026-07-21 22:46:07,720: INFO/ForkPoolWorker-1] Task kronos.parse_artefact_heavy[9562a7f4-5316-4b86-b8cd-cd89a280ccdb] retry: Retry in 120s: ParsingError('Evidence not found')

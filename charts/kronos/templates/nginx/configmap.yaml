@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kronos.fullname" . }}-nginx-config
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+data:
+  # Real bug found and fixed: the nginx Deployment (../nginx/deployment.yaml)
+  # mounts a ConfigMap volume named "{fullname}-nginx-config" at
+  # /etc/nginx/conf.d, but no template in this chart ever created that
+  # ConfigMap -- confirmed via a real `helm template` render (only one
+  # ConfigMap existed in the whole rendered chart, ../configmap.yaml, an
+  # unrelated one). Every real deployment of this chart would leave the
+  # nginx pods permanently stuck in ContainerCreating (FailedMount), with
+  # no ingress traffic ever reaching the cluster. ../files/nginx.conf.template
+  # is a Helm-`tpl`-rendered copy of the real docker/nginx/nginx.conf.template
+  # (kept in sync manually, same pattern already used for
+  # scripts/provision_keycloak_org.sh / ../files/provision_keycloak_org.sh).
+  default.conf: |-
+    {{- tpl (.Files.Get "files/nginx.conf.template") . | nindent 4 }}

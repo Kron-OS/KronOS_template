@@ -1,0 +1,14 @@
+dashboards_index_pattern_provisioning_failed
+case_id: 4eecf3d0-dd62-4978-b818-21a70887aefb
+expected saved-object id: kronos-case-4eecf3d0-dd62-4978-b818-21a70887aefb-timeline
+expected title: kronos-kronos-dev-case-4eecf3d0-dd62-4978-b818-21a70887aefb-*
+[PASS] index pattern exists after first call -- status=200
+[PASS] title matches the real index-name pattern -- kronos-kronos-dev-case-4eecf3d0-dd62-4978-b818-21a70887aefb-*
+[PASS] timeFieldName is @timestamp
+[PASS] second call still succeeds (idempotent) -- status=200
+[PASS] same saved-object id reused, not duplicated -- kronos-case-4eecf3d0-dd62-4978-b818-21a70887aefb-timeline
+[PASS] discoverable via the real _find API a real user's browser calls -- ['kronos-kronos-dev-case-4eecf3d0-dd62-4978-b818-21a70887aefb-*']
+[PASS] OpenSearch itself resolves this exact pattern string cleanly (200, valid syntax) -- {"indices":[],"aliases":[],"data_streams":[]}
+[PASS] unreachable Dashboards is swallowed (best-effort), doesn't raise
+
+8 passed, 0 failed

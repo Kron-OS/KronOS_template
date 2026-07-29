@@ -6,7 +6,11 @@ import uuid
 
 import pytest
 
-from src.domain.evidence import EvidenceState
+from src.domain.evidence import (
+    EvidenceState,
+    is_parse_stage_error_reason,
+    is_retryable_error_reason,
+)
 from src.exceptions import EvidenceStateError
 from tests.fixtures.factories import make_evidence, make_evidence_metadata
 
@@ -78,6 +82,74 @@ class TestEvidenceStateFSM:
 
     def test_can_transition_to_negative(self) -> None:
         assert not EvidenceState.UPLOADING.can_transition_to(EvidenceState.COMPLETE)
+
+    def test_error_to_scanning_retry_intake(self) -> None:
+        ev = make_evidence(EvidenceState.SCANNING).with_error("intake_failed:StorageError")
+        ev2 = ev.with_state(EvidenceState.SCANNING)
+        assert ev2.state == EvidenceState.SCANNING
+        assert ev2.error_reason is None
+
+    def test_error_to_parsing_retry_parse(self) -> None:
+        ev = make_evidence(EvidenceState.PARSING).with_error("ingest_failed")
+        ev2 = ev.with_state(EvidenceState.PARSING)
+        assert ev2.state == EvidenceState.PARSING
+        assert ev2.error_reason is None
+
+    def test_error_to_received_is_invalid(self) -> None:
+        ev = make_evidence(EvidenceState.PARSING).with_error("parse_failed")
+        with pytest.raises(EvidenceStateError):
+            ev.with_state(EvidenceState.RECEIVED)
+
+
+class TestErrorReasonTaxonomy:
+    @pytest.mark.parametrize(
+        "reason",
+        ["validation_failed", "size_limit_exceeded", "hash_mismatch", "no_parser_found"],
+    )
+    def test_terminal_reasons_not_retryable(self, reason: str) -> None:
+        assert not is_retryable_error_reason(reason)
+
+    def test_infected_prefix_not_retryable(self) -> None:
+        assert not is_retryable_error_reason("infected:Eicar-Test-Signature")
+
+    def test_none_reason_not_retryable(self) -> None:
+        assert not is_retryable_error_reason(None)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "intake_failed:StorageError",
+            "upload_timeout",
+            "intake_timeout",
+            "parse_failed",
+            "ingest_failed",
+            "parse_timeout",
+        ],
+    )
+    def test_unclassified_and_connectivity_reasons_are_retryable(self, reason: str) -> None:
+        assert is_retryable_error_reason(reason)
+
+    @pytest.mark.parametrize(
+        "reason", ["no_parser_found", "parse_failed", "ingest_failed", "parse_timeout"]
+    )
+    def test_parse_stage_reasons(self, reason: str) -> None:
+        assert is_parse_stage_error_reason(reason)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "validation_failed",
+            "size_limit_exceeded",
+            "hash_mismatch",
+            "intake_failed:StorageError",
+            "upload_timeout",
+            "intake_timeout",
+            "infected:Eicar-Test-Signature",
+            None,
+        ],
+    )
+    def test_intake_stage_reasons_are_not_parse_stage(self, reason: str | None) -> None:
+        assert not is_parse_stage_error_reason(reason)
 
 
 class TestEvidenceModel:

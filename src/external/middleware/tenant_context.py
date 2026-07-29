@@ -19,9 +19,7 @@ _bearer = HTTPBearer(auto_error=True)
 def _get_validator(request: Request) -> Any:
     validator = getattr(request.app.state, "keycloak_validator", None)
     if validator is None:
-        raise RuntimeError(
-            "KeycloakTokenValidator not registered in app.state.keycloak_validator"
-        )
+        raise RuntimeError("KeycloakTokenValidator not registered in app.state.keycloak_validator")
     return validator
 
 
@@ -40,7 +38,7 @@ async def get_tenant_context(
     try:
         return await validator.validate_and_extract(credentials.credentials)
     except AuthenticationError as exc:
-        logger.warning("jwt_validation_failed", extra={"detail": str(exc)})
+        logger.warning("jwt_validation_failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),

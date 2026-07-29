@@ -1,0 +1,800 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kronos
+      POSTGRES_USER: kronos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kronos_dev_password}
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check: during first-time initdb the bootstrap
+      # server listens only on the unix socket, so a socket-based pg_isready
+      # reports healthy before :5432 accepts connections, and dependents
+      # (backend/celery) then fail wiring with "Connect call failed ... 5432".
+      # start_period covers first-init (initdb + bootstrap + restart, ~45s on a
+      # fresh volume) during which the TCP check legitimately fails — without it
+      # the retries are exhausted before the real server is ready.
+      test: ["CMD-SHELL", "pg_isready -U kronos -d kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 90s
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      # Browsers PUT evidence directly to MinIO (presigned URLs), which is
+      # cross-origin (different port) from the app's own origin. MinIO's
+      # S3-style PutBucketCors bucket API returns "NotImplemented" on this
+      # image -- CORS here is a server-level setting instead. Must match
+      # CORS_ALLOWED_ORIGINS on kronos-backend below. kronos.local
+      # (nginx-terminated) is the browser's actual origin even though the
+      # presigned PUT itself lands on MinIO via nginx's :9444 reverse
+      # proxy (see nginx service below) -- CORS is about the requesting
+      # page's origin, not the request's destination. kronos.local is the
+      # sole authorized domain -- see docs/lan-dev-access.md; no
+      # localhost/127.0.0.1/bare-IP entries, by design (real bug history
+      # in poc/tls_lan_https/README.md: every one of those used to be a
+      # second, independently-maintained value that drifted out of sync).
+      MINIO_API_CORS_ALLOW_ORIGIN: "https://kronos.local"
+    volumes:
+      - minio_dev_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    # Pinned to 2.11.1 (not 2.13.0) for dev to stay matched with
+    # opensearch-dashboards below (both must be the same minor line).
+    # Security genuinely enabled (poc/opensearch_dashboards_sso/,
+    # access-management-review.md [C-1]/[C-2]) -- opensearch-init below
+    # layers the openid authc domain + generic DLS role on top of the
+    # bundled demo config (admin:admin) once this container is healthy.
+    image: opensearchproject/opensearch:2.11.1
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Real, reproduced finding: docker/opensearch/opensearch.yml cannot be
+      # bind-mounted read-only here (prod's own compose does exactly that,
+      # matching the same, still-latent bug) -- the security plugin's
+      # bundled demo installer (install_demo_configuration.sh, runs at
+      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true)
+      # APPENDS its own transport-SSL cert paths into this same file, and a
+      # read-only mount makes that append fail silently, so the security
+      # plugin starts with SSL requested but no cert paths configured and
+      # crash-loops with "failed to load plugin class
+      # [OpenSearchSecurityPlugin]". The real entrypoint script (read
+      # directly: opensearch-docker-entrypoint.sh) already translates any
+      # `key.subkey=value` env var into a `-Ekey.subkey=value` JVM
+      # override independent of the file, so this one setting -- the only
+      # one dev actually needs beyond the demo installer's own defaults --
+      # is set here instead, leaving the file alone for the demo installer
+      # to populate uninterrupted.
+      - plugins.security.unsupported.restapi.allow_securityconfig_modification=true
+    volumes:
+      - opensearch_dev_data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      # -k -u: the security plugin's bundled demo config enables HTTPS with
+      # a self-signed cert and requires real credentials -- a bare
+      # unauthenticated http:// probe (the old healthcheck) always 400s/
+      # fails once security is genuinely on.
+      test: ["CMD-SHELL", "curl -sk -u admin:admin -f https://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # Adds the openid authc domain (trusting Keycloak) and the generic DLS
+  # tenant role to OpenSearch's security config, once OpenSearch itself is
+  # healthy. Verified end-to-end in poc/opensearch_dashboards_sso/ (11/11
+  # real checks) -- see scripts/provision_opensearch_security.py's own
+  # docstring for the full account.
+  opensearch-init:
+    image: python:3.12-alpine
+    depends_on:
+      opensearch: { condition: service_healthy }
+    restart: "no"
+    volumes:
+      - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
+    environment:
+      OS_BASE: https://opensearch:9200
+      OS_ADMIN_USER: admin
+      OS_ADMIN_PASSWORD: admin
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+    entrypoint: ["python3", "/provision_opensearch_security.py"]
+
+  opensearch-dashboards:
+    # See version note on the opensearch service above — must stay matched
+    # to the OpenSearch server version. Security genuinely enabled, real
+    # Keycloak openid SSO -- verified end-to-end in
+    # poc/opensearch_dashboards_sso/ (11/11 real checks); see that PoC's
+    # README.md for the full account of every real bug found while
+    # building this (auth-domain ordering, wrong subject_key, non-functional
+    # env vars, broken redirect_uri, invalid_scope, a migration-collision
+    # bug from restarting after first boot, Keycloak's Secure-cookie
+    # requirement).
+    image: opensearchproject/opensearch-dashboards:2.11.1
+    environment:
+      - OPENSEARCH_HOSTS=["https://opensearch:9200"]
+      - OPENSEARCH_USERNAME=kibanaserver
+      - OPENSEARCH_PASSWORD=kibanaserver
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+    # Appends the real openid config (docker/opensearch-dashboards/
+    # opensearch_security_openid.yml) to the config file *before* the
+    # dashboards process itself starts, in the same single container boot
+    # -- not via exec+restart into an already-started container, which hit
+    # a real saved-objects migration collision (.kibana_1
+    # resource_already_exists_exception, Dashboards stuck permanently 503;
+    # see poc/opensearch_dashboards_sso/README.md finding #7). The plugin's
+    # own env-var mechanism doesn't cover opensearch_security.* settings at
+    # all (same README, finding #3), hence the file instead of more env vars.
+    # Guarded by `grep -q` before appending: opensearch_dashboards.yml lives
+    # in this container's own writable layer, which survives a plain
+    # `docker stop`/`docker start` (only `docker compose down` + `up`
+    # recreates it) -- an unguarded append re-ran on every restart, and by
+    # the second restart js-yaml crashed at boot with "duplicated mapping
+    # key", which is indistinguishable from the outside from a normal
+    # startup failure (nginx just sees a 502, since Dashboards never binds
+    # :5601). Reproduced for real: `docker start`-ing the already-crashing
+    # container showed the exact YAMLException, and the config pulled out
+    # via `docker cp` had 5 duplicate copies of the appended block.
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        grep -q '^opensearch_security.auth.type:' /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml ||
+        cat /tmp/opensearch_security_openid.yml >> /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml;
+        exec /usr/share/opensearch-dashboards/opensearch-dashboards-docker-entrypoint.sh opensearch-dashboards
+    volumes:
+      - ./opensearch-dashboards/opensearch_security_openid.yml:/tmp/opensearch_security_openid.yml:ro
+    ports: ["5601:5601"]
+    depends_on:
+      opensearch-init: { condition: service_completed_successfully }
+      # Real, reproduced finding: the security-dashboards plugin fetches
+      # Keycloak's discovery doc EAGERLY at Dashboards' own plugin-setup
+      # time, not lazily on first login -- without Keycloak already up and
+      # reachable, Dashboards fails to start at all ("FATAL Error: Failed
+      # when trying to obtain the endpoints from your IdP"), confirmed by
+      # directly reproducing it (started without Keycloak present).
+      keycloak: { condition: service_healthy }
+    # `depends_on: condition: service_healthy` above only gates `docker
+    # compose up` -- `docker compose restart` bypasses depends_on entirely,
+    # so a plain `restart` can bring this container back before Keycloak's
+    # own healthcheck passes again. Dashboards' security plugin does one
+    # eager, non-retrying discovery-doc fetch at plugin-setup time (see the
+    # depends_on comment above); losing that race is fatal ("FATAL: Failed
+    # when trying to obtain the endpoints from your IdP") and, with no
+    # restart policy, the container then just sits Exited forever.
+    # Reproduced for real: `docker compose restart` crashed this exact way,
+    # confirmed via a real ECONNREFUSED to Keycloak's container IP in the
+    # captured log. `on-failure` makes Docker retry on its own backoff until
+    # Keycloak is reachable again, self-healing without an operator having
+    # to notice and manually `up`/`start` it.
+    restart: on-failure
+    healthcheck:
+      # Real, reproduced finding: /api/status itself now requires auth
+      # (401) with the security-dashboards plugin genuinely enabled -- a
+      # bare unauthenticated probe there always "fails" even once
+      # Dashboards is fully up. /auth/openid/login is the one route the
+      # plugin intentionally leaves open (authRequired: false, confirmed by
+      # reading its real routes.ts source), and a healthy server always
+      # answers it with a real 302 redirect to Keycloak.
+      test: ["CMD-SHELL", "test \"$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5601/auth/openid/login)\" = 302"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  keycloak:
+    # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
+    # backend's _extract_tenant requires only lands in 26.1+. Keep in sync with prod.
+    image: quay.io/keycloak/keycloak:26.2
+    command: start-dev --import-realm
+    environment:
+      KC_DB: dev-mem
+      # KC_BOOTSTRAP_ADMIN_* (not the deprecated KEYCLOAK_ADMIN* names, which
+      # Keycloak 26 warns on and a future major will remove). Same bootstrap
+      # admin, current variable names.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_FEATURES: organization,token-exchange
+      # Expose /health/* on the management port (9000). Without this the health
+      # endpoints return 404 and the healthcheck below never passes.
+      KC_HEALTH_ENABLED: "true"
+      # Pin Keycloak's canonical issuer/frontend URL so it's stable regardless
+      # of which Host a request arrives on (backend /auth/refresh +
+      # keycloak-init via internal keycloak:8080 still work unaffected).
+      # Without it, start-dev derives the issuer per-request, so a
+      # browser-minted refresh token (iss=whatever Host it used) is
+      # rejected when the backend redeems it via keycloak:8080 -> 401
+      # invalid_token on /auth/refresh. kronos.local is the sole
+      # authorized domain (docs/lan-dev-access.md) -- every client starts
+      # the interactive login flow here, full stop; there is no
+      # localhost-direct special case anymore (real bug history:
+      # poc/tls_lan_https/README.md -- Keycloak's login form always POSTs
+      # to this one pinned origin regardless of where the flow started,
+      # so a client starting anywhere else loses its session-restart
+      # cookie crossing that domain boundary). Must exactly match
+      # kronos-backend's KEYCLOAK_PUBLIC_URL below (the value the backend
+      # validates `iss` against).
+      KC_HOSTNAME: https://kronos.local:8443
+      # Standard Keycloak reverse-proxy setting -- trusts X-Forwarded-* from
+      # the nginx :8443 proxy in front of it (see nginx service) instead of
+      # only ever seeing its own internal keycloak:8080 request line.
+      KC_PROXY_HEADERS: xforwarded
+      # Real, reproduced finding (poc/opensearch_dashboards_sso/ work,
+      # ported here): with KC_HOSTNAME pinned above, EVERY discovery-doc
+      # endpoint -- including token_endpoint -- is that same fixed
+      # "kronos.local:8443" string, verbatim, regardless of who fetched
+      # the doc. That's correct for the browser-facing
+      # authorization_endpoint, but Dashboards' own server-side
+      # token-exchange call (container -> container, via its connect_url
+      # reaching "keycloak:8080") then tries to open a real TCP
+      # connection to "kronos.local:8443" *from inside its own
+      # container* -- which doesn't even resolve there (kronos.local is
+      # a LAN-facing name published outside Docker's network, not in
+      # Docker's internal DNS) -- confirmed by direct reproduction.
+      # Verified directly
+      # (a real, throwaway Keycloak 26.2 container, discovery doc fetched
+      # both from the host and from a sibling container) that
+      # hostname-backchannel-dynamic keeps issuer/authorization_endpoint
+      # pinned to KC_HOSTNAME (so the backend's own refresh-token issuer
+      # check above is unaffected) while making token_endpoint (and other
+      # backchannel-only endpoints) resolve per-requester instead --
+      # exactly what Dashboards' server-side call needs, with no network
+      # topology changes.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
+    ports: ["8080:8080"]
+    healthcheck:
+      # The Keycloak 26 image ships no curl/wget, and /health lives on the
+      # management port 9000 (not 8080). Use bash's /dev/tcp (bash is present;
+      # kc.sh is a bash script) to probe GET /health/ready and match "200 OK".
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/9000; printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3; grep -q "200 OK" <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # Creates the kronos-dev organization via the Admin REST API and links the
+  # three dev users. The org is NOT in the realm import because Keycloak 26.2
+  # cannot import an organizations block. Uses the shared provisioning script
+  # (scripts/provision_keycloak_org.sh) so dev/prod/Helm stay in sync.
+  # Built (not bind-mounted) -- see docker/init/Dockerfile.keycloak-init for
+  # why: curlimages/curl runs as non-root, and Docker Desktop/WSL2's
+  # bind-mount layer doesn't reliably grant non-root container users read
+  # access to host files, even when the real host file mode is 0755.
+  keycloak-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
+    depends_on:
+      keycloak: { condition: service_healthy }
+    restart: "no"
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      ORG_NAME: KronOS Dev
+      ORG_ALIAS: kronos-dev
+      ORG_DESCRIPTION: Default development organization
+      ORG_DOMAIN: kronos.dev
+      ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
+
+  # Provisions the kronos-dev org's real OpenSearch Dashboards tenant
+  # (saved-object isolation) once both the org itself (keycloak-init) and
+  # OpenSearch's security config (opensearch-init) are ready. Verified
+  # end-to-end in poc/opensearch_dashboards_sso/ (11/11 real checks). Built,
+  # not bind-mounted -- same reason as keycloak-init above.
+  dashboards-tenant-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.dashboards-tenant-init
+    depends_on:
+      keycloak-init: { condition: service_completed_successfully }
+      opensearch-init: { condition: service_completed_successfully }
+    restart: "no"
+    environment:
+      OS_BASE: https://opensearch:9200
+      OS_ADMIN_USER: admin
+      OS_ADMIN_PASSWORD: admin
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      ORG_ALIAS: kronos-dev
+
+  clamav:
+    image: clamav/clamav:stable
+    environment:
+      # Real, reproduced bug: this image's compiled-in StreamMaxLength/
+      # MaxFileSize default is 100 MB (confirmed via `clamconf` against the
+      # real running container), well under KronOS's own upload ceiling —
+      # a real 239 MB E01 upload made clamd close the INSTREAM connection
+      # mid-transfer, surfacing as a raw BrokenPipeError in
+      # ClamAVScanner.scan_stream (src/application/scanning.py). The
+      # clamav/clamav:stable image's own /init entrypoint reads any
+      # CLAMD_CONF_<Setting> env var and rewrites the matching clamd.conf
+      # directive (verified by reading /init inside the real container,
+      # then confirmed end-to-end with a real >100 MB stream against a
+      # throwaway container using this exact mechanism —
+      # poc/clamav/run_poc_large_file.py). MaxScanSize covers the total
+      # bytes scanned per top-level stream/archive (can exceed
+      # StreamMaxLength/MaxFileSize for compressed/archive content), kept
+      # equal here since KronOS streams whole evidence files, not archives
+      # ClamAV itself decompresses. Must stay >= MAX_UPLOAD_BYTES above, or
+      # this same bug reappears for anything between the two limits.
+      CLAMD_CONF_StreamMaxLength: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxFileSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxScanSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+    volumes:
+      - clamav_dev_data:/var/lib/clamav
+    ports: ["3310:3310"]
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  tusd:
+    image: tusproject/tusd:latest
+    command: >
+      -port 1080
+      -s3-bucket kronos-tus-uploads
+      -s3-endpoint http://minio:9000
+      -s3-object-prefix uploads/
+      -s3-disable-ssl
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-kronos_minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      AWS_REGION: us-east-1
+    ports: ["1080:1080"]
+    depends_on:
+      minio: { condition: service_healthy }
+
+  tsa:
+    # freetsa/freetsa has no public Docker image; use a lightweight stub for dev
+    image: python:3.12-alpine
+    command:
+      - python
+      - -c
+      - |
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(200)
+                self.send_header('Content-Type','application/timestamp-reply')
+                self.end_headers()
+            def log_message(self, *a): pass
+        HTTPServer(('0.0.0.0', 318), H).serve_forever()
+    ports: ["318:318"]
+
+  step-ca:
+    image: smallstep/step-ca:latest
+    volumes:
+      - step_ca_data:/home/step
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "KronOS Internal CA"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "step-ca,localhost"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
+      DOCKER_STEPCA_INIT_PASSWORD: ${STEP_CA_PASSWORD:-step_ca_dev_password}
+    # Real bug found while wiring up tls-init below: step-ca's own ca.json
+    # ("address": ":9000", confirmed via `docker exec ... cat
+    # /home/step/config/ca.json`) listens on 9000 internally, regardless of
+    # DOCKER_STEPCA_INIT_* env vars -- the previous "9443:9443" mapping
+    # published a port nothing was listening on. Host port stays 9443 (kept
+    # distinct from MinIO's own host port 9000), now correctly routed to
+    # the container's real port 9000. The healthcheck's "curl ... || exit 0"
+    # was silently swallowing the resulting connection-refused, reporting
+    # "healthy" unconditionally -- removed so a genuine step-ca outage is
+    # no longer invisible.
+    ports: ["9443:9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fk https://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Issues a leaf cert for kronos.local (the sole authorized domain) from the
+  # step-ca instance above, for nginx's TLS termination -- see
+  # docs/lan-dev-access.md for why nginx alone terminates TLS for every
+  # browser-facing origin (Keycloak/MinIO/Dashboards reverse-proxied behind
+  # it) instead of each service getting its own cert. Built (not
+  # bind-mounted), same reason as keycloak-init/dashboards-tenant-init.
+  tls-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.tls-init
+    depends_on:
+      step-ca: { condition: service_healthy }
+    restart: "no"
+    environment:
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_PASSWORD: ${STEP_CA_PASSWORD:-step_ca_dev_password}
+      TLS_SAN_PRIMARY: ${KRONOS_LAN_HOST:-kronos.local}
+      TLS_CERT_DIR: /certs
+    volumes:
+      - tls_certs:/certs
+
+  kronos-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # kronos-backend, celery-worker and celery-beat all build this exact
+    # same context+dockerfile with no service-specific build args, so a
+    # shared `image:` tag makes Compose build it once and reuse the result
+    # for all three containers instead of running the (identical) apt/pip
+    # install three times per `docker compose build`.
+    image: kronos-backend:dev
+    volumes:
+      - ../src:/app/src:ro
+      # Shared with fluent-bit (docker/fluent-bit/docker-compose.fluent-bit.yml)
+      # so the JSON logs configure_logging() writes actually reach the
+      # SIEM pipeline (COMP-8) instead of only going to stdout, which
+      # nothing was tailing.
+      - kronos_app_logs:/var/log/kronos
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      # fluent-bit.conf tails this exact path (kronos.backend input).
+      KRONOS_LOG_FILE: /var/log/kronos/app.log
+      REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      # Real, reproduced finding (a real 239 MB E01 upload): this must stay
+      # <= clamd's own configured StreamMaxLength/MaxFileSize/MaxScanSize
+      # below, or a file this service accepts still gets its connection
+      # closed mid-scan by clamd -- see src/config.py's max_upload_bytes
+      # docstring and poc/clamav/run_poc_large_file.py for the full
+      # root-cause trace. Both default to the same 5 GiB value and both are
+      # overridable via this one env var so they can't drift apart again.
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      MINIO_ENDPOINT: minio:9000
+      # MINIO_ENDPOINT is used for the backend's own connection to MinIO
+      # (resolves via Docker's internal DNS). MINIO_PUBLIC_ENDPOINT is used
+      # only to sign presigned upload URLs, since the browser running on the
+      # host machine cannot resolve the "minio" hostname — without this,
+      # presigned URLs point at http://minio:9000/... and fail with
+      # DNS_PROBE_FINISHED_NXDOMAIN in the browser. Now a full URL (was a
+      # bare host:port) so its scheme can differ from MINIO_USE_TLS below,
+      # which only governs the *internal* minio:9000 connection: LAN
+      # browsers reach MinIO's presigned URLs via nginx's TLS-terminated
+      # :9444 reverse proxy (see nginx service), not MinIO's own listener
+      # directly, so the internal hop stays plain HTTP while the
+      # browser-facing URL is HTTPS. src/external/startup.py's
+      # `_minio_scheme` derivation was fixed to honor an explicit scheme
+      # here rather than always reusing MINIO_USE_TLS for both endpoints.
+      MINIO_PUBLIC_ENDPOINT: https://kronos.local:9444
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      MINIO_USE_TLS: "false"
+      # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. kronos.local
+      # is the sole authorized domain (docs/lan-dev-access.md).
+      CORS_ALLOWED_ORIGINS: "https://kronos.local"
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      # Browser-facing (like KEYCLOAK_PUBLIC_URL below): the backend embeds
+      # this directly as the Timeline tab's iframe src, so it must be a host
+      # the browser — not just other containers — can resolve. Must match
+      # the nginx service's OPENSEARCH_DASHBOARDS_URL (CSP frame-src) below.
+      # Points at nginx's TLS-terminated :5602 reverse proxy (see nginx
+      # service) rather than opensearch-dashboards' own plain-HTTP :5601 —
+      # an HTTP iframe embedded from an HTTPS SPA is blocked as mixed
+      # content, so this must be HTTPS whenever the SPA itself is.
+      OPENSEARCH_DASHBOARDS_URL: https://kronos.local:5602
+      # Docker-internal counterpart of the browser-facing URL above, for the
+      # backend's own server-to-server saved-objects calls
+      # (DashboardsIndexPatternProvisioner, src/adapter/opensearch/dashboards_client.py)
+      # -- auto-provisions each case's index pattern on creation so Discover
+      # has something to open immediately (poc/opensearch_dashboards_dls/README.md's
+      # "you need to create an index pattern first" gap). Plain HTTP, no
+      # nginx/TLS hop needed for a container-to-container call.
+      OPENSEARCH_DASHBOARDS_INTERNAL_URL: http://opensearch-dashboards:5601
+      KEYCLOAK_URL: http://keycloak:8080
+      # kronos.local is the sole authorized domain for every client --
+      # verified empirically (throwaway Keycloak 26.2 container) that
+      # Keycloak does not reject requests arriving on a different
+      # host/port than KC_HOSTNAME; it only fixes `iss`/
+      # `authorization_endpoint` to this value regardless of how the
+      # request arrived, while KC_HOSTNAME_BACKCHANNEL_DYNAMIC keeps
+      # `token_endpoint` resolving per-caller. This value only has to
+      # match whatever `iss` Keycloak actually mints, for the backend's
+      # own JWT validation.
+      KEYCLOAK_PUBLIC_URL: https://kronos.local:8443
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      # The SPA's public client (frontend/.env.example VITE_KEYCLOAK_CLIENT_ID)
+      # — /auth/refresh must redeem its refresh tokens as this client, not as
+      # KEYCLOAK_CLIENT_ID above (a different, confidential client).
+      KEYCLOAK_SPA_CLIENT_ID: kronos-frontend
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TSA_URL: http://tsa:318/api/v1/timestamp
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
+    command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
+
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kronos-backend:dev
+    volumes:
+      - ../src:/app/src:ro
+      # Same shared log volume as kronos-backend — fluent-bit.conf tails
+      # /var/log/kronos/celery.log as the "kronos.celery" input (COMP-8).
+      # NOTE: KRONOS_LOG_FILE below is only consumed once
+      # src/external/celery_app.py calls configure_logging() at worker init,
+      # matching the one-line call already wired into fastapi_app.py — that
+      # part is tracked separately (celery_app.py is owned by a different
+      # workstream in this multi-agent effort); this volume/env var is the
+      # infra half of COMP-8 so the pipeline is ready the moment it lands.
+      - kronos_app_logs:/var/log/kronos
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      # Must stay <= clamd's own StreamMaxLength/MaxFileSize/MaxScanSize
+      # below -- see kronos-backend's identical env var for the full
+      # root-cause trace (real 239 MB E01 upload, poc/clamav/run_poc_large_file.py).
+      # This is the service that actually runs process_intake (validate/
+      # scan/hash), so it must agree with kronos-backend's value.
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      MINIO_USE_TLS: "false"
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TSA_URL: http://tsa:318/api/v1/timestamp
+      KRONOS_LOG_FILE: /var/log/kronos/celery.log
+    # Gate on health: worker_init wiring (startup.py) connects to Postgres, so it
+    # must not start while "the database system is starting up", otherwise
+    # configure_dependencies() fails and beat tasks hit an unconfigured repo.
+    # opensearch is included too — unlike kronos-backend (which already
+    # waited on it), this worker consumes q.index and calls OpenSearch
+    # directly (ensure_ism_policy, bulk_index) from the moment it picks up
+    # its first task, which can be within a couple seconds of container start
+    # if evidence was already queued. Without this it used to race OpenSearch
+    # still initializing its ISM plugin indices, surfacing as transient
+    # search_phase_execution_exception/503s on the very first parses of a
+    # freshly-started stack.
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4 --loglevel=info
+
+  celery-worker-plaso:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.plaso-worker
+    volumes:
+      - ../src:/app/src:ro
+      - kronos_app_logs:/var/log/kronos
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      MINIO_USE_TLS: "false"
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TSA_URL: http://tsa:318/api/v1/timestamp
+      KRONOS_LOG_FILE: /var/log/kronos/celery-plaso.log
+      PLASO_WORKER_PATH: /app/plaso-worker/kronos-plaso-worker.py
+    # See celery-worker's identical comment above — execute_parse's ingest
+    # step calls OpenSearch directly (ensure_ism_policy, bulk_index) here too.
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
+    command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
+
+  celery-beat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kronos-backend:dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+      REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
+      MINIO_USE_TLS: "false"
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: admin
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TSA_URL: http://tsa:318/api/v1/timestamp
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      # Must match KC_HOSTNAME on the keycloak service exactly (see
+      # frontend/src/keycloak.ts's resolveKeycloakUrl() for the real,
+      # reproduced reason this can't be derived client-side instead).
+      args:
+        VITE_KEYCLOAK_URL: https://${KRONOS_LAN_HOST:-kronos.local}:8443
+    # Browser-facing origin for each service's CSP allowance — rendered into
+    # the CSP header by nginx's envsubst templating (see
+    # docker/nginx/nginx.conf.template). These are Docker-host-published
+    # ports, reachable from the browser on the host machine; contrast with
+    # the Docker-internal hostnames (e.g. opensearch-dashboards:5601) used
+    # elsewhere in this file for container-to-container traffic. kronos.local
+    # is the sole authorized domain (docs/lan-dev-access.md) -- no
+    # localhost/127.0.0.1/bare-IP entries. Real bug history for why this
+    # matters (poc/tls_lan_https/README.md): every one of these used to be
+    # a second, independently-hardcoded value (here, in
+    # frontend/index.html's <meta> CSP tag, and in the Keycloak realm's
+    # client allowlists) that silently drifted out of sync with each other.
+    environment:
+      KEYCLOAK_PUBLIC_URL: "https://kronos.local:8443"
+      BACKEND_PUBLIC_URL: "https://kronos.local"
+      MINIO_PUBLIC_URL: "https://kronos.local:9444"
+      OPENSEARCH_DASHBOARDS_URL: "https://kronos.local:5602"
+    volumes:
+      - tls_certs:/etc/kronos/tls:ro
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+      - "9444:9444"
+      - "5602:5602"
+    # keycloak/minio/opensearch-dashboards added -- real, reproduced finding:
+    # nginx-lan-https.conf.template's proxy_pass targets are static hostnames
+    # nginx resolves via Docker DNS once, at config-load/startup time (not
+    # per-request), so nginx refuses to even start ("host not found in
+    # upstream") if a target container doesn't exist in Docker's embedded
+    # DNS yet -- confirmed by nginx exiting 1 on "opensearch-dashboards"
+    # before it added service_started conditions for all three.
+    depends_on:
+      kronos-backend:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      minio:
+        condition: service_started
+      opensearch-dashboards:
+        condition: service_started
+      tls-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_dev_data:
+  minio_dev_data:
+  opensearch_dev_data:
+  clamav_dev_data:
+  step_ca_data:
+  # Shared with docker/fluent-bit/docker-compose.fluent-bit.yml (mounted
+  # read-only there as `kronos_app_logs: external: true`) — declared here as
+  # the canonical, non-external definition, matching the same pattern
+  # docker/falco/docker-compose.falco.yml already uses for falco_logs
+  # (COMP-8).
+  kronos_app_logs:
+  # tls-init's leaf cert + root CA, mounted read-only into nginx. See
+  # docker/init/Dockerfile.tls-init / tls-init-entrypoint.sh.
+  tls_certs:

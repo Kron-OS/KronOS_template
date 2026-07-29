@@ -1,0 +1,24 @@
+[PASS] real case created -- 201
+
+=== 1. Premature finalize (object not yet in MinIO) ===
+[PASS] premature finalize returns a clean 422 (not a raw 500) -- status=422 body={"detail":"Uploaded file is not yet visible in storage — retry finalize shortly"}
+[PASS] evidence still in UPLOADING, not orphaned in SCANNING -- UPLOADING
+[PASS] real PUT to MinIO succeeds -- 200
+[PASS] finalize succeeds once the object is really there (202, hand-off) -- 202
+[PASS] evidence reaches RECEIVED (or further -- the autonomous pipeline keeps going into PARSING on its own, per CLAUDE.md §E) -- COMPLETE
+
+=== 2. Terminal error (real EICAR) — must NOT be retryable ===
+[PASS] EICAR lands on ERROR -- ERROR
+[PASS] error reason is infected:* -- infected:Eicar-Test-Signature
+[PASS] isRetryable is false for a terminal reason
+[PASS] retry-intake refuses a terminal reason (422) -- status=422 body={"detail":"Error reason 'infected:Eicar-Test-Signature' is not retryable — re-upload instead"}
+
+=== 3. Transient error (real ClamAV briefly stopped) — retryable ===
+stopping docker-clamav-1 ...
+[PASS] evidence lands on ERROR (not orphaned in SCANNING) while ClamAV is down -- ERROR
+[PASS] error reason is retryable (not a terminal one) -- intake_failed:StorageError
+restarting docker-clamav-1 ...
+[PASS] retry-intake accepts a retryable reason (202) -- status=202 body={"id":"e151fd20-e556-41a9-829d-6c76435a0fb5","caseId":"fae14be5-be4c-4af8-ab7d-8e1ec480de7a","filename":"cloudtrail2.json","contentType":"application/json","sizeBytes":15,"sha256":null,"md5":null,"sta
+[PASS] retry-intake succeeds once ClamAV is back -- reaches RECEIVED (or further) -- COMPLETE
+
+14 passed, 0 failed

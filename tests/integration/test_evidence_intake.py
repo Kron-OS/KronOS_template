@@ -85,7 +85,7 @@ async def test_full_upload_flow_postgres(postgres_engine, local_storage) -> None
     )
     local_storage.write_quarantine(presigned.object_key, _JSON_CONTENT)
 
-    result = await intake.finalize_upload(
+    result = await intake.start_intake(
         evidence_id=evidence.evidence_id,
         client_sha256=_sha256(_JSON_CONTENT),
         tenant=tenant,
@@ -131,7 +131,7 @@ async def test_audit_events_persisted(postgres_engine, local_storage) -> None:
         tenant=tenant,
     )
     local_storage.write_quarantine(presigned.object_key, _JSON_CONTENT)
-    await intake.finalize_upload(
+    await intake.start_intake(
         evidence_id=evidence.evidence_id,
         client_sha256=_sha256(_JSON_CONTENT),
         tenant=tenant,
@@ -159,7 +159,7 @@ async def test_hash_chain_intact_after_upload(postgres_engine, local_storage) ->
         tenant=tenant,
     )
     local_storage.write_quarantine(presigned.object_key, _JSON_CONTENT)
-    await intake.finalize_upload(
+    await intake.start_intake(
         evidence_id=evidence.evidence_id,
         client_sha256=_sha256(_JSON_CONTENT),
         tenant=tenant,
@@ -190,7 +190,7 @@ async def test_hash_mismatch_sets_error_state_in_postgres(postgres_engine, local
     local_storage.write_quarantine(presigned.object_key, _JSON_CONTENT)
 
     with pytest.raises(ValidationError):
-        await intake.finalize_upload(
+        await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256="f" * 64,
             tenant=tenant,
@@ -220,7 +220,7 @@ async def test_concurrent_uploads_different_cases(postgres_engine, local_storage
             tenant=tenant,
         )
         local_storage.write_quarantine(presigned.object_key, content)
-        return await intake.finalize_upload(
+        return await intake.start_intake(
             evidence_id=ev.evidence_id,
             client_sha256=_sha256(content),
             tenant=tenant,
@@ -271,7 +271,7 @@ async def test_evtx_accepted_end_to_end(postgres_engine, local_storage) -> None:
         tenant=tenant,
     )
     local_storage.write_quarantine(presigned.object_key, _EVTX_HEADER)
-    result = await intake.finalize_upload(
+    result = await intake.start_intake(
         evidence_id=evidence.evidence_id,
         client_sha256=_sha256(_EVTX_HEADER),
         tenant=tenant,
@@ -297,7 +297,7 @@ async def test_stream_by_case_returns_evidence(postgres_engine, local_storage) -
             tenant=tenant,
         )
         local_storage.write_quarantine(presigned.object_key, content)
-        await intake.finalize_upload(
+        await intake.start_intake(
             evidence_id=ev.evidence_id,
             client_sha256=_sha256(content),
             tenant=tenant,

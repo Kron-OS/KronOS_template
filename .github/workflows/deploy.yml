@@ -1,0 +1,23 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ['Build & Security Scan']
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Kubernetes
+        run: |
+          echo "Deploy step — configure kubectl context and helm upgrade here"
+          # helm upgrade --install kronos ./helm \
+          #   --set image.tag=${{ github.sha }} \
+          #   --namespace kronos \
+          #   --wait

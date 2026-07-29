@@ -1,0 +1,83 @@
+org_id=37fd9d13-2aa4-4b6f-9b0d-1943dfb91b2e case_id=f0911150-f201-4dab-8cbf-6b184db7d250 anchor day (UTC)=2026-07-21
+[PASS] 5 real events logged to real Postgres
+
+real openssl-ts TSA responder listening on http://127.0.0.1:20318
+[real-tsa-server] received 59-byte POST (Content-Type=application/timestamp-query)
+[real-tsa-server] request DER (hex): 30390201013031300d060960864801650304020105000420ec980ef56726fb1cbff338e7f6a466168e7299cd3768f89e5eecd41f3e4114710101ff
+[real-tsa-server] openssl ts -reply exit=0 stderr='Using configuration from /tmp/kronos_poc_coc_tsa/tsa.cnf\nResponse has been generated.\n4087906328760000:error:0700006C:configuration file routines:NCONF_get_string:no value:../crypto/conf/conf_lib.c:316:group=tsa_config1 name=other_policies'
+[real-tsa-server] response DER (hex, truncated): 308208d93003020100308208d006092a864886f70d010702a08208c1308208bd020103310f300d06096086480165030402010500308188060b2a8648...
+
+AuditLogService.anchor_day() returned root_hash=ec980ef56726fb1c...
+[PASS] anchor_day() returned a non-empty root hash
+[PASS] real anchor row persisted in Postgres
+[PASS] stored anchor root matches anchor_day()'s return value
+[PASS] real TSA token was actually stored (not None) -- 2269 bytes
+[PASS] full chain verifies intact after anchoring
+
+Exported 6 events (including the AUDIT_MERKLE_ANCHORED bookkeeping event) to /home/reca/Claude/Kronos/KronOS_template/poc/chain_of_custody/export.json
+
+`kronos-attest merkle-root` -> 3a5c86bbcaac1d37... (exit 0)
+[PASS] kronos-attest merkle-root ran successfully
+
+`kronos-attest verify --tsa-cert` ->
+STDOUT:
+Chain intact (6 events, root=3a5c86bbcaac1d37…)
+Event b6e5b761-4308-4497-8a4a-4a326b7ee06a: case.created at 2026-07-21T23:05:27.456137+00:00
+TSA anchor 2026-07-21: valid
+
+STDERR:
+
+exit=0
+[PASS] kronos-attest verify: chain intact + event found + TSA anchor genuinely verified
+[PASS] verify output reports the TSA anchor as valid
+
+`kronos-attest merkle-proof` -> exit=0
+{
+  "event_id": "b6e5b761-4308-4497-8a4a-4a326b7ee06a",
+  "index": 0,
+  "leaf_hash": "8bb08794de6f502f27f7a2a6e7a09e5ceb3757a1a85d8ec50994f88abcf5f179",
+  "proof": [
+    {
+      "sibling_hash": "abf550e290747d50fec8373822810705dd338e170c98a65d0dc3f5f22f5f42f3",
+      "position": "right"
+    },
+    {
+      "sibling_hash": "7f2aa7c16ce609a15e1bf73b194584ca93fa4179787df35d164a0e65364fd802",
+      "po
+[PASS] merkle-proof succeeded and returned a proof list
+
+`kronos-attest day-report --tsa-cert` -> exit=0
+{
+  "day": "2026-07-21",
+  "event_count": 6,
+  "merkle_root": "3a5c86bbcaac1d372daafa8c07cc72fe53131014c448059f0e5c75fe8934fbdd",
+  "chain_valid": true,
+  "break_count": 0,
+  "tsa_anchored": true,
+  "tsa_gen_time": "2026-07-21T23:05:27.672237+00:00"
+}
+
+[PASS] day-report's tsa_anchored is True for a day that WAS genuinely TSA-anchored -- got True -- see README for root cause if False
+
+`kronos-attest case-report` -> exit=0
+{
+  "case_id": "f0911150-f201-4dab-8cbf-6b184db7d250",
+  "event_count": 5,
+  "merkle_root": "ec980ef56726fb1cbff338e7f6a466168e7299cd3768f89e5eecd41f3e411471",
+  "chain_valid": true,
+  "break_count": 0,
+  "evidence_ids": []
+}
+
+[PASS] case-report found all 5 real case events -- 5
+[PASS] case-report's chain_valid is True
+
+`kronos-attest verify` on TAMPERED export -> exit=1
+Event b6e5b761-4308-4497-8a4a-4a326b7ee06a: case.created at 2026-07-21T23:05:27.456137+00:00
+
+[PASS] kronos-attest verify DETECTS the tamper and exits nonzero
+[PASS] verify output reports a chain break (on stderr, where the CLI writes it)
+
+============================================================
+15 passed, 0 failed
+============================================================
