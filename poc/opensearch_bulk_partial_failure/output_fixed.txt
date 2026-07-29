@@ -1,0 +1,84 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch-py version: (3, 2, 0)
+OpenSearch version: 2.11.1
+Created index kronos-poc-partial-failure with strict mapping
+
+=== DEMONSTRATING CURRENT BUG ===
+
+Sending bulk request with 3 documents (doc2 will fail)...
+
+Calling bulk_index() [FIXED CODE]...
+✓ FIXED: bulk_index raised StorageError as expected:
+  Message: OpenSearch bulk indexing had 1 document(s) fail out of 3 total. Successfully indexed: 2. This is not a silent failure; the documents that failed are listed in context['failed_documents'].
+  Context details:
+    total_documents: 3
+    failed_count: 1
+    succeeded_count: 2
+    failed_documents:
+      - doc_id=doc-2, index=kronos-poc-partial-failure, status=400
+        error_type=mapper_parsing_exception
+        reason=failed to parse field [@timestamp] of type [date] in document with id 'doc-2'. P...
+
+  Actual docs in index: 2 (2 succeeded, 1 failed per the exception)
+
+--- Raw _bulk API response structure (for reference) ---
+{
+  "took": 4,
+  "errors": true,
+  "items": [
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-1",
+        "_version": 2,
+        "result": "updated",
+        "_shards": {
+          "total": 1,
+          "successful": 1,
+          "failed": 0
+        },
+        "_seq_no": 2,
+        "_primary_term": 1,
+        "status": 200
+      }
+    },
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-2",
+        "status": 400,
+        "error": {
+          "type": "mapper_parsing_exception",
+          "reason": "failed to parse field [@timestamp] of type [date] in document with id 'doc-2'. Preview of field's value: 'not-a-valid-date'",
+          "caused_by": {
+            "type": "illegal_argument_exception",
+            "reason": "failed to parse date field [not-a-valid-date] with format [strict_date_time]",
+            "caused_by": {
+              "type": "date_time_parse_exception",
+              "reason": "Failed to parse with all enclosed parsers"
+            }
+          }
+        }
+      }
+    },
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-3",
+        "_version": 2,
+        "result": "updated",
+        "_shards": {
+          "total": 1,
+          "successful": 1,
+          "failed": 0
+        },
+        "_seq_no": 3,
+        "_primary_term": 1,
+        "status": 200
+      }
+    }
+  ]
+}
+
+Cleaned up test index: kronos-poc-partial-failure

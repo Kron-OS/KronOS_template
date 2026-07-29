@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from src.exceptions import StorageError
+
 # Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE role, ONE static
 # mapping to every KronOS realm role (hyphenated -- see
 # src/external/middleware/keycloak_auth.py's _ROLE_MAP), created once, ever.
@@ -103,8 +105,41 @@ class OpenSearchClient(AbstractTimelineIndex):
             body.append(doc_body)
 
         response = await self._client.bulk(body=body)
-        errors = [item for item in response["items"] if "error" in item.get("index", {})]
-        return len(documents) - len(errors)
+
+        # Extract per-document errors from the _bulk response.
+        # Each item in response["items"] is a dict like:
+        #   {"index": {"_index": "...", "_id": "...", "status": 200, ...}}
+        # or on error:
+        #   {"index": {"_index": "...", "_id": "...", "status": 400,
+        #              "error": {"type": "mapper_parsing_exception", "reason": "..."}}}
+        errors = []
+        for item in response["items"]:
+            index_op = item.get("index", {})
+            if "error" in index_op:
+                errors.append(
+                    {
+                        "doc_id": index_op.get("_id"),
+                        "index_name": index_op.get("_index"),
+                        "status": index_op.get("status"),
+                        "error": index_op.get("error"),
+                    }
+                )
+
+        # Fail loudly (CLAUDE.md §1.8): any partial failure is an error, not silent data loss.
+        if errors:
+            raise StorageError(
+                f"OpenSearch bulk indexing had {len(errors)} document(s) fail out of {len(documents)} total. "
+                f"Successfully indexed: {len(documents) - len(errors)}. This is not a silent failure; "
+                f"the documents that failed are listed in context['failed_documents'].",
+                context={
+                    "total_documents": len(documents),
+                    "failed_count": len(errors),
+                    "succeeded_count": len(documents) - len(errors),
+                    "failed_documents": errors,
+                },
+            )
+
+        return len(documents)
 
     async def ensure_index_template(self) -> None:
         template_path = Path(__file__).parent / "index_template.json"

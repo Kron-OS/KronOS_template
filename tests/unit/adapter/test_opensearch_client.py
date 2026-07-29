@@ -89,3 +89,169 @@ async def test_ensure_generic_tenant_role_creates_one_role_and_one_mapping() -> 
     assert mapping_call.kwargs["body"]["backend_roles"] == [
         "org-admin", "case-lead", "analyst", "read-only",
     ]
+
+
+# ============================================================================
+# Regression tests for bulk_index partial failure fix (A4)
+# ============================================================================
+# These tests verify that bulk_index now "fails loudly" (CLAUDE.md §1.8)
+# by raising StorageError on any per-document indexing failure, instead of
+# silently returning a reduced count. See poc/opensearch_bulk_partial_failure/
+
+
+async def test_bulk_index_empty_batch_returns_zero() -> None:
+    """Empty batch should return 0 without error."""
+    from src.adapter.opensearch.client import InMemoryOpenSearchClient
+
+    client = InMemoryOpenSearchClient()
+    count = await client.bulk_index([])
+    assert count == 0
+
+
+async def test_bulk_index_all_succeed_returns_count() -> None:
+    """All documents succeed → return count, no exception."""
+    from src.adapter.opensearch.client import InMemoryOpenSearchClient
+
+    client = InMemoryOpenSearchClient()
+    documents = [
+        ("kronos-test", "doc-1", {"field": "value1"}),
+        ("kronos-test", "doc-2", {"field": "value2"}),
+        ("kronos-test", "doc-3", {"field": "value3"}),
+    ]
+    count = await client.bulk_index(documents)
+    assert count == 3
+
+
+async def test_bulk_index_partial_failure_raises_storage_error() -> None:
+    """Partial failure (some docs succeed, some fail) → raise StorageError."""
+    from src.exceptions import StorageError
+
+    client = _make_client()
+    # Mock the _bulk response with 1 success and 1 error (from the real PoC)
+    client._client.bulk = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "took": 3,
+            "errors": True,
+            "items": [
+                {
+                    "index": {
+                        "_index": "kronos-test",
+                        "_id": "doc-1",
+                        "status": 201,
+                        "result": "created",
+                    }
+                },
+                {
+                    "index": {
+                        "_index": "kronos-test",
+                        "_id": "doc-2",
+                        "status": 400,
+                        "error": {
+                            "type": "mapper_parsing_exception",
+                            "reason": "failed to parse field [@timestamp]",
+                        },
+                    }
+                },
+            ],
+        }
+    )
+
+    documents = [
+        ("kronos-test", "doc-1", {"@timestamp": "2026-01-01T00:00:00Z"}),
+        ("kronos-test", "doc-2", {"@timestamp": "invalid"}),
+    ]
+
+    with pytest.raises(StorageError) as exc_info:
+        await client.bulk_index(documents)
+
+    exc = exc_info.value
+    assert "1 document(s) fail" in str(exc)
+    assert exc.context["total_documents"] == 2
+    assert exc.context["failed_count"] == 1
+    assert exc.context["succeeded_count"] == 1
+    assert len(exc.context["failed_documents"]) == 1
+    assert exc.context["failed_documents"][0]["doc_id"] == "doc-2"
+    assert exc.context["failed_documents"][0]["status"] == 400
+    assert "mapper_parsing_exception" in str(exc.context["failed_documents"][0]["error"])
+
+
+async def test_bulk_index_complete_failure_raises_storage_error() -> None:
+    """All documents fail → raise StorageError with all failures in context."""
+    from src.exceptions import StorageError
+
+    client = _make_client()
+    client._client.bulk = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "took": 2,
+            "errors": True,
+            "items": [
+                {
+                    "index": {
+                        "_index": "kronos-test",
+                        "_id": "doc-1",
+                        "status": 400,
+                        "error": {"type": "parsing_exception", "reason": "error1"},
+                    }
+                },
+                {
+                    "index": {
+                        "_index": "kronos-test",
+                        "_id": "doc-2",
+                        "status": 400,
+                        "error": {"type": "parsing_exception", "reason": "error2"},
+                    }
+                },
+            ],
+        }
+    )
+
+    documents = [
+        ("kronos-test", "doc-1", {"data": "x"}),
+        ("kronos-test", "doc-2", {"data": "y"}),
+    ]
+
+    with pytest.raises(StorageError) as exc_info:
+        await client.bulk_index(documents)
+
+    exc = exc_info.value
+    assert exc.context["total_documents"] == 2
+    assert exc.context["failed_count"] == 2
+    assert exc.context["succeeded_count"] == 0
+
+
+async def test_bulk_index_context_includes_all_failure_details() -> None:
+    """Verify that the exception context includes detailed per-document errors."""
+    from src.exceptions import StorageError
+
+    client = _make_client()
+    client._client.bulk = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "took": 1,
+            "errors": True,
+            "items": [
+                {
+                    "index": {
+                        "_index": "kronos-org-case-123-202607",
+                        "_id": "sha1:abc123",
+                        "status": 400,
+                        "error": {
+                            "type": "mapper_parsing_exception",
+                            "reason": "failed to parse field [@timestamp] with format [strict_date_time]",
+                        },
+                    }
+                },
+            ],
+        }
+    )
+
+    documents = [("kronos-org-case-123-202607", "sha1:abc123", {"@timestamp": "bad"})]
+
+    with pytest.raises(StorageError) as exc_info:
+        await client.bulk_index(documents)
+
+    failed_doc = exc_info.value.context["failed_documents"][0]
+    assert failed_doc["doc_id"] == "sha1:abc123"
+    assert failed_doc["index_name"] == "kronos-org-case-123-202607"
+    assert failed_doc["status"] == 400
+    assert failed_doc["error"]["type"] == "mapper_parsing_exception"
+    assert "strict_date_time" in failed_doc["error"]["reason"]

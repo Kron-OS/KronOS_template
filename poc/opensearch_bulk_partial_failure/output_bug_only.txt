@@ -1,0 +1,77 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch-py version: (3, 2, 0)
+OpenSearch version: 2.11.1
+Created index kronos-poc-partial-failure with strict mapping
+
+=== DEMONSTRATING CURRENT BUG ===
+
+Sending bulk request with 3 documents (doc2 will fail)...
+
+Calling bulk_index() [CURRENT BUGGY CODE]...
+✗ BUG CONFIRMED: bulk_index returned 2 (out of 3) with NO EXCEPTION
+  Expected: 2 successes, 1 failure → should have raised StorageError
+  Actual: returned 2 silently → timeline records are lost!
+
+  Actual docs in index: 2 (expected 2, lost 1)
+
+--- Raw _bulk API response structure (for reference) ---
+{
+  "took": 3,
+  "errors": true,
+  "items": [
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-1",
+        "_version": 2,
+        "result": "updated",
+        "_shards": {
+          "total": 1,
+          "successful": 1,
+          "failed": 0
+        },
+        "_seq_no": 2,
+        "_primary_term": 1,
+        "status": 200
+      }
+    },
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-2",
+        "status": 400,
+        "error": {
+          "type": "mapper_parsing_exception",
+          "reason": "failed to parse field [@timestamp] of type [date] in document with id 'doc-2'. Preview of field's value: 'not-a-valid-date'",
+          "caused_by": {
+            "type": "illegal_argument_exception",
+            "reason": "failed to parse date field [not-a-valid-date] with format [strict_date_time]",
+            "caused_by": {
+              "type": "date_time_parse_exception",
+              "reason": "Failed to parse with all enclosed parsers"
+            }
+          }
+        }
+      }
+    },
+    {
+      "index": {
+        "_index": "kronos-poc-partial-failure",
+        "_id": "doc-3",
+        "_version": 2,
+        "result": "updated",
+        "_shards": {
+          "total": 1,
+          "successful": 1,
+          "failed": 0
+        },
+        "_seq_no": 3,
+        "_primary_term": 1,
+        "status": 200
+      }
+    }
+  ]
+}
+
+Cleaned up test index: kronos-poc-partial-failure
