@@ -162,7 +162,12 @@ class TestFinalizeUploadRoute:
             f"/api/evidence/upload/finalize/{evidence_id}",
             json={"client_sha256": _sha256(_JSON_CONTENT)},
         )
-        assert fin_resp.status_code == 200
+        # 202: finalize is now a hand-off to kronos.process_intake, not a
+        # synchronous completion (see cases.py/evidence.py's finalize_upload
+        # docstring) -- this test's fixture has no task_queue configured, so
+        # it still falls back to running intake inline and the returned
+        # body already reflects the real end state.
+        assert fin_resp.status_code == 202
         body = fin_resp.json()
         assert body["state"] == EvidenceState.RECEIVED.value
         assert body["sha256"] == _sha256(_JSON_CONTENT)
@@ -219,6 +224,109 @@ class TestFinalizeUploadRoute:
             json={"client_sha256": _sha256(_JSON_CONTENT)},
         )
         assert fin_resp.status_code == 403
+
+
+class TestRetryParseRoute:
+    """POST /evidence/{id}/retry-parse re-enters PARSING for a retryable
+    parse-stage ERROR reason, reusing the already-promoted evidence-bucket
+    object (no re-upload/re-scan needed)."""
+
+    def _finalize_to_received(self, client, storage, case_id) -> str:  # type: ignore[no-untyped-def]
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "cloudtrail.json",
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, _JSON_CONTENT)
+        client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(_JSON_CONTENT)},
+        )
+        return evidence_id
+
+    def _wire_real_orchestrator(self, client, storage, org_id, case_id):  # type: ignore[no-untyped-def]
+        """Override the orchestrator dependency to use this test's local
+        storage/evidence_repo instead of the production global singletons."""
+        from src.application.parsing_orchestration import ParsingOrchestrationService
+        from src.external.dependencies import (
+            get_parser_registry,
+            get_parsing_orchestration_service,
+            get_task_queue,
+        )
+
+        evidence_repo = client.app.dependency_overrides[get_evidence_repository]()
+        audit_repo = InMemoryAuditLogRepository()
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=get_parser_registry(),
+            task_queue=get_task_queue(),
+        )
+        client.app.dependency_overrides[get_parsing_orchestration_service] = (
+            lambda: orchestrator
+        )
+        return evidence_repo
+
+    def _force_error(self, evidence_repo, evidence_id: str, org_id, reason: str) -> None:  # type: ignore[no-untyped-def]
+        ev = asyncio.run(evidence_repo.get_by_id(uuid.UUID(evidence_id), org_id))
+        assert ev is not None
+        ev2 = ev.with_state(EvidenceState.PARSING).with_error(reason)
+        asyncio.run(evidence_repo.update(ev2))
+
+    def test_retryable_parse_reason_reenters_parsing(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_to_received(client, storage, case_id)
+        evidence_repo = self._wire_real_orchestrator(client, storage, org_id, case_id)
+        self._force_error(evidence_repo, evidence_id, org_id, "ingest_failed")
+
+        resp = client.post(f"/api/evidence/{evidence_id}/retry-parse")
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["state"] == EvidenceState.PARSING.value
+        assert body["errorReason"] is None
+
+    def test_terminal_reason_refused(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_to_received(client, storage, case_id)
+        evidence_repo = self._wire_real_orchestrator(client, storage, org_id, case_id)
+        self._force_error(evidence_repo, evidence_id, org_id, "no_parser_found")
+
+        resp = client.post(f"/api/evidence/{evidence_id}/retry-parse")
+        assert resp.status_code == 422
+
+    def test_intake_stage_reason_refused_with_hint(self, app_client) -> None:
+        """A retryable but intake-stage reason must be refused here — the
+        client should call retry-intake instead, not retry-parse."""
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_to_received(client, storage, case_id)
+        evidence_repo = self._wire_real_orchestrator(client, storage, org_id, case_id)
+        self._force_error(evidence_repo, evidence_id, org_id, "intake_failed:StorageError")
+
+        resp = client.post(f"/api/evidence/{evidence_id}/retry-parse")
+        assert resp.status_code == 422
+        assert "retry-intake" in resp.json()["detail"]
+
+    def test_wrong_state_returns_409(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_id = self._finalize_to_received(client, storage, case_id)
+        self._wire_real_orchestrator(client, storage, org_id, case_id)
+
+        resp = client.post(f"/api/evidence/{evidence_id}/retry-parse")
+        assert resp.status_code == 409
+
+    def test_unknown_evidence_returns_404(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        self._wire_real_orchestrator(client, storage, org_id, case_id)
+
+        resp = client.post(f"/api/evidence/{uuid.uuid4()}/retry-parse")
+        assert resp.status_code == 404
 
 
 def _override_tenant_role(

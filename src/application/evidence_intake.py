@@ -148,21 +148,32 @@ class EvidenceIntakeService:
         )
         return evidence, presigned
 
-    async def finalize_upload(
+    async def start_intake(
         self,
         evidence_id: uuid.UUID,
         client_sha256: str,
         tenant: TenantContext,
     ) -> Evidence:
-        """Validate, scan, hash, and promote the uploaded evidence file.
+        """Lightweight, client-facing half of finalize: validate preconditions,
+        enqueue the real work, return immediately.
 
-        Steps (in order — each failure is audited and sets ERROR state):
-          1. Validate extension + magic bytes
-          2. AV scan
-          3. SHA-256 + MD5 hash
-          4. Compare server hash vs client-provided SHA-256
-          5. Promote quarantine → WORM evidence bucket
-          6. Transition to RECEIVED
+        Real bug this split fixes: the old finalize_upload ran validate→scan→
+        hash→promote synchronously on the FastAPI request thread, after
+        already committing the SCANNING state transition. Any exception
+        besides the ones it explicitly anticipated (a premature call before
+        the object was visible in MinIO, a ClamAV connectivity blip, any
+        other unhandled exception from streaming/hashing/promoting) then
+        propagated uncaught, leaving evidence permanently stuck in SCANNING
+        or HASHING — no beat task swept those states, and finalize_upload's
+        own state==UPLOADING guard made retrying the same call impossible.
+
+        This method does the one cheap, synchronous check that actually
+        needs to happen before any state changes (does the object genuinely
+        exist yet?) and otherwise never touches FSM state — process_intake
+        (run from Celery, see kronos.process_intake) does the real work and
+        is solely responsible for every state transition from here on,
+        matching the same autonomous-pipeline pattern already used for
+        RECEIVED → PARSING.
         """
         evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
         if evidence is None:
@@ -183,19 +194,126 @@ class EvidenceIntakeService:
                 context={"evidence_id": str(evidence_id)},
             )
 
-        # --- Step 1: Validate ---
-        evidence = await self._run_validation(evidence, quarantine_key, tenant)
+        # Fails fast, cheaply (a HEAD, not a GET), and WITHOUT touching FSM
+        # state — a client that called this before its PUT actually landed
+        # can just call finalize again; nothing needs to be undone because
+        # nothing was ever committed. Directly closes the "not fully
+        # received yet" half of the reported bug.
+        if not await self._storage.object_exists(quarantine_key, bucket="quarantine"):
+            raise ValidationError(
+                "Uploaded file is not yet visible in storage — retry finalize shortly",
+                context={"evidence_id": str(evidence_id), "quarantine_key": quarantine_key},
+            )
 
-        # --- Step 2: AV scan ---
-        evidence = await self._run_scan(evidence, quarantine_key, tenant)
+        # Persisted so process_intake (and any later retry-intake) can
+        # re-verify against it without the client resupplying it.
+        evidence = evidence.with_client_declared_sha256(client_sha256)
+        await self._repo.update(evidence, expected_state=EvidenceState.UPLOADING)
 
-        # --- Step 3 & 4: Hash + compare ---
-        evidence = await self._run_hash(evidence, quarantine_key, client_sha256, tenant)
+        if self._task_queue is not None:
+            await self._task_queue.enqueue_intake(evidence_id, tenant)
+            return evidence
+        # No task_queue configured (e.g. a test double) — fall back to
+        # running intake inline so callers without Celery wired up still
+        # get the old synchronous behavior, including the real end state.
+        return await self.process_intake(evidence_id, tenant)
 
-        # --- Step 5: Promote ---
-        evidence = await self._promote(evidence, quarantine_key, tenant)
+    async def process_intake(
+        self,
+        evidence_id: uuid.UUID,
+        tenant: TenantContext,
+    ) -> Evidence:
+        """Validate, scan, hash, and promote the uploaded evidence file.
 
-        return evidence
+        Runs from the kronos.process_intake Celery task, never directly from
+        a client request — see start_intake()'s docstring for why.
+
+        Steps (in order — each already turns its own anticipated failure
+        into a clean, audited ERROR): validate extension/magic bytes, AV
+        scan, SHA-256+MD5 hash (+compare vs client-declared), promote
+        quarantine → WORM evidence bucket, transition to RECEIVED.
+
+        Anything those steps don't already handle (storage connectivity
+        errors, scanner connectivity errors, any other unanticipated
+        exception) is caught here and always lands on ERROR instead of
+        leaving evidence stuck in an intermediate state — the core fix.
+        Celery itself retries this task on failure (see celery_app.py); only
+        the task's own final attempt should call this fallback, so a
+        transient error gets a real chance to resolve itself first.
+        """
+        evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
+        if evidence is None:
+            raise ValidationError(
+                "Evidence not found",
+                context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+        # Idempotency: a retry-intake call, or a Celery redelivery racing a
+        # still-running prior attempt, must not double-process. Only
+        # UPLOADING (fresh) or ERROR (explicit retry) are valid entry points.
+        if evidence.state not in (EvidenceState.UPLOADING, EvidenceState.ERROR):
+            logger.info(
+                "process_intake_skip_wrong_state",
+                extra={"evidence_id": str(evidence_id), "state": evidence.state.value},
+            )
+            return evidence
+
+        quarantine_key = evidence.minio_quarantine_key
+        if not quarantine_key:
+            raise ValidationError(
+                "Evidence has no quarantine key",
+                context={"evidence_id": str(evidence_id)},
+            )
+        client_sha256 = evidence.client_declared_sha256
+        if not client_sha256:
+            # Only reachable if start_intake's own persist step above never
+            # ran — defensive, not expected in practice.
+            raise ValidationError(
+                "Evidence has no client-declared SHA-256 recorded",
+                context={"evidence_id": str(evidence_id)},
+            )
+
+        try:
+            evidence = await self._run_validation(evidence, quarantine_key, tenant)
+            evidence = await self._run_scan(evidence, quarantine_key, tenant)
+            evidence = await self._run_hash(evidence, quarantine_key, client_sha256, tenant)
+            evidence = await self._promote(evidence, quarantine_key, tenant)
+            return evidence
+        except ValidationError:
+            # Already turned into a clean, audited ERROR state by the step
+            # itself (validation_failed / size_limit_exceeded / infected:* /
+            # hash_mismatch — all terminal, see domain.evidence.is_retryable_error_reason).
+            raise
+        except Exception as exc:
+            current = await self._repo.get_by_id(evidence_id, tenant.org_id)
+            if current is not None and current.state not in (
+                EvidenceState.COMPLETE,
+                EvidenceState.ERROR,
+                EvidenceState.RECEIVED,
+            ):
+                errored = current.with_error(f"intake_failed:{type(exc).__name__}")
+                await self._repo.update(errored, expected_state=current.state)
+                await self._audit.log(
+                    AuditEventType.EVIDENCE_ERROR,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    evidence_id=evidence_id,
+                    details={"step": "intake", "error": str(exc)},
+                )
+            raise
+
+    async def retry_intake(self, evidence_id: uuid.UUID, tenant: TenantContext) -> None:
+        """Re-enqueue process_intake for ERROR evidence with a retryable reason.
+
+        State/reason validity is checked by the route (POST
+        /evidence/{id}/retry-intake) before this is called; this just
+        re-enqueues the same real work against the still-quarantined
+        object. client_declared_sha256 is already persisted from the
+        original start_intake call, so no re-upload is needed.
+        """
+        if self._task_queue is not None:
+            await self._task_queue.enqueue_intake(evidence_id, tenant)
+        else:
+            await self.process_intake(evidence_id, tenant)
 
     # ------------------------------------------------------------------
     # Private workflow steps

@@ -134,7 +134,11 @@ celery:
       concurrency: 1
     index:
       replicas: 2
-      queues: "q.index"
+      # q.intake (process_intake: validate/scan/hash/promote) grouped here
+      # with q.index (dispatch/finalize/beat orchestration) -- same
+      # lightweight, non-CPU-bound class as those, distinct from the
+      # actual parsing work on q.parse.fast/q.parse.plaso.
+      queues: "q.index,q.intake"
       concurrency: 8
 
 gvisorRuntimeClass: "gvisor"

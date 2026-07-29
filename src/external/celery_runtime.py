@@ -25,13 +25,20 @@ from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
 from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
+from src.application.evidence_intake import EvidenceIntakeService
+from src.application.hashing import HashService
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.timeline_ingest import TimelineIngestionService
 from src.config import Settings
 from src.external.dependencies import (
+    get_default_retention_days,
     get_evidence_storage,
+    get_max_upload_bytes,
     get_parser_registry,
+    get_scanner,
     get_task_queue,
+    get_timestamp_service,
+    get_validator,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +55,7 @@ class TaskResources:
     audit_log_service: AuditLogService
     artifact_repository: PostgresArtifactRepository
     orchestration_service: ParsingOrchestrationService
+    intake_service: EvidenceIntakeService
 
 
 async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClient]:
@@ -90,11 +98,25 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         artifact_ingest=artifact_service,
     )
 
+    intake_service = EvidenceIntakeService(
+        evidence_repository=evidence_repo,
+        storage=get_evidence_storage(),
+        audit_log=audit_service,
+        validator=get_validator(),
+        scanner=get_scanner(),
+        hash_service=HashService(),
+        max_upload_bytes=get_max_upload_bytes(),
+        task_queue=get_task_queue(),
+        timestamp_service=get_timestamp_service(),
+        default_retention_days=get_default_retention_days(),
+    )
+
     resources = TaskResources(
         evidence_repository=evidence_repo,
         audit_log_repository=audit_repo,
         audit_log_service=audit_service,
         artifact_repository=artifact_repo,
+        intake_service=intake_service,
         orchestration_service=orchestration,
     )
     return resources, engine, opensearch

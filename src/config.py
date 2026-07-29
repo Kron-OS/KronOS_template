@@ -99,8 +99,16 @@ class Settings(BaseSettings):
     celery_broker_url: SecretStr = Field(description="Celery broker, defaults to Redis URL")
     celery_result_backend: SecretStr
 
-    # Upload limits
-    max_upload_bytes: int = 1_073_741_824  # 1 GB
+    # Upload limits. Must stay <= clamd's real StreamMaxLength/MaxFileSize
+    # (docker-compose.dev.yml's CLAMD_CONF_StreamMaxLength/MaxFileSize/
+    # MaxScanSize) -- otherwise a file this service accepts can still exceed
+    # what the AV scanner will actually stream-scan, and clamd closes the
+    # connection mid-transfer (confirmed against a real clamd: a real 239 MB
+    # E01 upload hit clamd's compiled-in 100 MB StreamMaxLength default and
+    # crashed with a raw BrokenPipeError, deterministically on every retry --
+    # see poc/clamav/run_poc_large_file.py). 5 GB accommodates real forensic
+    # disk images (E01/EWF), which routinely exceed 1 GB.
+    max_upload_bytes: int = 5_368_709_120  # 5 GiB
     # 15 min per Project_Specifications.md §2 "Security Measures for Intake" (EVID-8).
     presigned_url_expiry_seconds: int = 900
 

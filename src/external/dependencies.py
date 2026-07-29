@@ -105,6 +105,14 @@ def get_dashboards_index_pattern_provisioner() -> DashboardsIndexPatternProvisio
     return _dashboards_index_pattern_provisioner
 
 
+def get_max_upload_bytes() -> int:
+    return _max_upload_bytes
+
+
+def get_default_retention_days() -> int:
+    return _default_retention_days
+
+
 def get_evidence_storage() -> EvidenceStorage:
     if _evidence_storage is None:
         raise RuntimeError(

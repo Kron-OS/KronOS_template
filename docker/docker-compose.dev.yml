@@ -332,6 +332,27 @@ services:
 
   clamav:
     image: clamav/clamav:stable
+    environment:
+      # Real, reproduced bug: this image's compiled-in StreamMaxLength/
+      # MaxFileSize default is 100 MB (confirmed via `clamconf` against the
+      # real running container), well under KronOS's own upload ceiling —
+      # a real 239 MB E01 upload made clamd close the INSTREAM connection
+      # mid-transfer, surfacing as a raw BrokenPipeError in
+      # ClamAVScanner.scan_stream (src/application/scanning.py). The
+      # clamav/clamav:stable image's own /init entrypoint reads any
+      # CLAMD_CONF_<Setting> env var and rewrites the matching clamd.conf
+      # directive (verified by reading /init inside the real container,
+      # then confirmed end-to-end with a real >100 MB stream against a
+      # throwaway container using this exact mechanism —
+      # poc/clamav/run_poc_large_file.py). MaxScanSize covers the total
+      # bytes scanned per top-level stream/archive (can exceed
+      # StreamMaxLength/MaxFileSize for compressed/archive content), kept
+      # equal here since KronOS streams whole evidence files, not archives
+      # ClamAV itself decompresses. Must stay >= MAX_UPLOAD_BYTES above, or
+      # this same bug reappears for anything between the two limits.
+      CLAMD_CONF_StreamMaxLength: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxFileSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxScanSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
     volumes:
       - clamav_dev_data:/var/lib/clamav
     ports: ["3310:3310"]
@@ -443,6 +464,27 @@ services:
       # fluent-bit.conf tails this exact path (kronos.backend input).
       KRONOS_LOG_FILE: /var/log/kronos/app.log
       REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      # Real, reproduced finding (a real 239 MB E01 upload): this must stay
+      # <= clamd's own configured StreamMaxLength/MaxFileSize/MaxScanSize
+      # below, or a file this service accepts still gets its connection
+      # closed mid-scan by clamd -- see src/config.py's max_upload_bytes
+      # docstring and poc/clamav/run_poc_large_file.py for the full
+      # root-cause trace. Both default to the same 5 GiB value and both are
+      # overridable via this one env var so they can't drift apart again.
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
       MINIO_ENDPOINT: minio:9000
       # MINIO_ENDPOINT is used for the backend's own connection to MinIO
       # (resolves via Docker's internal DNS). MINIO_PUBLIC_ENDPOINT is used
@@ -509,8 +551,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
-      CLAMD_HOST: clamav
-      CLAMD_PORT: "3310"
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -539,6 +579,25 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      # Must stay <= clamd's own StreamMaxLength/MaxFileSize/MaxScanSize
+      # below -- see kronos-backend's identical env var for the full
+      # root-cause trace (real 239 MB E01 upload, poc/clamav/run_poc_large_file.py).
+      # This is the service that actually runs process_intake (validate/
+      # scan/hash), so it must agree with kronos-backend's value.
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
@@ -574,7 +633,7 @@ services:
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
-    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4 --loglevel=info
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4 --loglevel=info
 
   celery-worker-plaso:
     build:
@@ -586,6 +645,19 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
@@ -623,6 +695,19 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
+      # Real, reproduced finding: this was never set anywhere in this file,
+      # so every service defaulted to src/config.py's clamd_host="localhost"
+      # -- wrong for a multi-container Compose stack (each container's own
+      # "localhost", not the real clamav service) -- and
+      # configure_clamav_from_settings() dev-mode-fallback silently
+      # downgraded to the permissive NoOpScanner instead of erroring.
+      # Real uploads through this actual dev-compose stack were never
+      # ClamAV-scanned at all until this was set; only the isolated
+      # poc/clamav/ container (with its own correct env) ever exercised
+      # real detection. Confirmed via a real EICAR upload through the real
+      # stack in poc/evidence_intake_async/.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}

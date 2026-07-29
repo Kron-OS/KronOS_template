@@ -38,6 +38,7 @@ evidence_table = sa.Table(
     sa.Column("minio_quarantine_key", sa.Text),
     sa.Column("minio_evidence_key", sa.Text),
     sa.Column("error_reason", sa.Text),
+    sa.Column("client_declared_sha256", sa.String(64)),
     # Additive columns for legal hold / WORM retention / RFC 3161 timestamping
     # (Project_Specifications.md §2 "evidence" schema; EVID-1/2/3). `create_all`
     # only adds missing tables, not columns — safe on a fresh schema; existing
@@ -190,6 +191,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             "minio_quarantine_key": ev.minio_quarantine_key,
             "minio_evidence_key": ev.minio_evidence_key,
             "error_reason": ev.error_reason,
+            "client_declared_sha256": ev.client_declared_sha256,
             "legal_hold": ev.legal_hold,
             "object_lock_until": ev.object_lock_until,
             "rfc3161_token": ev.rfc3161_token,
@@ -217,6 +219,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             minio_quarantine_key=row["minio_quarantine_key"],
             minio_evidence_key=row["minio_evidence_key"],
             error_reason=row["error_reason"],
+            client_declared_sha256=row.get("client_declared_sha256"),
             legal_hold=row.get("legal_hold", False) or False,
             object_lock_until=_ensure_utc_optional(row.get("object_lock_until")),
             rfc3161_token=row.get("rfc3161_token"),

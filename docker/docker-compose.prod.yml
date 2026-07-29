@@ -254,6 +254,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Real, reproduced finding (poc/evidence_intake_async/): this was
+      # missing here even though kronos-backend has it -- process_intake
+      # (validate/scan/hash/promote) now runs in THIS worker, not the
+      # backend request thread, so an unreachable clamd here is what
+      # actually matters. configure_clamav_from_settings() hard-fails
+      # worker startup in production if clamd is unreachable (EVID-6) --
+      # better a loud crash than silently scanning nothing.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
       MINIO_ENDPOINT: minio:9000
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
@@ -273,7 +282,7 @@ services:
     depends_on:
       - redis
       - postgres
-    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
     deploy:
       replicas: 2
       resources:

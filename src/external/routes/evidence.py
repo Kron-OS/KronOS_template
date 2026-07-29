@@ -12,7 +12,12 @@ from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.parsing_orchestration import ParsingOrchestrationService
-from src.domain.evidence import Evidence, EvidenceState
+from src.domain.evidence import (
+    Evidence,
+    EvidenceState,
+    is_parse_stage_error_reason,
+    is_retryable_error_reason,
+)
 from src.domain.user import Role, TenantContext
 from src.exceptions import (
     AuthorizationError,
@@ -83,6 +88,16 @@ class EvidenceOut(BaseModel):
     md5: str | None
     state: EvidenceState
     errorReason: str | None
+    # Which retry endpoint (if any) is worth offering for this ERROR
+    # evidence — "intake" -> POST /evidence/{id}/retry-intake (re-enters
+    # SCANNING, re-validates/re-scans/re-hashes the quarantined object),
+    # "parse" -> POST /evidence/{id}/retry-parse (re-enters PARSING against
+    # the already-promoted evidence-bucket object, no re-upload/re-scan).
+    # None for terminal reasons (validation_failed/size_limit_exceeded/
+    # infected:*/hash_mismatch/no_parser_found) where retrying can never
+    # change the verdict — see domain.evidence.is_retryable_error_reason /
+    # is_parse_stage_error_reason.
+    retryAction: str | None = None
     uploadedBy: str
     uploadedAt: str
     updatedAt: str
@@ -149,6 +164,7 @@ async def request_upload(
 @router.post(
     "/upload/finalize/{evidence_id}",
     response_model=EvidenceOut,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def finalize_upload(
     evidence_id: uuid.UUID,
@@ -158,18 +174,143 @@ async def finalize_upload(
     ],
     intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
 ) -> EvidenceOut:
-    """Validate, scan, hash, and promote the uploaded file to RECEIVED state.
+    """Confirm the upload landed, then hand off validate/scan/hash/promote
+    to the autonomous pipeline (kronos.process_intake) — this route no
+    longer runs that work itself.
 
     AUTH-005: same role gate as ``request_upload`` — finalize is the second
     half of the same upload action and must not be reachable by read-only.
+
+    Returns 202 with evidence still in UPLOADING: this is a hand-off, not a
+    completion. The frontend already listens to SSE for the RECEIVED/ERROR
+    transition that follows; nothing about that contract changes here.
+
+    A 422 here (evidence still in UPLOADING, error unchanged) means the
+    object genuinely isn't visible in storage yet — simply calling this
+    route again shortly is the correct client response, no separate retry
+    endpoint needed for this specific case since no state was ever touched.
     """
     try:
-        evidence = await intake.finalize_upload(
+        evidence = await intake.start_intake(
             evidence_id=evidence_id,
             client_sha256=body.client_sha256,
             tenant=tenant,
         )
     except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return to_evidence_out(evidence)
+
+
+@router.post(
+    "/{evidence_id}/retry-intake",
+    response_model=EvidenceOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_intake(
+    evidence_id: uuid.UUID,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
+    intake: Annotated[EvidenceIntakeService, Depends(get_intake_service)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+) -> EvidenceOut:
+    """Re-run intake for ERROR evidence with a retryable reason.
+
+    Only offered for reasons is_retryable_error_reason() considers
+    transient (storage/scanner connectivity, an intake that timed out,
+    any other unanticipated failure) — terminal reasons (validation_failed,
+    size_limit_exceeded, infected:*, hash_mismatch) reflect a real property
+    of the uploaded bytes, so retrying the same quarantined object can
+    never produce a different verdict; the frontend's Retry button is
+    gated on EvidenceOut.isRetryable, and this route re-checks it
+    server-side rather than trusting that gating alone.
+    """
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.state != EvidenceState.ERROR:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Evidence is in state {evidence.state.value}, expected ERROR",
+        )
+    if not is_retryable_error_reason(evidence.error_reason):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error reason '{evidence.error_reason}' is not retryable — re-upload instead",
+        )
+
+    if is_parse_stage_error_reason(evidence.error_reason):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error reason '{evidence.error_reason}' is a parse-stage error — "
+            "use POST /evidence/{id}/retry-parse instead",
+        )
+
+    try:
+        await intake.retry_intake(evidence_id=evidence_id, tenant=tenant)
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return to_evidence_out(evidence)
+
+
+@router.post(
+    "/{evidence_id}/retry-parse",
+    response_model=EvidenceOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_parse(
+    evidence_id: uuid.UUID,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
+    orchestrator: Annotated[
+        ParsingOrchestrationService, Depends(get_parsing_orchestration_service)
+    ],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+) -> EvidenceOut:
+    """Re-run parsing/indexing for ERROR evidence with a retryable parse-stage reason.
+
+    Unlike retry-intake, this re-enters PARSING directly against the object
+    already promoted to the evidence bucket — intake (validate/scan/hash)
+    already succeeded, only parsing or OpenSearch indexing failed
+    (parse_failed / ingest_failed / parse_timeout), so no re-upload or
+    re-scan is needed. no_parser_found is deliberately excluded — an
+    unsupported format can't change on retry (see
+    domain.evidence.is_retryable_error_reason).
+    """
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.state != EvidenceState.ERROR:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Evidence is in state {evidence.state.value}, expected ERROR",
+        )
+    if not is_retryable_error_reason(evidence.error_reason):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error reason '{evidence.error_reason}' is not retryable — re-upload instead",
+        )
+    if not is_parse_stage_error_reason(evidence.error_reason):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Error reason '{evidence.error_reason}' is an intake-stage error — "
+            "use POST /evidence/{id}/retry-intake instead",
+        )
+
+    try:
+        evidence = await orchestrator.retry_parse(evidence_id=evidence_id, tenant=tenant)
+    except (ValidationError, ParsingError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
@@ -346,6 +487,13 @@ async def _assert_case_ownership_for_evidence(
     assert_case_lead_or_admin(tenant, case)
 
 
+def _retry_action_for(ev: Evidence) -> str | None:
+    """Which retry endpoint (if any) applies to this evidence's current error."""
+    if ev.state != EvidenceState.ERROR or not is_retryable_error_reason(ev.error_reason):
+        return None
+    return "parse" if is_parse_stage_error_reason(ev.error_reason) else "intake"
+
+
 def to_evidence_out(ev: Evidence) -> EvidenceOut:
     """Serialize an Evidence domain entity to the shared API DTO.
 
@@ -363,6 +511,7 @@ def to_evidence_out(ev: Evidence) -> EvidenceOut:
         md5=ev.md5,
         state=ev.state,
         errorReason=ev.error_reason,
+        retryAction=_retry_action_for(ev),
         uploadedBy=str(ev.metadata.uploader_user_id),
         uploadedAt=ev.created_at.isoformat(),
         updatedAt=ev.updated_at.isoformat(),

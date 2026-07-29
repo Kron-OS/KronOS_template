@@ -62,50 +62,50 @@ class TimelineIngestionService:
         Raises:
             StorageError: if the underlying bulk request fails.
         """
-        if not self._template_applied:
-            # Verified against a real OpenSearch cluster (poc/full_pipeline/):
-            # without this, nothing ever calls ensure_index_template(), so
-            # every kronos-* index is created by dynamic mapping instead of
-            # the ECS template's explicit field types. String fields (e.g.
-            # kronos.evidence_id, kronos.org_id) then become "text" +
-            # ".keyword" multi-fields instead of pure "keyword", and a term
-            # query against the un-suffixed field name (exactly what
-            # OpenSearchQueryBuilder.org_id_filter builds) silently matches
-            # nothing — not a data leak, but a real, silent functionality
-            # break for any exact-match filter, tested and confirmed here.
-            await self._opensearch.ensure_index_template()
-            self._template_applied = True
-
-        if not self._ism_applied:
-            await self._opensearch.ensure_ism_policy()
-            self._ism_applied = True
-
-        if not self._tenant_role_applied:
-            # Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE
-            # generic, org-agnostic DLS role + static mapping, created once
-            # ever -- not per-org. New orgs/members need zero further calls
-            # here; DLS is templated from each caller's own JWT at query time.
-            if self._security_enabled:
-                await self._opensearch.ensure_generic_tenant_role()
-            elif not self._security_warned:
-                logger.warning("opensearch_security_disabled_skipping_tenant_role")
-                self._security_warned = True
-            self._tenant_role_applied = True
-
-        await self._audit.log(
-            AuditEventType.INGEST_STARTED,
-            org_id=tenant.org_id,
-            actor_user_id=tenant.user_id,
-            actor_username=tenant.username,
-            evidence_id=evidence_id,
-            details={},
-        )
-
         batch: list[tuple[str, str, dict[str, Any]]] = []
         total = 0
         last_flush = time.monotonic()
 
         try:
+            if not self._template_applied:
+                # Verified against a real OpenSearch cluster (poc/full_pipeline/):
+                # without this, nothing ever calls ensure_index_template(), so
+                # every kronos-* index is created by dynamic mapping instead of
+                # the ECS template's explicit field types. String fields (e.g.
+                # kronos.evidence_id, kronos.org_id) then become "text" +
+                # ".keyword" multi-fields instead of pure "keyword", and a term
+                # query against the un-suffixed field name (exactly what
+                # OpenSearchQueryBuilder.org_id_filter builds) silently matches
+                # nothing — not a data leak, but a real, silent functionality
+                # break for any exact-match filter, tested and confirmed here.
+                await self._opensearch.ensure_index_template()
+                self._template_applied = True
+
+            if not self._ism_applied:
+                await self._opensearch.ensure_ism_policy()
+                self._ism_applied = True
+
+            if not self._tenant_role_applied:
+                # Verified in poc/keycloak_opensearch_dls/ (steps 3-4): ONE
+                # generic, org-agnostic DLS role + static mapping, created once
+                # ever -- not per-org. New orgs/members need zero further calls
+                # here; DLS is templated from each caller's own JWT at query time.
+                if self._security_enabled:
+                    await self._opensearch.ensure_generic_tenant_role()
+                elif not self._security_warned:
+                    logger.warning("opensearch_security_disabled_skipping_tenant_role")
+                    self._security_warned = True
+                self._tenant_role_applied = True
+
+            await self._audit.log(
+                AuditEventType.INGEST_STARTED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                evidence_id=evidence_id,
+                details={},
+            )
+
             async for record in records:
                 index = build_index_name(
                     tenant.org_alias,

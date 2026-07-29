@@ -12,6 +12,19 @@ class TaskQueue(ABC):
     """Abstract task queue — Celery in production, in-memory stub for tests."""
 
     @abstractmethod
+    async def enqueue_intake(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
+        """Enqueue the process_intake task (validate/scan/hash/promote).
+
+        Called by the lightweight, client-facing finalize_upload route (and
+        by the retry-intake route for ERROR evidence with a retryable
+        reason) instead of running that work inline on the request thread —
+        see EvidenceIntakeService.start_intake()'s docstring for why. The
+        client's declared SHA-256 is read from the already-persisted
+        Evidence row (with_client_declared_sha256), not passed through here,
+        so a retry never needs the client to resupply it.
+        """
+
+    @abstractmethod
     async def enqueue_dispatch(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
         """Enqueue the dispatch_parse task (entry-point for the autonomous pipeline).
 
@@ -35,6 +48,11 @@ class InMemoryTaskQueue(TaskQueue):
 
     def __init__(self) -> None:
         self.enqueued: list[tuple[str, uuid.UUID, TenantContext]] = []
+
+    async def enqueue_intake(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
+        task_id = str(uuid.uuid4())
+        self.enqueued.append(("intake", evidence_id, tenant))
+        return task_id
 
     async def enqueue_dispatch(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
         task_id = str(uuid.uuid4())

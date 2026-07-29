@@ -1,0 +1,21 @@
+[PASS] real case created -- 201
+
+=== 1. Terminal parse-stage error (no_parser_found) — must NOT be retryable ===
+[PASS] real PUT to MinIO succeeds (mystery.csv) -- 200
+[PASS] lands on ERROR -- ERROR
+[PASS] error reason is no_parser_found -- no_parser_found
+[PASS] retryAction is None (terminal)
+[PASS] retry-parse refuses a terminal reason (422) -- status=422 body={"detail":"Error reason 'no_parser_found' is not retryable — re-upload instead"}
+
+=== 2. Transient parse-stage error (real OpenSearch briefly stopped) — retryable ===
+stopping docker-opensearch-1 ...
+[PASS] real PUT to MinIO succeeds (cloudtrail.json) -- 200
+[PASS] intake completes for real (independent of OpenSearch) before parsing hits the outage -- PARSING
+[PASS] evidence lands on ERROR (not stuck in PARSING) while OpenSearch is down -- ERROR
+[PASS] error reason is ingest_failed -- ingest_failed
+[PASS] retryAction is parse (retryable, parse-stage) -- parse
+restarting docker-opensearch-1 ...
+[PASS] retry-parse accepts a retryable parse-stage reason (202) -- status=202 body={"id":"03c1405a-3bc8-4ab2-ac5e-a6d0bf585702","caseId":"c4c797ba-ea25-44dc-9425-c0c5ed57ecb2","filename":"cloudtrail.json","contentType":"application/octet-stream","sizeBytes":172,"sha256":"756b9c65681
+[PASS] retry-parse succeeds once OpenSearch is back -- reaches COMPLETE -- COMPLETE
+
+13 passed, 0 failed

@@ -154,7 +154,7 @@ class TestFinalizeUploadHappyPath:
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
 
-        result = await intake.finalize_upload(
+        result = await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -172,7 +172,7 @@ class TestFinalizeUploadHappyPath:
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
 
-        result = await intake.finalize_upload(
+        result = await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -190,7 +190,7 @@ class TestFinalizeUploadHappyPath:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
-        await intake.finalize_upload(
+        await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -208,7 +208,7 @@ class TestFinalizeUploadHappyPath:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _EVTX_HEADER)
-        result = await intake.finalize_upload(
+        result = await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_EVTX_HEADER),
             tenant=tenant,
@@ -227,7 +227,7 @@ class TestFinalizeUploadHappyPath:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
-        result = await intake.finalize_upload(
+        result = await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -254,7 +254,7 @@ class TestFinalizeUploadErrors:
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
 
         with pytest.raises(ValidationError, match="mismatch"):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256="a" * 64,  # wrong hash
                 tenant=tenant,
@@ -274,7 +274,7 @@ class TestFinalizeUploadErrors:
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
 
         with pytest.raises(ValidationError):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256="b" * 64,
                 tenant=tenant,
@@ -295,7 +295,7 @@ class TestFinalizeUploadErrors:
         _simulate_upload(local_storage, presigned.object_key, bad_data)
 
         with pytest.raises(ValidationError, match="magic bytes"):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256=_sha256(bad_data),
                 tenant=tenant,
@@ -333,7 +333,7 @@ class TestFinalizeUploadErrors:
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
 
         with pytest.raises(ValidationError, match="infected"):
-            await infected_intake.finalize_upload(
+            await infected_intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256=_sha256(_JSON_CONTENT),
                 tenant=tenant,
@@ -355,7 +355,7 @@ class TestFinalizeUploadErrors:
         )
         other_tenant = make_tenant_context()  # different org_id
         with pytest.raises(ValidationError, match="not found"):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256=_sha256(_JSON_CONTENT),
                 tenant=other_tenant,
@@ -373,7 +373,7 @@ class TestFinalizeUploadErrors:
         _simulate_upload(local_storage, presigned.object_key, b"\x4d\x5a" + b"\x00" * 98)
 
         with pytest.raises(ValidationError, match="extension"):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256=_sha256(b"\x4d\x5a" + b"\x00" * 98),
                 tenant=tenant,
@@ -422,7 +422,7 @@ class TestUploadSizeEnforcement:
         _simulate_upload(local_storage, presigned.object_key, oversized)
 
         with pytest.raises(ValidationError, match="maximum permitted size"):
-            await intake.finalize_upload(
+            await intake.start_intake(
                 evidence_id=evidence.evidence_id,
                 client_sha256=_sha256(oversized),
                 tenant=tenant,
@@ -453,10 +453,17 @@ def _make_intake_with_queue(audit_repo, evidence_repo, local_storage, task_queue
 
 
 class TestAutoDispatch:
-    """Verify that finalize_upload auto-enqueues dispatch_parse on success."""
+    """Verify that process_intake auto-enqueues dispatch_parse on success.
+
+    start_intake itself only enqueues "intake" (kronos.process_intake) when
+    a real task_queue is configured — the actual validate/scan/hash/promote
+    work, and the dispatch_parse enqueue at the end of it, only happen when
+    process_intake runs (in production: the Celery worker; here: called
+    directly, simulating that worker).
+    """
 
     @pytest.mark.asyncio
-    async def test_dispatch_enqueued_after_successful_finalize(
+    async def test_start_intake_enqueues_intake_task(
         self, audit_repo, evidence_repo, local_storage, tenant
     ) -> None:
         from src.adapter.queue.task_queue import InMemoryTaskQueue
@@ -472,7 +479,7 @@ class TestAutoDispatch:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
-        await intake.finalize_upload(
+        await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -480,8 +487,36 @@ class TestAutoDispatch:
 
         assert len(queue.enqueued) == 1
         kind, eid, _ = queue.enqueued[0]
-        assert kind == "dispatch"
+        assert kind == "intake"
         assert eid == evidence.evidence_id
+
+    @pytest.mark.asyncio
+    async def test_dispatch_enqueued_after_successful_process_intake(
+        self, audit_repo, evidence_repo, local_storage, tenant
+    ) -> None:
+        from src.adapter.queue.task_queue import InMemoryTaskQueue
+
+        queue = InMemoryTaskQueue()
+        intake = _make_intake_with_queue(audit_repo, evidence_repo, local_storage, queue)
+
+        evidence, presigned = await intake.request_upload(
+            filename="cloudtrail.json",
+            content_type="application/json",
+            size_bytes=len(_JSON_CONTENT),
+            case_id=uuid.uuid4(),
+            tenant=tenant,
+        )
+        _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+        await intake.start_intake(
+            evidence_id=evidence.evidence_id,
+            client_sha256=_sha256(_JSON_CONTENT),
+            tenant=tenant,
+        )
+        # Simulates the Celery worker picking up the enqueued intake task.
+        await intake.process_intake(evidence_id=evidence.evidence_id, tenant=tenant)
+
+        kinds = [kind for kind, _eid, _t in queue.enqueued]
+        assert kinds == ["intake", "dispatch"]
 
     @pytest.mark.asyncio
     async def test_no_dispatch_on_hash_mismatch(
@@ -500,21 +535,23 @@ class TestAutoDispatch:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
+        await intake.start_intake(
+            evidence_id=evidence.evidence_id,
+            client_sha256="b" * 64,  # wrong on purpose
+            tenant=tenant,
+        )
 
         with pytest.raises(ValidationError):
-            await intake.finalize_upload(
-                evidence_id=evidence.evidence_id,
-                client_sha256="b" * 64,
-                tenant=tenant,
-            )
+            await intake.process_intake(evidence_id=evidence.evidence_id, tenant=tenant)
 
-        assert len(queue.enqueued) == 0
+        kinds = [kind for kind, _eid, _t in queue.enqueued]
+        assert kinds == ["intake"]  # no "dispatch" — hash mismatch is terminal
 
     @pytest.mark.asyncio
     async def test_dispatch_not_called_without_task_queue(
         self, intake, local_storage, tenant
     ) -> None:
-        """Intake without task_queue still completes — no dispatch, no error."""
+        """Intake without task_queue still completes inline — no dispatch, no error."""
         evidence, presigned = await intake.request_upload(
             filename="cloudtrail.json",
             content_type="application/json",
@@ -523,7 +560,7 @@ class TestAutoDispatch:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
-        result = await intake.finalize_upload(
+        result = await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
@@ -534,9 +571,12 @@ class TestAutoDispatch:
     async def test_queue_failure_does_not_abort_intake(
         self, audit_repo, evidence_repo, local_storage, tenant
     ) -> None:
-        """If the queue raises, evidence stays in RECEIVED (not ERROR)."""
+        """If dispatch enqueueing fails, evidence stays in RECEIVED (not ERROR)."""
 
-        class BrokenQueue:
+        class BrokenDispatchQueue:
+            async def enqueue_intake(self, *_a, **_kw):  # type: ignore[no-untyped-def]
+                return "task-id"
+
             async def enqueue_dispatch(self, *_a, **_kw):  # type: ignore[no-untyped-def]
                 raise RuntimeError("broker unavailable")
 
@@ -546,7 +586,9 @@ class TestAutoDispatch:
             async def enqueue_parse_heavy(self, *_a, **_kw):  # type: ignore[no-untyped-def]
                 raise RuntimeError("broker unavailable")
 
-        intake = _make_intake_with_queue(audit_repo, evidence_repo, local_storage, BrokenQueue())
+        intake = _make_intake_with_queue(
+            audit_repo, evidence_repo, local_storage, BrokenDispatchQueue()
+        )
         evidence, presigned = await intake.request_upload(
             filename="cloudtrail.json",
             content_type="application/json",
@@ -555,10 +597,11 @@ class TestAutoDispatch:
             tenant=tenant,
         )
         _simulate_upload(local_storage, presigned.object_key, _JSON_CONTENT)
-        result = await intake.finalize_upload(
+        await intake.start_intake(
             evidence_id=evidence.evidence_id,
             client_sha256=_sha256(_JSON_CONTENT),
             tenant=tenant,
         )
+        result = await intake.process_intake(evidence_id=evidence.evidence_id, tenant=tenant)
         # Evidence is safe in RECEIVED; auto_dispatch_received beat task will retry.
         assert result.state == EvidenceState.RECEIVED

@@ -94,7 +94,7 @@ async def _upload_and_finalize(intake, local_storage, tenant, case_id=None):  # 
         tenant=tenant,
     )
     local_storage.write_quarantine(presigned.object_key, _JSON_CONTENT)
-    return await intake.finalize_upload(
+    return await intake.start_intake(
         evidence_id=evidence.evidence_id,
         client_sha256=_sha256(_JSON_CONTENT),
         tenant=tenant,

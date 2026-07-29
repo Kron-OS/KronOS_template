@@ -271,6 +271,115 @@ class TestStartParsing:
 
 
 # ---------------------------------------------------------------------------
+# Tests: retry_parse
+# ---------------------------------------------------------------------------
+
+
+async def _seed_parse_error_evidence(
+    evidence_repo: InMemoryEvidenceRepository,
+    local_storage: LocalEvidenceStorage,
+    tenant: TenantContext,
+    error_reason: str = "ingest_failed",
+    data: bytes = _CLOUDTRAIL_BYTES,
+) -> Evidence:
+    """Create ERROR evidence with a parse-stage reason, object still in the
+    evidence bucket (intake already succeeded; only parsing/indexing failed)."""
+    meta = make_evidence_metadata(org_id=tenant.org_id)
+    evidence_key = f"{meta.org_alias}/{meta.case_id}/{uuid.uuid4()}"
+    local_storage.write_evidence(evidence_key, data)
+    evidence = Evidence(
+        metadata=meta,
+        state=EvidenceState.PARSING,
+        sha256="a" * 64,
+        minio_evidence_key=evidence_key,
+    ).with_error(error_reason)
+    await evidence_repo.save(evidence)
+    return evidence
+
+
+class TestRetryParse:
+    @pytest.mark.asyncio
+    async def test_retry_parse_transitions_to_parsing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        result = await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert result.state == EvidenceState.PARSING
+        assert result.error_reason is None
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_enqueues_fast_task(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert len(task_queue.enqueued) == 1
+        assert task_queue.enqueued[0][0] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_enqueues_heavy_task(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _HeavyParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        assert len(task_queue.enqueued) == 1
+        assert task_queue.enqueued[0][0] == "heavy"
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_logs_parse_started_with_retry_flag(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        started = next(
+            e for e in audit_repo.events if e.event_type == AuditEventType.PARSE_STARTED
+        )
+        assert started.details.get("retry") is True
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_wrong_state_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        evidence = await _seed_received_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(EvidenceStateConflictError, match="expected ERROR"):
+            await orchestrator.retry_parse(evidence.evidence_id, tenant)
+
+    @pytest.mark.asyncio
+    async def test_retry_parse_end_to_end_reaches_complete(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Full loop: ERROR (parse-stage) -> retry_parse -> PARSING ->
+        execute_parse (simulating the re-enqueued Celery task) -> COMPLETE,
+        against the same still-promoted evidence-bucket object -- no
+        re-upload, no re-scan."""
+        evidence = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.retry_parse(evidence.evidence_id, tenant)
+        count = await orchestrator.execute_parse(evidence.evidence_id, tenant)
+        assert count == 2
+        stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.COMPLETE
+
+
+# ---------------------------------------------------------------------------
 # Tests: execute_parse
 # ---------------------------------------------------------------------------
 

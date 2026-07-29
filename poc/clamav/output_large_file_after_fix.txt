@@ -1,0 +1,15 @@
+=== 0. Confirm real clamd config reflects the new 5 GiB limits ===
+[PASS] StreamMaxLength = 5368709120 (5 GiB) -- 1
+[PASS] MaxFileSize = 5368709120 (5 GiB)
+[PASS] MaxScanSize = 5368709120 (5 GiB)
+
+=== 1. The exact previously-failing scenario: 239 MB stream ===
+[PASS] 239 MB stream now scans clean (previously raised BrokenPipeError) -- ScanResult(is_clean=True, threat_name=None)
+
+=== 2. Confirm determinism: a second identical attempt also succeeds ===
+[PASS] second 239 MB attempt also scans clean -- ScanResult(is_clean=True, threat_name=None)
+
+=== 3. A 1.5 GB stream (realistic large forensic image size) ===
+[PASS] 1.5 GB stream scans clean -- ScanResult(is_clean=True, threat_name=None)
+
+6 passed, 0 failed

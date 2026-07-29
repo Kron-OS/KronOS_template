@@ -11,6 +11,20 @@ from src.domain.user import TenantContext
 class CeleryTaskQueue(TaskQueue):
     """Sends tasks to Celery.  Imports the Celery app lazily to avoid import cycles."""
 
+    async def enqueue_intake(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
+        """Enqueue process_intake (validate/scan/hash/promote), q.intake."""
+        from src.external.celery_app import process_intake  # noqa: PLC0415
+
+        result = process_intake.apply_async(
+            kwargs={
+                "evidence_id": str(evidence_id),
+                "org_id": str(tenant.org_id),
+                "user_id": str(tenant.user_id),
+            },
+            queue="q.intake",
+        )
+        return result.id  # type: ignore[no-any-return]
+
     async def enqueue_dispatch(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
         """Enqueue dispatch_parse — the autonomous pipeline entry-point.
 

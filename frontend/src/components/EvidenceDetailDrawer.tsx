@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Evidence } from '../types'
+import { retryIntake, retryParse } from '../api/evidence'
 import { ErrorCatalogueChip } from './ErrorCatalogue'
+import { Spinner } from './Spinner'
 import { StatusPill } from './StatusPill'
 
 function formatBytes(bytes: number): string {
@@ -31,6 +34,17 @@ interface EvidenceDetailDrawerProps {
 
 export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawerProps) {
   const [copied, setCopied] = useState(false)
+  const queryClient = useQueryClient()
+
+  const retryMutation = useMutation({
+    mutationFn: (evidenceId: string) =>
+      evidence?.retryAction === 'parse' ? retryParse(evidenceId) : retryIntake(evidenceId),
+    onSuccess: (_result, _evidenceId) => {
+      if (evidence) {
+        void queryClient.invalidateQueries({ queryKey: ['evidence', evidence.caseId] })
+      }
+    },
+  })
 
   useEffect(() => {
     if (!evidence) return
@@ -116,8 +130,24 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
           />
 
           {evidence.errorReason && (
-            <div className="mt-4">
+            <div className="mt-4 flex flex-col gap-2">
               <ErrorCatalogueChip reasonCode={evidence.errorReason} />
+              {evidence.retryAction && (
+                <button
+                  type="button"
+                  onClick={() => retryMutation.mutate(evidence.id)}
+                  disabled={retryMutation.isPending}
+                  className="flex w-fit items-center gap-2 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  {retryMutation.isPending && <Spinner size="sm" />}
+                  Retry
+                </button>
+              )}
+              {retryMutation.isError && (
+                <span className="text-xs text-red-400">
+                  Retry failed — please try again.
+                </span>
+              )}
             </div>
           )}
         </div>

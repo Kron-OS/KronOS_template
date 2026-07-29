@@ -147,6 +147,73 @@ class ParsingOrchestrationService:
         )
         return evidence
 
+    async def retry_parse(
+        self,
+        evidence_id: uuid.UUID,
+        tenant: TenantContext,
+    ) -> Evidence:
+        """Re-enter PARSING for ERROR evidence with a retryable parse-stage reason.
+
+        Unlike retry-intake (which re-enters SCANNING and re-validates/
+        re-scans/re-hashes the quarantined object), this re-enters PARSING
+        directly against the object already promoted to the evidence
+        bucket -- no re-upload, no re-scan, since intake already succeeded
+        and only parsing/indexing failed. Callers (the route) must already
+        have checked is_parse_stage_error_reason + is_retryable_error_reason;
+        this method re-derives the parser itself so a stale/incorrect prior
+        detection can't wedge a retry loop.
+        """
+        evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
+        if evidence is None:
+            raise ValidationError(
+                "Evidence not found",
+                context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+        if evidence.state != EvidenceState.ERROR:
+            raise EvidenceStateConflictError(
+                f"Evidence is in state {evidence.state.value}, expected ERROR",
+                context={"evidence_id": str(evidence_id), "state": evidence.state.value},
+            )
+
+        evidence_key = evidence.minio_evidence_key
+        if not evidence_key:
+            raise ParsingError(
+                "Evidence has no storage key",
+                context={"evidence_id": str(evidence_id)},
+            )
+
+        parser = await self._detect_parser(evidence, evidence_key)
+
+        evidence = evidence.with_state(EvidenceState.PARSING)
+        await self._repo.update(evidence, expected_state=EvidenceState.ERROR)
+        await self._audit.log(
+            AuditEventType.PARSE_STARTED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            actor_username=tenant.username,
+            evidence_id=evidence.evidence_id,
+            details={
+                "parser": parser.parser_name,
+                "parser_type": parser.parser_type.value,
+                "retry": True,
+            },
+        )
+
+        if parser.parser_type == ParserType.FAST:
+            await self._task_queue.enqueue_parse_fast(evidence_id, tenant)
+        else:
+            await self._task_queue.enqueue_parse_heavy(evidence_id, tenant)
+
+        logger.info(
+            "parse_retry_queued",
+            extra={
+                "evidence_id": str(evidence_id),
+                "parser": parser.parser_name,
+                "queue": parser.parser_type.value,
+            },
+        )
+        return evidence
+
     async def execute_parse(
         self,
         evidence_id: uuid.UUID,
@@ -282,7 +349,41 @@ class ParsingOrchestrationService:
                     extra={"evidence_id": str(evidence_id), "error": str(exc)},
                 )
             raise
-        except (ParsingError, ValidationError):
+        except (ParsingError, ValidationError) as exc:
+            # Previously just re-raised with no state mutation at all -- a
+            # corrupt file/unsupported format hitting this branch (e.g. via
+            # _detect_parser's second, execute_parse-local call) was left
+            # stuck in PARSING even on the true final attempt, relying
+            # entirely on the 3h abort_orphan_parses beat sweep. Mirror the
+            # generic except Exception branch below: only mutate state on
+            # the final attempt, so a pending Celery retry's own
+            # PARSING-state precondition still holds in between.
+            if is_final_attempt:
+                # Not "no_parser_found" here even for a ParsingError -- that
+                # reason is reserved for _detect_parser's own dedicated path
+                # in start_parsing (before PARSING is ever entered). A
+                # ParsingError surfacing inside execute_parse's try means the
+                # parser itself failed against real content (corrupt file,
+                # truncated stream, etc.), which is the same "parse_failed"
+                # category the generic Exception branch below already uses.
+                evidence = evidence.with_error("parse_failed")
+                await self._repo.update(evidence)
+                await self._audit.log(
+                    AuditEventType.PARSE_FAILED,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    evidence_id=evidence.evidence_id,
+                    details={"error": str(exc), "error_type": type(exc).__name__},
+                )
+            else:
+                logger.warning(
+                    "parse_failed_will_retry",
+                    extra={
+                        "evidence_id": str(evidence_id),
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
             raise
         except Exception as exc:
             if is_final_attempt:
