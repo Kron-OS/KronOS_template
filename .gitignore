@@ -27,3 +27,4 @@ id_rsa*
 # a public root cert, not a key) but ephemeral, per-stack-instance output.
 /kronos-dev-root-ca.crt
 
+scripts/dev_autoresume/.state/

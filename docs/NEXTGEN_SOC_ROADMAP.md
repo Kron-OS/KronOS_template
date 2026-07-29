@@ -518,7 +518,20 @@ modify files outside your scope — report conflicts instead.
   before dependents start.
 - **Orchestrator holds the dev stack.** Agents must not `down -v` the shared
   stack; container restarts are coordinated.
-- **Commit/push is the owner's call**, never an agent's.
+- **Commit/push authorization (2026-07-29, explicit, standing for this
+  effort only):** the project owner authorized auto-committing verified
+  work on `feat/nextgen-soc-cert-platform` as the autonomous orchestration
+  progresses, specifically because this run may span weeks unattended and
+  leaving it all uncommitted risks real data loss. Scope: commit (and push
+  to the already-tracked remote branch) only work that is actually real-PoC
+  verified per §2/§F — never commit a subagent's unverified claim. Never
+  force-push. Never touch `main` or any branch but this one. Never rewrite
+  history (no `commit --amend` beyond the immediately-preceding commit in
+  the same turn, no `rebase`). This authorization does **not** extend to
+  any other branch or repo action (PR creation, merges, deletes) — those
+  remain a human call. Subagents themselves still must not commit (per
+  their brief template in §4) — only the orchestrator commits, after
+  reviewing what a subagent actually did.
 - **Model policy (orchestrator directive, supersedes plain §F.4 guidance):**
   the orchestrator runs as Sonnet 5 at high effort; subagents run **cheaper**
   — Sonnet 5 at low/medium effort for well-scoped single-pair work with known
@@ -534,3 +547,16 @@ modify files outside your scope — report conflicts instead.
   restart docker-nginx-1`, then retry. Not a code bug — a real, recurring
   dev-environment fact worth each agent knowing up front rather than
   rediscovering.
+- **Continuation mechanism (2026-07-29):** autonomous continuation between
+  the project owner's own messages uses the harness's native `CronCreate`
+  (recurring prompt fired directly into this same chat session — the
+  project owner explicitly wants status visible here, not in a separate
+  cron-invoked CLI session's log file). `CronCreate` jobs are session-only
+  and auto-expire after 7 days — if this orchestration is still running
+  when a job is nearing that limit, re-arm it with a fresh `CronCreate`
+  call for another cycle rather than letting it lapse silently. A
+  secondary, silent OS-crontab-based backstop also exists
+  (`scripts/dev_autoresume/`) purely for the case the whole session process
+  itself dies (not just a subagent hitting a spend limit) — it already
+  proved itself once this session (see its own README) — but its activity
+  is not chat-visible by design/necessity, so `CronCreate` remains primary.

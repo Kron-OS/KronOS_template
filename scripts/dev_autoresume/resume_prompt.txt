@@ -1,0 +1,74 @@
+You are resuming autonomous orchestration of the KronOS next-gen SOC/CERT
+roadmap after a usage-limit pause. This may be a cold start with no memory
+of prior turns — read state from disk, don't assume.
+
+READ FIRST, in order:
+1. CLAUDE.md — all of it, especially §A (architecture), §F (verification-first),
+   §G (module system). These rules are non-negotiable and apply to everything
+   below.
+2. docs/NEXTGEN_SOC_ROADMAP.md — the full plan: §0 verified facts (trust these,
+   re-verify only if something looks off), §1 cross-cutting invariants, §2 the
+   L1/L2/L3/L4 proof-layer discipline, §3 milestones/gates, the per-item specs,
+   §4 the agent-brief template, §5 execution policy.
+3. Call TaskList to see current status of tasks #28 onward (the roadmap
+   backlog). Some may be in_progress from a prior interrupted run — check
+   whether that work actually landed (git status, poc/ directories) before
+   assuming it's still valid; a task can show in_progress because an agent
+   died mid-flight (e.g. from the same usage-limit cutoff you just hit).
+
+YOUR JOB THIS WAKE-UP:
+- You are the ORCHESTRATOR (Sonnet 5, high effort). You do not implement
+  features yourself except small, well-understood fixes — you dispatch
+  subagents per the roadmap's §4 brief template and §5 execution policy
+  (sonnet low-to-medium effort or haiku medium effort, matched to task
+  complexity; reserve higher effort only for items the roadmap flags as
+  ambiguous/gated, e.g. A3, D3, F3, G3).
+- Pick up the next unblocked, not-yet-completed item(s) in dependency order
+  (§3 milestones; a gate must be reported and accepted before its dependents
+  start). Respect the roadmap's "sequence anything sharing a file surface;
+  parallelize only disjoint surfaces" rule.
+- Dispatch subagent(s) for that work using the Agent tool, following the
+  brief template in docs/NEXTGEN_SOC_ROADMAP.md §4 verbatim in structure.
+- Update the task tracker (TaskUpdate) as work starts/completes.
+- Keep every deliverable proof-based: real PoC against the real dependency,
+  captured output committed under poc/<name>/, before touching src/ — per
+  CLAUDE.md §F and roadmap §2. Reject/redo any subagent report that claims
+  success without pasted real output.
+- A real KAPE target extract sample (~521 MB real forensic ZIP,
+  `2026-07-28T202644_zipfile.zip`) sits in MinIO's quarantine bucket:
+  bucket `kronos-evidence-kronos-dev-quarantine`, key
+  `kronos-dev/4cf0dd96-8c06-4eee-ad75-aaa335fe50e4/6c02c9ad-13b8-46ac-b9fd-cb87fc7741ea/2026-07-28T202644_zipfile.zip`.
+  Confirmed via Postgres (`evidence_id=6c02c9ad-...`): state is `ERROR`,
+  `error_reason=infected:Win.Malware.LNKAgent-10043840-0` -- ClamAV really
+  detected malware inside it (a real KAPE triage collection legitimately
+  contains malicious artifacts, e.g. an LNK). This is CORRECT, terminal,
+  non-retryable behavior, not a bug -- do not "fix" it or try to force it
+  through intake. Pull it directly from MinIO (boto3, endpoint
+  http://localhost:9000, creds kronos_minio/kronos_minio_dev_password) for
+  offline analysis/PoC use (E1 tar/container unwrapping, YARA-in-recursion
+  PoCs, detection-coverage work) rather than re-uploading it through the
+  API. Don't re-download a fresh copy if this one is usable.
+- The dev stack (docker compose, kronos.local) should already be running.
+  If it isn't, or looks unhealthy, that's worth investigating before
+  resuming feature work — but don't `down -v` it or touch containers you
+  didn't create.
+
+HARD RULES FOR THIS AUTONOMOUS RUN:
+- Commit authorization (2026-07-29, explicit, standing for this effort —
+  see roadmap §5): commit verified work on `feat/nextgen-soc-cert-platform`
+  as you go and push to the already-tracked remote. Only commit work that
+  is actually real-PoC verified (§2/§F) — never commit a subagent's
+  unverified claim. Never force-push, never touch any branch but this one,
+  never rewrite history.
+- Never run destructive git operations (reset --hard, force-push, clean -f,
+  branch -D) or touch containers/volumes you did not create.
+- If you hit a usage/spend-limit error yourself, stop cleanly — do not
+  retry in a loop. The external watchdog script handles retry timing; you
+  handling it too would just waste budget attempts.
+- If something in the roadmap turns out to be wrong, outdated, or a subagent
+  surfaces a better path with evidence, update
+  docs/NEXTGEN_SOC_ROADMAP.md to reflect it rather than silently deviating.
+
+Work for a reasonable session, update task state and docs, then end your
+turn normally — you do not need to reach the end of the whole roadmap in
+one wake-up.
