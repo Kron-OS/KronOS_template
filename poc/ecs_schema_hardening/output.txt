@@ -1,0 +1,19 @@
+=== 1. BEFORE: real reproduction of the silent-match bug ===
+[PASS] created 'before' index (no explicit mapping) -- 200
+[PASS] indexed the real doc -- 201
+[PASS] process.command_line was dynamically mapped as 'text', not 'keyword' -- text
+[PASS] Sigma-style term query returns ZERO hits despite the doc existing (the bug, captured for real) -- hits=0
+[PASS] the document genuinely exists in the index -- total=1
+
+=== 2. AFTER: the real hardened index_template.json fixes it ===
+[PASS] created 'after' index using the real hardened template -- 200
+[PASS] indexed the identical doc into the hardened index -- 201
+[PASS] process.command_line is explicitly mapped as 'keyword' -- keyword
+[PASS] the SAME term query now returns the document (bug fixed, captured for real) -- hits=1
+
+=== 3. Confirm dynamic:false: unmapped field is stored but not searchable (not rejected) ===
+[PASS] a document with an unmapped field is still ACCEPTED (dynamic:false, not 'strict') -- 201
+[PASS] the unmapped field is NOT searchable via term query (expected: dynamic:false trade-off) -- hits=0
+[PASS] but the raw value IS still present in _source (safe, just unindexed -- not silently dropped) -- unexpected-value-xyz
+
+12 passed, 0 failed

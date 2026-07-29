@@ -6,16 +6,24 @@
       "number_of_replicas": 1
     },
     "mappings": {
+      "_meta": {
+        "dynamic_policy": "false -- unmapped fields are stored in _source but NOT indexed. This is a deliberate, conservative choice over 'strict': parser `extra` fields vary per format and per parser, and 'strict' would REJECT the whole document (write failure, ingestion breaks) the moment any record carries a field not listed here. 'false' instead means an unknown field is safe-but-unsearchable rather than wrongly dynamic-mapped as text+keyword (the original bug: a Sigma term query against the un-suffixed name silently matched nothing even though the field existed and was populated). Every field a Sigma rule is expected to reference must be added here explicitly, as keyword/long/date as appropriate -- see docs/NEXTGEN_SOC_ROADMAP.md A1/A2."
+      },
+      "dynamic": false,
       "properties": {
         "@timestamp": { "type": "date" },
         "message": { "type": "text" },
+        "data_type": { "type": "keyword" },
         "event": {
           "properties": {
             "kind":     { "type": "keyword" },
             "category": { "type": "keyword" },
             "type":     { "type": "keyword" },
             "outcome":  { "type": "keyword" },
-            "original": { "type": "keyword", "index": false }
+            "original": { "type": "keyword", "index": false },
+            "code":     { "type": "keyword" },
+            "action":   { "type": "keyword" },
+            "duration": { "type": "long" }
           }
         },
         "host": {
@@ -36,13 +44,130 @@
         },
         "process": {
           "properties": {
-            "pid":  { "type": "long" },
-            "name": { "type": "keyword" }
+            "pid":             { "type": "long" },
+            "name":            { "type": "keyword" },
+            "executable":      { "type": "keyword" },
+            "command_line":    { "type": "keyword" },
+            "parent": {
+              "properties": {
+                "pid":          { "type": "long" },
+                "name":         { "type": "keyword" },
+                "executable":   { "type": "keyword" },
+                "command_line": { "type": "keyword" }
+              }
+            }
+          }
+        },
+        "source": {
+          "properties": {
+            "ip":   { "type": "ip" },
+            "port": { "type": "long" }
+          }
+        },
+        "destination": {
+          "properties": {
+            "ip":   { "type": "ip" },
+            "port": { "type": "long" }
+          }
+        },
+        "dns": {
+          "properties": {
+            "question": {
+              "properties": {
+                "name": { "type": "keyword" }
+              }
+            },
+            "rrname": { "type": "keyword" },
+            "rrtype": { "type": "keyword" },
+            "type":   { "type": "keyword" }
+          }
+        },
+        "registry": {
+          "properties": {
+            "path":  { "type": "keyword" },
+            "key":   { "type": "keyword" },
+            "value": { "type": "keyword" }
           }
         },
         "file": {
           "properties": {
-            "path": { "type": "keyword" }
+            "path": { "type": "keyword" },
+            "name": { "type": "keyword" },
+            "size": { "type": "long" },
+            "hash": {
+              "properties": {
+                "md5":    { "type": "keyword" },
+                "sha1":   { "type": "keyword" },
+                "sha256": { "type": "keyword" }
+              }
+            }
+          }
+        },
+        "error": {
+          "properties": {
+            "code":    { "type": "keyword" },
+            "message": { "type": "text" }
+          }
+        },
+        "http": {
+          "properties": {
+            "hostname": { "type": "keyword" },
+            "request": {
+              "properties": {
+                "method":   { "type": "keyword" },
+                "referrer": { "type": "keyword" }
+              }
+            },
+            "response": {
+              "properties": {
+                "status_code": { "type": "long" },
+                "body": {
+                  "properties": {
+                    "bytes": { "type": "long" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "url": {
+          "properties": {
+            "path":   { "type": "keyword" },
+            "domain": { "type": "keyword" }
+          }
+        },
+        "user_agent": {
+          "properties": {
+            "original": { "type": "keyword" }
+          }
+        },
+        "tls": {
+          "properties": {
+            "subject": { "type": "keyword" },
+            "sni":     { "type": "keyword" }
+          }
+        },
+        "alert": {
+          "properties": {
+            "signature": { "type": "keyword" },
+            "category":  { "type": "keyword" },
+            "severity":  { "type": "long" },
+            "action":    { "type": "keyword" }
+          }
+        },
+        "rule": {
+          "properties": {
+            "id": { "type": "keyword" }
+          }
+        },
+        "cloudtrail": {
+          "properties": {
+            "request_parameters": { "type": "object", "enabled": false }
+          }
+        },
+        "chrome": {
+          "properties": {
+            "title": { "type": "text" }
           }
         },
         "kronos": {
@@ -50,6 +175,7 @@
             "evidence_id":       { "type": "keyword" },
             "case_id":           { "type": "keyword" },
             "org_id":            { "type": "keyword" },
+            "org_alias":         { "type": "keyword" },
             "sha256":            { "type": "keyword" },
             "parser":            { "type": "keyword" },
             "parser_version":    { "type": "keyword" },
