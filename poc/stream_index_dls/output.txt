@@ -1,0 +1,28 @@
+[PASS] build_stream_index_name() produces the expected kronos-* shape -- kronos-kronos-dev-stream-kronos-poc-source-202607
+
+=== 1. Create real index 'kronos-kronos-dev-stream-kronos-poc-source-202607' -- relies on the real hardened index_template.json to auto-apply ===
+[PASS] index created (or already existed) -- status=200
+[PASS] real index inherited the hardened template's dynamic:false (A1) automatically -- dynamic='false'
+[PASS] real index inherited kronos.org_id mapped as keyword
+
+=== 2. Real Dashboards SSO login as the real, live case-lead analyst ===
+[PASS] real token issued, real org_id extracted -- 482072f5-8086-4815-be03-879cc2eaecb5
+
+=== 3. Index two real documents: one for the real org (482072f5-8086-4815-be03-879cc2eaecb5), one for a different org (5f16b3a4-09df-44a8-953d-548584806ad4) ===
+[PASS] indexed real doc 'real-org-doc' -- status=201
+[PASS] indexed real doc 'other-org-doc' -- status=201
+
+=== 4. As admin (no DLS): confirm BOTH documents are really there ===
+[PASS] admin sees both real documents (proves the isolation we're about to test is real DLS, not 'nothing is there') -- {'value': 2, 'relation': 'eq'}
+
+=== 5. As the real case-lead session (DLS active): confirm ONLY the matching-org document returns ===
+[PASS] real tenant session sees exactly 1 document (its own org's) -- count=1 body=
+[PASS] the visible document is the real org's document, not the other org's -- real-org-doc
+
+=== 6. Confirm the existing ISM policy really attached to this new stream index (not assumed from the wildcard alone) ===
+[PASS] the real kronos-* ISM policy is attached to the new stream index automatically -- policy_id='kronos-rollover' full={'index.plugins.index_state_management.policy_id': 'kronos-rollover', 'index.opendistro.index_state_management.policy_id': 'kronos-rollover', 'index': 'kronos-kronos-dev-stream-kronos-poc-source-202607', 'index_uuid': 'zHtWPc_oTmeGLcHqP6pL9A', 'policy_id': 'kronos-rollover', 'enabled': True}
+
+=== 7. Cleanup: delete throwaway index 'kronos-kronos-dev-stream-kronos-poc-source-202607' ===
+[PASS] throwaway index deleted -- status=200
+
+12 passed, 0 failed

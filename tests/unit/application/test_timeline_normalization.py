@@ -1,11 +1,15 @@
-"""Unit tests for ECSNormalizer and build_index_name."""
+"""Unit tests for ECSNormalizer, build_index_name, and build_stream_index_name."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
 
-from src.application.timeline_normalization import ECSNormalizer, build_index_name
+from src.application.timeline_normalization import (
+    ECSNormalizer,
+    build_index_name,
+    build_stream_index_name,
+)
 from tests.fixtures.factories import make_timeline_record
 
 
@@ -35,6 +39,57 @@ class TestBuildIndexName:
         ts1 = datetime(2024, 1, 1, tzinfo=UTC)
         ts2 = datetime(2024, 2, 1, tzinfo=UTC)
         assert build_index_name("org", "cid", ts1) != build_index_name("org", "cid", ts2)
+
+
+class TestBuildStreamIndexName:
+    def test_basic_pattern(self) -> None:
+        ts = datetime(2024, 3, 15, tzinfo=UTC)
+        name = build_stream_index_name("acme", "zeek-conn-log", ts)
+        assert name == "kronos-acme-stream-zeek-conn-log-202403"
+
+    def test_shares_kronos_prefix_with_case_scoped_naming(self) -> None:
+        """Both index families must match the same kronos-* wildcard that
+        kronos-generic-tenant's DLS clause and the ISM policy are templated
+        on -- verified for real in poc/stream_index_dls/."""
+        ts = datetime(2024, 3, 15, tzinfo=UTC)
+        assert build_stream_index_name("acme", "src", ts).startswith("kronos-")
+
+    def test_uppercase_org_alias_lowercased(self) -> None:
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
+        name = build_stream_index_name("ACME", "source", ts)
+        assert name.startswith("kronos-acme-stream-")
+
+    def test_special_chars_in_org_alias_replaced(self) -> None:
+        ts = datetime(2024, 6, 1, tzinfo=UTC)
+        name = build_stream_index_name("my org!", "source", ts)
+        assert "!" not in name
+        assert " " not in name
+
+    def test_special_chars_in_source_id_replaced(self) -> None:
+        ts = datetime(2024, 6, 1, tzinfo=UTC)
+        name = build_stream_index_name("org", "EDR Vendor X!", ts)
+        assert "!" not in name
+        assert " " not in name
+        assert "edr-vendor-x" in name
+
+    def test_yyyymm_suffix(self) -> None:
+        ts = datetime(2025, 12, 31, tzinfo=UTC)
+        name = build_stream_index_name("org", "source", ts)
+        assert name.endswith("-202512")
+
+    def test_different_months_produce_different_names(self) -> None:
+        ts1 = datetime(2024, 1, 1, tzinfo=UTC)
+        ts2 = datetime(2024, 2, 1, tzinfo=UTC)
+        assert build_stream_index_name("org", "src", ts1) != build_stream_index_name(
+            "org", "src", ts2
+        )
+
+    def test_case_and_stream_index_names_never_collide(self) -> None:
+        """The literal 'case'/'stream' segment keeps the two families
+        structurally distinct even if a case_id and source_id happened to
+        be the same string."""
+        ts = datetime(2024, 3, 15, tzinfo=UTC)
+        assert build_index_name("org", "x", ts) != build_stream_index_name("org", "x", ts)
 
 
 class TestECSNormalizer:

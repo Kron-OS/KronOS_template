@@ -19,6 +19,26 @@ def build_index_name(org_alias: str, case_id: str, timestamp: datetime) -> str:
     return f"kronos-{safe_org}-case-{case_id}-{yyyymm}"
 
 
+def build_stream_index_name(org_alias: str, source_id: str, timestamp: datetime) -> str:
+    """Return the per-tenant monthly index name for a continuous-telemetry
+    record (``StreamProvenance``, ``src/domain/stream.py`` -- roadmap M1/B1).
+
+    Pattern: ``kronos-{safe_org}-stream-{safe_source}-{yyyymm}`` -- a sibling
+    to :func:`build_index_name`'s case-scoped naming, keyed on ``source_id``
+    (e.g. a collector name) instead of ``case_id``, since a stream record has
+    no owning case at ingest time. Both share the ``kronos-*`` prefix
+    deliberately: ``kronos-generic-tenant``'s DLS clause
+    (``scripts/provision_opensearch_security.py``) and the ISM policy
+    (``ism_policy.json``) are both templated on that exact wildcard, so a new
+    index family under it inherits both without any config change -- verified
+    for real, not assumed, in ``poc/stream_index_dls/``.
+    """
+    safe_org = re.sub(r"[^a-z0-9-]", "-", org_alias.lower())
+    safe_source = re.sub(r"[^a-z0-9-]", "-", source_id.lower())
+    yyyymm = timestamp.strftime("%Y%m")
+    return f"kronos-{safe_org}-stream-{safe_source}-{yyyymm}"
+
+
 class ECSNormalizer:
     """Converts a :class:`TimelineRecord` to a nested OpenSearch document."""
 
