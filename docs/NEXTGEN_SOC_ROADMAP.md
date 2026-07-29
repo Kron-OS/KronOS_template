@@ -560,3 +560,20 @@ modify files outside your scope — report conflicts instead.
   itself dies (not just a subagent hitting a spend limit) — it already
   proved itself once this session (see its own README) — but its activity
   is not chat-visible by design/necessity, so `CronCreate` remains primary.
+- **Real concurrency hazard observed (2026-07-29), not hypothetical:** the
+  crontab backstop's `claude -p -c` and the interactive/CronCreate-fired
+  session both operate on the exact same git working directory (not
+  separate worktrees). Both processes running at once briefly raced on the
+  shared `.git/index`: one process's staged `git add` was silently undone
+  by the other process's own `git add`/`status` calls, until the other
+  process ran `git commit` (which resolved it -- the commit landed with
+  correct content, nothing was actually lost, but the staging area was
+  momentarily unpredictable for the losing side). **Rule going forward:**
+  if another `claude -p`/backstop process is alive
+  (`ps aux | grep 'claude -p'`) and has files staged/modified that you
+  didn't touch, do NOT run your own `git add`/`git reset`/`git commit`
+  until it finishes -- let it complete and commit its own work first. Pick
+  up a **different, unblocked** item on a disjoint file surface instead of
+  idly polling. If this becomes a recurring problem, the real fix is
+  running the backstop in a separate `git worktree` rather than sharing the
+  interactive session's working directory -- not yet done, flagged here.
