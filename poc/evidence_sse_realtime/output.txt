@@ -1,0 +1,7 @@
+[PASS] real login succeeds, lands on /cases
+[PASS] real case created and opened via the UI -- SSE realtime PoC 1785269433
+[PASS] real file uploaded via the UI and finalize accepted
+[PASS] status pill changed at least once WITHOUT a page reload (live SSE push) -- observed sequence: ['Uploading', 'Complete']
+[PASS] evidence reached a terminal state live (Complete, since no ClamAV/parse issue expected for this clean JSON file) -- Complete
+
+5 passed, 0 failed

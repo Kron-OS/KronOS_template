@@ -93,7 +93,10 @@ async def evidence_sse_stream(
 
                 for ev_id, state in current.items():
                     if last_states.get(ev_id) != state:
-                        payload = json.dumps({"evidence_id": ev_id, "state": state})
+                        # camelCase to match the frontend's SSEStatusEvent
+                        # interface (same field-naming convention as every
+                        # other DTO in this codebase, e.g. EvidenceOut).
+                        payload = json.dumps({"evidenceId": ev_id, "state": state})
                         yield f"event: status\ndata: {payload}\n\n"
 
                 last_states = current

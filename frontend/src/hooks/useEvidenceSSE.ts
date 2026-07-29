@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { getSSETicket } from '../api/evidence'
-import type { SSEStatusEvent, SSEErrorEvent } from '../types'
+import type { SSEStatusEvent } from '../types'
 
-type SSECallback = (event: SSEStatusEvent | SSEErrorEvent) => void
+type SSECallback = (event: SSEStatusEvent) => void
 
 export function useEvidenceSSE(caseId: string, onEvent: SSECallback): void {
   const cbRef = useRef(onEvent)
@@ -35,14 +35,34 @@ export function useEvidenceSSE(caseId: string, onEvent: SSECallback): void {
           if (openTimer) clearTimeout(openTimer)
         }
 
-        es.onmessage = (e) => {
+        // The backend (src/external/routes/sse.py) sends named SSE frames
+        // ("event: status\ndata: ...", "event: ping", "event: done") --
+        // EventSource.onmessage is a shorthand for addEventListener('message', ...)
+        // and per the SSE spec is NEVER invoked for a frame carrying an
+        // explicit event name other than "message". Using onmessage here
+        // silently received zero events forever: the connection opened
+        // fine (no error, no fallback to polling), but no status update
+        // ever reached the callback -- the evidence list only ever refreshed
+        // via a full page reload or an incidental window-focus refetch.
+        es.addEventListener('status', (e) => {
           try {
-            const data = JSON.parse(e.data) as SSEStatusEvent | SSEErrorEvent
+            const data = JSON.parse((e as MessageEvent).data) as SSEStatusEvent
             cbRef.current(data)
           } catch {
             // malformed event — ignore
           }
-        }
+        })
+
+        // All evidence in this case reached a terminal state (COMPLETE/ERROR)
+        // -- the server closes the stream deliberately. Close here instead of
+        // letting EventSource auto-reconnect: the one-shot ticket was already
+        // consumed, so a reconnect attempt would 401 into onerror and start
+        // an unnecessary polling loop for a case with nothing left to watch.
+        es.addEventListener('done', () => {
+          if (openTimer) clearTimeout(openTimer)
+          es?.close()
+          es = null
+        })
 
         es.onerror = () => {
           if (openTimer) clearTimeout(openTimer)
