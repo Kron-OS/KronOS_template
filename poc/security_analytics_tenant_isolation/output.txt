@@ -1,0 +1,24 @@
+=== 1. Real Dashboards SSO login as a real tenant analyst (case-lead, org kronos-dev) ===
+[PASS] real token issued
+[PASS] token carries the real combined dashboard_roles claim (org_id + role) -- ['482072f5-8086-4815-be03-879cc2eaecb5', 'case-lead']
+
+=== 2. Confirm real role resolution via OpenSearch's own authinfo ===
+[PASS] resolves to kronos-generic-tenant (the DLS-granting role) and a Dashboards tenant role, nothing SA/alerting-related -- ['own_index', 'kronos-generic-tenant', 'kronos-dash-kronos-dev']
+
+=== 3. Sanity: this real tenant session CAN read kronos-* (DLS working as already verified in prior PoCs) ===
+[PASS] kronos-* search succeeds for a real tenant session -- status=200
+
+=== 4. Can this real tenant session list/search Security Analytics detectors? ===
+[PASS] detector search is DENIED (403) for a plain tenant role -- no cluster permission granted -- status=403 body={"error":{"root_cause":[{"type":"security_exception","reason":"no permissions for [cluster:admin/opensearch/securityanalytics/detector/search] and User [name=10000000-0000-4000-8000-000000000003, back
+
+=== 5. Can this real tenant session search alerting monitors (the underlying findings/alerts engine)? ===
+[PASS] alerting monitor search is DENIED (403) -- separate plugin, also no permission granted -- status=403 body={"error":{"root_cause":[{"type":"security_exception","reason":"no permissions for [cluster:admin/opendistro/alerting/monitor/search] and User [name=10000000-0000-4000-8000-000000000003, backend_roles=
+
+=== 6. Can this real tenant session read the .opensearch-sap-* system indices DIRECTLY (bypassing the plugin API layer)? ===
+[PASS] direct raw-index read is DENIED (403) -- kronos-generic-tenant's index_permissions cover ONLY kronos-* -- status=403 body={"error":{"root_cause":[{"type":"security_exception","reason":"no permissions for [indices:data/read/search] and User [name=10000000-0000-4000-8000-000000000003, backend_roles=[case-lead, 482072f5-808
+
+=== 7. As admin: enumerate OpenSearch's OWN built-in SA/alerting roles and confirm none are mapped to any KronOS tenant role ===
+[PASS] OpenSearch ships dedicated SA/alerting RBAC roles (cluster-action-level, NOT document-level DLS) -- ['alerting_ack_alerts', 'alerting_full_access', 'alerting_read_access', 'security_analytics_ack_alerts', 'security_analytics_full_access', 'security_analytics_read_access']
+[PASS] NONE of OpenSearch's SA/alerting roles are currently mapped to any KronOS tenant backend_role (if one ever is, that user sees EVERY org's detectors/findings cluster-wide -- these roles have no DLS/per-tenant scoping mechanism at all) -- confirmed unmapped
+
+9 passed, 0 failed

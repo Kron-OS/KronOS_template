@@ -32,6 +32,7 @@ Established by direct inspection of the running dev stack on 2026-07-28:
 | Index naming is **case-scoped**: `kronos-{org}-case-{case_id}-{yyyymm}` | `timeline_normalization.py:12` |
 | ISM policy is **one flat policy** for all `kronos-*` (rollover 30d/30GB, delete 365d) | `ism_policy.json` |
 | SIEM side-configs exist but were **never wired or exercised** | `docker/{falco,wazuh,fluent-bit}/`, own compose files, absent from main stack |
+| Real ~521 MB KAPE target-extract ZIP available in MinIO quarantine (`kronos-evidence-kronos-dev-quarantine`, key `kronos-dev/4cf0dd96-8c06-4eee-ad75-aaa335fe50e4/6c02c9ad-13b8-46ac-b9fd-cb87fc7741ea/2026-07-28T202644_zipfile.zip`). State `ERROR`, `error_reason=infected:Win.Malware.LNKAgent-10043840-0` — a real, **correct** ClamAV detection (KAPE triage collections legitimately contain malicious artifacts), terminal/non-retryable by design, not a bug. Use for E1/E3/C5 real-sample work — pull directly via boto3, don't re-upload through the API | Postgres `evidence` table, confirmed 2026-07-29 |
 
 **Two decisions already taken from this, do not relitigate:**
 
@@ -144,6 +145,14 @@ the silent failure is now a **missed detection**.
 taxonomy) as `keyword`. `kronos.org_alias` is currently **written but unmapped**
 — fix.
 **Depends on:** nothing. **Blocks:** everything in M2.
+**STATUS (2026-07-29): implemented and REAL-VERIFIED.** `dynamic: false`
+chosen (not `strict` — would reject writes on any unlisted field). See
+`poc/ecs_schema_hardening/` — 12/12 real checks against the live cluster:
+bug reproduced (zero-hit term query on a real, existing doc), fix confirmed,
+and the `dynamic:false` trade-off confirmed (unmapped field accepted +
+stored, just unindexed). Existing indices keep their old mapping until
+reindexed — documented, not addressed in this pass (needs a real
+reindex/rollover plan, not something to do unattended).
 
 ### A2 · ECS field-mapping registry + CI validation — L1
 **Objective.** One authoritative, testable mapping from each parser's output to
@@ -151,6 +160,22 @@ canonical ECS field names, so community rules are portable across all six
 parsers. Must be an extensible registry object (new parser = registration, not
 an edit to existing code). **CI must fail** if the registry names a field the
 index template does not map — that mismatch is the A1 silent-failure bug.
+**STATUS (2026-07-29): framework implemented and real-verified; coverage
+partial.** `src/application/ecs_field_registry.py` — `FieldMapping` ABC +
+`ECSFieldMappingRegistry` + `validate_against_index_template()` (the CI
+check). 6/6 real pytest passes including a regression guard that the
+validator actually catches a deliberately-unmapped field. Only `evtx-rs`
+mapped so far (the real gap: `winlog.event_data.*` raw names never become
+`process.command_line` etc.) — verified by reading `evtx.py`. Checked
+`SuricataEveParser` too: it already writes ECS-shaped keys directly into
+`extra` (`source.ip`, `destination.port`), so it needs **no** mapping —
+don't add one. `CloudTrailParser`/`NginxParser`/`PlasoParser`/
+`ChromeHistoryParser` **not yet individually inspected** — next agent must
+read their real `extra[]` writes before assuming either way, same as was
+done for evtx/suricata here. Deliberately skipped mapping
+`winlog.event_data.Hashes` → `file.hash.sha256`: Sysmon's raw value is a
+composite string (`MD5=...,SHA256=...`), a plain rename would misrepresent
+it — needs real parsing logic first.
 **Depends on:** A1 (same surface — same agent).
 
 ### A3 · GATE · Security Analytics multi-tenant isolation — L2
@@ -166,6 +191,22 @@ surfaced to tenants exclusively through KronOS's own audited `Detection` entity
 (C4) with backend-enforced filtering, and the Dashboards-native Security
 Analytics UI cannot be exposed to tenants at all.
 **Depends on:** nothing (poc-only). **Blocks:** C1, C2, C4, C6.
+**STATUS (2026-07-29): GATE RESOLVED — GO WITH CONDITIONS, real-verified.**
+See `poc/security_analytics_tenant_isolation/` (9/9 real checks, real
+Dashboards-SSO login as a real tenant analyst). Finding: SA/Alerting have
+**no per-tenant scoping at all** — pure cluster-action RBAC, no DLS
+equivalent. Isolation today is by absence of grant (confirmed: no KronOS
+tenant role has any SA/alerting permission; direct raw-index reads of
+`.opensearch-sap-*` are also denied by `kronos-generic-tenant`'s
+`index_permissions`, which cover only `kronos-*`). Binding conditions for
+C1/C2/C4/C6: (1) never map SA/alerting roles to any tenant-facing role —
+if ever granted, that user sees every org's data, cluster-wide, with no
+recovery; (2) detectors/rules/findings are managed exclusively by a KronOS
+backend service using admin credentials, same trust tier as
+`ensure_index_template`; (3) all tenant-facing access goes through
+KronOS's own `Detection` entity (C4) with application-layer `org_id`
+filtering — not a NO-GO fallback, the only correct design, confirmed; (4)
+the native SA Dashboards UI must never be exposed to tenants.
 
 ### A4 · Known debt: `bulk_index` silent partial-failure — L1
 **Objective.** `OpenSearchClient.bulk_index` counts per-document errors from the
@@ -478,6 +519,18 @@ modify files outside your scope — report conflicts instead.
 - **Orchestrator holds the dev stack.** Agents must not `down -v` the shared
   stack; container restarts are coordinated.
 - **Commit/push is the owner's call**, never an agent's.
-- **Model/effort per §F.4:** low/medium (Sonnet) for well-scoped single-pair
-  work with known versions; high effort reserved for ambiguous or
-  conflicting-documentation items (A3, D3, F3, G3 qualify).
+- **Model policy (orchestrator directive, supersedes plain §F.4 guidance):**
+  the orchestrator runs as Sonnet 5 at high effort; subagents run **cheaper**
+  — Sonnet 5 at low/medium effort for well-scoped single-pair work with known
+  versions, Haiku at medium effort for small/mechanical tasks (test updates,
+  boilerplate registrations, log/doc bookkeeping). Do not dispatch subagents
+  at Opus or high effort even for gates (A3, D3, F3, G3) — those get Sonnet
+  with a more careful, explicit brief instead, per the template in §4.
+- **Known operational friction: the dev stack's step-ca leaf cert has a 24h
+  TTL and does not auto-renew.** Any agent whose PoC needs real login via
+  `kronos.local` (most L2/L3 work) will hit
+  `CERTIFICATE_VERIFY_FAILED: certificate has expired` once a day. Fix:
+  `docker compose -f docker/docker-compose.dev.yml up -d tls-init && docker
+  restart docker-nginx-1`, then retry. Not a code bug — a real, recurring
+  dev-environment fact worth each agent knowing up front rather than
+  rediscovering.
