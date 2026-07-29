@@ -8,11 +8,20 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from src.domain.timeline import KronosProvenance
+from src.domain.timeline import EvidenceProvenance, KronosProvenance
 from tests.fixtures.factories import make_timeline_record
 
 
 class TestKronosProvenance:
+    def test_kronos_provenance_is_evidence_provenance_alias(self) -> None:
+        """B1: KronosProvenance is a zero-behavior-change rename alias.
+
+        Every existing call site (six parsers, factories, tests) constructs
+        `KronosProvenance(...)`; this must remain the exact same class as
+        the new `EvidenceProvenance` name, not a lookalike duplicate.
+        """
+        assert KronosProvenance is EvidenceProvenance
+
     def test_required_fields(self) -> None:
         prov = KronosProvenance(
             evidence_id=uuid.uuid4(),

@@ -1,28 +1,78 @@
-"""TimelineRecord domain model: ECS schema + kronos.* provenance block."""
+"""TimelineRecord domain model: ECS schema + kronos.* provenance block.
+
+``kronos.*`` provenance splits into two concrete shapes (roadmap M1/B1):
+
+- ``EvidenceProvenance`` -- a record parsed from an uploaded, hashed,
+  case-scoped evidence file. This is the shape every one of today's six
+  parsers (``src/external/parsers/*``) already produces.
+- ``StreamProvenance`` (``src/domain/stream.py``) -- a record ingested from
+  continuous telemetry (a future syslog/EDR/Zeek collector, roadmap M3),
+  which has no owning evidence file, no per-file sha256, and no case at
+  ingest time (a case is attached later, during triage).
+
+Both share ``ProvenanceBase``. ``TimelineRecord.kronos`` is intentionally
+**not yet** widened to the ``EvidenceProvenance | StreamProvenance`` union in
+this pass -- see the follow-up note on ``KronosProvenance`` below for why,
+and ``src/domain/stream.py`` for the discriminated-union type that is ready
+for that follow-up to adopt.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class KronosProvenance(BaseModel):
-    """Provenance block attached to every ingested timeline record."""
+class ProvenanceBase(BaseModel):
+    """Fields common to every kronos.* provenance block, forensic or streamed.
+
+    ``org_id`` is always computed by the server -- from the authenticated
+    ``TenantContext`` for evidence uploads, or from a verified collector
+    client certificate for streams (roadmap D2) -- and is **never** accepted
+    verbatim from a parser's or collector's own output/payload. This is
+    invariant §1.3 in ``docs/NEXTGEN_SOC_ROADMAP.md``: a stream source lying
+    about its own ``org_id`` in its payload must never be able to write into
+    another tenant's data. Nothing in this domain layer enforces that by
+    itself (it has no notion of "the request" or "the caller") -- the
+    enforcement point is the application-layer service that constructs the
+    provenance object, which is why this is documented here rather than
+    coded as a validator.
+    """
 
     model_config = {"frozen": True}
 
-    evidence_id: uuid.UUID
-    case_id: uuid.UUID
     org_id: uuid.UUID
     org_alias: str = Field(default="", description="Human-readable org alias for querying")
-    sha256: str = Field(description="SHA-256 of the source evidence file")
-    parser: str = Field(description="Parser name that produced this record (e.g. evtx-rs)")
+    parser: str = Field(description="Parser/collector name that produced this record")
     parser_version: str
-    record_index: int = Field(ge=0, description="Zero-based index within the parsed evidence file")
     ingest_timestamp: datetime = Field(description="UTC time the record was written to OpenSearch")
+
+
+class EvidenceProvenance(ProvenanceBase):
+    """Provenance for a record parsed from an uploaded, hashed evidence file.
+
+    This is today's provenance shape, unchanged in behavior -- only the name
+    changes (previously ``KronosProvenance``, defined directly in this
+    module with these same fields). ``KronosProvenance`` below is kept as a
+    plain alias so every existing caller (all six parsers under
+    ``src/external/parsers/``, ``src/external/sandbox/firecracker.py``,
+    ``src/adapter/repository/postgres_artifact.py``, and
+    ``tests/fixtures/factories.py``) keeps working unmodified.
+    """
+
+    # Discriminator for the EvidenceProvenance | StreamProvenance union
+    # (src/domain/stream.py:Provenance). Defaulted so every existing
+    # construction site -- none of which passes `kind=` today -- keeps
+    # working without modification.
+    kind: Literal["evidence"] = "evidence"
+
+    evidence_id: uuid.UUID
+    case_id: uuid.UUID
+    sha256: str = Field(description="SHA-256 of the source evidence file")
+    record_index: int = Field(ge=0, description="Zero-based index within the parsed evidence file")
 
     # Additive, optional: only set for records extracted from a container
     # (KAPE zip, disk image). Lets an examiner filter "all events from
@@ -36,6 +86,19 @@ class KronosProvenance(BaseModel):
         default=None,
         description="SHA-256 of the top-level container (unset for non-container evidence)",
     )
+
+
+# Backward-compatible alias. `KronosProvenance` is the exact name every
+# existing call site imports and constructs; renaming the class in place to
+# `EvidenceProvenance` and binding the old name to the same class object is
+# a zero-behavior-change rename (same validation, same fields, same
+# defaults) -- not a parallel/duplicate type. Widening these call sites to
+# import `EvidenceProvenance` directly, and widening `TimelineRecord.kronos`
+# itself to `EvidenceProvenance | StreamProvenance`, is explicitly left as
+# scoped follow-up (see docs/NEXTGEN_SOC_ROADMAP.md B1/B2 and this task's
+# final report) -- it touches all six parsers plus timeline_normalization.py
+# and is out of this pass's src/domain/-only scope.
+KronosProvenance = EvidenceProvenance
 
 
 class ECSBase(BaseModel):
@@ -97,4 +160,14 @@ class TimelineRecord(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
     # kronos.* provenance block — mandatory for every record.
-    kronos: KronosProvenance
+    #
+    # Still narrowed to EvidenceProvenance, not widened to the
+    # EvidenceProvenance | StreamProvenance union (src/domain/stream.py),
+    # in this pass. Every current producer of a TimelineRecord (the six
+    # parsers under src/external/parsers/, src/external/sandbox/
+    # firecracker.py) is evidence-file-based, so this is not a regression
+    # -- it's the scoped follow-up documented in this task's report:
+    # widening this annotation is only safe once something in the
+    # pipeline actually constructs a StreamProvenance (roadmap D1/D2/D4),
+    # which does not exist yet.
+    kronos: EvidenceProvenance
