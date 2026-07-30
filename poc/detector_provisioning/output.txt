@@ -1,0 +1,24 @@
+
+=== Part 1: direct class-level verification (synthetic org) ===
+[PASS] 3 detectors created (one per verified log type) -- found 3: ['kronos-c2-poc-0d8cc843-windows-detector', 'kronos-c2-poc-0d8cc843-cloudtrail-detector', 'kronos-c2-poc-0d8cc843-network-detector']
+[PASS] detector names exactly match org+log_type scoping -- {'kronos-c2-poc-0d8cc843-network-detector', 'kronos-c2-poc-0d8cc843-windows-detector', 'kronos-c2-poc-0d8cc843-cloudtrail-detector'}
+[PASS] [windows] index pattern is per-org, not per-case -- ['kronos-c2-poc-0d8cc843-*']
+[PASS] [windows] enabled and has a non-empty prepackaged rule set -- rule_count=1580
+[PASS] [cloudtrail] index pattern is per-org, not per-case -- ['kronos-c2-poc-0d8cc843-*']
+[PASS] [cloudtrail] enabled and has a non-empty prepackaged rule set -- rule_count=32
+[PASS] [network] index pattern is per-org, not per-case -- ['kronos-c2-poc-0d8cc843-*']
+[PASS] [network] enabled and has a non-empty prepackaged rule set -- rule_count=38
+[PASS] idempotent re-run: still exactly 3 detectors, no duplicates -- found 3
+[PASS] confirmed: real OpenSearch 2.11.1 PUT-update-with-empty-triggers 500 bug (justifies check-then-create-only design, not create-or-update) -- status=500 body={"error":{"root_cause":[{"type":"security_analytics_exception","reason":"kotlin.collections.EmptyMap cannot be cast to kotlin.collections.MutableMap"}],"type":"security_analytics_exception","reason":"
+[PASS] cleanup: synthetic-org detectors removed -- remaining=0
+
+=== Part 2: real end-to-end via POST /api/cases (org=kronos-dev) ===
+pre-existing kronos-dev detectors: set()
+[PASS] first real case created (201) -- 201
+kronos-dev detectors after first real case creation: set()
+[PASS] root cause reproduced directly: kronos-dev's legacy mixed-mapping indices trip SA's real cross-index alias-consistency check (data issue, not a KronOS code defect -- Part 1 proves the mechanism itself works against consistently-mapped indices) -- status=500 {"error":{"root_cause":[{"type":"security_analytics_exception","reason":"Invalid [path] value [event.action_kronos-kronos-dev-__LMxOsp8BG52zb-VTYHNd] for field alias [aws.cloudtrai
+[PASS] second real case creation for the SAME affected org still succeeds (201) -- the binding safety property (SA failure must never block case creation) holds even under this real failure mode -- 201
+[PASS] no partial/duplicate detectors were left behind by the failed attempts -- after_first=0 after_second=0
+[PASS] tenant JWT cannot call Security Analytics directly (A3: admin-only) -- status=403
+
+16 passed, 0 failed

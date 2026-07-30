@@ -133,6 +133,23 @@ async def wire_dependencies_async() -> None:
         else None
     )
 
+    # Auto-provisions per-org Security Analytics detectors (roadmap M2/C2).
+    # Same "honestly disabled" pattern: None (no-op) is a valid, explicit
+    # configuration, not a fabricated fallback. Uses the same admin
+    # credentials as the main OpenSearch client -- per the A3 gate
+    # (poc/security_analytics_tenant_isolation/), Security Analytics is
+    # never touched with anything but admin credentials, and never exposed
+    # directly to a tenant session.
+    from src.adapter.opensearch.detector_provisioner import (  # noqa: PLC0415
+        SecurityAnalyticsDetectorProvisioner,
+    )
+
+    detector_provisioner = SecurityAnalyticsDetectorProvisioner(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
@@ -145,6 +162,7 @@ async def wire_dependencies_async() -> None:
         presigned_expiry_seconds=settings.presigned_url_expiry_seconds,
         opensearch_dashboards_url=settings.opensearch_dashboards_url,
         dashboards_index_pattern_provisioner=dashboards_provisioner,
+        detector_provisioner=detector_provisioner,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
         opensearch_security_enabled=settings.opensearch_security_enabled,

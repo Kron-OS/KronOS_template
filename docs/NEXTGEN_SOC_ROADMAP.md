@@ -275,6 +275,39 @@ automatic, scoped to that org's index patterns — following the established
 pattern of `ensure_generic_tenant_role` / `DashboardsIndexPatternProvisioner`.
 Idempotent; new org needs zero manual steps. **Depends on:** C1.
 
+**STATUS (2026-07-30): DONE.** `SecurityAnalyticsDetectorProvisioner`
+(`src/adapter/opensearch/detector_provisioner.py`), wired through
+`create_case()` best-effort, non-blocking, admin-credentials-only (A3).
+Real verification (`poc/detector_provisioning/`, 16/16 checks passed)
+against the live 2.11.1 cluster caught and fixed three real bugs invisible
+from the code or the mocked unit tests: (1) missing `verify=False` on the
+internal `httpx.AsyncClient` — the internal `OPENSEARCH_URL` is
+`https://opensearch:9200` even docker-internally, so every real call was
+failing `CERTIFICATE_VERIFY_FAILED`; (2) `extra={"name": ...}` in two log
+calls, which raises `KeyError` in `Logger.makeRecord` (`name` is a reserved
+`LogRecord` attribute) once INFO-level structured logging is enabled per
+CLAUDE.md §B.4 — would have crashed every real provisioning call in
+production; (3) the idempotency check queried a flat `name.keyword` field
+that doesn't exist — `.opensearch-sap-detectors-config`'s real mapping has
+`name` nested under a `detector` object, so the query silently matched
+zero documents always, defeating idempotency (every call created a
+duplicate). Also directly reproduced the real OpenSearch 2.11.1 PUT-update
+defect (`kotlin.collections.EmptyMap cannot be cast to
+kotlin.collections.MutableMap`) that justifies check-then-create-only
+instead of create-or-update. One real, *unresolved but non-blocking* data
+gap found and documented (not papered over): the live dev org `kronos-dev`
+has ~40 legacy pre-A1 case indices with inconsistent field mappings
+(`cloud.service.name` typed `keyword` post-A1 vs. dynamically-inferred
+`text`+keyword pre-A1), which trips OpenSearch SA's real cross-index
+alias-consistency check with a 500 when provisioning that specific org's
+detectors — confirmed to be a data-quality artifact of this dev org's own
+PoC history, not a provisioner defect (Part 1 proves the mechanism works
+end-to-end against a clean org); the binding safety property (a real SA
+failure must never block case creation) was confirmed to hold under this
+exact real failure. See `poc/detector_provisioning/README.md` for the full
+account. Unit tests: `tests/unit/adapter/test_detector_provisioner.py`
+(6 tests, mocked httpx).
+
 ### C3 · Rule-pack lifecycle: versioning, signing, custom CRUD, cost gate — L1+L2
 **Objective.** Rules are untrusted input. Two real risks: a rule compiling to a
 catastrophically expensive query (leading-wildcard × regex over a year) is a

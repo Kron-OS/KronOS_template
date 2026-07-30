@@ -20,10 +20,12 @@ from src.adapter.opensearch.dashboards_client import (
     DashboardsIndexPatternProvisioner,
     case_index_pattern_id,
 )
+from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
     get_dashboards_index_pattern_provisioner,
+    get_detector_provisioner,
     get_evidence_repository,
     get_opensearch_dashboards_url,
     get_tenant_context,
@@ -125,6 +127,9 @@ async def create_case(
     dashboards_provisioner: Annotated[
         DashboardsIndexPatternProvisioner | None, Depends(get_dashboards_index_pattern_provisioner)
     ] = None,
+    detector_provisioner: Annotated[
+        DetectorProvisioner | None, Depends(get_detector_provisioner)
+    ] = None,
 ) -> CaseOut:
     """Create a new investigation case for the caller's org."""
     case = Case(
@@ -160,6 +165,15 @@ async def create_case(
     # case creation.
     if dashboards_provisioner is not None:
         await dashboards_provisioner.ensure_case_index_pattern(tenant.org_alias, case.case_id)
+
+    # Best-effort (roadmap M2/C2): idempotent, so this is cheap after the
+    # first case for an org (existence check only) and real detector
+    # creation only happens once, the first time. A transient Security
+    # Analytics outage must not block case creation -- the provisioner
+    # itself already swallows per-log-type failures; the next case
+    # creation for this org will simply retry.
+    if detector_provisioner is not None:
+        await detector_provisioner.ensure_org_detectors(tenant.org_alias)
 
     return _to_case_out(case)
 
