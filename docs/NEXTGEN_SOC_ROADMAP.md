@@ -555,11 +555,17 @@ modify files outside your scope — report conflicts instead.
   and auto-expire after 7 days — if this orchestration is still running
   when a job is nearing that limit, re-arm it with a fresh `CronCreate`
   call for another cycle rather than letting it lapse silently. A
-  secondary, silent OS-crontab-based backstop also exists
+  secondary, silent OS-crontab-based backstop also existed
   (`scripts/dev_autoresume/`) purely for the case the whole session process
-  itself dies (not just a subagent hitting a spend limit) — it already
-  proved itself once this session (see its own README) — but its activity
-  is not chat-visible by design/necessity, so `CronCreate` remains primary.
+  itself dies (not just a subagent hitting a spend limit) — it proved
+  itself once this session (see its own README) — but its activity is not
+  chat-visible by design/necessity. **Stopped (2026-07-29) via its own
+  `stop.sh`** once `CronCreate` proved reliable across many consecutive
+  wake-ups: running both concurrently caused the real git-index race
+  documented just below, and `CronCreate` alone is sufficient while this
+  session stays alive. Re-run `scripts/dev_autoresume/install.sh` only if
+  `CronCreate` itself stops firing (session death) and the project owner
+  needs unattended continuation restored.
 - **Real concurrency hazard observed (2026-07-29), not hypothetical:** the
   crontab backstop's `claude -p -c` and the interactive/CronCreate-fired
   session both operate on the exact same git working directory (not
