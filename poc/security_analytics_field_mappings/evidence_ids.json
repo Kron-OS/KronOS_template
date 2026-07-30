@@ -1,0 +1,25 @@
+{
+  "case_id": "1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa",
+  "evidence": [
+    {
+      "label": "evtx-rs",
+      "evidence_id": "f7f280df-a36c-46cd-a1bb-5ce2f98788bd",
+      "filename": "system.evtx"
+    },
+    {
+      "label": "cloudtrail",
+      "evidence_id": "60be88e1-2ab0-46c5-b2c3-04d17e087b33",
+      "filename": "aws_cloudtrail.jsonl"
+    },
+    {
+      "label": "nginx",
+      "evidence_id": "dbd73cef-8443-4541-bdb7-509e32dc3ee5",
+      "filename": "apache_access.log"
+    },
+    {
+      "label": "suricata-eve",
+      "evidence_id": "7e78e875-c7b5-4643-925b-edf7cd5f0ad8",
+      "filename": "eve.json"
+    }
+  ]
+}

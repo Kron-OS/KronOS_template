@@ -1,0 +1,33 @@
+login OK (mfa_path=none)
+create_case -> 201 {"id":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","title":"C1 SA field-mapping + rule-coverage gate","description":"Real samples per log type (windows/cloudtrail/apache_access/network) for OpenSearch Security Analytics coverage measurement.","reference":null,"status":"open","createdAt":"2026-07-29T21:19:58.998680+00:00","updatedAt":"2026-07-29T21:19:58.998683+00:00","createdBy":"10000000-0000-4000-8000-000000000003","evidenceCount":0}
+case_id=1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa
+--- evtx-rs: system.evtx (200000 bytes, sha256=ed6ad162c5a5...) ---
+evtx-rs upload/request -> 201 {"evidenceId":"f7f280df-a36c-46cd-a1bb-5ce2f98788bd","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/f7f280df-a36c-46cd-a1bb-5ce2f98788bd/system.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260
+evtx-rs PUT to MinIO -> 200
+evtx-rs finalize -> 202 {"id":"f7f280df-a36c-46cd-a1bb-5ce2f98788bd","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"system.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8000-0
+--- cloudtrail: aws_cloudtrail.jsonl (13060 bytes, sha256=3ff219b4c3ac...) ---
+cloudtrail upload/request -> 201 {"evidenceId":"60be88e1-2ab0-46c5-b2c3-04d17e087b33","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/60be88e1-2ab0-46c5-b2c3-04d17e087b33/aws_cloudtrail.jsonl?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_mini
+cloudtrail PUT to MinIO -> 200
+cloudtrail finalize -> 202 {"id":"60be88e1-2ab0-46c5-b2c3-04d17e087b33","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"aws_cloudtrail.jsonl","contentType":"application/x-ndjson","sizeBytes":13060,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-80
+--- nginx: apache_access.log (3130 bytes, sha256=62ba15cfe14c...) ---
+nginx upload/request -> 201 {"evidenceId":"dbd73cef-8443-4541-bdb7-509e32dc3ee5","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/dbd73cef-8443-4541-bdb7-509e32dc3ee5/apache_access.log?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2
+nginx PUT to MinIO -> 200
+nginx finalize -> 202 {"id":"dbd73cef-8443-4541-bdb7-509e32dc3ee5","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"apache_access.log","contentType":"text/plain","sizeBytes":3130,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8000-00000000000
+--- suricata-eve: eve.json (4724 bytes, sha256=1fe110a2eba4...) ---
+suricata-eve upload/request -> 201 {"evidenceId":"7e78e875-c7b5-4643-925b-edf7cd5f0ad8","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/7e78e875-c7b5-4643-925b-edf7cd5f0ad8/eve.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260729
+suricata-eve PUT to MinIO -> 200
+suricata-eve finalize -> 202 {"id":"7e78e875-c7b5-4643-925b-edf7cd5f0ad8","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"eve.json","contentType":"application/json","sizeBytes":4724,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8000-000000000003",
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/security_analytics_field_mappings/evidence_ids.json
+Traceback (most recent call last):
+  File "/home/reca/Claude/Kronos/KronOS_template/poc/security_analytics_field_mappings/ingest_samples.py", line 127, in <module>
+    main()
+    ~~~~^^
+  File "/home/reca/Claude/Kronos/KronOS_template/poc/security_analytics_field_mappings/ingest_samples.py", line 114, in main
+    states = {e["filename"]: e["state"] for e in resp.json()}
+              ~^^^^^^^^^^^^
+TypeError: string indices must be integers, not 'str'
+login OK (mfa_path=none)
+poll 0: {'system.evtx': 'COMPLETE', 'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'PARSING', 'eve.json': 'COMPLETE'}
+poll 1: {'system.evtx': 'COMPLETE', 'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'PARSING', 'eve.json': 'COMPLETE'}
+poll 2: {'system.evtx': 'COMPLETE', 'aws_cloudtrail.jsonl': 'COMPLETE', 'apache_access.log': 'COMPLETE', 'eve.json': 'COMPLETE'}
+{"case_id": "1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa", "states": {"system.evtx": "COMPLETE", "aws_cloudtrail.jsonl": "COMPLETE", "apache_access.log": "COMPLETE", "eve.json": "COMPLETE"}}

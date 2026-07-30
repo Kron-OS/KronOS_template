@@ -10,10 +10,37 @@
         "dynamic_policy": "false -- unmapped fields are stored in _source but NOT indexed. This is a deliberate, conservative choice over 'strict': parser `extra` fields vary per format and per parser, and 'strict' would REJECT the whole document (write failure, ingestion breaks) the moment any record carries a field not listed here. 'false' instead means an unknown field is safe-but-unsearchable rather than wrongly dynamic-mapped as text+keyword (the original bug: a Sigma term query against the un-suffixed name silently matched nothing even though the field existed and was populated). Every field a Sigma rule is expected to reference must be added here explicitly, as keyword/long/date as appropriate -- see docs/NEXTGEN_SOC_ROADMAP.md A1/A2."
       },
       "dynamic": false,
+      "dynamic_templates": [
+        {
+          "winlog_event_data_strings": {
+            "path_match": "winlog.event_data.*",
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword" }
+          }
+        }
+      ],
       "properties": {
         "@timestamp": { "type": "date" },
         "message": { "type": "text" },
         "data_type": { "type": "keyword" },
+        "winlog": {
+          "dynamic": true,
+          "properties": {
+            "provider_name": { "type": "keyword" },
+            "event_data": { "dynamic": true, "properties": {} }
+          }
+        },
+        "cloud": {
+          "properties": {
+            "service": { "properties": { "name": { "type": "keyword" } } },
+            "region":  { "type": "keyword" }
+          }
+        },
+        "log": {
+          "properties": {
+            "file": { "properties": { "path": { "type": "keyword" } } }
+          }
+        },
         "event": {
           "properties": {
             "kind":     { "type": "keyword" },

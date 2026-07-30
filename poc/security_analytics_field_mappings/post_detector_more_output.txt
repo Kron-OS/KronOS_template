@@ -1,0 +1,10 @@
+login OK (mfa_path=none)
+cloudtrail upload/request -> 201 {"evidenceId":"c47b9247-e125-4e47-8503-b65f2c939d1b","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/c47b9247-e125-4e47-8503-b65f2c939d1b/aws_cloudtrail_post_detector.jsonl?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credenti
+cloudtrail PUT to MinIO -> 200
+cloudtrail finalize -> 202 {"id":"c47b9247-e125-4e47-8503-b65f2c939d1b","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"aws_cloudtrail_post_detector.jsonl","contentType":"application/x-ndjson","sizeBytes":13060,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"1000000
+suricata-eve upload/request -> 201 {"evidenceId":"7f4166e4-3294-4ce8-adf2-0f15b18ee213","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/7f4166e4-3294-4ce8-adf2-0f15b18ee213/eve_post_detector.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_mi
+suricata-eve PUT to MinIO -> 200
+suricata-eve finalize -> 202 {"id":"7f4166e4-3294-4ce8-adf2-0f15b18ee213","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"eve_post_detector.json","contentType":"application/json","sizeBytes":4724,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8000-
+poll 0: {'aws_cloudtrail_post_detector.jsonl': 'SCANNING', 'eve_post_detector.json': 'UPLOADING'}
+poll 1: {'aws_cloudtrail_post_detector.jsonl': 'COMPLETE', 'eve_post_detector.json': 'COMPLETE'}
+{"case_id": "1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa", "results": [{"label": "cloudtrail", "evidence_id": "c47b9247-e125-4e47-8503-b65f2c939d1b", "filename": "aws_cloudtrail_post_detector.jsonl"}, {"label": "suricata-eve", "evidence_id": "7f4166e4-3294-4ce8-adf2-0f15b18ee213", "filename": "eve_post_detector.json"}], "states": {"aws_cloudtrail_post_detector.jsonl": "COMPLETE", "eve_post_detector.json": "COMPLETE"}}

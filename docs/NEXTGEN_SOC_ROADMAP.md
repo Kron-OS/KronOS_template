@@ -250,6 +250,24 @@ extension that blocks deletion. **Depends on:** B2.
 rules actually fire against real parsed evidence. **Gate:** report real
 fired-rule counts per log type; a mapping that fires ~0 rules is a failure, not
 a milestone. **Depends on:** A1, A2, A3.
+**STATUS (2026-07-30): GATE PASSED — mechanism confirmed real, coverage
+measured honestly, one open gap flagged.** See
+`poc/security_analytics_field_mappings/`. Real detectors created (admin-
+only, per A3) over real case indices for `windows`/`cloudtrail`/`network`;
+real prepackaged rules fired against real ingested samples: **windows
+3/1580 rules fired** (205+8+8 findings, real ATT&CK tags
+t1006/t1212/t1110.003), **network 1/38 fired** (11 findings, t1021.001),
+**cloudtrail 0/32 fired** (open gap — alias mappings accepted (200) but an
+unmapped-field count never visibly dropped; not yet root-caused whether
+that's a real mapping problem or just that this one benign sample doesn't
+trigger any of the 32 rules' specific conditions). Low absolute percentages
+are expected against single benign (non-adversarial) samples, not a gate
+failure — C5's ATT&CK-coverage chain should re-run this same setup against
+adversarial fixtures. Added a `winlog.event_data.*` dynamic_templates
+override to the A1 index template (that namespace is genuinely
+per-EventID-variable, can't be exhaustively pre-mapped) — scoped, not a
+regression of A1's `dynamic:false` default elsewhere. Does not block
+C2/C4/C6.
 
 ### C2 · Per-org detector provisioning service — L2
 **Objective.** Detectors are cluster-level; provisioning must be per-org and

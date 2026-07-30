@@ -1,0 +1,6 @@
+{
+  "system.evtx": "COMPLETE",
+  "aws_cloudtrail.jsonl": "COMPLETE",
+  "apache_access.log": "COMPLETE",
+  "eve.json": "COMPLETE"
+}

@@ -1,0 +1,7 @@
+login OK (mfa_path=none)
+upload/request -> 201 {"evidenceId":"f41612cb-cfdb-437e-8229-f7e2a95ad090","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa/f41612cb-cfdb-437e-8229-f7e2a95ad090/system_post_detector.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos
+PUT to MinIO -> 200
+finalize -> 202 {"id":"f41612cb-cfdb-437e-8229-f7e2a95ad090","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","filename":"system_post_detector.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-00
+poll 0: UPLOADING
+poll 1: COMPLETE
+{"case_id": "1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa", "evidence_id": "f41612cb-cfdb-437e-8229-f7e2a95ad090", "state": "COMPLETE"}
