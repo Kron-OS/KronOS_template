@@ -1,0 +1,38 @@
+{
+  "policy": {
+    "description": "Aggressive tier for high-volume, lower-forensic-priority continuous stream sources (e.g. network flow/firewall telemetry): rollover at 5 GB or 7 days; delete after 90 days. Case-scoped evidence indices stay on kronos-rollover's longer retention -- this tier exists because continuous telemetry accumulates far faster and does not carry the same per-item evidentiary weight as case evidence, so a shorter, cost-conscious retention is the correct default rather than the case tier's 365-day window.",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {
+            "rollover": {
+              "min_index_age": "7d",
+              "min_size": "5gb"
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "90d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [{ "delete": {} }],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["kronos-*-stream-network-*", "kronos-*-stream-firewall-*", "kronos-*-stream-flow-*", "kronos-*-stream-dns-*"],
+        "priority": 200
+      }
+    ]
+  }
+}

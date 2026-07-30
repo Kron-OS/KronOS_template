@@ -1,0 +1,41 @@
+
+=== Part 0: confirm real findings exist (per F.2 step 4 -- captured before any sync code runs) ===
+[PASS] real findings exist for kronos-kronos-dev-network-detector in the correct .opensearch-sap-network-findings-* index (NOT the nonexistent .opensearch-sap-findings-* this session's own earlier check used) -- total=10
+  sample real finding _id=980b4d05-ce45-40eb-b246-f8a0b50bd6cc
+  sample real finding _source keys: ['correlated_doc_ids', 'execution_id', 'id', 'index', 'monitor_id', 'monitor_name', 'queries', 'related_doc_ids', 'timestamp']
+  sample real finding queries[0]: {'id': '1fc0809e-06bf-4de3-ad52-25e5263b7623', 'name': '1fc0809e-06bf-4de3-ad52-25e5263b7623', 'query': '(NOT ((id.orig_h: 192.168.*) OR (id.orig_h: 10.*) OR (id.orig_h: 172.16.*) OR (id.orig_h: 172.17.*) OR (id.orig_h: 172.18.*) OR (id.orig_h: 172.19.*) OR (id.orig_h: 172.20.*) OR (id.orig_h: 172.21.*) OR (id.orig_h: 172.22.*) OR (id.orig_h: 172.23.*) OR (id.orig_h: 172.24.*) OR (id.orig_h: 172.25.*) OR (id.orig_h: 172.26.*) OR (id.orig_h: 172.27.*) OR (id.orig_h: 172.28.*) OR (id.orig_h: 172.29.*) OR (id.orig_h: 172.30.*) OR (id.orig_h: 172.31.*) OR (id.orig_h: fd*) OR (id.orig_h: 2620\\:83\\:800f*)))', 'tags': ['high', 'network', 'attack.t1021.001']}
+
+=== Part 1: run the real DetectionSyncService against real OpenSearch + real Postgres ===
+[PASS] first real sync run created at least one real Detection row -- created=10
+[PASS] every stored Detection has org_id == the syncing tenant's real org_id (roadmap invariant #3 -- never from the finding) -- org_ids={'482072f5-8086-4815-be03-879cc2eaecb5'}
+[PASS] every newly-synced Detection starts in triage_state NEW -- {'NEW'}
+[PASS] every stored Detection carries at least one real rule_id (replayability) -- [(DetectionRuleMatch(rule_id='1fc0809e-06bf-4de3-ad52-25e5263b7623', rule_name='1fc0809e-06bf-4de3-ad52-25e5263b7623', tags=('high', 'network', 'attack.t1021.001')),)]
+[PASS] the real t1021.001 rule id is among the stored rule_matches -- {'1fc0809e-06bf-4de3-ad52-25e5263b7623'}
+[PASS] case_id correctly extracted from the finding's real source index name -- {UUID('1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa')}
+  10 real Detection rows now in Postgres for org kronos-dev
+
+=== Part 2: re-run sync -- must be idempotent, zero duplicates ===
+[PASS] re-run creates zero new Detection rows -- created=0
+[PASS] row count unchanged after re-run (rigorous: same finding_ids, same count) -- before=10 after=10
+
+=== Part 3: real valid triage FSM transition + audit hash-chain verification ===
+[PASS] real NEW -> INVESTIGATING transition applied and persisted -- INVESTIGATING
+[PASS] re-read from real Postgres confirms the persisted triage_state -- INVESTIGATING
+[PASS] real INVESTIGATING -> TRUE_POSITIVE transition applied and persisted -- TRUE_POSITIVE
+[PASS] exactly 2 real DETECTION_TRIAGE_TRANSITIONED audit events for this detection -- count=2
+[PASS] second event's prev_row_hash == first event's row_hash (real hash-chain link) -- first.row_hash=e008ff80b06943b0a3d2f327c907cf5ac51e9219ec496cc7beced17acdb5a97c second.prev_row_hash=e008ff80b06943b0a3d2f327c907cf5ac51e9219ec496cc7beced17acdb5a97c
+[PASS] AuditLogService.verify_chain() confirms the org's FULL real hash chain is intact (includes this org's entire real history, not just this run) -- chain intact
+
+=== Part 4: illegal transition must be rejected (with a real audit trail) ===
+[PASS] at least one Detection remains in NEW to exercise the illegal-transition case
+  real rejection: Invalid detection triage transition: NEW → TRUE_POSITIVE
+[PASS] illegal NEW -> TRUE_POSITIVE transition raised DetectionStateError
+[PASS] rejected transition did NOT mutate the persisted triage_state -- NEW
+[PASS] the rejected attempt itself produced a real DETECTION_TRIAGE_TRANSITION_FAILED audit event -- count=1
+[PASS] a terminal TRUE_POSITIVE Detection also rejects re-transition (no reopen loophole)
+
+=== Cleanup: remove the throwaway bootstrap detector (not part of any committed src/ path) ===
+  deleted detector TcyIs58BG52zb-VTinPb: status=200
+  NOTE: the real findings this detector already produced remain in .opensearch-sap-network-findings-* (findings are independent, immutable records -- deleting a detector does not delete its past findings), and the real Detection + audit_log rows this PoC created remain in Postgres as inspectable proof of the run.
+
+20 passed, 0 failed

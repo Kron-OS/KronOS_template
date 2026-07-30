@@ -64,6 +64,13 @@ class AuditEventType(StrEnum):
     # RFC 3161 timestamping
     EVIDENCE_TSA_ANCHORED = "evidence.tsa_anchored"
 
+    # Detection / triage (roadmap M2/C4) -- SA findings mirrored into
+    # KronOS's own audited Detection entity; see src/domain/detection.py.
+    DETECTION_SYNCED = "detection.synced"
+    DETECTION_SYNC_FAILED = "detection.sync_failed"
+    DETECTION_TRIAGE_TRANSITIONED = "detection.triage_transitioned"
+    DETECTION_TRIAGE_TRANSITION_FAILED = "detection.triage_transition_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

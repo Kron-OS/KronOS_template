@@ -71,6 +71,7 @@ def _make_intake(
     *,
     timestamp_service=None,  # type: ignore[no-untyped-def]
     default_retention_days: int = 365,
+    ism_manager=None,  # type: ignore[no-untyped-def]
 ) -> EvidenceIntakeService:
     return EvidenceIntakeService(
         evidence_repository=evidence_repo,
@@ -82,6 +83,7 @@ def _make_intake(
         max_upload_bytes=100_000,
         timestamp_service=timestamp_service,
         default_retention_days=default_retention_days,
+        ism_manager=ism_manager,
     )
 
 
@@ -238,6 +240,103 @@ class TestSetLegalHold:
 
         with pytest.raises(ValidationError):
             await intake.set_legal_hold(uuid.uuid4(), True, tenant)
+
+
+# ---------------------------------------------------------------------------
+# Roadmap M1/B3: legal hold mirrored onto the case's real OpenSearch indices
+# ---------------------------------------------------------------------------
+
+
+class TestIsmLegalHoldSync:
+    @pytest.mark.asyncio
+    async def test_place_hold_resolves_indices_and_places_hold_on_each(
+        self, audit_repo, evidence_repo, local_storage
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        ism_manager = AsyncMock()
+        ism_manager.resolve_indices.return_value = ["idx-202601", "idx-202602"]
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, ism_manager=ism_manager)
+        tenant = make_tenant_context(roles={Role.ORG_ADMIN})
+        evidence = await _upload_and_finalize(intake, local_storage, tenant)
+
+        await intake.set_legal_hold(evidence.evidence_id, True, tenant)
+
+        ism_manager.resolve_indices.assert_awaited_once()
+        assert ism_manager.place_legal_hold.await_count == 2
+        held_indices = {c.args[0] for c in ism_manager.place_legal_hold.await_args_list}
+        assert held_indices == {"idx-202601", "idx-202602"}
+        ism_manager.release_legal_hold.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_release_resumes_management_when_no_other_evidence_is_held(
+        self, audit_repo, evidence_repo, local_storage
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        ism_manager = AsyncMock()
+        ism_manager.resolve_indices.return_value = ["idx-202601"]
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, ism_manager=ism_manager)
+        tenant = make_tenant_context(roles={Role.ORG_ADMIN})
+        evidence = await _upload_and_finalize(intake, local_storage, tenant)
+
+        await intake.set_legal_hold(evidence.evidence_id, True, tenant)
+        await intake.set_legal_hold(evidence.evidence_id, False, tenant)
+
+        ism_manager.release_legal_hold.assert_awaited_once_with("idx-202601", "kronos-rollover")
+
+    @pytest.mark.asyncio
+    async def test_release_does_not_resume_management_while_other_evidence_still_held(
+        self, audit_repo, evidence_repo, local_storage
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        ism_manager = AsyncMock()
+        ism_manager.resolve_indices.return_value = ["idx-202601"]
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, ism_manager=ism_manager)
+        tenant = make_tenant_context(roles={Role.ORG_ADMIN})
+        case_id = uuid.uuid4()
+        evidence_a = await _upload_and_finalize(intake, local_storage, tenant, case_id=case_id)
+        evidence_b = await _upload_and_finalize(intake, local_storage, tenant, case_id=case_id)
+
+        await intake.set_legal_hold(evidence_a.evidence_id, True, tenant)
+        await intake.set_legal_hold(evidence_b.evidence_id, True, tenant)
+        await intake.set_legal_hold(evidence_a.evidence_id, False, tenant)
+
+        # evidence_b is still held -- releasing evidence_a's hold must not
+        # resume ISM management for indices the case still needs held.
+        ism_manager.release_legal_hold.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ism_outage_does_not_block_the_already_successful_hold(
+        self, audit_repo, evidence_repo, local_storage
+    ) -> None:
+        """Best-effort, matching every other OpenSearch-side provisioner in
+        this codebase: an OpenSearch outage must never fail a call that
+        already succeeded against MinIO and Postgres."""
+        from unittest.mock import AsyncMock
+
+        ism_manager = AsyncMock()
+        ism_manager.resolve_indices.side_effect = RuntimeError("OpenSearch unreachable")
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, ism_manager=ism_manager)
+        tenant = make_tenant_context(roles={Role.ORG_ADMIN})
+        evidence = await _upload_and_finalize(intake, local_storage, tenant)
+
+        held = await intake.set_legal_hold(evidence.evidence_id, True, tenant)
+
+        assert held.legal_hold is True
+        assert local_storage.is_legal_hold_set(evidence.minio_evidence_key) is True
+
+    @pytest.mark.asyncio
+    async def test_no_ism_manager_configured_is_a_valid_noop(
+        self, audit_repo, evidence_repo, local_storage
+    ) -> None:
+        intake = _make_intake(audit_repo, evidence_repo, local_storage, ism_manager=None)
+        tenant = make_tenant_context(roles={Role.ORG_ADMIN})
+        evidence = await _upload_and_finalize(intake, local_storage, tenant)
+
+        held = await intake.set_legal_hold(evidence.evidence_id, True, tenant)
+        assert held.legal_hold is True
 
 
 # ---------------------------------------------------------------------------

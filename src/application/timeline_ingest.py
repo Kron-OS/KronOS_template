@@ -9,7 +9,9 @@ from collections.abc import AsyncIterable
 from typing import Any
 
 from src.adapter.opensearch.client import AbstractTimelineIndex
+from src.adapter.opensearch.ism_manager import IsmLifecycleManager
 from src.application.audit_log import AuditLogService
+from src.application.ism_tiering import IsmTierResolver
 from src.application.timeline_normalization import ECSNormalizer, build_index_name
 from src.domain.audit import AuditEventType
 from src.domain.timeline import TimelineRecord
@@ -37,6 +39,8 @@ class TimelineIngestionService:
         *,
         batch_size: int = _DEFAULT_BATCH_SIZE,
         security_enabled: bool = False,
+        ism_manager: IsmLifecycleManager | None = None,
+        ism_tier_resolver: IsmTierResolver | None = None,
     ) -> None:
         self._opensearch = opensearch
         self._audit = audit_log
@@ -47,6 +51,16 @@ class TimelineIngestionService:
         self._tenant_role_applied = False
         self._security_enabled = security_enabled
         self._security_warned = False
+        # Roadmap M1/B3 (poc/ism_tiering_legal_hold/): real, live-cluster
+        # verification found ism_template's implicit auto-attach can leave a
+        # new index's ISM management stuck at enabled=false with no
+        # self-healing (the periodic coordinator sweep never revisits an
+        # index that already has a -- disabled -- managed-index doc). None
+        # (no-op) is a valid, explicit "not configured" state, matching the
+        # existing dashboards_provisioner/detector_provisioner pattern.
+        self._ism_manager = ism_manager
+        self._ism_tier_resolver = ism_tier_resolver
+        self._ism_ensured_indices: set[str] = set()
 
     async def ingest_records(
         self,
@@ -156,6 +170,23 @@ class TimelineIngestionService:
     async def _flush(self, batch: list[tuple[str, str, dict[str, Any]]]) -> int:
         count = await self._opensearch.bulk_index(batch)
         logger.debug("ingest_flush", extra={"flushed": count})
+
+        # Must run AFTER bulk_index -- _plugins/_ism/add/{index} 404s on an
+        # index that doesn't exist yet, and bulk_index's own auto-create is
+        # what brings each of these indices into existence in the first
+        # place (see this class's docstring / poc/ism_tiering_legal_hold/).
+        if self._ism_manager is not None:
+            for index in {index for index, _, _ in batch}:
+                if index in self._ism_ensured_indices:
+                    continue
+                policy_id = (
+                    self._ism_tier_resolver.policy_id_for_source(None)
+                    if self._ism_tier_resolver is not None
+                    else "kronos-rollover"
+                )
+                await self._ism_manager.ensure_managed(index, policy_id)
+                self._ism_ensured_indices.add(index)
+
         return count
 
 

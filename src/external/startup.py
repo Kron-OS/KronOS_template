@@ -45,6 +45,9 @@ async def wire_dependencies_async() -> None:
         PostgresAuditLogRepository,
     )
     from src.adapter.repository.postgres_case import PostgresCaseRepository  # noqa: PLC0415
+    from src.adapter.repository.postgres_detection import (  # noqa: PLC0415
+        PostgresDetectionRepository,
+    )
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
@@ -70,11 +73,13 @@ async def wire_dependencies_async() -> None:
     evidence_repo = PostgresEvidenceRepository(engine)
     case_repo = PostgresCaseRepository(engine)
     artifact_repo = PostgresArtifactRepository(engine)
+    detection_repo = PostgresDetectionRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
     await PostgresCaseRepository.create_tables(engine)
     await PostgresArtifactRepository.create_tables(engine)
+    await PostgresDetectionRepository.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
@@ -150,11 +155,41 @@ async def wire_dependencies_async() -> None:
         admin_password=settings.opensearch_password.get_secret_value(),
     )
 
+    # Roadmap M1/B3 (poc/ism_tiering_legal_hold/): explicit self-healing ISM
+    # attachment + legal-hold control -- ism_template's implicit auto-attach
+    # alone was found, against the real live cluster, to leave indices
+    # stuck with management disabled with no automatic recovery.
+    from src.adapter.opensearch.ism_manager import (  # noqa: PLC0415
+        OpenSearchIsmLifecycleManager,
+    )
+
+    ism_manager = OpenSearchIsmLifecycleManager(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+
+    # Read-only real SA findings reader (roadmap M2/C4) -- mirrors the
+    # detector_provisioner's own unconditional construction above:
+    # opensearch_url/username/password are always-required Settings
+    # fields, so (unlike dashboards_provisioner) there is no "URL not
+    # configured" honest-disable case to handle here.
+    from src.adapter.opensearch.findings_client import (  # noqa: PLC0415
+        SecurityAnalyticsFindingsClient,
+    )
+
+    findings_client = SecurityAnalyticsFindingsClient(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
         case_repository=case_repo,
         artifact_repository=artifact_repo,
+        detection_repository=detection_repo,
         evidence_storage=storage,
         task_queue=task_queue,
         opensearch_client=opensearch,
@@ -163,6 +198,8 @@ async def wire_dependencies_async() -> None:
         opensearch_dashboards_url=settings.opensearch_dashboards_url,
         dashboards_index_pattern_provisioner=dashboards_provisioner,
         detector_provisioner=detector_provisioner,
+        ism_manager=ism_manager,
+        findings_client=findings_client,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
         opensearch_security_enabled=settings.opensearch_security_enabled,

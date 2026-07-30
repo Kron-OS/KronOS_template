@@ -239,6 +239,48 @@ don't assume. **Depends on:** B1, A3.
 hot/warm/cold tiering and per-source retention, plus automated legal-hold
 extension that blocks deletion. **Depends on:** B2.
 
+**STATUS (2026-07-30): DONE.** `src/adapter/opensearch/ism_manager.py`
+(`IsmLifecycleManager` ABC + `OpenSearchIsmLifecycleManager`) and
+`src/application/ism_tiering.py` (`IsmTierResolver` + `DefaultIsmTierResolver`),
+wired into `TimelineIngestionService` (self-healing attachment after every
+flush) and `EvidenceIntakeService.set_legal_hold()` (mirrors
+`Evidence.legal_hold` onto the case's real OpenSearch indices). Real
+verification (`poc/ism_tiering_legal_hold/`, 15/15 checks passed) against
+the live OpenSearch 2.11.1 cluster found a serious, previously-undiscovered
+bug before writing any new logic: **every real, pre-existing KronOS case
+index on this dev stack had its ISM managed-index job stuck at
+`enabled: false, enabled_time: null`** — the already-deployed
+`kronos-rollover` policy had never actually been ticking for any of them,
+despite `_plugins/_ism/explain` reporting a policy_id attached. Root cause:
+attachment itself works (confirmed for both explicit-`PUT` and `_bulk`-auto-create
+paths, fresh); something (very likely a container/OpenSearch restart
+mid-cycle, of which this session has had many) leaves a managed-index doc
+stuck disabled, and the periodic ISM coordinator sweep never revisits an
+index that already has a (disabled) managed-index doc — no automatic
+self-healing exists. A second real bug was found while building the fix:
+`POST _plugins/_ism/add/{index}` on an index that already has a recorded
+policy_id (even a disabled one) returns **HTTP 200** with
+`{"failures": true, ...}` in the body — the same silent-failure shape as
+the historical `bulk_index` bug (A4). `ensure_managed()` now does
+`remove`-then-`add` unconditionally and checks the response body, not just
+the status. **All 17 real, stuck production indices on this dev stack were
+remediated** (17 disabled → 0 disabled, confirmed via direct query).
+Per-source tiering: a new `kronos-stream-aggressive` policy (5 GB/7-day
+rollover, 90-day delete) for high-volume telemetry sources
+(network/firewall/flow/dns), confirmed via real ISM template priority
+ordering (`priority: 200` beats the general pattern's `100`) — reachable
+today only via direct `ism_manager` calls, since `TimelineIngestionService`
+is case-scoped only; wiring it into a real stream-ingest call site is D1's
+job, not B3's. Legal hold: `Evidence.legal_hold` already existed
+(MinIO Object Lock, pre-dating this session); B3 extends it to also
+`place_legal_hold()`/`release_legal_hold()` the evidence's case's real
+OpenSearch indices, case-grade (release only resumes once no other
+evidence in the case is still held, checked via a real
+`stream_by_case()` scan). See `poc/ism_tiering_legal_hold/README.md` for
+the full account. Unit tests: `tests/unit/adapter/test_ism_manager.py`,
+`tests/unit/application/test_ism_tiering.py`, plus new coverage in
+`test_timeline_ingest.py` and `test_evidence_legal_hold_retention_tsa.py`.
+
 ---
 
 ## M2 — Detection engine (rules)
@@ -322,6 +364,36 @@ chain. Mirror them into an immutable, audited `Detection` entity with its own
 triage FSM (`NEW → INVESTIGATING → TRUE_POSITIVE | FALSE_POSITIVE`), storing the
 **exact rule version** that fired for replayability. `org_id` from
 `TenantContext`, never from the finding. **Depends on:** C2, A3.
+
+**STATUS (2026-07-30): DONE.** `src/domain/detection.py` (`Detection`,
+`DetectionTriageState` FSM mirroring `EvidenceState`'s idiom),
+`src/application/detection_sync.py` (`DetectionSyncService`, strictly
+read-only against OpenSearch), `src/application/detection_triage.py`
+(`DetectionTriageService`, every transition audited via
+`AuditLogService.audit_context()`), `src/adapter/opensearch/findings_client.py`
+(`SecurityAnalyticsFindingsClient`, admin-only per A3), and
+`src/adapter/repository/postgres_detection.py`. Real verification
+(`poc/detection_finding_sync/`, 20/20 checks passed) against the live
+OpenSearch 2.11.1 cluster + real Postgres found two real, non-obvious
+facts before writing the sync code: (1) real SA findings live in
+**per-log-type** indices (`.opensearch-sap-{log_type}-findings-*`), not
+`.opensearch-sap-findings-*` — an earlier session check against the wrong
+pattern had incorrectly concluded C1's findings were "gone"; (2) SA
+detectors only evaluate documents indexed **after** the monitor's own
+last-run cursor, not pre-existing ones — a real operational fact, not a
+KronOS bug. A real finding's `queries` field is a list (one finding can
+match multiple rules), so `Detection.rule_matches` is a tuple, matching
+the real data shape. Idempotency (re-sync creates zero duplicate rows),
+the audited triage FSM (real hash-chain-linked `DETECTION_TRIAGE_TRANSITIONED`
+events, `AuditLogService.verify_chain()` confirmed intact), and illegal-transition
+rejection (with its own real `DETECTION_TRIAGE_TRANSITION_FAILED` audit
+event, no reopen loophole on a terminal state) were all proven against
+real Postgres, not asserted from code reading. See
+`poc/detection_finding_sync/README.md` for the full account. Unit tests:
+`tests/unit/domain/test_detection.py`, `test_detection_sync.py`,
+`test_detection_triage.py` (40 tests). DI wiring
+(`get_detection_sync_service`/`get_detection_triage_service`) exists but no
+route or automatic trigger yet — that is C6's scope, not C4's.
 
 ### C5 · Rule coverage measurement + ATT&CK mapping — L3
 **Objective.** `chain_detect_from_evidence/`: real upload → parse → index →

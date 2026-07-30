@@ -15,6 +15,8 @@ from fastapi import Depends
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
+from src.adapter.opensearch.findings_client import FindingsClient
+from src.adapter.opensearch.ism_manager import IsmLifecycleManager
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.artifact_repository import (
     ArtifactRepository,
@@ -22,12 +24,16 @@ from src.adapter.repository.artifact_repository import (
 )
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
+from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
+from src.application.detection_sync import DetectionSyncService
+from src.application.detection_triage import DetectionTriageService
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
+from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.scanning import AntivirusScanner, NoOpScanner
@@ -63,6 +69,10 @@ _presigned_expiry: int = 900
 _opensearch_dashboards_url: str | None = None
 _dashboards_index_pattern_provisioner: DashboardsIndexPatternProvisioner | None = None
 _detector_provisioner: DetectorProvisioner | None = None
+_ism_manager: IsmLifecycleManager | None = None
+_ism_tier_resolver: IsmTierResolver = DefaultIsmTierResolver()
+_findings_client: FindingsClient | None = None
+_detection_repository: DetectionRepository = InMemoryDetectionRepository()
 _timestamp_service: RFC3161TimestampService | None = None
 _default_retention_days: int = 365
 _opensearch_security_enabled: bool = False
@@ -109,6 +119,22 @@ def get_dashboards_index_pattern_provisioner() -> DashboardsIndexPatternProvisio
 
 def get_detector_provisioner() -> DetectorProvisioner | None:
     return _detector_provisioner
+
+
+def get_ism_manager() -> IsmLifecycleManager | None:
+    return _ism_manager
+
+
+def get_ism_tier_resolver() -> IsmTierResolver:
+    return _ism_tier_resolver
+
+
+def get_findings_client() -> FindingsClient | None:
+    return _findings_client
+
+
+def get_detection_repository() -> DetectionRepository:
+    return _detection_repository
 
 
 def get_max_upload_bytes() -> int:
@@ -277,6 +303,7 @@ def get_intake_service(
         task_queue=_task_queue,
         timestamp_service=_timestamp_service,
         default_retention_days=_default_retention_days,
+        ism_manager=_ism_manager,
     )
 
 
@@ -291,6 +318,8 @@ def get_timeline_ingest_service(
         opensearch=_opensearch_client,
         audit_log=audit_log,
         security_enabled=_opensearch_security_enabled,
+        ism_manager=_ism_manager,
+        ism_tier_resolver=_ism_tier_resolver,
     )
 
 
@@ -317,6 +346,35 @@ def get_parsing_orchestration_service(
         timeline_ingest=timeline_ingest,
         artifact_ingest=artifact_ingest,
     )
+
+
+def get_detection_sync_service(
+    detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> DetectionSyncService | None:
+    """FastAPI dependency for DetectionSyncService.
+
+    None (no-op) when no FindingsClient is configured -- the same "honestly
+    disabled" pattern as get_timestamp_service/get_dashboards_index_pattern_
+    provisioner: callers must treat None as "sync disabled", never fabricate
+    a result.
+    """
+    findings_client = get_findings_client()
+    if findings_client is None:
+        return None
+    return DetectionSyncService(
+        findings_client=findings_client,
+        detection_repository=detection_repository,
+        audit_log=audit_log,
+    )
+
+
+def get_detection_triage_service(
+    detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> DetectionTriageService:
+    """FastAPI dependency for DetectionTriageService."""
+    return DetectionTriageService(detection_repository=detection_repository, audit_log=audit_log)
 
 
 def _build_tenant_from_task(org_id: str, user_id: str) -> TenantContext:
@@ -400,6 +458,10 @@ def configure_dependencies(
     opensearch_dashboards_url: str | None = None,
     dashboards_index_pattern_provisioner: DashboardsIndexPatternProvisioner | None = None,
     detector_provisioner: DetectorProvisioner | None = None,
+    ism_manager: IsmLifecycleManager | None = None,
+    ism_tier_resolver: IsmTierResolver | None = None,
+    findings_client: FindingsClient | None = None,
+    detection_repository: DetectionRepository | None = None,
     timestamp_service: RFC3161TimestampService | None = None,
     default_retention_days: int = 365,
     opensearch_security_enabled: bool = False,
@@ -411,6 +473,8 @@ def configure_dependencies(
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
     global _opensearch_security_enabled, _artifact_repository
     global _dashboards_index_pattern_provisioner, _detector_provisioner
+    global _ism_manager, _ism_tier_resolver
+    global _findings_client, _detection_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -428,11 +492,17 @@ def configure_dependencies(
         _case_repository = case_repository
     if artifact_repository is not None:
         _artifact_repository = artifact_repository
+    if detection_repository is not None:
+        _detection_repository = detection_repository
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
     _opensearch_dashboards_url = opensearch_dashboards_url
     _dashboards_index_pattern_provisioner = dashboards_index_pattern_provisioner
     _detector_provisioner = detector_provisioner
+    _ism_manager = ism_manager
+    if ism_tier_resolver is not None:
+        _ism_tier_resolver = ism_tier_resolver
+    _findings_client = findings_client
     _timestamp_service = timestamp_service
     _default_retention_days = default_retention_days
     _opensearch_security_enabled = opensearch_security_enabled
@@ -445,12 +515,16 @@ def reset_dependencies() -> None:
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
     global _artifact_repository, _dashboards_index_pattern_provisioner, _detector_provisioner
+    global _ism_manager, _ism_tier_resolver
+    global _findings_client, _detection_repository
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
     _case_repository = InMemoryCaseRepository()
     _artifact_repository = InMemoryArtifactRepository()
+    _detection_repository = InMemoryDetectionRepository()
+    _findings_client = None
     _scanner = NoOpScanner()
     _task_queue = InMemoryTaskQueue()
     _parser_registry = None
@@ -460,6 +534,8 @@ def reset_dependencies() -> None:
     _opensearch_dashboards_url = None
     _dashboards_index_pattern_provisioner = None
     _detector_provisioner = None
+    _ism_manager = None
+    _ism_tier_resolver = DefaultIsmTierResolver()
     _timestamp_service = None
     _default_retention_days = 365
     _opensearch_security_enabled = False

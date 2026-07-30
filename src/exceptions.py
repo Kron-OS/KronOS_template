@@ -46,6 +46,10 @@ class EvidenceStateError(KronOSException):
     """Raised when an invalid FSM transition is attempted on evidence."""
 
 
+class DetectionStateError(KronOSException):
+    """Raised when an invalid triage FSM transition is attempted on a Detection."""
+
+
 class TimestampingError(KronOSException):
     """Raised when RFC 3161 timestamp acquisition or verification fails closed.
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
+from src.adapter.opensearch.ism_manager import IsmLifecycleManager
 from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
@@ -81,6 +83,7 @@ class EvidenceIntakeService:
         task_queue: TaskQueue | None = None,
         timestamp_service: RFC3161TimestampService | None = None,
         default_retention_days: int = _DEFAULT_RETENTION_DAYS,
+        ism_manager: IsmLifecycleManager | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -93,6 +96,11 @@ class EvidenceIntakeService:
         self._task_queue = task_queue
         self._timestamp_service = timestamp_service
         self._default_retention_days = default_retention_days
+        # Roadmap M1/B3: mirrors Evidence.legal_hold onto this evidence's
+        # case's OpenSearch indices, the same way it already mirrors onto
+        # the MinIO WORM object below. None (no-op) is a valid, explicit
+        # "not configured" state, matching dashboards_provisioner's pattern.
+        self._ism_manager = ism_manager
 
     async def request_upload(
         self,
@@ -631,6 +639,9 @@ class EvidenceIntakeService:
         updated = evidence.with_legal_hold(hold)
         await self._repo.update(updated, expected_state=evidence.state)
 
+        if self._ism_manager is not None:
+            await self._sync_ism_legal_hold(updated, tenant, hold)
+
         event_type = (
             AuditEventType.EVIDENCE_LEGAL_HOLD_SET
             if hold
@@ -649,6 +660,44 @@ class EvidenceIntakeService:
             extra={"evidence_id": str(evidence_id), "hold": hold},
         )
         return updated
+
+    async def _sync_ism_legal_hold(self, evidence: Evidence, tenant: TenantContext, hold: bool) -> None:
+        """Mirror ``Evidence.legal_hold`` onto this evidence's case's real
+        OpenSearch indices (roadmap M1/B3). Case-grade, not per-evidence-item:
+        a case's parsed timeline indices are shared across every evidence
+        item that produced records for the same month, and MinIO's own
+        Object Lock legal hold is what already carries per-object precision
+        for the raw artefact -- this only needs to keep the case's indices
+        undeletable for as long as ANY of its evidence is held, and resume
+        normal lifecycle once none are. Best-effort: an OpenSearch outage
+        here must never fail the call that already succeeded against MinIO
+        and Postgres -- logged, not raised, matching every other
+        provisioner in this codebase (DashboardsIndexPatternProvisioner,
+        SecurityAnalyticsDetectorProvisioner).
+        """
+        safe_org = re.sub(r"[^a-z0-9-]", "-", tenant.org_alias.lower())
+        pattern = f"kronos-{safe_org}-case-{evidence.metadata.case_id}-*"
+        try:
+            indices = await self._ism_manager.resolve_indices(pattern)
+            if not indices:
+                return
+            if hold:
+                for index in indices:
+                    await self._ism_manager.place_legal_hold(index)
+                return
+
+            # Releasing: only actually resume lifecycle management if no
+            # OTHER evidence in this case is still under hold.
+            async for other in self._repo.stream_by_case(evidence.metadata.case_id, tenant.org_id):
+                if other.evidence_id != evidence.evidence_id and other.legal_hold:
+                    return
+            for index in indices:
+                await self._ism_manager.release_legal_hold(index, "kronos-rollover")
+        except Exception as exc:  # noqa: BLE001 — best-effort, never blocks the caller
+            logger.warning(
+                "ism_legal_hold_sync_failed",
+                extra={"evidence_id": str(evidence.evidence_id), "hold": hold, "error": str(exc)},
+            )
 
     def _bucket_for_audit(self, evidence: Evidence) -> str | None:
         """Best-effort bucket name for a custody audit entry; never raises."""
