@@ -525,6 +525,11 @@ DO NOT: commit or push. Do not touch containers you didn't create. Do not
 modify files outside your scope — report conflicts instead.
 ```
 
+If this is a **redispatch** of a previously-interrupted task (check the
+task's `dispatch_log` metadata per §6), prepend a real, evidence-based
+**PRIOR PROGRESS** section per §6.3 — never resend the original brief
+verbatim as if nothing happened.
+
 ---
 
 ## 5. Execution policy
@@ -601,3 +606,120 @@ modify files outside your scope — report conflicts instead.
   idly polling. If this becomes a recurring problem, the real fix is
   running the backstop in a separate `git worktree` rather than sharing the
   interactive session's working directory -- not yet done, flagged here.
+
+---
+
+## 6. Pause/resume protocol for spend-limit interruptions
+
+**Problem this section fixes:** the `Agent` tool has no native pause/resume.
+A dispatched subagent either completes or dies; there is no built-in "retry
+this exact task when the limit resets." Observed repeatedly this session:
+subagent dispatch fails immediately with a spend-limit error in bursts, then
+recovers, with no advance warning either way. Without a formal protocol,
+each recovery either loses the subagent's real partial progress (redoing
+work, wasting budget) or silently duplicates it (e.g. creating a second
+detector with a different name for work already done). Both already nearly
+happened this session before being caught by manual inspection — this
+section makes that inspection mandatory and structured instead of ad hoc.
+
+**The model: pause = leave real, inspectable state behind; resume = read
+that state before acting, never trust task status alone.**
+
+### 6.1 The task metadata ledger (mandatory, every task)
+
+Before dispatching or resuming work on task N, and again immediately after
+any dispatch attempt (success, failure, or spend-limit death), update that
+task's `metadata` via `TaskUpdate` with an appended entry under
+`dispatch_log` (a list; append, don't overwrite):
+
+```json
+{
+  "dispatch_log": [
+    {"ts": "2026-07-30T05:12:00Z", "action": "dispatch", "model": "sonnet",
+     "outcome": "spend_limit", "note": "died before any file/artifact created"},
+    {"ts": "2026-07-30T07:14:00Z", "action": "verify_state", "outcome": "clean",
+     "note": "git status clean, no poc dir, no live detectors named kronos-poc-*"},
+    {"ts": "2026-07-30T07:14:30Z", "action": "dispatch", "model": "sonnet",
+     "outcome": "success", "note": "committed as <hash>"}
+  ]
+}
+```
+
+This is durable (the Task store has persisted across this entire multi-day
+session, including a context-compaction event) and gives the *next* actor —
+whether that's you later, a fresh subagent, or a cold-started orchestrator
+turn — a structured answer to "what already happened here" without
+re-deriving it from scratch or trusting a stale `in_progress` label.
+
+### 6.2 Mandatory real-state verification before ANY action on an in-flight task
+
+Never act on a task's `status`/`owner` fields alone. Before dispatching,
+resuming, or redispatching, **always** check real, ground-truth state first,
+in this order, and record what you found in `dispatch_log` (per 6.1):
+
+1. `git log --oneline -10 -- <the files this task would touch>` — was it
+   already committed (possibly by a different process — this happened for
+   real with B2, see §5's concurrency note)?
+2. `git status --short` and `ls poc/<expected-dir>/` — is there real,
+   uncommitted progress sitting in the working tree?
+3. Where applicable, a live check against the real dependency (e.g. "does a
+   detector/index/role with this exact name already exist?", the same way
+   B2's PoC caught that A1's template fix existed in the file but had never
+   actually reached the live cluster). **A file existing is not proof a
+   *live system* reflects it — check both when the task involves external
+   state.**
+
+Only after this produces a real, evidenced picture should you decide: finish
+it yourself, redispatch with a delta-aware brief (6.3), or start clean.
+
+### 6.3 Delta-aware resume briefs (redispatch, not restart)
+
+A redispatch is **never** the original static brief re-sent verbatim. Before
+redispatching, prepend a **PRIOR PROGRESS** section built from 6.2's real
+findings, e.g.:
+
+```
+PRIOR PROGRESS (verified by orchestrator 2026-07-30T07:14Z, do not redo):
+- A prior attempt already created 3 real detectors
+  (kronos-poc-windows-detector, -cloudtrail-detector, -network-detector)
+  and captured real findings (see poc/security_analytics_field_mappings/
+  if it exists, or the task's dispatch_log). Confirmed via
+  `_plugins/_security_analytics/detectors/_search` that [these still exist
+  / these were already cleaned up].
+- Confirmed via `git log` that [nothing/partial work] has been committed.
+YOUR JOB: pick up exactly from here — [specific remaining scope]. Do not
+recreate resources that already exist; if unsure whether something exists,
+check first (idempotent-by-construction is already required per §1.1, this
+is the same principle applied to your own resumption).
+```
+
+If 6.2 found a clean slate (nothing real happened), say so explicitly
+instead ("PRIOR ATTEMPT(S): N, all died before producing any artifact —
+proceed as a fresh dispatch") so the agent doesn't waste time hunting for
+progress that doesn't exist.
+
+### 6.4 The pause/resume cadence itself
+
+- **Pause is implicit and free**: a spend-limited dispatch fails fast (no
+  meaningful budget burned per attempt). No special "pause" action is
+  needed beyond recording the failure (6.1) and not retrying dispatch
+  again *this same cycle* (existing §5/cron-prompt rule: one probe attempt
+  per cycle, fall back to direct work on failure rather than burning
+  multiple attempts in a row).
+- **Resume is driven by `CronCreate`'s existing schedule** (§5) — no
+  separate resume-specific timer is needed. Every firing already re-checks
+  `TaskList`; per 6.2, it must now also re-verify ground truth for any
+  `in_progress` task before deciding to redispatch, finish directly, or
+  wait another cycle.
+- **No duplication, structurally**: every dispatched brief already requires
+  idempotent-by-construction operations (§1.1's extensibility bar plus each
+  item's own idempotency requirements — e.g. C2's "creating a case twice
+  must not create duplicate detectors"). 6.2/6.3 add a second layer on top
+  (don't even attempt the redundant call if it's already known to be done),
+  but idempotency at the operation level remains the hard backstop even if
+  a resume brief's PRIOR PROGRESS section is incomplete or wrong.
+- **No loss, structurally**: because 6.2 is mandatory before treating
+  anything as "not done," real partial progress (uncommitted files, live
+  cluster resources) is never silently abandoned — it either gets
+  committed (if verified correct) or explicitly folded into the next
+  brief's scope.
