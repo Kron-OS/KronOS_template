@@ -548,6 +548,51 @@ certificate; a collector that lies in its payload must not be able to write into
 another tenant. Backpressure and dedup-by-event-hash required.
 **Depends on:** D1.
 
+**STATUS (2026-07-31): DONE.** `CollectorIdentity` (org_id/source_id,
+`src/domain/collector.py`), `X509SanCollectorIdentityExtractor`
+(`src/external/middleware/collector_mtls.py`, parses a
+`urn:kronos:collector:org:<uuid>:source:<id>` URI SAN from the
+already-TLS-verified peer cert), `MTLSIdentityH11Protocol`
+(`src/external/mtls_protocol.py`, recovers the verified peer cert via
+asyncio's `ssl_object` since uvicorn 0.51.0 has no ASGI TLS extension —
+confirmed by grepping its real installed source), `CollectorIngestService`
+(backpressure + SHA-256 content-hash dedup, then produce via D1's
+`StreamIngestAdapter` — extended with a new `approximate_length()` method),
+`RedisEventDedupChecker` (atomic `SET NX EX`), a minimal standalone
+`collector_app`/`run_dual_listener.py` (mTLS termination happens in this
+uvicorn process itself, not nginx, for this deployment's most
+security-sensitive new trust boundary). Real verification
+(`poc/collector_ingest_mtls/`, 17/17 checks) against the live step-ca:
+two real, distinct client certs issued for two different real orgs via
+the real `admin` JWK provisioner (the only one actually configured — the
+bootstrap script's `kronos-sa`/ACME additions are silently absent on the
+live container); each real cert's request derives the matching real
+org_id, never from the payload; a payload embedding a fake org_id is
+structurally inert — confirmed via direct Redis inspection, not just a
+200 response; no client cert, and an untrusted (non-step-ca-signed) cert,
+are both rejected at the TLS handshake; real dedup and real (deliberately
+tiny, for the test) backpressure both fire and are independently
+confirmed via direct Redis reads.
+
+**Real finding**, load-bearing for any future client of this API:
+httpx 0.28.1's convenience `cert=(crt, key)` + `verify=<ca path>` tuple
+form silently fails this exact TLS 1.3 + EC P-256 mutual-auth handshake
+with `UNEXPECTED_EOF_WHILE_READING` on every attempt — isolated by
+confirming the identical server/certs work correctly via `curl`, raw
+`openssl s_client`, AND an explicit `ssl.SSLContext` passed to httpx as
+`verify=`. Not a bug in this repo's own mTLS code (independently proven
+correct first) — a real httpx-side quirk for this parameter combination,
+worked around in the PoC and worth knowing for D6's later L3 chain.
+
+**Scope note**: `run_dual_listener.py` is real and runs correctly as a
+standalone process; it is not yet added to `docker/docker-compose.dev.yml`
+— real deployment wiring is flagged as follow-up work, not attempted here
+(matches this session's established pattern, e.g. B3's aggressive tier,
+C2's kronos-dev legacy-index gap). See `poc/collector_ingest_mtls/README.md`
+for the full account. Unit tests: `test_collector_mtls.py`,
+`test_collector_ingest.py`, `test_event_dedup.py`,
+`test_routes_collector_ingest.py` (24 tests).
+
 ### D3 · GATE · Batch sealing (Merkle + TSA + WORM) — L2
 **Objective.** Reconcile continuous ingestion with chain of custody without
 per-event hashing/scanning/timestamping. Seal stream segments (time- or

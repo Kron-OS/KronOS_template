@@ -1,0 +1,81 @@
+work dir: /tmp/d2poc_dv7daf71
+
+==============================================================================
+0. Real cert issuance from the live step-ca (admin JWK provisioner)
+==============================================================================
+real step CLI: Smallstep CLI/0.30.2 (linux/amd64)
+[PASS] real step CLI reachable in the running step-ca container
+[PASS] real client cert issued for collector A (distinct org)
+[PASS] real client cert issued for collector B (distinct org)
+[PASS] real server cert issued for the mTLS listener itself
+
+==============================================================================
+1. Start the real mTLS collector listener as a subprocess
+==============================================================================
+[PASS] real mTLS listener process came up and accepts TLS connections
+
+==============================================================================
+2. Real mTLS request, collector A -- identity derived from the cert
+==============================================================================
+collector A ingest -> 202 {"results":[{"accepted":true,"duplicate":false,"messageId":"1785517453918-0"}]}
+[PASS] real mTLS request from collector A accepted (202)
+[PASS] event was accepted, not a duplicate
+
+==============================================================================
+3. Real mTLS request, collector B -- different real org, different key
+==============================================================================
+collector B ingest -> 202 {"results":[{"accepted":true,"duplicate":false,"messageId":"1785517453924-0"}]}
+[PASS] real mTLS request from collector B accepted (202)
+
+==============================================================================
+4. Cross-org lie in the payload is structurally inert
+==============================================================================
+[PASS] a payload embedding another org's id is still accepted (schema doesn't reject it)
+[PASS] the lying event landed under collector A's REAL cert-derived key, not the org_id it tried to claim in its payload -- org_a stream contents: [{'message': 'conn from 10.0.0.5', 'seq': 1}, {'message': 'trying to claim org B', 'org_id': 'dc09cba0-8df5-477b-9a1a-7f4f42636375', 'seq': 2}]
+[PASS] org B's real stream was NOT touched by collector A's lying payload (structural isolation -- the key itself comes only from the verified cert) -- org_b stream contents: [{'message': 'conn from org b', 'seq': 1}]
+
+==============================================================================
+5. No client certificate at all -> rejected at the TLS layer
+==============================================================================
+[PASS] a request with NO client certificate is rejected at the TLS handshake -- [SSL: UNEXPECTED_EOF_WHILE_READING] unexpected eof while reading (_ssl.c:2711)
+
+==============================================================================
+6. An untrusted (non-step-ca-signed) client cert -> also rejected
+==============================================================================
+[PASS] a real, syntactically valid but NOT step-ca-signed client cert is rejected -- [Errno 104] Connection reset by peer
+
+==============================================================================
+7. Real dedup: identical event submitted twice -> only one lands
+==============================================================================
+first submit -> {'results': [{'accepted': True, 'duplicate': False, 'messageId': '1785517453940-0'}]}
+retry (identical) -> {'results': [{'accepted': False, 'duplicate': True, 'messageId': None}]}
+[PASS] first submission accepted
+[PASS] identical retry correctly flagged as a duplicate, NOT re-produced
+[PASS] the duplicate event appears exactly once in the real Redis stream
+
+==============================================================================
+8. Real backpressure: COLLECTOR_MAX_STREAM_LENGTH=3 is enforced
+==============================================================================
+backpressure fired on attempt 1: 503 {"detail":"Stream kronos:stream:a37f3abb-0116-4abc-9773-b7da23f71ba5:zeek-conn at capacity (3 >= 3)"}
+[PASS] real 503 backpressure response fired once the stream reached the configured ceiling -- last_status=503
+
+17 passed, 0 failed
+
+--- listener process stdout/stderr ---
+INFO:     Started server process [1755393]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on https://127.0.0.1:8543 (Press CTRL+C to quit)
+INFO:     127.0.0.1:40480 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:40492 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:40498 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:40492 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:40498 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:40498 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:40492 - "POST /api/collector/ingest HTTP/1.1" 202 Accepted
+collector_ingest_backpressure_rejected
+INFO:     127.0.0.1:40492 - "POST /api/collector/ingest HTTP/1.1" 503 Service Unavailable
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+
+cleanup: deleted real PoC keys from Redis DB 3

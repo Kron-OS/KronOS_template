@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # Celery broker/backend (DB 1/2) or step-up tickets (DB 0).
     stream_redis_db: int = 3
 
+    # Collector ingest (roadmap M3/D2) -- real, enforced (not advisory)
+    # per-(org,source) backpressure ceiling, and how long a content-hash
+    # dedup key is remembered (must comfortably exceed any realistic
+    # collector retry/backoff window; see EventDedupChecker's docstring for
+    # why this trades unbounded storage growth for a bounded false-negative
+    # window on very late retries).
+    collector_max_stream_length: int = 1_000_000
+    collector_dedup_ttl_seconds: int = 3600
+
     # MinIO / S3
     minio_endpoint: str = Field(description="MinIO endpoint, e.g. minio:9000")
     minio_access_key: SecretStr

@@ -96,6 +96,18 @@ class StreamIngestAdapter(ABC):
         `abort_orphan_*` idiom) must invoke it periodically.
         """
 
+    @abstractmethod
+    async def approximate_length(self, org_id: uuid.UUID, source_id: str) -> int:
+        """Real-time entry count for this (org, source)'s own stream (roadmap M3/D2).
+
+        Deliberately NOT used to trim/drop anything itself -- this adapter
+        never trims (see D3's own explicit warning that a MAXLEN trim of
+        unsealed events is silent evidence loss, not a backpressure
+        mechanism). Callers (CollectorIngestService) use this purely as a
+        gauge to decide whether to reject *new* writes with a real,
+        observable backpressure signal -- existing data is never touched.
+        """
+
 
 class RedisStreamIngestAdapter(StreamIngestAdapter):
     """Real Redis Streams implementation, verified against Redis 7.4.9.
@@ -186,6 +198,9 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
             for mid, fields in claimed_entries
         ]
 
+    async def approximate_length(self, org_id: uuid.UUID, source_id: str) -> int:
+        return int(await self._redis.xlen(self._key(org_id, source_id)))
+
 
 class InMemoryStreamIngestAdapter(StreamIngestAdapter):
     """Thread-unsafe in-memory stand-in for unit tests -- no real ack/redelivery
@@ -250,3 +265,6 @@ class InMemoryStreamIngestAdapter(StreamIngestAdapter):
         min_idle_ms: int,
     ) -> list[StreamMessage]:
         return []
+
+    async def approximate_length(self, org_id: uuid.UUID, source_id: str) -> int:
+        return len(self._streams.get(self._key(org_id, source_id), []))

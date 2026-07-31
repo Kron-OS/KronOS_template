@@ -19,6 +19,7 @@ from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvi
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.adapter.opensearch.findings_client import FindingsClient
 from src.adapter.opensearch.ism_manager import IsmLifecycleManager
+from src.adapter.queue.event_dedup import EventDedupChecker, InMemoryEventDedupChecker
 from src.adapter.queue.stream_ingest import InMemoryStreamIngestAdapter, StreamIngestAdapter
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.artifact_repository import (
@@ -33,6 +34,7 @@ from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePac
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
+from src.application.collector_ingest import CollectorIngestService
 from src.application.cost_gate import RuleCostGate
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
@@ -80,6 +82,8 @@ _detector_provisioner: DetectorProvisioner | None = None
 _ism_manager: IsmLifecycleManager | None = None
 _ism_tier_resolver: IsmTierResolver = DefaultIsmTierResolver()
 _stream_ingest_adapter: StreamIngestAdapter = InMemoryStreamIngestAdapter()
+_event_dedup_checker: EventDedupChecker = InMemoryEventDedupChecker()
+_collector_ingest_service: CollectorIngestService | None = None
 _findings_client: FindingsClient | None = None
 _detection_repository: DetectionRepository = InMemoryDetectionRepository()
 _timestamp_service: RFC3161TimestampService | None = None
@@ -144,6 +148,42 @@ def get_ism_tier_resolver() -> IsmTierResolver:
 
 def get_stream_ingest_adapter() -> StreamIngestAdapter:
     return _stream_ingest_adapter
+
+
+def get_collector_ingest_service() -> CollectorIngestService:
+    """FastAPI dependency for CollectorIngestService (roadmap M3/D2).
+
+    Configured independently of the large ``configure_dependencies()``
+    monolith via :func:`configure_collector_ingest_service` -- the mTLS
+    collector listener (``src/external/run_dual_listener.py``) is a
+    deliberately minimal standalone ASGI app (``src/external/collector_app.py``)
+    with no Postgres/MinIO/OpenSearch dependencies at all, so it has no
+    reason to call the full app's startup wiring.
+    """
+    if _collector_ingest_service is None:
+        raise RuntimeError(
+            "CollectorIngestService is not configured. "
+            "Call configure_collector_ingest_service() at startup."
+        )
+    return _collector_ingest_service
+
+
+def configure_collector_ingest_service(
+    stream_ingest_adapter: StreamIngestAdapter,
+    dedup_checker: EventDedupChecker,
+    *,
+    max_stream_length: int,
+    dedup_ttl_seconds: int,
+) -> None:
+    global _collector_ingest_service, _stream_ingest_adapter, _event_dedup_checker
+    _stream_ingest_adapter = stream_ingest_adapter
+    _event_dedup_checker = dedup_checker
+    _collector_ingest_service = CollectorIngestService(
+        stream_ingest_adapter,
+        dedup_checker,
+        max_stream_length=max_stream_length,
+        dedup_ttl_seconds=dedup_ttl_seconds,
+    )
 
 
 def get_findings_client() -> FindingsClient | None:
@@ -609,6 +649,7 @@ def reset_dependencies() -> None:
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
     global _artifact_repository, _dashboards_index_pattern_provisioner, _detector_provisioner
     global _ism_manager, _ism_tier_resolver, _stream_ingest_adapter
+    global _event_dedup_checker, _collector_ingest_service
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
@@ -632,6 +673,8 @@ def reset_dependencies() -> None:
     _ism_manager = None
     _ism_tier_resolver = DefaultIsmTierResolver()
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()
+    _event_dedup_checker = InMemoryEventDedupChecker()
+    _collector_ingest_service = None
     _timestamp_service = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
