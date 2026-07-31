@@ -120,3 +120,29 @@ export interface SSEStatusEvent {
 export interface DashboardUrl {
   url: string
 }
+
+export type DetectionTriageState = 'NEW' | 'INVESTIGATING' | 'TRUE_POSITIVE' | 'FALSE_POSITIVE'
+
+export interface DetectionRuleMatch {
+  ruleId: string
+  ruleName: string | null
+  tags: string[]
+}
+
+// Field names match src/external/routes/detections.py's DetectionOut DTO --
+// the only tenant-facing surface over SA finding data (roadmap A3 gate).
+export interface Detection {
+  id: string
+  orgId: string
+  caseId: string | null
+  findingId: string
+  detectorName: string
+  sourceIndex: string
+  ruleMatches: DetectionRuleMatch[]
+  matchedDocumentIds: string[]
+  attackTags: string[]
+  findingTimestamp: string
+  triageState: DetectionTriageState
+  syncedAt: string
+  updatedAt: string
+}

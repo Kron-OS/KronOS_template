@@ -468,6 +468,35 @@ the full account. No `src/` changes were needed or made for this item.
 If A3 was NO-GO, this is the *only* tenant-facing surface for findings.
 **Depends on:** C4.
 
+**STATUS (2026-07-31): DONE.** `src/external/routes/detections.py`
+(`GET /api/detections` org-scoped+filterable, `GET /api/detections/{id}`
+404-not-403 on cross-org, `POST /api/detections/{id}/triage` delegating
+entirely to C4's already-audited `DetectionTriageService`, 409 not 500 on
+an illegal FSM transition) plus a React frontend (`DetectionsPage`,
+`DetectionDetailPage`, `TriageStatePill`, FSM-aware triage buttons),
+matching the existing `CasesPage`/`CaseDetailPage` idiom. This is the
+tenant-facing surface the A3 gate's binding condition requires — SA/
+Alerting's own APIs are never proxied here, only the audited `Detection`
+entity. Role split: read routes open to all four roles, triage restricted
+to org_admin/case_lead/analyst (mirrors the §1 permission matrix's
+"Upload evidence" row). Real verification: `poc/detection_api_triage_ui/`
+(25/25 checks) against the real running backend with real Keycloak JWTs
+from real logins across two real orgs — real org-scoped list/filter over
+C4's 10 real Detection rows, cross-org isolation (404 not 403, verified
+list/detail/triage all three), a real persisted `NEW→INVESTIGATING`
+transition, illegal-transition and terminal-reopen rejection (409), and
+read-only-role-cannot-triage (403). Real browser check via headless
+Chromium: logged in as case-lead, saw all 10 real rows with correct
+triage pills and real ATT&CK tags, filtered by state, opened a detail
+page, clicked "Start Investigating," confirmed via direct `psql` that the
+persisted row and a real audit row both reflect the transition — not just
+a UI-state claim. Backend suite 767→781 passed, no regressions; frontend
+`npm run test` 43 passed, `tsc -b`/lint clean. Known, reported (not
+fixed) gap: no automatic trigger for `DetectionSyncService` exists yet
+(no route or beat task calls it) — populating real `Detection` rows in
+normal operation, beyond what earlier PoCs manually synced, remains open
+follow-up work, not this item's scope.
+
 ---
 
 ## M3 — Continuous ingestion

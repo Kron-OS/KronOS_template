@@ -14,6 +14,8 @@ import { LoginPage } from './pages/LoginPage'
 import { CasesPage } from './pages/CasesPage'
 import { CaseDetailPage } from './pages/CaseDetailPage'
 import { AdminPage } from './pages/AdminPage'
+import { DetectionsPage } from './pages/DetectionsPage'
+import { DetectionDetailPage } from './pages/DetectionDetailPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,6 +66,30 @@ const caseDetailRoute = createRoute({
   ),
 })
 
+const detectionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/detections',
+  component: () => (
+    <AuthGuard>
+      <Layout>
+        <DetectionsPage />
+      </Layout>
+    </AuthGuard>
+  ),
+})
+
+const detectionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/detections/$detectionId',
+  component: () => (
+    <AuthGuard>
+      <Layout>
+        <DetectionDetailPage />
+      </Layout>
+    </AuthGuard>
+  ),
+})
+
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/org',
@@ -83,6 +109,8 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   casesRoute,
   caseDetailRoute,
+  detectionsRoute,
+  detectionDetailRoute,
   adminRoute,
 ])
 

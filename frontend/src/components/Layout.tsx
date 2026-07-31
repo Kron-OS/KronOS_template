@@ -44,6 +44,12 @@ export function Layout({ children }: LayoutProps) {
             >
               Cases
             </Link>
+            <Link
+              to="/detections"
+              className="text-gray-300 hover:text-white [&.active]:text-indigo-400"
+            >
+              Detections
+            </Link>
             {user?.roles.includes('org-admin') && (
               <Link
                 to="/admin/org"

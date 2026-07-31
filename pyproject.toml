@@ -122,6 +122,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A"]
 "src/external/routes/admin.py" = ["N815", "B008"]
 "src/external/routes/cases.py" = ["N815", "B008"]
 "src/external/routes/evidence.py" = ["N815"]
+"src/external/routes/detections.py" = ["N815"]
 "src/external/routes/sse.py" = ["N815"]
 "src/external/routes/step_up.py" = ["N815"]
 # FastAPI's Depends(...)/Query(...)/Body(...) default-argument pattern is

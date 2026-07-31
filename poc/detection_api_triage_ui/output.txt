@@ -1,0 +1,45 @@
+=== Real logins (PKCE, real Keycloak, real kronos-frontend client) ===
+  case-lead: org={'kronos-dev': {'id': '482072f5-8086-4815-be03-879cc2eaecb5'}}, roles=['case-lead']
+  analyst: org={'kronos-dev': {'id': '482072f5-8086-4815-be03-879cc2eaecb5'}}, roles=['analyst']
+  poc-c6-analyst: org={'kronos-poc-c6': {'id': '825f35fc-c8f4-4fc0-bc40-f457deb178b6'}}, roles=['offline_access', 'default-roles-kronos', 'analyst', 'uma_authorization']
+  poc-c6-readonly: org={'kronos-dev': {'id': '482072f5-8086-4815-be03-879cc2eaecb5'}}, roles=['offline_access', 'default-roles-kronos', 'uma_authorization', 'read-only']
+[PASS] case-lead's real token org_id is kronos-dev's real org id
+[PASS] poc-c6-analyst's real token org_id is the real SECOND org (not kronos-dev)
+
+=== Part 1: GET /api/detections (org kronos-dev, real synced rows) ===
+  -> 200
+[PASS] case-lead can list detections (200)
+[PASS] at least the 10 real Detection rows left by poc/detection_finding_sync/ are visible -- total=10
+[PASS] at least one real TRUE_POSITIVE row present (from C4's own triage exercise)
+[PASS] at least one real NEW row present -- count=8
+[PASS] triageState=NEW query filter returns only NEW rows -- count=8
+[PASS] caseId query filter returns only that case's detections
+[PASS] analyst (read-tier role) can also list detections (matches §1 matrix's 'Search timeline' read row)
+
+=== Part 2: GET /api/detections/{id} ===
+[PASS] case-lead can read a single detection's detail
+[PASS] detail carries a real rule_id (replayability) -- [{'ruleId': '1fc0809e-06bf-4de3-ad52-25e5263b7623', 'ruleName': '1fc0809e-06bf-4de3-ad52-25e5263b7623', 'tags': ['high', 'network', 'attack.t1021.001']}]
+[PASS] detail's attackTags exposes the real ATT&CK tag t1021.001 -- ['attack.t1021.001']
+[PASS] a nonexistent detection_id also returns 404 -- got 404
+
+=== Part 3: cross-org isolation -- real second org, real second login ===
+[PASS] poc-c6-analyst (different real org) sees ZERO of kronos-dev's detections -- status=200 total=0
+[PASS] poc-c6-analyst reading kronos-dev's real detection by id -> 404 (NOT 403 -- must not leak cross-org existence) -- got 404
+[PASS] poc-c6-analyst cannot triage kronos-dev's real detection -> 404 -- got 404
+[PASS] target detection's triage_state genuinely unchanged after the cross-org attempt
+
+=== Part 4: real triage transitions via POST /triage ===
+[PASS] analyst: real NEW -> INVESTIGATING transition via the real API -- got 200 {"id":"e8dd75b7-a028-4cc3-8a92-64a11ff5b185","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","caseId":"1a49dcd0-b6a6-4410-83aa-def7ffc9f9fa","findingId":"855e0add-3966-49f4-8f44-57cedf3a238a","detector
+[PASS] re-read from the real API confirms the persisted triage_state
+[PASS] illegal NEW -> TRUE_POSITIVE (skipping INVESTIGATING) returns 409, not a raw 500 -- got 409 {"detail":"Invalid detection triage transition: NEW → TRUE_POSITIVE"}
+[PASS] the rejected illegal transition did NOT mutate the persisted state
+[PASS] a terminal TRUE_POSITIVE detection rejects re-transition -> 409 (no reopen loophole) -- got 409
+
+=== Part 5: read-only role -- can list/read, cannot triage ===
+[PASS] read-only role CAN list detections (matches §1 matrix's read-tier rows) -- status=200
+[PASS] read-only role CAN read a single detection's detail
+[PASS] read-only role CANNOT triage -> 403 (mirrors §1 matrix's 'Upload evidence' row: org-admin/case-lead/analyst yes, read-only no) -- got 403 {"detail":"Insufficient privileges: one of ['org_admin', 'analyst', 'case_lead'] is required"}
+
+============================================================
+25 passed, 0 failed
+============================================================
