@@ -432,6 +432,37 @@ route or automatic trigger yet — that is C6's scope, not C4's.
 detect → `Detection` row. Report real coverage by ATT&CK technique.
 **Depends on:** C4, A4.
 
+**STATUS (2026-07-31): DONE, with a real, important architectural finding —
+not a clean pass.** `poc/chain_detect_from_evidence/` real-chained upload →
+Celery-driven parse → OpenSearch indexing → admin-only detector creation →
+`DetectionSyncService` → Postgres, using genuinely fresh evidence (not a
+reused already-indexed sample): 19/20 mechanics checks passed. The 20th
+(a real SA finding firing within the run) failed for a real, conclusively
+root-caused reason, **not a bug in any C1-C4 component**: OpenSearch
+Security Analytics monitors filter candidate documents by whether their
+own `@timestamp` falls within a recent execution window since the
+monitor's last run — not by write/arrival order. Confirmed directly: the
+same real evidence with its genuine historical timestamp (2015-era, from
+the real EVTX file) produced zero findings across 8+ minutes and many
+1-minute schedule cycles; re-indexing one document with **only**
+`@timestamp` changed to "now" produced a real finding on the very next
+cycle. **Real forensic evidence is, by definition, always historically
+timestamped** — this means SA's detector/monitor model, oriented around
+continuously-arriving present-time telemetry (the future D-milestone
+stream path), is structurally the wrong fit for evaluating KronOS's
+**evidence** ingestion path as currently configured. C4's own PoC had
+already quietly worked around this exact issue (re-indexing samples with a
+fresh timestamp to get a demonstrable finding) without generalizing the
+implication — this item makes it explicit rather than leaving it buried.
+**Open follow-up, not yet scoped as its own roadmap item:** either a
+scheduled/backfill query mode for SA monitors against a fixed absolute
+time range instead of "since last run," or a KronOS-native retrospective
+rule-evaluation path independent of SA's monitor-schedule model. Real
+measured ATT&CK coverage for this run's own fresh evidence: honestly zero
+(nothing new fired to sync) — a correct, not a failed, measurement given
+the root cause above. See `poc/chain_detect_from_evidence/README.md` for
+the full account. No `src/` changes were needed or made for this item.
+
 ### C6 · Detection API + triage UI — L3
 **Objective.** Backend-filtered detection list/detail/triage endpoints and UI.
 If A3 was NO-GO, this is the *only* tenant-facing surface for findings.

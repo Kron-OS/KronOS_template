@@ -1,0 +1,81 @@
+login OK (mfa_path=none)
+token claims: org_id=482072f5-8086-4815-be03-879cc2eaecb5 sub=10000000-0000-4000-8000-000000000003 roles=['case-lead']
+created fresh case dc236f62-31d8-44c9-b8e9-a844e5c0b4e6
+[windows] evidence_id=112936e0-101b-47e7-82a1-59a083a94356 sha256=ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224 finalize -> {'id': '112936e0-101b-47e7-82a1-59a083a94356', 'caseId': 'dc236f62-31d8-44c9-b8e9-a844e5c0b4e6', 'filename': 'chain-c5-432a508c.evtx', 'contentType': 'application/octet-stream', 'sizeBytes': 200000, 'sha256': None, 'md5': None, 'state': 'UPLOADING', 'errorReason': None, 'retryAction': None, 'uploadedBy': '10000000-0000-4000-8000-000000000003', 'uploadedAt': '2026-07-31T05:16:11.979813+00:00', 'updatedAt': '2026-07-31T05:16:12.088238+00:00', 'rfc3161Token': None, 'legalHold': False, 'objectLockUntil': None}
+[network] evidence_id=7401fd0c-005b-4f08-bd6d-428e0847b4a7 sha256=1fe110a2eba4e36b1f71867dc1b02d26be38cf6e40bfe05af219733e6410e06c finalize -> {'id': '7401fd0c-005b-4f08-bd6d-428e0847b4a7', 'caseId': 'dc236f62-31d8-44c9-b8e9-a844e5c0b4e6', 'filename': 'chain-c5-22b5438b-eve.json', 'contentType': 'application/json', 'sizeBytes': 4724, 'sha256': None, 'md5': None, 'state': 'UPLOADING', 'errorReason': None, 'retryAction': None, 'uploadedBy': '10000000-0000-4000-8000-000000000003', 'uploadedAt': '2026-07-31T05:16:12.153424+00:00', 'updatedAt': '2026-07-31T05:16:12.217646+00:00', 'rfc3161Token': None, 'legalHold': False, 'objectLockUntil': None}
+poll: {'windows': 'SCANNING', 'network': 'UPLOADING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE'}
+[windows] detector kronos-kronos-dev-windows-detector id=pMyatp8BG52zb-VTIXR4
+[network] detector kronos-kronos-dev-network-detector id=p8yatp8BG52zb-VTInRb
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+findings poll (scoped to case_id=dc236f62-31d8-44c9-b8e9-a844e5c0b4e6): total=0
+deleted detector pMyatp8BG52zb-VTIXR4 (windows)
+deleted detector p8yatp8BG52zb-VTInRb (network)
+=== Step 1: real login (case-lead, kronos-dev) ===
+[PASS] real JWT carries org_id/organization claims -- org_id=482072f5-8086-4815-be03-879cc2eaecb5 org_alias=kronos-dev
+
+=== Step 2: real, fresh case creation ===
+[PASS] real POST /api/cases succeeds (201) despite kronos-dev's known C2 legacy-index gap -- status=201 body={"id":"dc236f62-31d8-44c9-b8e9-a844e5c0b4e6","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","title":"C5 chain PoC 5ee621f9","description":"L3 evidence->detect->Detection chain","reference":null,"status":"open","createdAt":"2026-07-31T05:16:10.635300+00:00","updatedAt":"2026-07-31T05:16:10.635302+00:
+
+=== Step 3: real, fresh evidence upload+finalize (autonomous pipeline) ===
+[PASS] [windows] upload/request -> 201 -- status=201 body={"evidenceId":"112936e0-101b-47e7-82a1-59a083a94356","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/dc236f62-31d8-44c9-b8e9-a844e5c0b4e6/112936e0-101b-47e7-82a1-59a083a94356/chain-c5-432a508c.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_mi
+[PASS] [windows] real presigned PUT to MinIO succeeds -- status=200
+[PASS] [windows] finalize_upload -> 202 (triggers the autonomous pipeline, E.1) -- status=202 body={"id":"112936e0-101b-47e7-82a1-59a083a94356","caseId":"dc236f62-31d8-44c9-b8e9-a844e5c0b4e6","filename":"chain-c5-432a508c.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-
+[PASS] [network] upload/request -> 201 -- status=201 body={"evidenceId":"7401fd0c-005b-4f08-bd6d-428e0847b4a7","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/dc236f62-31d8-44c9-b8e9-a844e5c0b4e6/7401fd0c-005b-4f08-bd6d-428e0847b4a7/chain-c5-22b5438b-eve.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=krono
+[PASS] [network] real presigned PUT to MinIO succeeds -- status=200
+[PASS] [network] finalize_upload -> 202 (triggers the autonomous pipeline, E.1) -- status=202 body={"id":"7401fd0c-005b-4f08-bd6d-428e0847b4a7","caseId":"dc236f62-31d8-44c9-b8e9-a844e5c0b4e6","filename":"chain-c5-22b5438b-eve.json","contentType":"application/json","sizeBytes":4724,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8
+
+=== Step 4: poll for real Celery-driven parse -> OpenSearch indexing ===
+[PASS] [windows] real evidence reached COMPLETE via the autonomous pipeline (no manual parse/start call) -- state=COMPLETE
+[PASS] [network] real evidence reached COMPLETE via the autonomous pipeline (no manual parse/start call) -- state=COMPLETE
+
+=== Step 5: confirm real fresh documents actually landed in OpenSearch ===
+[PASS] [windows] real fresh documents indexed in this case's OpenSearch index -- count=194
+[PASS] [network] real fresh documents indexed in this case's OpenSearch index -- count=6
+
+=== Step 6: real case-scoped detectors, admin creds (A3), matching C1/C4 workaround for kronos-dev's known legacy-index gap ===
+[PASS] [windows] fetched real prepackaged rule ids -- count=1580
+[PASS] [windows] real detector created, case-scoped index (sidesteps C2's documented kronos-dev legacy-index gap) -- status=201 body={"_id":"pMyatp8BG52zb-VTIXR4","_version":1,"detector":{"name":"kronos-kronos-dev-windows-detector","detector_type":"windows","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"C5 chain PoC case-scoped detector (windows)","indices":["krono
+[PASS] [network] fetched real prepackaged rule ids -- count=38
+[PASS] [network] real detector created, case-scoped index (sidesteps C2's documented kronos-dev legacy-index gap) -- status=201 body={"_id":"p8yatp8BG52zb-VTInRb","_version":1,"detector":{"name":"kronos-kronos-dev-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"C5 chain PoC case-scoped detector (network)","indices":["krono
+
+=== Step 7: wait for the real detector's scheduled monitor run to actually fire ===
+[FAIL] at least one real SA finding produced against the freshly-ingested evidence -- total=0
+
+=== Step 8: real DetectionSyncService.sync_org_findings() -- unmodified src/ code ===
+[FAIL] real sync created at least one new Detection row -- created=0
+[FAIL] at least one real Detection row exists for THIS run's fresh case_id -- count=0 (org total=10)
+[PASS] every real Detection row's org_id == the syncing tenant's real org_id (invariant #3 -- computed, never read from the finding) -- set()
+[PASS] every real Detection row's case_id correctly parsed from the finding's own source index name -- set()
+[FAIL] at least one real ATT&CK tag present on this run's Detection rows (Detection.attack_tags) -- []
+
+=== Step 9: real measured ATT&CK coverage for this run's fresh Detection rows ===
+{
+  "detections": 0,
+  "technique_counts": {}
+}
+[PASS] re-running sync creates zero new rows for the same real findings (idempotency) -- created=0
+
+=== Cleanup: remove the throwaway case-scoped detectors (not part of any committed src/ path) ===
+NOTE: real findings + real Detection/audit_log rows this run created are deliberately left in place as inspectable proof, matching C4's own precedent.
+
+19 passed, 4 failed
+FAILURES: ['at least one real SA finding produced against the freshly-ingested evidence', 'real sync created at least one new Detection row', "at least one real Detection row exists for THIS run's fresh case_id", "at least one real ATT&CK tag present on this run's Detection rows (Detection.attack_tags)"]
