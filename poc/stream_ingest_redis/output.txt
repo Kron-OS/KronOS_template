@@ -1,0 +1,107 @@
+==============================================================================
+0. Pin real server version
+==============================================================================
+redis_version = 7.4.9
+[PASS] Redis server reports version 7.x
+
+org_a key = kronos:stream:poc:33e7c78c-013e-47f6-830a-73ee026229b9:poc-auth-log
+org_b key = kronos:stream:poc:213836ac-6dc2-4d0a-ae77-7199ee8b2b7f:poc-auth-log
+
+==============================================================================
+1. Produce real records for two different real org identifiers
+==============================================================================
+org_a produced ids: ['1785495092271-0', '1785495092272-0', '1785495092272-1', '1785495092272-2', '1785495092272-3']
+org_b produced ids: ['1785495092273-0', '1785495092273-1', '1785495092273-2', '1785495092273-3', '1785495092274-0']
+[PASS] 5 events durably appended to org_a's own key
+[PASS] 5 events durably appended to org_b's own key
+
+--- raw redis-cli-equivalent check: keys physically separate ---
+real keys present in DB 3: ['kronos:stream:poc:213836ac-6dc2-4d0a-ae77-7199ee8b2b7f:poc-auth-log', 'kronos:stream:poc:33e7c78c-013e-47f6-830a-73ee026229b9:poc-auth-log']
+[PASS] exactly 2 distinct physical keys exist (no shared key)
+[PASS] org_a key is a real Redis stream type
+[PASS] org_b key is a real Redis stream type
+org_a raw XRANGE payloads: ['{"event": "login", "seq": 0, "org": "a"}', '{"event": "login", "seq": 1, "org": "a"}', '{"event": "login", "seq": 2, "org": "a"}', '{"event": "login", "seq": 3, "org": "a"}', '{"event": "login", "seq": 4, "org": "a"}']
+org_b raw XRANGE payloads: ['{"event": "login", "seq": 0, "org": "b"}', '{"event": "login", "seq": 1, "org": "b"}', '{"event": "login", "seq": 2, "org": "b"}', '{"event": "login", "seq": 3, "org": "b"}', '{"event": "login", "seq": 4, "org": "b"}']
+[PASS] org_a's key contains ONLY org-a-tagged payloads (raw XRANGE, not via adapter)
+[PASS] org_b's key contains ONLY org-b-tagged payloads (raw XRANGE, not via adapter)
+
+==============================================================================
+2. Consumer group at-least-once: unacked read -> real redelivery
+==============================================================================
+created consumer group 'ingest-cg' on kronos:stream:poc:33e7c78c-013e-47f6-830a-73ee026229b9:poc-auth-log starting at id=0 (replay-from-start)
+consumer-1 read (unacked): ['1785495092271-0', '1785495092272-0', '1785495092272-1']
+[PASS] consumer-1 really read 3 messages
+XPENDING summary immediately after: {'pending': 3, 'min': '1785495092271-0', 'max': '1785495092272-1', 'consumers': [{'name': 'consumer-1', 'pending': 3}]}
+[PASS] 3 messages genuinely pending/unacked in the group
+consumer-2 XAUTOCLAIM reclaimed: ['1785495092271-0', '1785495092272-0', '1785495092272-1']
+[PASS] consumer-2 (a fresh consumer) really reclaimed the SAME 3 unacked ids via XAUTOCLAIM
+pending-entry owners after reclaim: {'1785495092271-0': 'consumer-2', '1785495092272-0': 'consumer-2', '1785495092272-1': 'consumer-2'}
+[PASS] all 3 reclaimed ids are now owned by consumer-2, not consumer-1
+XPENDING summary after consumer-2 acks: {'pending': 0, 'min': None, 'max': None, 'consumers': []}
+[PASS] acking via the NEW consumer clears the pending list
+
+==============================================================================
+3. Durability across a real consumer restart (new connection object)
+==============================================================================
+drained + acked remaining backlog: ['1785495092272-2', '1785495092272-3']
+produced 4 new events while 'no consumer running': ['1785495092583-0', '1785495092583-1', '1785495092584-0', '1785495092584-1']
+brand-new consumer instance ('consumer-restarted') on a NEW connection read: ['1785495092583-0', '1785495092583-1', '1785495092584-0', '1785495092584-1']
+[PASS] new consumer instance (new connection, new name) picks up exactly the post-restart backlog
+[PASS] durability is server-side (group cursor), not client/process memory
+
+==============================================================================
+4. Cross-org isolation: structural, not filtered
+==============================================================================
+attempt to read org_b's key using org_a's group name -> error: "NOGROUP No such key 'kronos:stream:poc:213836ac-6dc2-4d0a-ae77-7199ee8b2b7f:poc-auth-log' or consumer group 'ingest-cg' in XREADGROUP with GROUP option"
+[PASS] org_a's consumer group cannot read org_b's key at all (real NOGROUP, not empty results)
+[PASS] org_b's key still contains ONLY its own 5 original events (nothing from org_a leaked in)
+
+==============================================================================
+5. No shared bottleneck: a burst on org_a does not delay org_b's consumer
+==============================================================================
+org_a burst of 20,000 events took 0.349s
+org_b's independent blocking consumer returned in 0.198s with 1 message(s)
+[PASS] org_b's consumer was not starved by org_a's 20k burst (returned well under the 1.5s block timeout)
+
+==============================================================================
+6. Retention / trimming (MAXLEN) and replay-from-group-start
+==============================================================================
+produced 200 events with MAXLEN~50; real XLEN afterward = 100
+[PASS] approximate MAXLEN trimming really reduced 200 events to well under 200
+new consumer group at id=0 first 5 reads: ['1785495092964-3', '1785495092964-4', '1785495092964-5', '1785495092964-6', '1785495092964-7'] -> first payload '{"seq": 100}'
+[PASS] a fresh consumer group replays from the earliest RETAINED entry, not just new arrivals
+[PASS] replay group actually returned real rows
+
+==============================================================================
+CLEANUP
+==============================================================================
+deleted 3 PoC keys from DB 3
+[PASS] no PoC keys remain in DB 3 after cleanup
+
+==============================================================================
+SUMMARY
+==============================================================================
+  [PASS] Redis server reports version 7.x
+  [PASS] 5 events durably appended to org_a's own key
+  [PASS] 5 events durably appended to org_b's own key
+  [PASS] exactly 2 distinct physical keys exist (no shared key)
+  [PASS] org_a key is a real Redis stream type
+  [PASS] org_b key is a real Redis stream type
+  [PASS] org_a's key contains ONLY org-a-tagged payloads (raw XRANGE, not via adapter)
+  [PASS] org_b's key contains ONLY org-b-tagged payloads (raw XRANGE, not via adapter)
+  [PASS] consumer-1 really read 3 messages
+  [PASS] 3 messages genuinely pending/unacked in the group
+  [PASS] consumer-2 (a fresh consumer) really reclaimed the SAME 3 unacked ids via XAUTOCLAIM
+  [PASS] all 3 reclaimed ids are now owned by consumer-2, not consumer-1
+  [PASS] acking via the NEW consumer clears the pending list
+  [PASS] new consumer instance (new connection, new name) picks up exactly the post-restart backlog
+  [PASS] durability is server-side (group cursor), not client/process memory
+  [PASS] org_a's consumer group cannot read org_b's key at all (real NOGROUP, not empty results)
+  [PASS] org_b's key still contains ONLY its own 5 original events (nothing from org_a leaked in)
+  [PASS] org_b's consumer was not starved by org_a's 20k burst (returned well under the 1.5s block timeout)
+  [PASS] approximate MAXLEN trimming really reduced 200 events to well under 200
+  [PASS] a fresh consumer group replays from the earliest RETAINED entry, not just new arrivals
+  [PASS] replay group actually returned real rows
+  [PASS] no PoC keys remain in DB 3 after cleanup
+
+22/22 checks passed

@@ -174,6 +174,24 @@ async def wire_dependencies_async() -> None:
         admin_password=settings.opensearch_password.get_secret_value(),
     )
 
+    # Continuous ingestion transport (roadmap M3/D1, poc/stream_ingest_redis/):
+    # real Redis Streams, on a dedicated DB number (settings.stream_redis_db,
+    # default 3) so a stream's own real burst/backpressure characteristics
+    # never contend with the Celery broker/backend (DB 1/2) or step-up
+    # tickets (DB 0) sharing this same real Redis instance.
+    # decode_responses=False (the default) -- this adapter is deliberately
+    # payload-agnostic, transporting raw bytes; D4 owns interpreting them.
+    from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+    from redis.asyncio import Redis as AsyncRedis  # noqa: PLC0415
+
+    from src.adapter.queue.stream_ingest import RedisStreamIngestAdapter  # noqa: PLC0415
+
+    _redis_url = settings.redis_url.get_secret_value()
+    _parsed_redis = urlsplit(_redis_url)
+    _stream_redis_url = urlunsplit(_parsed_redis._replace(path=f"/{settings.stream_redis_db}"))
+    stream_ingest_adapter = RedisStreamIngestAdapter(AsyncRedis.from_url(_stream_redis_url))
+
     # Read-only real SA findings reader (roadmap M2/C4) -- mirrors the
     # detector_provisioner's own unconditional construction above:
     # opensearch_url/username/password are always-required Settings
@@ -229,6 +247,7 @@ async def wire_dependencies_async() -> None:
         dashboards_index_pattern_provisioner=dashboards_provisioner,
         detector_provisioner=detector_provisioner,
         ism_manager=ism_manager,
+        stream_ingest_adapter=stream_ingest_adapter,
         findings_client=findings_client,
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,

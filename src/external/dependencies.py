@@ -19,6 +19,7 @@ from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvi
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.adapter.opensearch.findings_client import FindingsClient
 from src.adapter.opensearch.ism_manager import IsmLifecycleManager
+from src.adapter.queue.stream_ingest import InMemoryStreamIngestAdapter, StreamIngestAdapter
 from src.adapter.queue.task_queue import InMemoryTaskQueue, TaskQueue
 from src.adapter.repository.artifact_repository import (
     ArtifactRepository,
@@ -78,6 +79,7 @@ _dashboards_index_pattern_provisioner: DashboardsIndexPatternProvisioner | None 
 _detector_provisioner: DetectorProvisioner | None = None
 _ism_manager: IsmLifecycleManager | None = None
 _ism_tier_resolver: IsmTierResolver = DefaultIsmTierResolver()
+_stream_ingest_adapter: StreamIngestAdapter = InMemoryStreamIngestAdapter()
 _findings_client: FindingsClient | None = None
 _detection_repository: DetectionRepository = InMemoryDetectionRepository()
 _timestamp_service: RFC3161TimestampService | None = None
@@ -138,6 +140,10 @@ def get_ism_manager() -> IsmLifecycleManager | None:
 
 def get_ism_tier_resolver() -> IsmTierResolver:
     return _ism_tier_resolver
+
+
+def get_stream_ingest_adapter() -> StreamIngestAdapter:
+    return _stream_ingest_adapter
 
 
 def get_findings_client() -> FindingsClient | None:
@@ -533,6 +539,7 @@ def configure_dependencies(
     detector_provisioner: DetectorProvisioner | None = None,
     ism_manager: IsmLifecycleManager | None = None,
     ism_tier_resolver: IsmTierResolver | None = None,
+    stream_ingest_adapter: StreamIngestAdapter | None = None,
     findings_client: FindingsClient | None = None,
     detection_repository: DetectionRepository | None = None,
     timestamp_service: RFC3161TimestampService | None = None,
@@ -550,7 +557,7 @@ def configure_dependencies(
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
     global _opensearch_security_enabled, _artifact_repository
     global _dashboards_index_pattern_provisioner, _detector_provisioner
-    global _ism_manager, _ism_tier_resolver
+    global _ism_manager, _ism_tier_resolver, _stream_ingest_adapter
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
@@ -581,6 +588,8 @@ def configure_dependencies(
     _ism_manager = ism_manager
     if ism_tier_resolver is not None:
         _ism_tier_resolver = ism_tier_resolver
+    if stream_ingest_adapter is not None:
+        _stream_ingest_adapter = stream_ingest_adapter
     _findings_client = findings_client
     _timestamp_service = timestamp_service
     _default_retention_days = default_retention_days
@@ -599,7 +608,7 @@ def reset_dependencies() -> None:
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
     global _artifact_repository, _dashboards_index_pattern_provisioner, _detector_provisioner
-    global _ism_manager, _ism_tier_resolver
+    global _ism_manager, _ism_tier_resolver, _stream_ingest_adapter
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
@@ -622,6 +631,7 @@ def reset_dependencies() -> None:
     _detector_provisioner = None
     _ism_manager = None
     _ism_tier_resolver = DefaultIsmTierResolver()
+    _stream_ingest_adapter = InMemoryStreamIngestAdapter()
     _timestamp_service = None
     _default_retention_days = 365
     _opensearch_security_enabled = False

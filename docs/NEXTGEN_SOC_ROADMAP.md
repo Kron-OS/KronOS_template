@@ -509,6 +509,37 @@ above the adapter, and adopted only on measured need. Per-org stream keys so a
 consumer for org A structurally cannot read org B, and one noisy tenant cannot
 starve another. **Depends on:** B1.
 
+**STATUS (2026-07-31): DONE.** `src/adapter/queue/stream_ingest.py`
+(`StreamIngestAdapter` ABC + `RedisStreamIngestAdapter` + `InMemoryStreamIngestAdapter`
+test double), keyed `kronos:stream:{org_id}:{source_id}` (org first —
+isolation is structural, not app-layer-filtered). Real verification
+(`poc/stream_ingest_redis/`, 22/22 checks) against the real, live
+dev-stack Redis (confirmed 7.4.9, `redis` client 8.0.1 — the `>=5.0` pin
+has drifted, flagged): two orgs with the *identical* source_id never
+share a key; at-least-once delivery via real consumer groups
+(`XREADGROUP`/`XPENDING`/`XAUTOCLAIM` — an unacked read genuinely stays
+pending, a fresh consumer reclaims it after an idle threshold, ownership
+demonstrably transfers); durability is server-side (a brand-new
+connection + consumer name, after the original connection fully closed,
+picks up exactly the backlog produced while "no consumer was running");
+cross-org isolation confirmed via a real `NOGROUP` error (not just an
+empty result) when one org's group is used against another org's key; a
+real 20,000-event burst on one org's key does not delay an independent
+consumer on another org's key (no shared bottleneck); `MAXLEN ~50`
+approximate trimming confirmed to actually reduce 200 writes to 100
+retained. Replay scope stated honestly: from the consumer group's own
+start cursor, not arbitrary-timestamp seek (Redis Streams has no native
+timestamp index) — a deliberate, bounded design choice. Wired into DI via
+a new `stream_redis_db` setting (default 3), a dedicated DB number on the
+same shared Redis instance so stream traffic never contends with the
+Celery broker/backend (DB 1/2) or step-up tickets (DB 0). This is
+strictly L1 (the adapter itself, not wired into D2's collector API or
+D4's normalization pipeline yet — both consume it going forward). Also
+finally gives B3's `kronos-stream-aggressive` ISM tier (built ahead of any
+real producer) something to eventually be exercised by, once D4 lands.
+Unit tests: `tests/unit/adapter/test_stream_ingest.py` (13 tests, mocked
+redis client + a same-ABC-contract check on the in-memory double).
+
 ### D2 · Collector ingest API + mTLS identity — L2
 **Objective.** Collector-facing ingest authenticated by **step-ca-issued client
 certificates**, not long-lived bearer tokens (500 endpoints × static secret is

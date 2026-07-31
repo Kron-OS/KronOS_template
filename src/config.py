@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # Redis
     redis_url: SecretStr = Field(description="Redis DSN, e.g. redis://...")
 
+    # Continuous ingestion (roadmap M3/D1, poc/stream_ingest_redis/) -- a
+    # separate DB number on the SAME shared Redis instance, so a stream's
+    # own real burst/backpressure characteristics never contend with the
+    # Celery broker/backend (DB 1/2) or step-up tickets (DB 0).
+    stream_redis_db: int = 3
+
     # MinIO / S3
     minio_endpoint: str = Field(description="MinIO endpoint, e.g. minio:9000")
     minio_access_key: SecretStr
