@@ -137,6 +137,30 @@ class TestRedisStreamIngestAdapterReclaimStale:
         assert reclaimed == [StreamMessage(message_id="1-0", payload=b"stuck")]
 
 
+class TestRedisStreamIngestAdapterEarliestMessageId:
+    @pytest.mark.asyncio
+    async def test_returns_the_oldest_retained_entry_id(self) -> None:
+        redis = AsyncMock()
+        org = uuid.uuid4()
+        redis.xrange.return_value = [(b"5-0", {b"payload": b"oldest"})]
+        adapter = RedisStreamIngestAdapter(redis)
+
+        earliest = await adapter.earliest_message_id(org, "zeek-conn")
+
+        redis.xrange.assert_awaited_once_with(
+            f"kronos:stream:{org}:zeek-conn", min="-", max="+", count=1
+        )
+        assert earliest == "5-0"
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_returns_none(self) -> None:
+        redis = AsyncMock()
+        redis.xrange.return_value = []
+        adapter = RedisStreamIngestAdapter(redis)
+
+        assert await adapter.earliest_message_id(uuid.uuid4(), "zeek-conn") is None
+
+
 class TestInMemoryStreamIngestAdapterContract:
     """The in-memory double must satisfy the same ABC contract callers rely on."""
 
@@ -185,3 +209,16 @@ class TestInMemoryStreamIngestAdapterContract:
         messages = await adapter.consume(org, "src", "cg", "c1", count=10)
 
         assert [m.payload for m in messages] == [b"two"]
+
+    @pytest.mark.asyncio
+    async def test_earliest_message_id_returns_oldest_and_none_when_empty(self) -> None:
+        adapter = InMemoryStreamIngestAdapter()
+        org = uuid.uuid4()
+
+        assert await adapter.earliest_message_id(org, "src") is None
+
+        await adapter.produce(org, "src", b"one")
+        await adapter.produce(org, "src", b"two")
+
+        earliest = await adapter.earliest_message_id(org, "src")
+        assert earliest == "1-0"

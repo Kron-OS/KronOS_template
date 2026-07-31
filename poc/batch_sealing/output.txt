@@ -1,0 +1,83 @@
+==============================================================================
+PoC: BatchSealingService <-> real Redis + MinIO + Postgres + real TSA
+==============================================================================
+rfc3161ng version (pinned rfc3161ng>=2.1.3): 2.1.3
+Real local TSA responder listening on http://127.0.0.1:20319 (every POST answered by a real `openssl ts -reply` invocation).
+Real Postgres: sealed_batches table created (checkfirst=True).
+redis_version = 7.4.9
+[PASS] Redis server reports version 7.x
+
+==============================================================================
+SCENARIO 1: seal a real batch; demonstrate a real inclusion proof
+==============================================================================
+Produced 5 real events onto kronos:stream:cd276235-0887-4926-9fba-483fdb3f14b7:poc-zeek-conn
+[PASS] seal_pending() returned a SealedBatch
+batch_id=68d1718c-bec1-4268-b4d5-18ae8411f74f event_count=5 merkle_root=88886151e33347c3931c5f7b1d72598c80f62d8bda6ef0824b64b207e0096026
+[PASS] event_count matches produced events
+[PASS] leaf_hashes match real sha256(payload) in order
+[PASS] real WORM manifest read back from MinIO matches batch_id
+[PASS] real WORM manifest event_count matches
+[PASS] real MinIO bucket has Object Lock ENABLED + COMPLIANCE default retention
+
+--- openssl's own independent decode of the real TSA token ---
+Status info:
+Status: Granted.
+Status description: unspecified
+Failure info: unspecified
+
+TST info:
+Version: 1
+Policy OID: 1.2.3.4.5.6.7.8.1
+Hash Algorithm: sha256
+Message data:
+    0000 - 88 88 61 51 e3 33 47 c3-93 1c 5f 7b 1d 72 59 8c   ..aQ.3G..._{.rY.
+    0010 - 80 f6 2d 8b da 6e f0 82-4b 64 b2 07 e0 09 60 26   ..-..n..Kd....`&
+Serial number: 0x01
+Time stamp: Jul 31 23:03:18 2026 GMT
+Accuracy: 0x01 seconds, unspecified millis, unspecified micros
+Ordering: yes
+Nonce: unspecified
+TSA: DirName:/CN=Test TSA
+Extensions:
+
+[PASS] openssl independently decodes the real TSA token (Status: Granted)
+[PASS] RFC3161TimestampService.verify() confirms the token covers the real merkle_root
+TSA genTime = datetime.datetime(2026, 7, 31, 23, 3, 18)
+[PASS] real Postgres row exists (raw SQL, independent of the repository)
+[PASS] raw SQL row's merkle_root matches
+[PASS] real BATCH_SEALED audit event persisted in Postgres audit_log
+[PASS] SealedBatch re-fetched fresh from real Postgres
+[PASS] GATE: real inclusion proof for arbitrary event index=2 (message_id=1785538998108-0) verifies TRUE
+[PASS] GATE negative: tampered leaf against the real proof verifies FALSE
+[PASS] GATE negative: tampered proof against the real leaf verifies FALSE
+[PASS] real XPENDING shows 0 pending entries after successful seal (fully acked)
+
+==============================================================================
+SCENARIO 2: a real MinIO failure must leave events unacked, then recover
+==============================================================================
+batch_seal_failed_events_remain_unacked
+seal_pending() correctly raised BatchSealFailedError: Batch sealing failed; source events remain unacked for retry
+[PASS] real MinIO auth failure raises BatchSealFailedError (not swallowed)
+[PASS] after the real failure, both events are STILL pending (unacked) per real XPENDING
+[PASS] real BATCH_SEAL_FAILED audit event persisted in Postgres
+[PASS] no SealedBatch row was ever persisted for the failed attempt
+[PASS] recovery: seal_pending() with correct storage now succeeds
+[PASS] recovery: sealed exactly the 2 originally-failed events, not more/fewer
+[PASS] recovery: real XPENDING now shows 0 pending (recovered events acked)
+
+==============================================================================
+SCENARIO 3: real MAXLEN trim past the sealed watermark must page
+==============================================================================
+[PASS] scenario 3 setup: first batch sealed for real
+batch_a.last_message_id = 1785538999506-0
+after real XTRIM MAXLEN=1, earliest retained message id = 1785538999567-2
+[PASS] real XTRIM moved the earliest retained id past batch_a's last_message_id
+sealing_watermark_gap_detected
+seal_pending() correctly raised EvidenceLossDetectedError: Stream retention has trimmed events that were never sealed
+[PASS] GATE failure-mode: real MAXLEN trim past watermark raises EvidenceLossDetectedError (pages, not a warning)
+[PASS] real BATCH_SEAL_WATERMARK_GAP_DETECTED audit event persisted in Postgres
+
+==============================================================================
+PoC PASSED -- all 28 checks passed against real Redis/MinIO/Postgres/TSA.
+GATE: PASSED -- real inclusion proof for an arbitrary sealed event verified true (and tampered variants verified false) from a freshly-refetched real Postgres row; both failure-mode requirements (never-ack-on-failure, page-on-unsealed-trim) demonstrated against real dependencies.
+==============================================================================

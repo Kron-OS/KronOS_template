@@ -62,3 +62,26 @@ class TimestampingError(KronOSException):
     mistaken for a transient storage hiccup and silently retried into a
     fabricated success — see AUDIT-06 / COMP-3.
     """
+
+
+class BatchSealFailedError(KronOSException):
+    """Raised when any step of sealing a stream batch fails (roadmap M3/D3).
+
+    The caller (``BatchSealingService``) never acks the source stream
+    messages when this is raised — they remain real, pending entries in the
+    consumer group so at-least-once delivery resurfaces them for the next
+    seal attempt. Wraps the underlying failure (WORM write, TSA call, audit
+    write, or repository persist); never fabricates partial success.
+    """
+
+
+class EvidenceLossDetectedError(KronOSException):
+    """Raised when a stream's MAXLEN retention has trimmed events that were
+    never sealed into a WORM batch (roadmap M3/D3) -- real, silent evidence
+    loss, not a warning-level condition. This codebase has no real external
+    paging/alerting integration today (checked: no PagerDuty/Opsgenie/
+    webhook hook exists anywhere in ``src/``) -- this exception plus a
+    ``logger.critical`` structured log line IS "paging" in this codebase
+    until a real integration is added; documented honestly rather than
+    claimed as more than it is.
+    """

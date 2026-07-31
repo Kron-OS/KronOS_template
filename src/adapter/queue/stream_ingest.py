@@ -108,6 +108,20 @@ class StreamIngestAdapter(ABC):
         observable backpressure signal -- existing data is never touched.
         """
 
+    @abstractmethod
+    async def earliest_message_id(self, org_id: uuid.UUID, source_id: str) -> str | None:
+        """Id of the oldest entry still physically retained in this (org,
+        source)'s stream, or None if the stream is empty/absent (roadmap M3/D3).
+
+        This is the real, concrete primitive ``BatchSealingService``'s
+        MAXLEN-trim gap detector needs: since a ``MAXLEN`` trim always
+        evicts from the *oldest* end first, comparing this value against the
+        last sealed batch's own ``last_message_id`` watermark tells the
+        sealer whether trimming has advanced past everything it has already
+        sealed and started eating into events that were never sealed --
+        real, silent evidence loss, not merely "old data aged out."
+        """
+
 
 class RedisStreamIngestAdapter(StreamIngestAdapter):
     """Real Redis Streams implementation, verified against Redis 7.4.9.
@@ -201,6 +215,13 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
     async def approximate_length(self, org_id: uuid.UUID, source_id: str) -> int:
         return int(await self._redis.xlen(self._key(org_id, source_id)))
 
+    async def earliest_message_id(self, org_id: uuid.UUID, source_id: str) -> str | None:
+        entries = await self._redis.xrange(self._key(org_id, source_id), min="-", max="+", count=1)
+        if not entries:
+            return None
+        mid, _fields = entries[0]
+        return mid.decode() if isinstance(mid, bytes) else str(mid)
+
 
 class InMemoryStreamIngestAdapter(StreamIngestAdapter):
     """Thread-unsafe in-memory stand-in for unit tests -- no real ack/redelivery
@@ -268,3 +289,7 @@ class InMemoryStreamIngestAdapter(StreamIngestAdapter):
 
     async def approximate_length(self, org_id: uuid.UUID, source_id: str) -> int:
         return len(self._streams.get(self._key(org_id, source_id), []))
+
+    async def earliest_message_id(self, org_id: uuid.UUID, source_id: str) -> str | None:
+        messages = self._streams.get(self._key(org_id, source_id), [])
+        return messages[0].message_id if messages else None

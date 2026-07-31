@@ -54,6 +54,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_rule_pack import (  # noqa: PLC0415
         PostgresRulePackRepository,
     )
+    from src.adapter.repository.postgres_sealed_batch import (  # noqa: PLC0415
+        PostgresSealedBatchRepository,
+    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
@@ -85,6 +88,7 @@ async def wire_dependencies_async() -> None:
     await PostgresArtifactRepository.create_tables(engine)
     await PostgresDetectionRepository.create_tables(engine)
     await PostgresRulePackRepository.create_tables(engine)
+    await PostgresSealedBatchRepository.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(

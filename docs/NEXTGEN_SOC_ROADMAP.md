@@ -605,6 +605,69 @@ batch. **Sealing failure must never ack the stream, and a `MAXLEN` trim of
 unsealed events must page, not warn** — that is silent evidence loss.
 **Depends on:** D1.
 
+**STATUS (2026-08-01): DONE — GATE PASSED.** `src/domain/sealed_batch.py`
+(frozen `SealedBatch`, validates `leaf_hashes`/`message_ids`/`event_count`
+alignment), `src/application/batch_sealing.py` (`BatchSealingService` —
+consumes via D1's `reclaim_stale(min_idle_ms=0)` + `consume()`, hashes each
+payload as a Merkle leaf, writes one WORM manifest, calls a **mandatory**
+TSA (unlike `anchor_day()`'s best-effort TSA — a batch missing its TSA token
+is not "sealed", full stop), persists one `SealedBatch` row, logs one
+`BATCH_SEALED` audit event, and only then acks — any failure before ack
+raises `BatchSealFailedError` and leaves the source messages genuinely
+unacked for D1's own at-least-once redelivery), `src/application/
+sealing_trigger_policy.py` (`Size`/`Time`/`CompositeTriggerPolicy`, mirrors
+`RuleCostGate`'s composition idiom), `src/adapter/repository/sealed_batch.py`
++ `postgres_sealed_batch.py`, `src/adapter/storage/sealed_batch_storage.py`
+(`S3SealedBatchStorage` — one Object-Lock COMPLIANCE bucket per org, mirrors
+`S3EvidenceStorage`). New `AuditEventType.BATCH_SEALED` /
+`BATCH_SEAL_FAILED` / `BATCH_SEAL_WATERMARK_GAP_DETECTED`, new
+`BatchSealFailedError` / `EvidenceLossDetectedError` exceptions. D1's
+`StreamIngestAdapter` ABC gained `earliest_message_id()` (`XRANGE ... COUNT
+1`), the concrete primitive the watermark-gap check needs. Unit suite:
+850 passed (independently re-verified, up from the 818 baseline).
+
+PoC: `poc/batch_sealing/` — 28/28 checks passed against the real
+already-running dev stack (`docker-postgres-1` 16.14, `docker-redis-1`
+7.4.9, `docker-minio-1`) plus a real openssl-`ts`-backed RFC 3161 TSA
+(reusing `poc/rfc3161`'s own real-TSA substitute, since the dev-compose
+`tsa` stub returns an empty body and can't produce a decodable token). The
+literal gate condition was demonstrated by re-fetching a sealed batch fresh
+from real Postgres (a separate round trip from the in-process object),
+reconstructing an inclusion proof for an **arbitrary** event (index 2 of 5)
+via `src/domain/merkle.py`, and verifying it true — plus two negative cases
+(tampered leaf, tampered proof) both verifying false. Both binding
+failure-mode requirements were also demonstrated against real
+infrastructure, not just unit-mocked: (1) a real MinIO auth failure
+(`ClientError`, wrong credentials) left the source events genuinely pending
+per real `XPENDING`, raised `BatchSealFailedError`, wrote no `SealedBatch`
+row, and a subsequent real recovery attempt sealed exactly those two
+message ids via `reclaim_stale`, no loss or duplication; (2) a real `XTRIM
+MAXLEN 1` past an already-sealed watermark raised `EvidenceLossDetectedError`
+with a real `BATCH_SEAL_WATERMARK_GAP_DETECTED` audit row persisted, not a
+swallowed warning.
+
+Real gap found and fixed during this verification pass (not by the dead
+subagent that built the feature): `PostgresSealedBatchRepository.
+create_tables()` was never wired into `src/external/startup.py` —
+`sealed_batches` would not have existed in any real deployment, so the
+first production save would have failed with "relation does not exist."
+Added alongside the other repositories' own `create_tables()` calls in
+`wire_dependencies_async()`.
+
+**Explicitly flagged, not yet done:** (1) nothing schedules
+`BatchSealingService.seal_pending()` in production yet — no Celery beat
+task, no `configure_batch_sealing_service()` call anywhere in `startup.py`
+(mirrors D2's own precedent of the collector listener not yet being in
+`docker-compose.dev.yml`) — natural fit for D5/D6, both of which already
+depend on D3; (2) single-sealer-per-(org, source) assumption documented in
+`BatchSealingService`'s own docstring — real multi-sealer concurrency would
+need per-message ownership leases, not attempted; (3) a stream that goes
+fully empty after a prior successful seal is treated as "nothing to check"
+rather than an automatic gap (D1's adapter can't distinguish "never had
+more data" from "everything including unsealed data was trimmed" once
+empty) — a persistent last-produced-id watermark independent of the stream
+itself would close this, flagged as follow-up.
+
 ### D4 · Continuous normalization pipeline (stream → ECS) — L2
 **Objective.** Reuse the A2 registry to normalize continuous sources into the
 *same* ECS schema as Plaso-parsed forensic events — one timeline, one query

@@ -64,6 +64,12 @@ class AuditEventType(StrEnum):
     # RFC 3161 timestamping
     EVIDENCE_TSA_ANCHORED = "evidence.tsa_anchored"
 
+    # Batch sealing (roadmap M3/D3) -- continuous-stream chain-of-custody;
+    # see src/application/batch_sealing.py.
+    BATCH_SEALED = "batch.sealed"
+    BATCH_SEAL_FAILED = "batch.seal_failed"
+    BATCH_SEAL_WATERMARK_GAP_DETECTED = "batch.seal_watermark_gap_detected"
+
     # Detection / triage (roadmap M2/C4) -- SA findings mirrored into
     # KronOS's own audited Detection entity; see src/domain/detection.py.
     DETECTION_SYNCED = "detection.synced"

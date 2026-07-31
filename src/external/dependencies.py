@@ -31,9 +31,15 @@ from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseR
 from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
+from src.adapter.repository.sealed_batch import (
+    InMemorySealedBatchRepository,
+    SealedBatchRepository,
+)
+from src.adapter.storage.sealed_batch_storage import SealedBatchStorage
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
+from src.application.batch_sealing import BatchSealingService
 from src.application.collector_ingest import CollectorIngestService
 from src.application.cost_gate import RuleCostGate
 from src.application.detection_sync import DetectionSyncService
@@ -47,6 +53,7 @@ from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
+from src.application.sealing_trigger_policy import SealingTriggerPolicy
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator, default_validator_chain
@@ -93,6 +100,8 @@ _rule_pack_repository: RulePackRepository = InMemoryRulePackRepository()
 _pack_signature_verifier: PackSignatureVerifier | None = None
 _custom_rule_client: CustomRuleClient | None = None
 _custom_rule_detector_binder: CustomRuleDetectorBinder | None = None
+_sealed_batch_repository: SealedBatchRepository = InMemorySealedBatchRepository()
+_batch_sealing_service: BatchSealingService | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +192,53 @@ def configure_collector_ingest_service(
         dedup_checker,
         max_stream_length=max_stream_length,
         dedup_ttl_seconds=dedup_ttl_seconds,
+    )
+
+
+def get_sealed_batch_repository() -> SealedBatchRepository:
+    return _sealed_batch_repository
+
+
+def get_batch_sealing_service() -> BatchSealingService:
+    """FastAPI/beat-task dependency for BatchSealingService (roadmap M3/D3).
+
+    Configured independently via :func:`configure_batch_sealing_service` --
+    mirrors :func:`configure_collector_ingest_service`'s own pattern, since
+    both are standalone consumers of D1's ``StreamIngestAdapter`` rather
+    than part of the large ``configure_dependencies()`` monolith. Real
+    scheduled invocation (a beat task calling ``seal_pending()`` per
+    registered (org, source) on an interval) is deliberately not wired here
+    -- flagged as follow-up, matching D2's own precedent for
+    ``run_dual_listener.py`` not yet being added to
+    ``docker-compose.dev.yml``.
+    """
+    if _batch_sealing_service is None:
+        raise RuntimeError(
+            "BatchSealingService is not configured. "
+            "Call configure_batch_sealing_service() at startup."
+        )
+    return _batch_sealing_service
+
+
+def configure_batch_sealing_service(
+    stream_adapter: StreamIngestAdapter,
+    storage: SealedBatchStorage,
+    timestamp_service: RFC3161TimestampService | None,
+    audit_log: AuditLogService,
+    repository: SealedBatchRepository,
+    trigger_policy: SealingTriggerPolicy,
+    **kwargs: Any,
+) -> None:
+    global _batch_sealing_service, _sealed_batch_repository
+    _sealed_batch_repository = repository
+    _batch_sealing_service = BatchSealingService(
+        stream_adapter,
+        storage,
+        timestamp_service,
+        audit_log,
+        repository,
+        trigger_policy,
+        **kwargs,
     )
 
 
@@ -653,6 +709,7 @@ def reset_dependencies() -> None:
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
+    global _sealed_batch_repository, _batch_sealing_service
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -682,3 +739,5 @@ def reset_dependencies() -> None:
     _pack_signature_verifier = None
     _custom_rule_client = None
     _custom_rule_detector_binder = None
+    _sealed_batch_repository = InMemorySealedBatchRepository()
+    _batch_sealing_service = None
