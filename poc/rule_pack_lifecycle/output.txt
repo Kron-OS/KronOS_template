@@ -1,0 +1,36 @@
+
+=== Part 0: confirm the real, pinned tools are reachable ===
+[PASS] real cosign binary on PATH -- ['BuildDate:     2026-07-17T14:32:20Z', 'GoVersion:     go1.26.4', 'Compiler:      gc', 'Platform:      linux/amd64']
+[PASS] real signed bundle + keypair exist from prior offline signing step
+[PASS] real live OpenSearch cluster reachable -- status=200
+
+=== Part 1: real cost gate -- accept reasonable, reject expensive ===
+[PASS] a genuinely reasonable exact-match rule is ACCEPTED -- accepted
+[PASS] a |contains rule (real leading-wildcard compile target) is REJECTED -- ["field 'process.command_line' uses modifier(s) ['contains'], confirmed against OpenSearch 2.11.1 to compile to a leading wildcard query (|contains -> '*x*', |endswith -> '*x') -- cannot use the term-dictionary prefix structure, forces a full per-term scan"]
+[PASS] an unanchored |re rule (real raw-regex compile target) is REJECTED -- ["field 'dns.question.name' regex '.*\\\\.evil\\\\..*\\\\.com$' is unanchored (does not start with '^') -- confirmed against OpenSearch 2.11.1 to compile to a raw regex query with no prefix to seek on, forcing a full term-dictionary scan"]
+[PASS] confirmed: OpenSearch's own rule-creation API accepts the expensive |contains rule with NO cost-related rejection (the real reason this gate must run BEFORE OpenSearch ever sees the rule) -- opensearch_id=ZsyHtp8BG52zb-VTqHRP
+
+=== Part 2: real versioned CRUD against real Postgres ===
+[PASS] first rule added, cost-gate accepted
+[PASS] pack is now at version 1 with 1 rule
+[PASS] second rule added, cost-gate rejected it (stored anyway, not silently dropped)
+[PASS] pack is now at version 2 with 2 rules total
+[PASS] version 1 is still retrievable and unchanged -- creating v2 never lost v1 (roadmap invariant #6: replayability) -- versions=[(1, 1), (2, 2)]
+[PASS] only 1 of 2 rules in the latest version is ACCEPTED (the cost-gated one is excluded) -- accepted=['Rule A']
+
+=== Part 3: real Cosign signature verification gates pack import ===
+[PASS] a validly-signed pack is accepted -- real signature_verified=True, real content_sha256 recorded -- signature_verified=True
+[PASS] the imported version is tagged SIGNED_THIRD_PARTY
+[PASS] a real signature/content mismatch (tampered bytes, real bundle) is REJECTED wholesale -- no rule from it ever reaches a new version
+[PASS] the rejected pack has NO version at all (fails closed before any bookkeeping)
+
+=== Part 4: publish accepted rules to a real detector, confirm real tenant scoping ===
+[PASS] exactly 1 rule published (the accepted one; the cost-gated one never reaches OpenSearch) -- published=1
+[PASS] re-publish is idempotent -- 0 newly published
+[PASS] a real custom-rule detector was created for this org+log_type
+[PASS] the detector's index pattern is scoped to THIS org's own wildcard only (roadmap risk (b): tenant isolation computed from TenantContext, never rule content) -- ['kronos-c3-poc-4ceb3580-*']
+[PASS] exactly 1 custom rule id attached (only the accepted one)
+  cleanup: deleted detector asyHtp8BG52zb-VTrXRw, status=200
+  cleanup: deleted custom rule Z8yHtp8BG52zb-VTrHS0, status=200
+
+22 passed, 0 failed

@@ -51,6 +51,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
+    from src.adapter.repository.postgres_rule_pack import (  # noqa: PLC0415
+        PostgresRulePackRepository,
+    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
@@ -74,12 +77,14 @@ async def wire_dependencies_async() -> None:
     case_repo = PostgresCaseRepository(engine)
     artifact_repo = PostgresArtifactRepository(engine)
     detection_repo = PostgresDetectionRepository(engine)
+    rule_pack_repo = PostgresRulePackRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
     await PostgresCaseRepository.create_tables(engine)
     await PostgresArtifactRepository.create_tables(engine)
     await PostgresDetectionRepository.create_tables(engine)
+    await PostgresRulePackRepository.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
@@ -184,6 +189,31 @@ async def wire_dependencies_async() -> None:
         admin_password=settings.opensearch_password.get_secret_value(),
     )
 
+    # Rule-pack lifecycle (roadmap M2/C3, poc/rule_pack_lifecycle/): custom
+    # rule publish + detector wiring, admin-only per the A3 gate exactly like
+    # detector_provisioner/findings_client above. CosignPackSignatureVerifier
+    # needs no OpenSearch connection at all -- it shells out to the pinned
+    # `cosign` binary only when a signed pack is actually imported.
+    from src.adapter.opensearch.custom_rule_client import (  # noqa: PLC0415
+        SecurityAnalyticsCustomRuleClient,
+    )
+    from src.adapter.opensearch.custom_rule_detector_provisioner import (  # noqa: PLC0415
+        SecurityAnalyticsCustomRuleDetectorProvisioner,
+    )
+    from src.adapter.signing.cosign_verifier import CosignPackSignatureVerifier  # noqa: PLC0415
+
+    custom_rule_client = SecurityAnalyticsCustomRuleClient(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+    custom_rule_detector_binder = SecurityAnalyticsCustomRuleDetectorProvisioner(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+    pack_signature_verifier = CosignPackSignatureVerifier(cosign_binary=settings.cosign_binary_path)
+
     configure_dependencies(
         audit_log_repository=audit_repo,
         evidence_repository=evidence_repo,
@@ -203,6 +233,10 @@ async def wire_dependencies_async() -> None:
         timestamp_service=timestamp_service,
         default_retention_days=settings.minio_default_retention_days,
         opensearch_security_enabled=settings.opensearch_security_enabled,
+        rule_pack_repository=rule_pack_repo,
+        pack_signature_verifier=pack_signature_verifier,
+        custom_rule_client=custom_rule_client,
+        custom_rule_detector_binder=custom_rule_detector_binder,
     )
     configure_clamav_from_settings()
 

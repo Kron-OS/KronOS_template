@@ -78,6 +78,13 @@ class Settings(BaseSettings):
         description="True only when the OpenSearch Security plugin is enabled (prod)",
     )
 
+    # Rule-pack lifecycle (roadmap M2/C3) -- Cosign binary used to verify
+    # signed third-party rule packs (src/adapter/signing/cosign_verifier.py).
+    # Defaults to relying on PATH, matching how the rest of the toolchain
+    # (Trivy, Cosign in CI) is invoked -- override when the binary isn't on
+    # PATH (e.g. a pinned path in a Chainguard/Wolfi image).
+    cosign_binary_path: str = "cosign"
+
     # Keycloak
     keycloak_url: str = Field(description="Keycloak base URL, e.g. https://auth.example.com")
     keycloak_realm: str = "kronos"

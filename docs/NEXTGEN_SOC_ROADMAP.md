@@ -358,6 +358,38 @@ versioned rule packs, Cosign verification for third-party packs (reuse
 `reviews/Extensibility_Architecture_Proposal.md` §4 unchanged), custom-rule CRUD,
 and a pre-execution cost gate. **Depends on:** C1.
 
+**STATUS (2026-07-31): DONE.** `src/domain/rule_pack.py` (`RulePack`,
+`RulePackVersion` append-only versioning, `CustomRule`, `CostGateVerdict`),
+`src/application/rule_pack_service.py` (versioned CRUD + Cosign gate,
+zero OpenSearch knowledge), `src/application/rule_pack_publisher.py`
+(the one place a pack's content reaches the real cluster), `RuleCostGate`
+(pluggable heuristics: leading-wildcard `|contains`/`|endswith`, unanchored
+`|re`), `SecurityAnalyticsCustomRuleClient` +
+`SecurityAnalyticsCustomRuleDetectorProvisioner` (a deliberate sibling to
+C2's detector class, not an extension — custom-rule content changes on
+every CRUD op, so it uses delete-and-recreate idempotency instead of C2's
+check-then-create-only, both confirmed necessary by the same real
+OpenSearch 2.11.1 PUT-update defect C2 found), and
+`CosignPackSignatureVerifier` (real Cosign v3.1.2, first use in this repo).
+Real verification (`poc/rule_pack_lifecycle/`, 22/22 checks passed)
+against the live cluster, real Postgres, and a real installed Cosign
+binary found: (1) a real Sigma rule's `logsource` is product/service
+(zeek-style), not a bare category field, and omitting
+`description`/`author`/`references`/`falsepositives` reproduces a real 500
+`NullPointerException`; (2) OpenSearch's own custom-rule API accepts a
+genuinely expensive `|contains` rule with zero validation — confirmed by
+actually pushing one, the concrete justification for why this gate must
+run client-side; (3) Cosign v3.1.2's `sign-blob --bundle` produces a
+self-contained JSON bundle with an embedded Rekor proof, not the bare
+`.sig` older docs describe; a real signature-verified pack is accepted, a
+tampered one is rejected wholesale (no version created at all, fails
+closed before any bookkeeping); (4) a custom rule's OpenSearch-assigned
+`_id` is independent of the Sigma YAML's own declared `id:`. Unit tests:
+`test_cost_gate.py`, `test_rule_pack_service.py`,
+`test_rule_pack_publisher.py`, `test_custom_rule_client.py`,
+`test_custom_rule_detector_provisioner.py`, `test_cosign_verifier.py`
+(40 tests). See `poc/rule_pack_lifecycle/README.md` for the full account.
+
 ### C4 · `Detection` entity + triage FSM + audited finding sync — L2
 **Objective.** SA findings are mutable plugin state outside the Postgres hash
 chain. Mirror them into an immutable, audited `Detection` entity with its own

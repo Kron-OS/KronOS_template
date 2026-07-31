@@ -13,6 +13,8 @@ from typing import Annotated, Any
 from fastapi import Depends
 
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
+from src.adapter.opensearch.custom_rule_client import CustomRuleClient
+from src.adapter.opensearch.custom_rule_detector_provisioner import CustomRuleDetectorBinder
 from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.adapter.opensearch.findings_client import FindingsClient
@@ -26,16 +28,21 @@ from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
 from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
 from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
+from src.application.cost_gate import RuleCostGate
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
 from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
+from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
+from src.application.rule_pack_publisher import RulePackPublisher
+from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
@@ -76,6 +83,10 @@ _detection_repository: DetectionRepository = InMemoryDetectionRepository()
 _timestamp_service: RFC3161TimestampService | None = None
 _default_retention_days: int = 365
 _opensearch_security_enabled: bool = False
+_rule_pack_repository: RulePackRepository = InMemoryRulePackRepository()
+_pack_signature_verifier: PackSignatureVerifier | None = None
+_custom_rule_client: CustomRuleClient | None = None
+_custom_rule_detector_binder: CustomRuleDetectorBinder | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +146,22 @@ def get_findings_client() -> FindingsClient | None:
 
 def get_detection_repository() -> DetectionRepository:
     return _detection_repository
+
+
+def get_rule_pack_repository() -> RulePackRepository:
+    return _rule_pack_repository
+
+
+def get_pack_signature_verifier() -> PackSignatureVerifier | None:
+    return _pack_signature_verifier
+
+
+def get_custom_rule_client() -> CustomRuleClient | None:
+    return _custom_rule_client
+
+
+def get_custom_rule_detector_binder() -> CustomRuleDetectorBinder | None:
+    return _custom_rule_detector_binder
 
 
 def get_max_upload_bytes() -> int:
@@ -377,6 +404,52 @@ def get_detection_triage_service(
     return DetectionTriageService(detection_repository=detection_repository, audit_log=audit_log)
 
 
+def get_rule_pack_service(
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> RulePackService:
+    """FastAPI dependency for RulePackService (roadmap M2/C3).
+
+    Requires no OpenSearch connectivity at all -- pure CRUD/versioning/cost-
+    gate/signature-verification bookkeeping (see RulePackService's module
+    docstring for why publishing is a separate class).
+    """
+    signature_verifier = get_pack_signature_verifier()
+    if signature_verifier is None:
+        from src.adapter.signing.cosign_verifier import (  # noqa: PLC0415
+            CosignPackSignatureVerifier,
+        )
+
+        signature_verifier = CosignPackSignatureVerifier()
+    return RulePackService(
+        repository=get_rule_pack_repository(),
+        cost_gate=RuleCostGate(),
+        signature_verifier=signature_verifier,
+        audit_log=audit_log,
+    )
+
+
+def get_rule_pack_publisher(
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> RulePackPublisher | None:
+    """FastAPI dependency for RulePackPublisher.
+
+    None (no-op) when no CustomRuleClient/CustomRuleDetectorBinder is
+    configured -- the same "honestly disabled" pattern as
+    get_detection_sync_service/get_dashboards_index_pattern_provisioner:
+    callers must treat None as "publish disabled", never fabricate a result.
+    """
+    custom_rule_client = get_custom_rule_client()
+    detector_binder = get_custom_rule_detector_binder()
+    if custom_rule_client is None or detector_binder is None:
+        return None
+    return RulePackPublisher(
+        repository=get_rule_pack_repository(),
+        custom_rule_client=custom_rule_client,
+        detector_binder=detector_binder,
+        audit_log=audit_log,
+    )
+
+
 def _build_tenant_from_task(org_id: str, user_id: str) -> TenantContext:
     """Build a minimal TenantContext for Celery task execution (no HTTP request)."""
     import uuid as _uuid  # noqa: PLC0415
@@ -465,6 +538,10 @@ def configure_dependencies(
     timestamp_service: RFC3161TimestampService | None = None,
     default_retention_days: int = 365,
     opensearch_security_enabled: bool = False,
+    rule_pack_repository: RulePackRepository | None = None,
+    pack_signature_verifier: PackSignatureVerifier | None = None,
+    custom_rule_client: CustomRuleClient | None = None,
+    custom_rule_detector_binder: CustomRuleDetectorBinder | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -475,6 +552,8 @@ def configure_dependencies(
     global _dashboards_index_pattern_provisioner, _detector_provisioner
     global _ism_manager, _ism_tier_resolver
     global _findings_client, _detection_repository
+    global _rule_pack_repository, _pack_signature_verifier
+    global _custom_rule_client, _custom_rule_detector_binder
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -506,6 +585,11 @@ def configure_dependencies(
     _timestamp_service = timestamp_service
     _default_retention_days = default_retention_days
     _opensearch_security_enabled = opensearch_security_enabled
+    if rule_pack_repository is not None:
+        _rule_pack_repository = rule_pack_repository
+    _pack_signature_verifier = pack_signature_verifier
+    _custom_rule_client = custom_rule_client
+    _custom_rule_detector_binder = custom_rule_detector_binder
 
 
 def reset_dependencies() -> None:
@@ -517,6 +601,8 @@ def reset_dependencies() -> None:
     global _artifact_repository, _dashboards_index_pattern_provisioner, _detector_provisioner
     global _ism_manager, _ism_tier_resolver
     global _findings_client, _detection_repository
+    global _rule_pack_repository, _pack_signature_verifier
+    global _custom_rule_client, _custom_rule_detector_binder
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -539,3 +625,7 @@ def reset_dependencies() -> None:
     _timestamp_service = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
+    _rule_pack_repository = InMemoryRulePackRepository()
+    _pack_signature_verifier = None
+    _custom_rule_client = None
+    _custom_rule_detector_binder = None

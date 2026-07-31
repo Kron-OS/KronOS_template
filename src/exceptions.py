@@ -50,6 +50,11 @@ class DetectionStateError(KronOSException):
     """Raised when an invalid triage FSM transition is attempted on a Detection."""
 
 
+class RulePackError(KronOSException):
+    """Raised on rule-pack lifecycle failures: signature rejection, cost-gate
+    rejection surfaced as a hard error, or publish/detector-wiring failure."""
+
+
 class TimestampingError(KronOSException):
     """Raised when RFC 3161 timestamp acquisition or verification fails closed.
 

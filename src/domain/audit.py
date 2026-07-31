@@ -71,6 +71,14 @@ class AuditEventType(StrEnum):
     DETECTION_TRIAGE_TRANSITIONED = "detection.triage_transitioned"
     DETECTION_TRIAGE_TRANSITION_FAILED = "detection.triage_transition_failed"
 
+    # Rule-pack lifecycle (roadmap M2/C3) -- versioned custom-rule packs;
+    # see src/application/rule_pack_service.py.
+    RULE_PACK_VERSION_CREATED = "rule_pack.version_created"
+    RULE_PACK_VERSION_CREATE_FAILED = "rule_pack.version_create_failed"
+    RULE_PACK_SIGNATURE_REJECTED = "rule_pack.signature_rejected"
+    RULE_PACK_RULE_PUBLISHED = "rule_pack.rule_published"
+    RULE_PACK_RULE_PUBLISH_FAILED = "rule_pack.rule_publish_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"
