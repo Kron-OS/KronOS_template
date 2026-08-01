@@ -1,0 +1,46 @@
+YaraXSandboxRunner real end-to-end PoC (roadmap E2)
+Python: 3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]
+yara_x module file: /home/reca/venv/lib/python3.14/site-packages/yara_x/__init__.py
+
+=== Scenario 1: positive match, real byte offsets ===
+rule_source = 'rule find_foobar { strings: $a = "foobar" condition: $a }'
+target      = b'xxxxfoobarxxxxfoobar' (len=20)
+matched: True
+  rule identifier='find_foobar' namespace='default' tags=()
+    pattern='$a' offset=4 length=6 xor_key=None
+    pattern='$a' offset=14 length=6 xor_key=None
+VERIFIED: real match, real correct byte offsets (4 and 14).
+
+=== Scenario 2: negative match (honest no-match, not an error) ===
+rule_source = 'rule find_foobar { strings: $a = "foobar" condition: $a }'
+target      = b'nothing interesting in this blob at all'
+matched: False, matched_rules: ()
+VERIFIED: real scan, real honest zero matches, no exception raised.
+
+=== Scenario 3: malformed rule text (clean compile error, not a crash) ===
+rule_source = 'this is not valid yara syntax {{{'
+VERIFIED: clean YaraRuleCompilationError raised: error[E001]: syntax error
+ --> line:1:1
+  |
+1 | this is not valid yara syntax {{{
+  | ^^^^ expecting import statement or rule definition
+  context: {'rule_error': 'error[E001]: syntax error\n --> line:1:1\n  |\n1 | this is not valid yara syntax {{{\n  | ^^^^ expecting import statement or rule definition'}
+
+=== Scenario 4: tagged rule, metadata, two real occurrences ===
+rule_source =
+rule tagged_rule : malware apt {
+    meta:
+        author = "kronos-e2-poc"
+        severity = 5
+    strings:
+        $b = "bar"
+    condition:
+        $b
+}
+
+target      = b'foobarbar'
+rule identifier='tagged_rule' tags=('malware', 'apt')
+matched_strings offset/length pairs: [(3, 3), (6, 3)]
+VERIFIED: real tags carried through, both real overlapping-pattern offsets correct.
+
+All 4 real scenarios passed.

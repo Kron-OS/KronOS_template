@@ -87,6 +87,27 @@ class EvidenceLossDetectedError(KronOSException):
     """
 
 
+class YaraScanError(KronOSException):
+    """Raised when the sandboxed YARA-X worker subprocess fails or times out.
+
+    Covers subprocess launch failure, non-zero exit, malformed JSON output,
+    and a real scan timeout (``yara_x.Scanner.set_timeout``) -- never a rule
+    compilation problem, see ``YaraRuleCompilationError`` for that (a rule
+    author error, not an infrastructure failure).
+    """
+
+
+class YaraRuleCompilationError(YaraScanError):
+    """Raised when the worker's real ``yara_x.compile()`` rejects rule source.
+
+    Distinct from ``YaraScanError`` so a caller can tell "your rule text is
+    invalid YARA syntax" (fix the rule, retry is pointless) apart from "the
+    sandbox itself failed" (infrastructure issue, retry may help) --
+    mirrors ``EvidenceStateConflictError`` vs ``ParsingError``'s existing
+    split in this file for the same reason.
+    """
+
+
 class SealerFallBehindDetectedError(KronOSException):
     """Signals that a stream's oldest pending (unsealed) event has aged past
     ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold

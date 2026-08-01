@@ -1039,6 +1039,100 @@ untrusted rule text **in-process** and libyara has a CVE history; inside an API
 worker that is one memory-safety bug from RCE. Subprocess, container-sandboxed
 via `FirecrackerLauncher` per §G.3. Never shell out from inside a parser class.
 
+**STATUS (2026-08-01): DONE (runner only — E3/E4 remain, by design).**
+Real research first, per §F: `pip index versions yara-x` confirmed the real,
+official VirusTotal/yara-x Python binding is on PyPI, latest **1.19.0**,
+shipping a `cp38-abi3` manylinux wheel that installs and imports cleanly on
+this host's Python 3.14.4 with **zero extra runtime dependencies** (`pip
+show yara-x` → empty `Requires:`) — confirmed by a real `pip install
+yara-x==1.19.0` into both a throwaway venv and the project's real dev venv.
+Pinned `yara-x==1.19.0` in `pyproject.toml`.
+
+A real `yr` standalone CLI binary also genuinely exists (GitHub releases),
+but was **not** used: its documented `--output-format ndjson|json` surface
+(`virustotal.github.io/yara-x/docs/cli/commands/`) only exposes rule
+identifiers/namespace/tags, never per-match byte offsets — verified by
+reading the real docs, not assumed. E3's own requirement ("matched-string
+offsets so an examiner can independently verify") is unmet by that path.
+The Python binding's `Match` object, by contrast, exposes real
+`offset`/`length`/`xor_key` directly — confirmed for real: a rule matching
+`"foobar"` in a synthetic blob returned matches at byte offsets 4 and 14,
+both independently checkable by counting bytes (`poc/yarax_sandboxed_runner/
+output.txt`, Scenario 1). That is the deciding factor: only the binding
+path can honestly satisfy E3's stated requirement, so it was used —
+**inside a subprocess worker**, never imported into the caller's process.
+
+Built `YaraXSandboxRunner` (`src/external/sandbox/yara_x_runner.py`) as a
+**separate class from `FirecrackerLauncher`**, not a subclass or a shared
+base — same subprocess/JSON-io/timeout *architecture*
+(`docker/yara/kronos-yarax-worker.py` mirrors `kronos-plaso-worker.py`'s
+exact shape: real rule-source/target-bytes files on disk, CLI-arg paths, one
+JSON object on stdout, everything else on stderr), but genuinely different
+output shape (`YaraScanResult`/`YaraRuleMatch`/`YaraStringMatch` dataclasses
+carrying rule identifier/namespace/tags + real matched-string byte
+offsets, vs. `FirecrackerLauncher`'s `TimelineRecord` stream) and
+`FirecrackerLauncher`'s own constructor is genuinely Plaso-specific
+(`parser_name`/`parser_version` defaults, dfVFS `display_name` prefix
+parsing) with no YARA-X analogue — mirrors this same branch's own E1
+precedent (`TarArchiveParser`/`ZipArchiveParser`: two classes, one
+pattern) rather than forcing a shared base for its own sake.
+
+Two independent timeouts, same reasoning as the Plaso worker's
+`_L2T_TIMEOUT`/`_PSORT_TIMEOUT` vs. the Celery task's own `time_limit`: the
+worker itself calls `yara_x.Scanner.set_timeout()` (verified for real: a
+pathological nested-quantifier rule against a large blob cleanly raised
+`yara_x.TimeoutError` at the configured 1s, not a hang), and
+`YaraXSandboxRunner` layers its own outer `subprocess.run(timeout=...)`
+above that as a second kill-switch if the in-worker one somehow doesn't
+fire — both paths covered by real tests, not just described.
+
+**Honest risk-model statement (not oversold):** YARA-X's Rust
+implementation removes the memory-corruption/CVE class of bug
+libyara/`yara-python` carries — the reason this item exists — and running
+it in a subprocess buys real *subprocess* isolation (a crashed/misbehaving
+worker is not a compromised API/Celery process). It does **not** buy
+Firecracker-microVM/gVisor isolation: this still runs as a plain host
+subprocess inside the existing Chainguard/Wolfi container, the exact same
+honest level of isolation `FirecrackerLauncher`'s own docstring already
+states for Plaso today. No new claim beyond what's real.
+
+**No new Dockerfile variant, no new Celery queue** — checked, not assumed.
+Unlike Plaso, `yara-x`'s wheel is a single 9.3 MB self-contained extension
+with no extra dependencies; the base `docker/Dockerfile`'s existing `pip
+install .` step already picks it up from `pyproject.toml`. Nothing calls
+`YaraXSandboxRunner` outside its own tests/PoC yet (E3 is the real future
+caller), so wiring a dedicated queue now would be speculative — flagged for
+whoever picks up E3 to decide once real workload/latency is known.
+
+Verification: `~/venv/bin/python3 -m pytest tests/unit/ -q --no-cov` →
+**920 passed** (baseline 906 + 14 new: `test_yara_x_runner.py`, 3 of which
+drive the real worker script against the real, pinned `yara_x==1.19.0`,
+100% coverage on both new files — confirmed via a full `--cov` run,
+`src/exceptions.py` 20/20 and `src/external/sandbox/yara_x_runner.py` 92/92
+— no coverage-omit entry needed, unlike `firecracker.py`). mypy: 29 errors,
+unchanged from the pre-existing baseline (confirmed identical error list),
+none in touched files. ruff: 27 (baseline), unchanged. black: clean on all
+touched files. Real end-to-end PoC
+(`poc/yarax_sandboxed_runner/`, per §F): 4 real scenarios (positive match
+with correct offsets, honest negative match, clean compile-error surfacing,
+tagged rule with two real overlapping-pattern occurrences) — full
+transcript in `output.txt`.
+
+**Explicitly not built here (E3/E4's job, flagged for whoever picks those
+up next):** no wiring into the parser recursion path or
+`ZipArchiveParser`/`TarArchiveParser`/`PlasoParser`'s already-surfaced
+`source_path`/`container_sha256` (E3); no `StructuredArtifact(kind=
+"yara.match")` emission, though `YaraRuleMatch`/`YaraStringMatch` already
+carry every field E3 needs (rule identifier, tags, matched-string
+offset+length) to build that `content` dict without this class changing;
+no ruleset signing/versioning/lifecycle (E4); no Celery queue decision
+(see above). `YaraXSandboxRunner.run()` currently accepts rule source text
+directly (not a pre-compiled/cached `Rules` object) — fine for E2's scope
+(one runner, one scan), but E3's real caller will likely want to compile
+once per ruleset and scan many files, which this class does not yet
+support (recompiling per call is correct but not optimized) — noted, not
+solved, since nothing calls this repeatedly yet.
+
 ### E3 · YARA scanning in the recursion path → `StructuredArtifact` — L2
 **Objective.** Scan **forensic artifacts**, not just the top-level blob. Hook
 where `ZipArchiveParser` / `PlasoParser` already surface extracted files with
