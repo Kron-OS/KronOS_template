@@ -1224,6 +1224,85 @@ per §6.2, found the design sound, and finished directly:
 ### E4 · Ruleset lifecycle (signed, versioned) — L1
 **Objective.** Same trust model as C3, applied to YARA rulesets.
 
+**STATUS (2026-08-01): DONE.** `src/domain/yara_rule_pack.py`
+(`YaraRulePack`, `YaraRulePackVersion` append-only versioning, `YaraRule` --
+mirrors C3's `RulePack`/`RulePackVersion`/`CustomRule` shape exactly,
+reusing `RulePackSourceTier` UNCHANGED per CLAUDE.md §G.3),
+`src/application/yara_rule_pack_service.py` (`YaraRulePackService`:
+versioned CRUD + `publish_version`, zero cost-gate knowledge -- see below),
+`src/adapter/repository/yara_rule_pack.py` +
+`src/adapter/repository/postgres_yara_rule_pack.py`
+(`YaraRulePackRepository`/`PostgresYaraRulePackRepository`, mirroring
+`postgres_rule_pack.py`'s append-only-versions-plus-mutable-pointer-table
+pattern), and `SignedYaraRulePackProvider` + `yara_scan_org_var`
+(`src/application/yara_rules.py`) -- the concrete `YaraRuleProvider`
+implementation E3's own docstring anticipated, wired into
+`ParsingOrchestrationService.execute_parse` with **zero changes** to
+`ZipArchiveParser`/`TarArchiveParser` themselves. Real verification
+(`poc/yara_rulepack_lifecycle/`, 22/22 checks passed) against real
+Postgres and a real installed Cosign v3.1.2 binary, plus a real end-to-end
+run through the actual `ZipArchiveParser.extract_artifacts()` +
+`YaraXSandboxRunner` subprocess, found:
+
+1. **No new signature verifier was needed.** `CosignPackSignatureVerifier`
+   (C3) is genuinely generic over content bytes -- reused completely
+   unchanged to sign/verify YARA rule-pack content, confirmed by an actual
+   `cosign sign-blob`/`verify-blob` round trip over real YARA-X rule text
+   (not just Sigma YAML).
+2. **No cost/DoS gate was built, as a considered decision, not an
+   oversight.** C3's `RuleCostGate` exists because a bad Sigma rule
+   compiles to an expensive query against a *shared, multi-tenant
+   OpenSearch cluster*. YARA-X scanning has no equivalent shared-resource
+   amplification path: `YaraXSandboxRunner` (E2) already wall-clock-bounds
+   every scan two ways (in-worker `Scanner.set_timeout()` + its own outer
+   subprocess timeout) -- a real, already-verified mitigation for the
+   analogous risk, contained per-scan/per-member in one sandboxed
+   subprocess, never cluster-wide. Building a parallel gate would
+   duplicate that existing mitigation for a risk shape that doesn't
+   apply. See `src/domain/yara_rule_pack.py`'s module docstring for the
+   full reasoning.
+3. **`get_rule_source()`'s zero-argument contract (frozen, per E3) meant
+   org scoping needed a `ContextVar`, not a new method parameter.** A
+   signed/versioned pack is inherently org-scoped, but changing
+   `YaraRuleProvider.get_rule_source()`'s signature would have required
+   touching `ZipArchiveParser`/`TarArchiveParser`'s call sites -- explicitly
+   out of scope. `yara_scan_org_var` is bound by
+   `ParsingOrchestrationService.execute_parse` (the one call site for
+   every `ForensicParser.extract_artifacts()`, not just the two container
+   parsers) immediately around that call and reset afterward, mirroring
+   the existing `depth_var`/`budget_var` idiom
+   (`src/external/parsers/_container_common.py`). Verified for real (a
+   different org's bound context sees nothing; no bound context at all
+   yields an honest `None`) and by a dedicated unit test proving the bind/
+   reset happens in the real orchestration path, not just inside the PoC.
+4. **No HTTP route was added**, matching C3's own real scope exactly (a
+   repo search confirmed C3 itself never got one either -- only DI-level
+   FastAPI dependency functions). `get_yara_rule_pack_service`/
+   `get_yara_rule_pack_repository` exist in
+   `src/external/dependencies.py`, ready for a future route.
+5. **A real, previously-undiscovered gap in E2/E3's own production
+   activation was found and deliberately NOT worked around**: neither
+   `docker/Dockerfile` nor `docker/Dockerfile.plaso-worker` `COPY`s
+   `docker/yara/kronos-yarax-worker.py` into the built image (unlike
+   `docker/plaso/kronos-plaso-worker.py`, which IS copied in) --
+   `YaraXSandboxRunner`'s default worker path would not resolve inside a
+   real deployed container today. `PostgresYaraRulePackRepository` +
+   `create_tables()` persistence wiring WAS added to
+   `wire_dependencies_async` (real, independently verified above), but
+   `_yara_runner`/`_yara_rule_provider` were deliberately left unwired in
+   production startup -- wiring scanning on by default, unverified against
+   the real built container image, would itself violate CLAUDE.md §F.
+   Flagged as the concrete follow-up for whoever completes E2/E3/E4's
+   actual production activation (Dockerfile `COPY` fix + a real
+   container-level PoC re-run).
+
+Unit tests: `tests/unit/application/test_yara_rule_pack_service.py` (21
+tests), `tests/unit/application/test_yara_rules.py`'s new
+`TestSignedYaraRulePackProvider` (5 tests), and one new test in
+`tests/unit/application/test_parsing_orchestration.py::TestExecuteParse`
+proving the `yara_scan_org_var` bind/reset. See
+`poc/yara_rulepack_lifecycle/README.md` for the full account.
+
 ### E5 · Memory-dump module (Volatility, §G) — L1+L2
 **Objective.** A `ForensicParser` per §G wrapping real `volatility3` in its own
 sandboxed runtime/queue, emitting `StructuredArtifact`s (`volatility.pstree`

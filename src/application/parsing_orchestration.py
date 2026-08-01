@@ -14,6 +14,7 @@ from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
+from src.application.yara_rules import yara_scan_org_var
 from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
@@ -284,19 +285,34 @@ class ParsingOrchestrationService:
             # documented v1 tradeoff: two stream_object() calls for a
             # parser that implements both -- see
             # reviews/Data_Source_Module_System.md §5/§9).
-            artifact_stream = await self._storage.stream_object(evidence_key, bucket="evidence")
-            annotated_artifacts = _annotate_artifacts(
-                parser.extract_artifacts(artifact_stream, evidence, tenant),
-                tenant.org_alias,
-            )
-            if self._artifact_ingest is not None:
-                artifact_count = await self._artifact_ingest.ingest_artifacts(
-                    annotated_artifacts, tenant, evidence_id
+            #
+            # yara_scan_org_var is bound here, around the whole
+            # extract_artifacts()-consuming block, not inside
+            # ZipArchiveParser/TarArchiveParser themselves (roadmap E4 --
+            # see src/application/yara_rules.py's module docstring for why
+            # a ContextVar is how org scoping reaches
+            # SignedYaraRulePackProvider.get_rule_source() without those two
+            # parsers' zero-argument call site ever needing to change). This
+            # is the ONE place every ForensicParser's extract_artifacts() is
+            # invoked from, so binding it here covers every current and
+            # future parser, not just the container ones.
+            org_context_token = yara_scan_org_var.set(tenant.org_id)
+            try:
+                artifact_stream = await self._storage.stream_object(evidence_key, bucket="evidence")
+                annotated_artifacts = _annotate_artifacts(
+                    parser.extract_artifacts(artifact_stream, evidence, tenant),
+                    tenant.org_alias,
                 )
-            else:
-                artifact_count = 0
-                async for _ in annotated_artifacts:
-                    artifact_count += 1
+                if self._artifact_ingest is not None:
+                    artifact_count = await self._artifact_ingest.ingest_artifacts(
+                        annotated_artifacts, tenant, evidence_id
+                    )
+                else:
+                    artifact_count = 0
+                    async for _ in annotated_artifacts:
+                        artifact_count += 1
+            finally:
+                yara_scan_org_var.reset(org_context_token)
 
             evidence = evidence.with_state(EvidenceState.COMPLETE)
             await self._repo.update(evidence)

@@ -95,6 +95,20 @@ class AuditEventType(StrEnum):
     RULE_PACK_RULE_PUBLISHED = "rule_pack.rule_published"
     RULE_PACK_RULE_PUBLISH_FAILED = "rule_pack.rule_publish_failed"
 
+    # YARA rule-pack lifecycle (roadmap E4) -- same trust model as C3's Sigma
+    # rule packs, applied to YARA rulesets; see
+    # src/application/yara_rule_pack_service.py. No RULE_PUBLISHED/
+    # RULE_PUBLISH_FAILED analogue: unlike C3 (which pushes each accepted
+    # rule to a real external system, OpenSearch), "publishing" a YARA rule
+    # pack version only flips this repository's own local pointer -- there
+    # is no second external system call that can fail independently of the
+    # version-create step.
+    YARA_RULE_PACK_VERSION_CREATED = "yara_rule_pack.version_created"
+    YARA_RULE_PACK_VERSION_CREATE_FAILED = "yara_rule_pack.version_create_failed"
+    YARA_RULE_PACK_SIGNATURE_REJECTED = "yara_rule_pack.signature_rejected"
+    YARA_RULE_PACK_VERSION_PUBLISHED = "yara_rule_pack.version_published"
+    YARA_RULE_PACK_PUBLISH_FAILED = "yara_rule_pack.publish_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

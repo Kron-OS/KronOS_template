@@ -1,0 +1,82 @@
+==============================================================================
+PoC: YARA rule-pack lifecycle -- signed, versioned, published (roadmap E4)
+==============================================================================
+
+==============================================================================
+PART 0: real pinned tool versions
+==============================================================================
+  ______   ______        _______. __    _______ .__   __.
+ /      | /  __  \      /       ||  |  /  _____||  \ |  |
+|  ,----'|  |  |  |    |   (----`|  | |  |  __  |   \|  |
+|  |     |  |  |  |     \   \    |  | |  | |_ | |  . `  |
+|  `----.|  `--'  | .----)   |   |  | |  |__| | |  |\   |
+ \______| \______/  |_______/    |__|  \______| |__| \__|
+cosign: A tool for Container Signing, Verification and Storage in an OCI registry
+
+GitVersion:    v3.1.2
+GitCommit:     193d2153431f8bb0d945a4c1ee721872f73add67
+GitTreeState:  clean
+BuildDate:     2026-07-17T14:32:20Z
+GoVersion:     go1.26.4
+Compiler:      gc
+Platform:      linux/amd64
+
+
+[PASS] cosign v3.1.2 confirmed via real `cosign version`
+[PASS] real signed content fixture exists
+[PASS] real Cosign bundle fixture exists
+
+real synthetic org for this run: org_id=89f1fa56-57b6-4d78-9d0f-16bfa5b0bdca org_alias=e4-poc-e5d6650c
+
+==============================================================================
+PART 1: real Postgres append-only versioned CRUD
+==============================================================================
+after 1st add_rule: version=1, rule_count=1
+[PASS] first add_rule creates version 1
+[PASS] version 1 has exactly 1 rule
+after 2nd add_rule: version=2, rule_count=2, total versions=2
+[PASS] second add_rule creates version 2
+[PASS] version 2 has both rules
+[PASS] version 1 remains independently retrievable (never lost)
+[PASS] org_id on every version is the real tenant's org_id, never content-derived
+
+==============================================================================
+PART 2: real Cosign verify-blob signature gate
+==============================================================================
+real signed import: version=1 signature_verified=True source_tier=signed_third_party content_sha256=82ab69cf067081ca660aacca759cdaac2b753e41b103be8f95f5a96da1b0cd33
+[PASS] valid signature: signature_verified=True
+[PASS] valid signature: tagged SIGNED_THIRD_PARTY
+[PASS] valid signature: content_sha256 matches the real signed bytes
+real rejection (expected): YARA rule pack signature verification failed -- pack rejected
+[PASS] tampered content over the same real bundle is rejected
+[PASS] rejected import creates NO version at all (fails closed before bookkeeping)
+
+==============================================================================
+PART 3: publish_version + SignedYaraRulePackProvider (org-scoped)
+==============================================================================
+provider.get_rule_source() BEFORE publish: None
+[PASS] added-but-unpublished rules do not leak into the provider
+published pack 'custom-pack' version 2
+provider.get_rule_source() AFTER publish (truncated): 'rule RuleA_Poc { strings: $a = "POC_RULE_A" condition: $a }\n\nrule RuleB_Poc { strings: $b = "POC_RULE_B" condition: $b }'
+[PASS] provider returns real published rule text after publish
+[PASS] a different org's context sees no rules from this org's published pack
+yara_rule_pack_provider_no_org_context
+[PASS] no bound org context at all -> honest None, never a fallback ruleset
+
+==============================================================================
+PART 4: real end-to-end -- ZipArchiveParser.extract_artifacts() (unmodified) scanning via SignedYaraRulePackProvider
+==============================================================================
+extract_artifacts() yielded 1 real StructuredArtifact(s)
+  kind=yara.match source_path=evil.bin rule=Finds_Evil_Marker_E4Poc matched_strings=[{'pattern_identifier': '$marker', 'offset': 4, 'length': 18, 'xor_key': None}]
+[PASS] real end-to-end scan yields exactly 1 match (evil.bin)
+[PASS] the match names the real rule sourced through SignedYaraRulePackProvider
+[PASS] source_path correctly identifies the matching member
+[PASS] org_id on the artifact is the real tenant's org_id, never from pack/rule content
+
+==============================================================================
+Real Postgres rows left in place as inspectable proof of this run (matching poc/rule_pack_lifecycle/'s own convention) -- packs: e715a7d8-c4a9-4680-9e46-167f58475f66, 7047d66a-2db5-4e8b-a09b-5e1f36c2270c, abaa5353-a704-41a6-ab65-1ecf2db148d0
+==============================================================================
+
+==============================================================================
+RESULT: 22/22 checks passed
+==============================================================================

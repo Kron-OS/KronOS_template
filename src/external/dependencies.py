@@ -36,6 +36,10 @@ from src.adapter.repository.sealed_batch import (
     InMemorySealedBatchRepository,
     SealedBatchRepository,
 )
+from src.adapter.repository.yara_rule_pack import (
+    InMemoryYaraRulePackRepository,
+    YaraRulePackRepository,
+)
 from src.adapter.storage.sealed_batch_storage import SealedBatchStorage
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
@@ -58,6 +62,7 @@ from src.application.sealing_trigger_policy import SealingTriggerPolicy
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator, default_validator_chain
+from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
@@ -113,6 +118,11 @@ _rule_pack_repository: RulePackRepository = InMemoryRulePackRepository()
 _pack_signature_verifier: PackSignatureVerifier | None = None
 _custom_rule_client: CustomRuleClient | None = None
 _custom_rule_detector_binder: CustomRuleDetectorBinder | None = None
+# YARA rule-pack lifecycle (roadmap E4). Reuses _pack_signature_verifier
+# above (CosignPackSignatureVerifier is generic content-bytes signing, not
+# Sigma-specific -- see src/adapter/signing/cosign_verifier.py's own
+# docstring) rather than a second signature-verifier singleton.
+_yara_rule_pack_repository: YaraRulePackRepository = InMemoryYaraRulePackRepository()
 _sealed_batch_repository: SealedBatchRepository = InMemorySealedBatchRepository()
 _batch_sealing_service: BatchSealingService | None = None
 _dead_letter_sink: DeadLetterSink = InMemoryDeadLetterSink()
@@ -287,6 +297,10 @@ def get_detection_repository() -> DetectionRepository:
 
 def get_rule_pack_repository() -> RulePackRepository:
     return _rule_pack_repository
+
+
+def get_yara_rule_pack_repository() -> YaraRulePackRepository:
+    return _yara_rule_pack_repository
 
 
 def get_pack_signature_verifier() -> PackSignatureVerifier | None:
@@ -575,6 +589,31 @@ def get_rule_pack_service(
     )
 
 
+def get_yara_rule_pack_service(
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> YaraRulePackService:
+    """FastAPI dependency for YaraRulePackService (roadmap E4).
+
+    Mirrors ``get_rule_pack_service`` exactly, minus the cost gate (YARA-X
+    scanning has no equivalent risk -- see
+    ``src/domain/yara_rule_pack.py``'s module docstring) and reusing the
+    same ``PackSignatureVerifier`` singleton C3 already configures (Cosign
+    verification is generic over content bytes, not Sigma-specific).
+    """
+    signature_verifier = get_pack_signature_verifier()
+    if signature_verifier is None:
+        from src.adapter.signing.cosign_verifier import (  # noqa: PLC0415
+            CosignPackSignatureVerifier,
+        )
+
+        signature_verifier = CosignPackSignatureVerifier()
+    return YaraRulePackService(
+        repository=get_yara_rule_pack_repository(),
+        signature_verifier=signature_verifier,
+        audit_log=audit_log,
+    )
+
+
 def get_rule_pack_publisher(
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RulePackPublisher | None:
@@ -692,6 +731,7 @@ def configure_dependencies(
     custom_rule_detector_binder: CustomRuleDetectorBinder | None = None,
     yara_runner: YaraXSandboxRunner | None = None,
     yara_rule_provider: YaraRuleProvider | None = None,
+    yara_rule_pack_repository: YaraRulePackRepository | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -704,7 +744,7 @@ def configure_dependencies(
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
-    global _yara_runner, _yara_rule_provider
+    global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -745,6 +785,8 @@ def configure_dependencies(
     _custom_rule_detector_binder = custom_rule_detector_binder
     _yara_runner = yara_runner
     _yara_rule_provider = yara_rule_provider
+    if yara_rule_pack_repository is not None:
+        _yara_rule_pack_repository = yara_rule_pack_repository
 
 
 def reset_dependencies() -> None:
@@ -760,7 +802,7 @@ def reset_dependencies() -> None:
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _sealed_batch_repository, _batch_sealing_service
-    global _yara_runner, _yara_rule_provider
+    global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -794,3 +836,4 @@ def reset_dependencies() -> None:
     _batch_sealing_service = None
     _yara_runner = None
     _yara_rule_provider = None
+    _yara_rule_pack_repository = InMemoryYaraRulePackRepository()

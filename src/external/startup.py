@@ -11,7 +11,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _resolve_minio_public_endpoint_url(public_endpoint: str | None, internal_scheme: str) -> str | None:
+def _resolve_minio_public_endpoint_url(
+    public_endpoint: str | None, internal_scheme: str
+) -> str | None:
     """Build the presigned-URL client's endpoint_url from MINIO_PUBLIC_ENDPOINT.
 
     Historically reused the internal connection's scheme (minio_use_tls) for
@@ -60,6 +62,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_sealed_batch import (  # noqa: PLC0415
         PostgresSealedBatchRepository,
     )
+    from src.adapter.repository.postgres_yara_rule_pack import (  # noqa: PLC0415
+        PostgresYaraRulePackRepository,
+    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
@@ -84,6 +89,7 @@ async def wire_dependencies_async() -> None:
     artifact_repo = PostgresArtifactRepository(engine)
     detection_repo = PostgresDetectionRepository(engine)
     rule_pack_repo = PostgresRulePackRepository(engine)
+    yara_rule_pack_repo = PostgresYaraRulePackRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
@@ -91,6 +97,7 @@ async def wire_dependencies_async() -> None:
     await PostgresArtifactRepository.create_tables(engine)
     await PostgresDetectionRepository.create_tables(engine)
     await PostgresRulePackRepository.create_tables(engine)
+    await PostgresYaraRulePackRepository.create_tables(engine)
     await PostgresSealedBatchRepository.create_tables(engine)
     # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
     # nothing configures a Postgres-backed sink into the DI container below
@@ -272,6 +279,20 @@ async def wire_dependencies_async() -> None:
         pack_signature_verifier=pack_signature_verifier,
         custom_rule_client=custom_rule_client,
         custom_rule_detector_binder=custom_rule_detector_binder,
+        # YARA rule-pack lifecycle (roadmap E4): persistence wiring only.
+        # Deliberately NOT wiring yara_runner/yara_rule_provider here yet --
+        # a real, concrete gap was found while checking whether to: neither
+        # docker/Dockerfile nor docker/Dockerfile.plaso-worker COPYs
+        # docker/yara/kronos-yarax-worker.py into the built image (unlike
+        # docker/plaso/kronos-plaso-worker.py, which Dockerfile.plaso-worker
+        # explicitly COPYs in) -- YaraXSandboxRunner's default worker path
+        # would not resolve inside a real deployed container today. Wiring
+        # scanning on by default here, unverified against the real built
+        # image, would violate CLAUDE.md §F ("plausible code without a
+        # captured real run is an automatic fail"). Flagged as a follow-up
+        # for whoever completes E2/E3's own production activation, not
+        # silently worked around here.
+        yara_rule_pack_repository=yara_rule_pack_repo,
     )
     configure_clamav_from_settings()
 

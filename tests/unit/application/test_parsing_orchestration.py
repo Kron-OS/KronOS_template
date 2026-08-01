@@ -15,6 +15,8 @@ from src.application.audit_log import AuditLogService
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
 from src.application.parsing_orchestration import ParsingOrchestrationService, _make_document_id
+from src.application.yara_rules import yara_scan_org_var
+from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import KronosProvenance, TimelineRecord
@@ -82,6 +84,24 @@ class _HeavyParser(_FakeCloudTrailParser):
     @property
     def parser_type(self) -> ParserType:
         return ParserType.HEAVY
+
+
+class _OrgContextCapturingParser(_FakeCloudTrailParser):
+    """Records yara_scan_org_var's value observed inside extract_artifacts(),
+    without yielding any artifact -- used to prove ParsingOrchestrationService
+    binds the org context (roadmap E4) around its extract_artifacts() call,
+    without requiring any change to ZipArchiveParser/TarArchiveParser
+    themselves (see src/application/yara_rules.py's module docstring)."""
+
+    def __init__(self) -> None:
+        self.observed_org_ids: list[uuid.UUID | None] = []
+
+    async def extract_artifacts(  # type: ignore[override]
+        self, stream: AsyncIterator[bytes], evidence: Evidence, tenant: TenantContext
+    ) -> AsyncIterator[StructuredArtifact]:
+        self.observed_org_ids.append(yara_scan_org_var.get())
+        return
+        yield  # pragma: no cover -- makes this an async generator
 
 
 class _FailingParser(_FakeCloudTrailParser):
@@ -343,9 +363,7 @@ class TestRetryParse:
             evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
         )
         await orchestrator.retry_parse(evidence.evidence_id, tenant)
-        started = next(
-            e for e in audit_repo.events if e.event_type == AuditEventType.PARSE_STARTED
-        )
+        started = next(e for e in audit_repo.events if e.event_type == AuditEventType.PARSE_STARTED)
         assert started.details.get("retry") is True
 
     @pytest.mark.asyncio
@@ -579,6 +597,26 @@ class TestExecuteParse:
         assert indices, "no documents were indexed"
         assert all(idx.startswith("kronos-acmecorp-case-") for idx in indices), indices
         assert not any("system" in idx for idx in indices)
+
+    @pytest.mark.asyncio
+    async def test_yara_scan_org_var_bound_around_extract_artifacts(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Roadmap E4: ParsingOrchestrationService must bind yara_scan_org_var
+        to the tenant's org_id for the duration of extract_artifacts(), and
+        reset it afterward -- the mechanism SignedYaraRulePackProvider relies
+        on since get_rule_source() itself takes no tenant argument."""
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        parser = _OrgContextCapturingParser()
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, parser
+        )
+
+        assert yara_scan_org_var.get() is None
+        await orchestrator.execute_parse(evidence.evidence_id, tenant)
+
+        assert parser.observed_org_ids == [tenant.org_id]
+        assert yara_scan_org_var.get() is None  # reset after the call, no leakage
 
     @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:
