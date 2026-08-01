@@ -1,5 +1,15 @@
 # PoC: StreamNormalizationService — continuous normalization (stream → ECS, roadmap M3/D4)
 
+**Superseded constructor signature, flagged 2026-08-01 (roadmap M3/D5):**
+`StreamNormalizationService.__init__` gained two required parameters
+(`dead_letter_sink`, `audit_log`) and `normalize_batch()` now returns a
+`StreamNormalizationResult` (`indexed_count`/`dead_lettered_count`), not a
+bare `int` — see `poc/stream_backpressure_dlq/` for D5's own PoC, which
+exercises the current signature for real. This script/output below is left
+unmodified as the accurate historical record of what D4 actually verified
+at the time; it will raise a `TypeError` if run as-is against the
+current `src/`.
+
 ## Versions (pinned, read from this repo / this host — not assumed)
 
 - Redis: `docker-redis-1` (`redis:7-alpine`), 7.4.9 (matches `poc/stream_ingest_redis/`, `poc/batch_sealing/`).

@@ -275,6 +275,93 @@ class TestWatermarkGapDetection:
         assert audit_repo._events[-1].details["earliest_retained_message_id"] == "20-0"
 
 
+def _msg_with_age(payload: bytes, age_seconds: float) -> StreamMessage:
+    """A StreamMessage whose id's real millisecond component makes
+    _message_id_ms() compute an oldest_pending_age_seconds of roughly
+    age_seconds -- lets a test simulate "this event has been pending for a
+    long time" without actually sleeping."""
+    old_ms = int(datetime.now(UTC).timestamp() * 1000 - age_seconds * 1000)
+    return StreamMessage(message_id=f"{old_ms}-0", payload=payload)
+
+
+class TestSealerFallBehindAlerting:
+    """Distinct from TestWatermarkGapDetection above: this is a liveness
+    signal (the sealer isn't keeping up), not evidence loss, so it must page
+    (log + audit event) WITHOUT raising or blocking the seal attempt this
+    same cycle makes -- see BatchSealingService's module docstring and
+    _check_sealer_fall_behind's own docstring for the reasoning."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_never_pages_even_with_very_old_pending_events(self) -> None:
+        messages = [_msg_with_age(b"ancient", age_seconds=99_999)]
+        stream = _stream_adapter([], messages)
+        audit_repo = InMemoryAuditLogRepository()
+        audit_log = AuditLogService(audit_repo)
+        repo = InMemorySealedBatchRepository()
+        # No stall_alert_after_seconds passed -- default None disables the check.
+        service = _service(stream, _storage(), _tsa(), audit_log, repo, SizeBoundTriggerPolicy(100))
+
+        result = await service.seal_pending(uuid.uuid4(), "zeek-conn")
+
+        assert result is None  # trigger policy still not met, deferred as normal
+        assert all(
+            e.event_type != AuditEventType.SEALER_FALL_BEHIND_DETECTED for e in audit_repo._events
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_pending_event_pages_but_does_not_raise_and_seal_still_proceeds(self) -> None:
+        org_id = uuid.uuid4()
+        messages = [_msg_with_age(b"stale-event", age_seconds=3600)]  # 1 hour old
+        stream = _stream_adapter([], messages)
+        audit_repo = InMemoryAuditLogRepository()
+        audit_log = AuditLogService(audit_repo)
+        repo = InMemorySealedBatchRepository()
+        # Threshold (60s) is well below the trigger policy's own threshold
+        # would ever need to be -- distinct knobs, per this item's own design.
+        service = BatchSealingService(
+            stream, _storage(), _tsa(), audit_log, repo, SizeBoundTriggerPolicy(1),
+            stall_alert_after_seconds=60.0,
+        )
+
+        sealed = await service.seal_pending(org_id, "zeek-conn")
+
+        # The alert did NOT block sealing -- the very same cycle sealed the
+        # stale segment (the mechanism that resolves the staleness).
+        assert sealed is not None
+        stream.ack.assert_awaited_once()
+
+        alert_events = [
+            e for e in audit_repo._events if e.event_type == AuditEventType.SEALER_FALL_BEHIND_DETECTED
+        ]
+        assert len(alert_events) == 1
+        assert alert_events[0].details["pending_event_count"] == 1
+        assert alert_events[0].details["oldest_pending_age_seconds"] >= 3600
+        assert alert_events[0].details["stall_alert_after_seconds"] == 60.0
+
+        # Both the alert AND the normal success event were recorded -- the
+        # alert is additive, not a replacement for the normal BATCH_SEALED flow.
+        assert any(e.event_type == AuditEventType.BATCH_SEALED for e in audit_repo._events)
+
+    @pytest.mark.asyncio
+    async def test_pending_age_below_threshold_does_not_page(self) -> None:
+        messages = [_msg_with_age(b"fresh", age_seconds=5)]
+        stream = _stream_adapter([], messages)
+        audit_repo = InMemoryAuditLogRepository()
+        audit_log = AuditLogService(audit_repo)
+        repo = InMemorySealedBatchRepository()
+        service = BatchSealingService(
+            stream, _storage(), _tsa(), audit_log, repo, SizeBoundTriggerPolicy(100),
+            stall_alert_after_seconds=60.0,
+        )
+
+        result = await service.seal_pending(uuid.uuid4(), "zeek-conn")
+
+        assert result is None
+        assert all(
+            e.event_type != AuditEventType.SEALER_FALL_BEHIND_DETECTED for e in audit_repo._events
+        )
+
+
 class TestInclusionProofReconstruction:
     """The literal gate condition: an arbitrary real event's inclusion proof,
     reconstructed from the SealedBatch's own stored leaf_hashes, must verify

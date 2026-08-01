@@ -85,3 +85,24 @@ class EvidenceLossDetectedError(KronOSException):
     until a real integration is added; documented honestly rather than
     claimed as more than it is.
     """
+
+
+class SealerFallBehindDetectedError(KronOSException):
+    """Signals that a stream's oldest pending (unsealed) event has aged past
+    ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold
+    (roadmap M3/D5) -- evidence the sealer isn't being invoked/isn't keeping
+    up, a liveness problem, not evidence loss.
+
+    Deliberately NOT raised by ``seal_pending()``'s own automatic cycle --
+    unlike ``EvidenceLossDetectedError`` (data already, irreversibly trimmed
+    by the time it's detected), the pending events this signal describes are
+    still fully present and this very seal_pending() call is about to
+    attempt to seal them; raising here would abort the one call that could
+    resolve the staleness. ``seal_pending()`` logs
+    ``logger.critical``/writes ``AuditEventType.SEALER_FALL_BEHIND_DETECTED``
+    and continues. This exception class exists as the concrete hook a
+    deliberate caller (e.g. a future admin liveness/health-check route) can
+    raise from, mirroring this codebase's established idiom of pairing every
+    paging-worthy condition with a dedicated exception type even when the
+    default automatic path chooses not to raise it.
+    """

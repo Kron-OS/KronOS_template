@@ -28,6 +28,7 @@ from src.adapter.repository.artifact_repository import (
 )
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
+from src.adapter.repository.dead_letter import DeadLetterSink, InMemoryDeadLetterSink
 from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
@@ -102,6 +103,7 @@ _custom_rule_client: CustomRuleClient | None = None
 _custom_rule_detector_binder: CustomRuleDetectorBinder | None = None
 _sealed_batch_repository: SealedBatchRepository = InMemorySealedBatchRepository()
 _batch_sealing_service: BatchSealingService | None = None
+_dead_letter_sink: DeadLetterSink = InMemoryDeadLetterSink()
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,27 @@ def configure_collector_ingest_service(
 
 def get_sealed_batch_repository() -> SealedBatchRepository:
     return _sealed_batch_repository
+
+
+def get_dead_letter_sink() -> DeadLetterSink:
+    """FastAPI/beat-task dependency for DeadLetterSink (roadmap M3/D5).
+
+    Mirrors :func:`get_sealed_batch_repository`'s own pattern: a
+    module-level singleton defaulting to the in-memory double so DI never
+    hard-fails before Postgres is configured, swapped for
+    ``PostgresDeadLetterSink`` in :func:`configure_dead_letter_sink` at real
+    startup. ``StreamNormalizationService`` itself is not wired into this
+    container yet (mirrors D4's own precedent -- it is constructed directly
+    by its callers/tests/PoC); this getter exists so a future caller (an
+    admin route listing dead-lettered events for a batch, a beat task) has
+    a real hook point without needing that larger wiring done first.
+    """
+    return _dead_letter_sink
+
+
+def configure_dead_letter_sink(sink: DeadLetterSink) -> None:
+    global _dead_letter_sink
+    _dead_letter_sink = sink
 
 
 def get_batch_sealing_service() -> BatchSealingService:

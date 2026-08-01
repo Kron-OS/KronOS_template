@@ -22,6 +22,26 @@ trigger-on-seal wiring, mirroring D3's own explicit scope note (sealing
 itself isn't scheduled yet either). Proving the mechanism produces correct
 ECS documents when invoked is this item's job; automatic invocation is
 D5/D6's.
+
+**Per-event dead-lettering (roadmap M3/D5).** Before this item, a single
+malformed event inside an otherwise-fine batch (``normalizer.normalize()``
+raising ``ParsingError`` for one genuinely corrupt line) aborted the whole
+``_records()`` async generator -- since it feeds directly into
+``TimelineIngestionService.ingest_stream_records()``, that one bad event
+silently cost every other already-yielded, perfectly-good event in the same
+batch its indexing. This was real, observable data-loss risk, not a
+hypothetical: continuous telemetry from a real collector WILL eventually
+include a truncated/corrupted line. ``normalize_batch`` now catches
+``ParsingError`` around each individual event's ``normalize()`` call,
+routes that one event's raw payload (plus its ``batch_id``/``event_offset``/
+``org_id``/``source_id`` and the real error) to a ``DeadLetterSink``, logs
+it, and continues with the rest of the batch -- the sealed batch's WORM
+object still has the raw bytes forever regardless, so nothing is lost even
+temporarily, just correctly *not* indexed until whatever's wrong with that
+one event is understood. ``normalize_batch`` returns a
+``StreamNormalizationResult`` distinguishing ``indexed_count`` from
+``dead_lettered_count`` so a caller can tell "0 dead-lettered, all good"
+from "N indexed, M silently vanished" -- the latter must never be possible.
 """
 
 from __future__ import annotations
@@ -32,17 +52,33 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from src.adapter.repository.dead_letter import DeadLetterSink
 from src.adapter.repository.sealed_batch import SealedBatchRepository
 from src.adapter.storage.sealed_batch_storage import SealedBatchStorage
+from src.application.audit_log import AuditLogService
 from src.application.stream_source_registry import StreamSourceNormalizerRegistry
 from src.application.timeline_ingest import TimelineIngestionService
+from src.domain.audit import AuditEventType
+from src.domain.dead_letter import DeadLetterEvent
+from src.domain.sealed_batch import SealedBatch
 from src.domain.stream import StreamProvenance
 from src.domain.timeline import TimelineRecord
 from src.exceptions import ParsingError, ValidationError
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StreamNormalizationResult:
+    """Outcome of one ``normalize_batch`` call -- deliberately two separate
+    counts, never conflated into one "processed" number, so a caller can
+    always tell exactly-good from silently-dropped (roadmap M3/D5)."""
+
+    indexed_count: int
+    dead_lettered_count: int
 
 
 class StreamNormalizationService:
@@ -54,16 +90,24 @@ class StreamNormalizationService:
         sealed_batch_storage: SealedBatchStorage,
         ingestion: TimelineIngestionService,
         normalizer_registry: StreamSourceNormalizerRegistry,
+        dead_letter_sink: DeadLetterSink,
+        audit_log: AuditLogService,
     ) -> None:
         self._repository = sealed_batch_repository
         self._storage = sealed_batch_storage
         self._ingestion = ingestion
         self._registry = normalizer_registry
+        self._dead_letter_sink = dead_letter_sink
+        self._audit_log = audit_log
 
-    async def normalize_batch(self, org_id: uuid.UUID, batch_id: uuid.UUID, org_alias: str) -> int:
+    async def normalize_batch(
+        self, org_id: uuid.UUID, batch_id: uuid.UUID, org_alias: str
+    ) -> StreamNormalizationResult:
         """Normalize and index every event in one sealed batch.
 
-        Returns the number of records indexed.
+        An event that fails to normalize is dead-lettered (see this
+        module's own docstring), never allowed to abort the rest of the
+        batch's indexing.
 
         Raises:
             ValidationError: if no ``SealedBatch`` with this id exists for org_id.
@@ -104,11 +148,22 @@ class StreamNormalizationService:
             },
         )
 
+        dead_lettered_count = 0
+
         async def _records() -> AsyncIterator[TimelineRecord]:
+            nonlocal dead_lettered_count
             ingest_ts = datetime.now(UTC)
             for offset, event in enumerate(events):
                 payload = base64.b64decode(event["payload_base64"])
-                normalized = normalizer.normalize(payload)
+                try:
+                    normalized = normalizer.normalize(payload)
+                except ParsingError as exc:
+                    # One bad event must never abort the rest of an
+                    # otherwise-good batch (see this module's own
+                    # docstring) -- dead-letter this one, keep going.
+                    dead_lettered_count += 1
+                    await self._dead_letter(org_id, batch, offset, payload, exc)
+                    continue
                 yield TimelineRecord(
                     document_id=_stream_document_id(batch_id, offset),
                     timestamp=normalized.timestamp,
@@ -137,12 +192,64 @@ class StreamNormalizationService:
                     ),
                 )
 
-        return await self._ingestion.ingest_stream_records(
+        indexed_count = await self._ingestion.ingest_stream_records(
             _records(),
             org_id=org_id,
             org_alias=org_alias,
             source_id=batch.source_id,
             batch_id=batch_id,
+        )
+        return StreamNormalizationResult(
+            indexed_count=indexed_count, dead_lettered_count=dead_lettered_count
+        )
+
+    async def _dead_letter(
+        self,
+        org_id: uuid.UUID,
+        batch: SealedBatch,
+        event_offset: int,
+        payload: bytes,
+        exc: ParsingError,
+    ) -> None:
+        """Persist one event that failed normalization and audit the fact --
+        never just a swallowed/counted failure (CLAUDE.md SS B.2: audit every
+        error). Never logs ``payload`` itself (may contain raw telemetry
+        content) -- only its length and the real error, matching this
+        codebase's no-PII-in-logs convention (SS B.4)."""
+        entry = DeadLetterEvent(
+            org_id=org_id,
+            source_id=batch.source_id,
+            batch_id=batch.batch_id,
+            event_offset=event_offset,
+            payload=payload,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            dead_lettered_at=datetime.now(UTC),
+        )
+        await self._dead_letter_sink.record(entry)
+        logger.warning(
+            "stream_event_dead_lettered",
+            extra={
+                "org_id": str(org_id),
+                "batch_id": str(batch.batch_id),
+                "source_id": batch.source_id,
+                "event_offset": event_offset,
+                "payload_size_bytes": len(payload),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+        await self._audit_log.log(
+            AuditEventType.STREAM_EVENT_DEAD_LETTERED,
+            org_id=org_id,
+            details={
+                "batch_id": str(batch.batch_id),
+                "source_id": batch.source_id,
+                "event_offset": event_offset,
+                "dead_letter_id": str(entry.dead_letter_id),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
         )
 
 

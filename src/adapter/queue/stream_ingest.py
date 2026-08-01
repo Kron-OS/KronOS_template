@@ -34,6 +34,36 @@ class StreamMessage:
     payload: bytes
 
 
+@dataclass(frozen=True)
+class ConsumerGroupHealth:
+    """Real-time consumer-group backlog/lag snapshot (roadmap M3/D5).
+
+    Backed by two distinct real Redis Streams primitives that answer two
+    different questions -- both are real backpressure signals, but of
+    different failure modes:
+
+    - ``pending_count``/``min_pending_id``/``max_pending_id``/
+      ``consumer_pending_counts`` come from ``XPENDING <key> <group>``'s
+      summary form: entries already delivered to some consumer but never
+      acked. High and growing means "a consumer picked this up and got
+      stuck/crashed mid-processing" -- D1's own ``reclaim_stale()``
+      (``XAUTOCLAIM``) is the recovery lever for this.
+    - ``lag`` comes from ``XINFO GROUPS``' own ``lag`` field (Redis 7+):
+      entries that exist in the stream but have never been delivered to
+      *any* consumer of this group at all. High and growing means "nothing
+      is reading this stream fast enough (or at all)" -- a dead/absent
+      consumer process, not a stuck one. ``None`` when the group does not
+      exist (nothing has ever consumed this stream) rather than 0, so a
+      caller can distinguish "no backlog" from "no such group".
+    """
+
+    pending_count: int
+    min_pending_id: str | None
+    max_pending_id: str | None
+    consumer_pending_counts: dict[str, int]
+    lag: int | None
+
+
 class StreamIngestAdapter(ABC):
     """Per-org, per-source durable telemetry transport."""
 
@@ -120,6 +150,22 @@ class StreamIngestAdapter(ABC):
         sealer whether trimming has advanced past everything it has already
         sealed and started eating into events that were never sealed --
         real, silent evidence loss, not merely "old data aged out."
+        """
+
+    @abstractmethod
+    async def consumer_group_health(
+        self, org_id: uuid.UUID, source_id: str, group: str
+    ) -> ConsumerGroupHealth:
+        """Real backlog/lag snapshot for *group* on this (org, source)'s stream
+        (roadmap M3/D5).
+
+        The concrete primitive D5's backpressure-observability requirement
+        needs: a caller (a future admin route or beat task -- deliberately
+        NOT wired to either here, mirroring D3/D4's own precedent of proving
+        a mechanism without wiring its automatic invocation) can use this to
+        decide "is this consumer group falling behind" without inventing a
+        new metrics stack -- see ``ConsumerGroupHealth``'s own docstring for
+        what ``pending_count`` vs ``lag`` each actually mean.
         """
 
 
@@ -222,6 +268,68 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
         mid, _fields = entries[0]
         return mid.decode() if isinstance(mid, bytes) else str(mid)
 
+    async def consumer_group_health(
+        self, org_id: uuid.UUID, source_id: str, group: str
+    ) -> ConsumerGroupHealth:
+        from redis.exceptions import ResponseError  # noqa: PLC0415
+
+        key = self._key(org_id, source_id)
+        try:
+            summary = await self._redis.xpending(key, group)
+        except ResponseError as exc:
+            if "NOGROUP" in str(exc):
+                return ConsumerGroupHealth(
+                    pending_count=0,
+                    min_pending_id=None,
+                    max_pending_id=None,
+                    consumer_pending_counts={},
+                    lag=None,
+                )
+            raise
+
+        def _decode(value: bytes | str | None) -> str | None:
+            if value is None:
+                return None
+            return value.decode() if isinstance(value, bytes) else str(value)
+
+        def _decode_name(value: bytes | str) -> str:
+            # A real XPENDING/XINFO GROUPS consumer/group name entry is
+            # never null -- Redis Streams has no concept of an anonymous
+            # consumer -- so this is a real invariant, not just a
+            # type-narrowing appeasement.
+            decoded = _decode(value)
+            assert decoded is not None
+            return decoded
+
+        consumer_pending_counts = {
+            _decode_name(c["name"]): int(c["pending"]) for c in (summary.get("consumers") or [])
+        }
+
+        # XINFO GROUPS reports lag per-group (real, undelivered-entry count,
+        # Redis 7+) -- find this group's own row. A concurrently-deleted
+        # group between the XPENDING call above and this one is treated the
+        # same as "group never existed" (lag=None), not raised, since a
+        # health check racing a real group deletion is a real, benign race,
+        # not a caller error.
+        lag: int | None = None
+        try:
+            for row in await self._redis.xinfo_groups(key):
+                if _decode(row.get("name")) == group:
+                    raw_lag = row.get("lag")
+                    lag = None if raw_lag is None else int(raw_lag)
+                    break
+        except ResponseError as exc:
+            if "no such key" not in str(exc).lower():
+                raise
+
+        return ConsumerGroupHealth(
+            pending_count=int(summary["pending"]),
+            min_pending_id=_decode(summary["min"]),
+            max_pending_id=_decode(summary["max"]),
+            consumer_pending_counts=consumer_pending_counts,
+            lag=lag,
+        )
+
 
 class InMemoryStreamIngestAdapter(StreamIngestAdapter):
     """Thread-unsafe in-memory stand-in for unit tests -- no real ack/redelivery
@@ -293,3 +401,33 @@ class InMemoryStreamIngestAdapter(StreamIngestAdapter):
     async def earliest_message_id(self, org_id: uuid.UUID, source_id: str) -> str | None:
         messages = self._streams.get(self._key(org_id, source_id), [])
         return messages[0].message_id if messages else None
+
+    async def consumer_group_health(
+        self, org_id: uuid.UUID, source_id: str, group: str
+    ) -> ConsumerGroupHealth:
+        key = self._key(org_id, source_id)
+        if (key, group) not in self._groups:
+            return ConsumerGroupHealth(
+                pending_count=0,
+                min_pending_id=None,
+                max_pending_id=None,
+                consumer_pending_counts={},
+                lag=None,
+            )
+        # Documented simplification (matches ack()/reclaim_stale()'s own
+        # gaps above): this double has no real pending-entries-list, so
+        # pending_count is always reported as 0 -- real "delivered but
+        # unacked" assertions belong in poc/stream_ingest_redis/ against
+        # real Redis, not here. lag IS meaningful here though: it reuses
+        # the same (key, group) cursor consume() already tracks, so
+        # "entries never yet delivered to this group" is real for this
+        # double, just computed differently than XINFO GROUPS' own counter.
+        cursor = self._groups[(key, group)]
+        total = len(self._streams.get(key, []))
+        return ConsumerGroupHealth(
+            pending_count=0,
+            min_pending_id=None,
+            max_pending_id=None,
+            consumer_pending_counts={},
+            lag=max(total - cursor, 0),
+        )

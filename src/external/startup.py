@@ -45,6 +45,9 @@ async def wire_dependencies_async() -> None:
         PostgresAuditLogRepository,
     )
     from src.adapter.repository.postgres_case import PostgresCaseRepository  # noqa: PLC0415
+    from src.adapter.repository.postgres_dead_letter import (  # noqa: PLC0415
+        PostgresDeadLetterSink,
+    )
     from src.adapter.repository.postgres_detection import (  # noqa: PLC0415
         PostgresDetectionRepository,
     )
@@ -89,6 +92,15 @@ async def wire_dependencies_async() -> None:
     await PostgresDetectionRepository.create_tables(engine)
     await PostgresRulePackRepository.create_tables(engine)
     await PostgresSealedBatchRepository.create_tables(engine)
+    # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
+    # nothing configures a Postgres-backed sink into the DI container below
+    # yet (StreamNormalizationService itself isn't wired into
+    # configure_dependencies() either, mirroring D4's own precedent) --
+    # deliberately NOT repeating D3's real, since-fixed gap where
+    # PostgresSealedBatchRepository.create_tables() was originally missing
+    # from this exact list and the table would not have existed for the
+    # first real production save.
+    await PostgresDeadLetterSink.create_tables(engine)
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(

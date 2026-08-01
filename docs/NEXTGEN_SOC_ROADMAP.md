@@ -747,6 +747,155 @@ scheduling follow-up — natural fit for D5/D6.
 **Objective.** Lag/queue-depth/trim metrics, dead-letter for unparseable events,
 alerting on sealer fall-behind. **Depends on:** D1.
 
+**STATUS (2026-08-01): DONE.** Three independent mechanisms, each proven
+against the real dev stack, none wired to automatic scheduling (same
+precedent as D2's collector listener, D3's `seal_pending()`, D4's
+`normalize_batch()` — this item proves each mechanism works when invoked,
+per CLAUDE.md's own D5 scope note; no Prometheus/Grafana/`/metrics`
+endpoint was added, per this item's own explicit out-of-scope list).
+
+1. **Consumer-group lag/health.** `StreamIngestAdapter` ABC
+   (`src/adapter/queue/stream_ingest.py`) gained
+   `consumer_group_health(org_id, source_id, group) -> ConsumerGroupHealth`
+   (a new frozen dataclass: `pending_count`/`min_pending_id`/
+   `max_pending_id`/`consumer_pending_counts` from Redis Streams' real
+   `XPENDING <key> <group>` summary form, `lag` from `XINFO GROUPS`'s own
+   `lag` field, Redis 7+ — the two numbers answer different questions:
+   "consumers reading but not acking" vs. "nothing reading this stream at
+   all"). Implemented for real in `RedisStreamIngestAdapter` (verified
+   against the real, live `docker-redis-1` 7.4.9 both via unit tests
+   mocking the redis client per CLAUDE.md §B.5 and via the real PoC below)
+   and honestly in `InMemoryStreamIngestAdapter` (documented limitation:
+   this double has no real pending-entries-list, so `pending_count` is
+   always 0 — matches `ack()`/`reclaim_stale()`'s own already-documented
+   gaps in that class; `lag` IS real there, computed from the same cursor
+   `consume()` already tracks). `lag=None` (not `0`) distinguishes "group
+   never existed" from "group exists with zero backlog."
+2. **Dead-letter for unparseable stream events — the concrete bug this
+   item was scoped around.** Before this pass,
+   `StreamNormalizationService.normalize_batch()`
+   (`src/application/stream_normalization.py`) let a single event's
+   `ParsingError` (e.g. one genuinely corrupt Zeek line) abort the whole
+   `_records()` generator feeding `TimelineIngestionService.
+   ingest_stream_records()` — real, observable data-loss risk for every
+   other already-yielded, perfectly-good event in the same batch.
+   `normalize_batch` now catches `ParsingError` per event, routes that
+   event's raw payload/`batch_id`/`event_offset`/org/source/real error to a
+   new `DeadLetterSink` ABC (`src/adapter/repository/dead_letter.py`,
+   `InMemoryDeadLetterSink` + `PostgresDeadLetterSink` — mirrors the
+   `SealedBatchRepository` ABC+impl pattern exactly; a new
+   `dead_letter_events` Postgres table, chosen over a new storage backend
+   since every other durable pipeline artifact is already Postgres-backed),
+   logs it (`logger.warning`, no payload content — SS B.4), writes a new
+   `AuditEventType.STREAM_EVENT_DEAD_LETTERED` event, and continues with
+   the rest of the batch. Returns a new `StreamNormalizationResult`
+   (`indexed_count`/`dead_lettered_count`) instead of a bare `int` so a
+   caller can never conflate "all good" with "some silently vanished" — a
+   real, intentional constructor/return-type break from D4, with both
+   existing call sites (unit tests) updated, not papered over.
+3. **Sealer fall-behind alerting.** `BatchSealingService.seal_pending()`
+   gained an optional `stall_alert_after_seconds` threshold — distinct from
+   `SealingTriggerPolicy`'s own trigger threshold (must be set well above
+   it: a healthy, regularly-invoked sealer would already have sealed a
+   segment long before reaching this threshold, so crossing it is real
+   evidence the seal cycle itself isn't running/keeping up, a liveness
+   problem, not evidence loss). Reuses `_check_watermark_gap`'s exact
+   idiom (`logger.critical` + a dedicated `AuditEventType.
+   SEALER_FALL_BEHIND_DETECTED` + a dedicated `SealerFallBehindDetectedError`
+   exception class exists in `src/exceptions.py`) but — after actually
+   reasoning about it, not copy-pasting — deliberately does **not** raise
+   from the automatic path: unlike the watermark gap (data already,
+   irreversibly trimmed by the time it's detected), the stale pending
+   segment is still fully present and this very `seal_pending()` call is
+   about to attempt sealing it; raising would abort the one call that
+   could resolve the staleness. So it pages (log + audit event) and lets
+   sealing proceed — proven for real in the PoC below: the alert fires
+   AND the stale batch gets sealed in the same call.
+
+**Real PoC:** `poc/stream_backpressure_dlq/` — 24/24 checks passed against
+the real already-running dev stack (`docker-redis-1` 7.4.9,
+`docker-postgres-1`, `docker-minio-1`, `docker-opensearch-1`, plus the same
+real openssl-`ts`-backed TSA substitute D3/D4 used). (a) A real batch of 5
+Zeek-conn-log-shaped events with one deliberately malformed at offset 2 was
+sealed (sealing hashes raw bytes — it has no opinion on payload content, so
+this is purely a normalization-time bug) and normalized: an independent
+real Postgres `SELECT` confirmed exactly one `dead_letter_events` row at
+the correct offset with the exact original malformed bytes and a real
+`ParsingError` error_type, and an independent real OpenSearch `_search`
+(filtered on this run's own `kronos.batch_id` — a real `keyword` ECS
+field — not `match_all`, see the PoC's own README for why) confirmed
+exactly the 4 good events landed. (b) 5 real events produced, 3 consumed
+without acking via a real consumer group; `consumer_group_health()`'s
+answer (`pending_count=3`, `lag=2`) was cross-checked against **raw**
+`XPENDING`/`XINFO GROUPS` calls made independently in the PoC script
+itself, not trusted from the adapter's own parsing alone — both agreed;
+acking+draining brought both real numbers to zero; a never-created group
+correctly reported `lag=None`. (c) One real event `XADD`'d with an
+explicitly 1-hour-old message id (Redis Streams allows an arbitrary
+starting id on a fresh stream, so no real sleeping was needed) triggered a
+real `SEALER_FALL_BEHIND_DETECTED` audit row (`oldest_pending_age_seconds
+>= 3599`, independently confirmed via Postgres `SELECT`) in the same
+`seal_pending()` call that also wrote a real `BATCH_SEALED` row —
+confirming the alert is additive, not blocking.
+
+**Real findings during PoC verification, fixed, not hidden** (see the
+PoC's own README for the full account): a first real run passed 24/24; a
+second real run (checking idempotency) failed 2 checks because the PoC's
+own fixed `org_alias`/fixed Zeek timestamps produce the same OpenSearch
+index name every run, so a `match_all` query double-counted a prior run's
+leftover documents — fixed by scoping the query to the run's own
+`kronos.batch_id` (a real bug in the PoC's assertion, not in `src/`); a
+third run then hit a real `OSError: Address already in use` on the PoC's
+own local TSA responder port (`socketserver.ThreadingTCPServer`'s
+`allow_reuse_address` defaults to `False`) — fixed with
+`allow_reuse_address = True`. Re-ran clean afterward, confirmed idempotent
+across repeated runs.
+
+**Verification checklist:** unit suite independently re-run at **878
+passed** (868 D4 baseline + 10 new: 5 for `consumer_group_health`, 3 for
+sealer fall-behind alerting, 2 for the dead-letter fix). `mypy src/
+--ignore-missing-imports`: a true `git stash -u` baseline (including
+untracked files, per this session's own established discipline) confirmed
+exactly **29 pre-existing errors**; with this item's changes applied, back
+to exactly 29 — zero new, after fixing two real new symptoms first
+(`postgres_dead_letter.py`'s `_from_row` typed its row parameter as
+`dict[str, object]`, the same pattern `postgres_sealed_batch.py` already
+carries as one of the 29 pre-existing errors — retyped as `dict[str, Any]`
+instead of copying the same bug into a new file; `ConsumerGroupHealth`'s
+`consumer_pending_counts` dict comprehension needed a real non-`None`
+decode helper for consumer names, a genuine Redis Streams invariant, not
+just a type-checker appeasement). `ruff check src/`: a true stashed
+baseline was 27; back to exactly 27 after fixing one real new
+import-order issue (`postgres_dead_letter` import misplaced alphabetically
+in `startup.py`) — zero new. `black --check src/`: the pre-existing
+16-file baseline unchanged; the 3 files this item's own new/changed code
+touched (`dead_letter.py`, `postgres_dead_letter.py`, `batch_sealing.py`)
+were reformatted clean.
+
+**Explicitly flagged, not yet done:** (1) `DeadLetterSink`/
+`PostgresDeadLetterSink` are not wired into `configure_dependencies()` —
+mirrors `SealedBatchRepository`'s own precedent (its Postgres table is
+created at startup via `create_tables()`, but nothing calls
+`configure_batch_sealing_service()` in `startup.py` either yet); a
+`get_dead_letter_sink()`/`configure_dead_letter_sink()` pair exists in
+`src/external/dependencies.py` as the hook point, and
+`PostgresDeadLetterSink.create_tables()` runs at real startup so the table
+exists whenever a future caller needs it — deliberately not repeating D3's
+own since-fixed gap of a missing `create_tables()` call. (2) No admin route
+or beat task calls `consumer_group_health()`/lists dead-lettered events for
+an operator yet — proving the mechanism, not wiring its consumption, is
+this item's own explicit scope (see CLAUDE.md's D5 out-of-scope list). (3)
+`stall_alert_after_seconds` has no default operational value chosen for
+production — an operator must pick one deliberately above whatever
+`SealingTriggerPolicy` threshold is configured for the same (org, source);
+no attempt was made to derive one automatically from the trigger policy
+object, since the ABC doesn't expose its own threshold for introspection
+today. (4) `SealerFallBehindDetectedError` is defined but never raised
+anywhere in this codebase yet (deliberately, see reasoning above) — it
+exists purely as a hook point for a future caller (e.g. an admin
+liveness/health-check route) that wants a hard-failure signal instead of
+the default page-and-continue behavior.
+
 ### D6 · L3 chain: collector → stream → seal → index → detect
 **Depends on:** D2, D3, D4, C4.
 

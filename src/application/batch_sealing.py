@@ -58,6 +58,30 @@ brief states):
   log), and ``EvidenceLossDetectedError`` raised so no caller can silently
   swallow it -- the concrete hook point a real paging integration (e.g. a
   log-based alert rule, or a future ``AlertSink`` ABC) would attach to.
+
+Sealer fall-behind alerting (roadmap M3/D5): ``_check_sealer_fall_behind``
+reuses the exact same idiom (``logger.critical`` + a dedicated
+``AuditEventType.SEALER_FALL_BEHIND_DETECTED`` + a dedicated
+``SealerFallBehindDetectedError`` exception class exists) for a distinctly
+*different* condition than the watermark gap above: "the oldest pending
+event has waited past ``stall_alert_after_seconds`` -- a threshold that must
+be set well above ``SealingTriggerPolicy``'s own trigger threshold, since a
+healthy sealer running on schedule would have already sealed this segment
+long before reaching it. Crossing it is real evidence the seal cycle itself
+isn't being invoked/isn't keeping up (no beat task calling
+``seal_pending()``, a stuck process, etc.), a liveness problem. Deliberately
+**not raised** from ``seal_pending()``'s own automatic path, unlike
+``EvidenceLossDetectedError`` above: the watermark gap describes data
+already, irreversibly trimmed by the time it's detected -- there is nothing
+left to do but refuse to silently continue. The fall-behind condition
+describes data that is still fully present and pending, and this very
+``seal_pending()`` call is about to attempt to seal exactly that data (per
+the normal ``trigger.should_seal`` check right after) -- raising here would
+abort the one call that could resolve the staleness, which is the wrong
+failure mode for a liveness signal. So this pages (log + audit event) and
+continues; see ``SealerFallBehindDetectedError``'s own docstring for the
+deliberate hook point left for a future caller that DOES want to raise on
+this (e.g. an admin liveness/health-check route).
 """
 
 from __future__ import annotations
@@ -79,6 +103,12 @@ from src.domain.audit import AuditEventType
 from src.domain.merkle import build_merkle_root
 from src.domain.sealed_batch import SealedBatch
 from src.exceptions import BatchSealFailedError, EvidenceLossDetectedError
+
+# SealerFallBehindDetectedError (src/exceptions.py) is deliberately NOT
+# raised anywhere in this module -- see _check_sealer_fall_behind's own
+# docstring for why. It exists as a hook point for a future caller (e.g. an
+# admin liveness/health-check route) that DOES want to raise on this
+# condition.
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +140,7 @@ class BatchSealingService:
         consumer_name: str = "sealer-1",
         poll_count: int = 1000,
         poll_block_ms: int = 1000,
+        stall_alert_after_seconds: float | None = None,
     ) -> None:
         self._stream = stream_adapter
         self._storage = storage
@@ -121,6 +152,12 @@ class BatchSealingService:
         self._consumer_name = consumer_name
         self._poll_count = poll_count
         self._poll_block_ms = poll_block_ms
+        # None (the default) disables the check entirely -- an operator
+        # opts in with a real value, deliberately set well above whatever
+        # SealingTriggerPolicy threshold is in use for the same (org,
+        # source) (see this class's module docstring for why the two
+        # thresholds are, and must stay, distinct).
+        self._stall_alert_after_seconds = stall_alert_after_seconds
 
     async def seal_pending(self, org_id: uuid.UUID, source_id: str) -> SealedBatch | None:
         """One full seal cycle for (org_id, source_id).
@@ -160,6 +197,7 @@ class BatchSealingService:
         oldest_age_seconds = (
             datetime.now(UTC).timestamp() * 1000 - _message_id_ms(messages[0].message_id)
         ) / 1000
+        await self._check_sealer_fall_behind(org_id, source_id, len(messages), oldest_age_seconds)
         if not self._trigger.should_seal(
             pending_event_count=len(messages), oldest_pending_age_seconds=oldest_age_seconds
         ):
@@ -325,6 +363,43 @@ class BatchSealingService:
                     "earliest_retained_message_id": earliest,
                 },
             )
+
+    async def _check_sealer_fall_behind(
+        self,
+        org_id: uuid.UUID,
+        source_id: str,
+        pending_event_count: int,
+        oldest_pending_age_seconds: float,
+    ) -> None:
+        """Page (log + audit event, do NOT raise) if the oldest pending event
+        has aged past ``stall_alert_after_seconds`` -- see module docstring
+        for why this is a liveness signal, not evidence loss, and therefore
+        does not abort the seal attempt this same cycle is about to make."""
+        if self._stall_alert_after_seconds is None:
+            return
+        if oldest_pending_age_seconds < self._stall_alert_after_seconds:
+            return
+
+        logger.critical(
+            "sealer_fall_behind_detected",
+            extra={
+                "org_id": str(org_id),
+                "source_id": source_id,
+                "pending_event_count": pending_event_count,
+                "oldest_pending_age_seconds": oldest_pending_age_seconds,
+                "stall_alert_after_seconds": self._stall_alert_after_seconds,
+            },
+        )
+        await self._audit_log.log(
+            AuditEventType.SEALER_FALL_BEHIND_DETECTED,
+            org_id=org_id,
+            details={
+                "source_id": source_id,
+                "pending_event_count": pending_event_count,
+                "oldest_pending_age_seconds": oldest_pending_age_seconds,
+                "stall_alert_after_seconds": self._stall_alert_after_seconds,
+            },
+        )
 
 
 def _build_manifest(

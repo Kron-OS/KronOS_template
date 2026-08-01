@@ -18,11 +18,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.adapter.opensearch.client import InMemoryOpenSearchClient
+from src.adapter.repository.dead_letter import InMemoryDeadLetterSink
 from src.adapter.repository.sealed_batch import InMemorySealedBatchRepository
 from src.application.audit_log import AuditLogService
 from src.application.stream_normalization import StreamNormalizationService
 from src.application.stream_source_registry import get_default_stream_normalizer_registry
 from src.application.timeline_ingest import TimelineIngestionService
+from src.domain.audit import AuditEventType
 from src.domain.sealed_batch import SealedBatch
 from src.domain.stream import StreamProvenance
 from src.exceptions import ParsingError, ValidationError
@@ -79,14 +81,24 @@ def _sealed_batch(org_id: uuid.UUID, source_id: str, event_count: int) -> Sealed
 
 
 class TestStreamNormalizationService:
-    def _service(self, storage: AsyncMock) -> tuple[StreamNormalizationService, InMemorySealedBatchRepository, InMemoryOpenSearchClient]:
+    def _service(
+        self, storage: AsyncMock
+    ) -> tuple[
+        StreamNormalizationService,
+        InMemorySealedBatchRepository,
+        InMemoryOpenSearchClient,
+        InMemoryDeadLetterSink,
+        InMemoryAuditLogRepository,
+    ]:
         repo = InMemorySealedBatchRepository()
         os_client = InMemoryOpenSearchClient()
-        audit = AuditLogService(InMemoryAuditLogRepository())
+        audit_repo = InMemoryAuditLogRepository()
+        audit = AuditLogService(audit_repo)
         ingestion = TimelineIngestionService(opensearch=os_client, audit_log=audit)
         registry = get_default_stream_normalizer_registry()
-        service = StreamNormalizationService(repo, storage, ingestion, registry)
-        return service, repo, os_client
+        dead_letters = InMemoryDeadLetterSink()
+        service = StreamNormalizationService(repo, storage, ingestion, registry, dead_letters, audit)
+        return service, repo, os_client, dead_letters, audit_repo
 
     @pytest.mark.asyncio
     async def test_normalizes_and_indexes_every_event_in_a_sealed_batch(self) -> None:
@@ -96,12 +108,14 @@ class TestStreamNormalizationService:
         storage = AsyncMock()
         storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
 
-        service, repo, os_client = self._service(storage)
+        service, repo, os_client, dead_letters, _audit_repo = self._service(storage)
         await repo.save(batch)
 
-        count = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+        result = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
 
-        assert count == 3
+        assert result.indexed_count == 3
+        assert result.dead_lettered_count == 0
+        assert await dead_letters.list_for_batch(org_id, batch.batch_id) == []
         storage.get_batch.assert_awaited_once_with(batch.worm_bucket, batch.worm_object_key)
         all_docs = {
             doc_id: body
@@ -123,7 +137,7 @@ class TestStreamNormalizationService:
         events = [_zeek_event(i) for i in range(2)]
         storage = AsyncMock()
         storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
-        service, repo, os_client = self._service(storage)
+        service, repo, os_client, _dl, _audit_repo = self._service(storage)
         await repo.save(batch)
 
         await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
@@ -138,7 +152,7 @@ class TestStreamNormalizationService:
     @pytest.mark.asyncio
     async def test_unknown_batch_raises_validation_error(self) -> None:
         storage = AsyncMock()
-        service, _repo, _os = self._service(storage)
+        service, _repo, _os, _dl, _audit_repo = self._service(storage)
 
         with pytest.raises(ValidationError):
             await service.normalize_batch(uuid.uuid4(), uuid.uuid4(), org_alias="acme")
@@ -148,7 +162,7 @@ class TestStreamNormalizationService:
         org_id = uuid.uuid4()
         batch = _sealed_batch(org_id, "unregistered-source", event_count=1)
         storage = AsyncMock()
-        service, repo, _os = self._service(storage)
+        service, repo, _os, _dl, _audit_repo = self._service(storage)
         await repo.save(batch)
 
         with pytest.raises(ParsingError, match="No stream normalizer registered"):
@@ -161,11 +175,73 @@ class TestStreamNormalizationService:
         batch = _sealed_batch(org_id, "zeek-conn-log", event_count=1)
         storage = AsyncMock()
         storage.get_batch.return_value = b"not json"
-        service, repo, _os = self._service(storage)
+        service, repo, _os, _dl, _audit_repo = self._service(storage)
         await repo.save(batch)
 
         with pytest.raises(ParsingError, match="malformed"):
             await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+
+    @pytest.mark.asyncio
+    async def test_one_malformed_event_is_dead_lettered_the_rest_still_indexed(self) -> None:
+        """The concrete D5 bug fix: a single corrupt event inside an
+        otherwise-good batch must not abort indexing of its siblings."""
+        org_id = uuid.uuid4()
+        batch = _sealed_batch(org_id, "zeek-conn-log", event_count=3)
+        good_0 = _zeek_event(0)
+        bad_1 = b"this is not valid JSON at all {{{"
+        good_2 = _zeek_event(2)
+        storage = AsyncMock()
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", [good_0, bad_1, good_2]
+        )
+        service, repo, os_client, dead_letters, audit_repo = self._service(storage)
+        await repo.save(batch)
+
+        result = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+
+        # Both good events indexed; the one bad event dead-lettered, not lost
+        # or silently conflated into either count.
+        assert result.indexed_count == 2
+        assert result.dead_lettered_count == 1
+        all_docs = {
+            doc_id: body
+            for index in os_client.all_indices()
+            for doc_id, body in os_client.get_documents(index).items()
+        }
+        assert len(all_docs) == 2
+
+        dead = await dead_letters.list_for_batch(org_id, batch.batch_id)
+        assert len(dead) == 1
+        assert dead[0].event_offset == 1
+        assert dead[0].payload == bad_1
+        assert dead[0].source_id == "zeek-conn-log"
+        assert dead[0].batch_id == batch.batch_id
+        assert dead[0].org_id == org_id
+        assert dead[0].error_type  # a real exception class name, not blank
+
+        dead_letter_audit = [
+            e for e in audit_repo._events if e.event_type == AuditEventType.STREAM_EVENT_DEAD_LETTERED
+        ]
+        assert len(dead_letter_audit) == 1
+        assert dead_letter_audit[0].details["event_offset"] == 1
+        assert dead_letter_audit[0].details["batch_id"] == str(batch.batch_id)
+
+    @pytest.mark.asyncio
+    async def test_all_events_malformed_indexes_zero_and_dead_letters_all(self) -> None:
+        org_id = uuid.uuid4()
+        batch = _sealed_batch(org_id, "zeek-conn-log", event_count=2)
+        storage = AsyncMock()
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", [b"bad-1", b"bad-2"]
+        )
+        service, repo, os_client, dead_letters, _audit_repo = self._service(storage)
+        await repo.save(batch)
+
+        result = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+
+        assert result.indexed_count == 0
+        assert result.dead_lettered_count == 2
+        assert len(await dead_letters.list_for_batch(org_id, batch.batch_id)) == 2
 
     @pytest.mark.asyncio
     async def test_produced_records_carry_stream_provenance(self) -> None:
@@ -176,7 +252,7 @@ class TestStreamNormalizationService:
         storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
 
         captured: list = []
-        service, repo, os_client = self._service(storage)
+        service, repo, os_client, _dl, _audit_repo = self._service(storage)
         await repo.save(batch)
 
         # Patch ingest_stream_records to inspect the actual TimelineRecord.kronos type

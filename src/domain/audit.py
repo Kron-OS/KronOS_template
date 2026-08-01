@@ -69,6 +69,16 @@ class AuditEventType(StrEnum):
     BATCH_SEALED = "batch.sealed"
     BATCH_SEAL_FAILED = "batch.seal_failed"
     BATCH_SEAL_WATERMARK_GAP_DETECTED = "batch.seal_watermark_gap_detected"
+    # Health signal, not evidence loss -- the pending segment is still fully
+    # present and about to be picked up this very cycle; see
+    # BatchSealingService._check_sealer_fall_behind's own docstring for why
+    # this does NOT raise, unlike the watermark-gap case above.
+    SEALER_FALL_BEHIND_DETECTED = "batch.sealer_fall_behind_detected"
+
+    # Stream normalization dead-letter (roadmap M3/D5) -- one event within a
+    # sealed batch that failed to normalize; see
+    # src/application/stream_normalization.py.
+    STREAM_EVENT_DEAD_LETTERED = "stream.event_dead_lettered"
 
     # Detection / triage (roadmap M2/C4) -- SA findings mirrored into
     # KronOS's own audited Detection entity; see src/domain/detection.py.

@@ -1,0 +1,56 @@
+==============================================================================
+PoC: D5 backpressure/DLQ/observability <-> real Redis/Postgres/MinIO/TSA/OpenSearch
+==============================================================================
+Real local TSA responder listening on http://127.0.0.1:20321
+Real Redis server version: 7.4.9 (pinned expectation: 7.x, matches poc/stream_ingest_redis/'s own 7.4.9 finding)
+
+==============================================================================
+SCENARIO (a): one malformed event in a batch of 5 -- DLQ, not data loss
+==============================================================================
+Produced 5 real events (1 deliberately malformed at offset 2) onto kronos:stream:7ab70fb9-2529-4d78-9a18-2b7644bfa5aa:zeek-conn-log
+[PASS] real batch sealed despite containing one malformed event (sealing hashes raw bytes -- it doesn't parse/validate content)
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch_security_disabled_skipping_tenant_role
+stream_event_dead_lettered
+normalize_batch() -> indexed_count=4 dead_lettered_count=1
+[PASS] exactly 4 good events indexed (not fewer -- the bad one did NOT abort the rest)
+[PASS] exactly 1 event dead-lettered (not silently dropped/conflated)
+[PASS] real Postgres dead_letter_events has exactly 1 row for this batch
+[PASS] real dead-lettered row is the correct offset (2)
+[PASS] real dead-lettered row's payload matches the original malformed bytes
+[PASS] real dead-lettered row has a real error_type (ParsingError)
+[PASS] real STREAM_EVENT_DEAD_LETTERED audit row persisted in Postgres
+[PASS] real OpenSearch _search returned 200 for scenario (a)
+[PASS] real OpenSearch has exactly 4 documents for THIS run's batch_id (not 5, not 0)
+[PASS] real indexed offsets are exactly [0,1,3,4] -- offset 2 (bad) correctly absent
+
+==============================================================================
+SCENARIO (b): real consumer-group lag/health via XPENDING + XINFO GROUPS
+==============================================================================
+[PASS] real consume() delivered exactly 3 of the 5 real events (unacked)
+consumer_group_health() -> pending_count=3 lag=2 consumers={'poc-consumer-1': 3}
+[PASS] real ConsumerGroupHealth.pending_count == 3 (delivered, unacked)
+[PASS] real ConsumerGroupHealth.lag == 2 (never delivered to any consumer)
+[PASS] real ConsumerGroupHealth.consumer_pending_counts attributes all 3 to poc-consumer-1
+raw XPENDING: {'pending': 3, 'min': b'1785568483136-0', 'max': b'1785568483139-0', 'consumers': [{'name': b'poc-consumer-1', 'pending': 3}]}
+raw XINFO GROUPS: [{'name': b'poc-lag-group', 'consumers': 1, 'pending': 3, 'last-delivered-id': b'1785568483139-0', 'entries-read': 3, 'lag': 2}]
+[PASS] raw XPENDING pending count matches adapter's own answer
+[PASS] raw XINFO GROUPS lag matches adapter's own answer
+[PASS] after acking everything, real pending_count == 0
+[PASS] after consuming everything, real lag == 0
+[PASS] consumer_group_health() for a nonexistent group returns lag=None, not 0
+
+==============================================================================
+SCENARIO (c): real sealer fall-behind alert -- pages, does not block sealing
+==============================================================================
+XADD'd one real event with an explicitly 1-hour-old id (1785564883157-1) onto a brand-new stream kronos:stream:74703b73-4dd4-4142-9d40-eb4304ae2da7:poc-fallbehind-source
+sealer_fall_behind_detected
+[PASS] the stale segment was still sealed in the SAME call the alert fired in (pages, does not block)
+[PASS] real SEALER_FALL_BEHIND_DETECTED audit row persisted in Postgres
+[PASS] real alert's oldest_pending_age_seconds reflects the real ~3600s age
+[PASS] real BATCH_SEALED audit row ALSO persisted -- the alert is additive, not a block
+
+==============================================================================
+PoC PASSED -- all 24 checks passed against real Redis/Postgres/MinIO/TSA/OpenSearch.
+==============================================================================

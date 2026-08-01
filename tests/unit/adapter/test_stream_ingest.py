@@ -17,6 +17,7 @@ import pytest
 from redis.exceptions import ResponseError
 
 from src.adapter.queue.stream_ingest import (
+    ConsumerGroupHealth,
     InMemoryStreamIngestAdapter,
     RedisStreamIngestAdapter,
     StreamMessage,
@@ -161,6 +162,82 @@ class TestRedisStreamIngestAdapterEarliestMessageId:
         assert await adapter.earliest_message_id(uuid.uuid4(), "zeek-conn") is None
 
 
+class TestRedisStreamIngestAdapterConsumerGroupHealth:
+    @pytest.mark.asyncio
+    async def test_returns_pending_and_lag_from_the_real_xpending_xinfo_shapes(self) -> None:
+        redis = AsyncMock()
+        org = uuid.uuid4()
+        redis.xpending.return_value = {
+            "pending": 3,
+            "min": b"1-0",
+            "max": b"1-2",
+            "consumers": [{"name": b"consumer-1", "pending": 3}],
+        }
+        redis.xinfo_groups.return_value = [
+            {
+                "name": "cg",
+                "consumers": 1,
+                "pending": 3,
+                "last-delivered-id": b"1-2",
+                "entries-read": 3,
+                "lag": 2,
+            }
+        ]
+        adapter = RedisStreamIngestAdapter(redis)
+
+        health = await adapter.consumer_group_health(org, "zeek-conn", "cg")
+
+        redis.xpending.assert_awaited_once_with(f"kronos:stream:{org}:zeek-conn", "cg")
+        redis.xinfo_groups.assert_awaited_once_with(f"kronos:stream:{org}:zeek-conn")
+        assert health == ConsumerGroupHealth(
+            pending_count=3,
+            min_pending_id="1-0",
+            max_pending_id="1-2",
+            consumer_pending_counts={"consumer-1": 3},
+            lag=2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_nogroup_error_returns_none_lag_health_not_raised(self) -> None:
+        redis = AsyncMock()
+        redis.xpending.side_effect = ResponseError(
+            "NOGROUP No such key 'kronos:stream:x:y' or consumer group 'cg'"
+        )
+        adapter = RedisStreamIngestAdapter(redis)
+
+        health = await adapter.consumer_group_health(uuid.uuid4(), "zeek-conn", "cg")
+
+        assert health == ConsumerGroupHealth(
+            pending_count=0, min_pending_id=None, max_pending_id=None,
+            consumer_pending_counts={}, lag=None,
+        )
+        redis.xinfo_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_nogroup_xpending_error_is_reraised(self) -> None:
+        redis = AsyncMock()
+        redis.xpending.side_effect = ResponseError("some other real error")
+        adapter = RedisStreamIngestAdapter(redis)
+
+        with pytest.raises(ResponseError):
+            await adapter.consumer_group_health(uuid.uuid4(), "zeek-conn", "cg")
+
+    @pytest.mark.asyncio
+    async def test_zero_pending_still_reports_real_lag(self) -> None:
+        redis = AsyncMock()
+        redis.xpending.return_value = {"pending": 0, "min": None, "max": None, "consumers": []}
+        redis.xinfo_groups.return_value = [
+            {"name": "cg", "consumers": 1, "pending": 0, "last-delivered-id": b"0-0",
+             "entries-read": 0, "lag": 5}
+        ]
+        adapter = RedisStreamIngestAdapter(redis)
+
+        health = await adapter.consumer_group_health(uuid.uuid4(), "zeek-conn", "cg")
+
+        assert health.pending_count == 0
+        assert health.lag == 5
+
+
 class TestInMemoryStreamIngestAdapterContract:
     """The in-memory double must satisfy the same ABC contract callers rely on."""
 
@@ -222,3 +299,29 @@ class TestInMemoryStreamIngestAdapterContract:
 
         earliest = await adapter.earliest_message_id(org, "src")
         assert earliest == "1-0"
+
+    @pytest.mark.asyncio
+    async def test_consumer_group_health_reports_lag_via_the_shared_cursor(self) -> None:
+        adapter = InMemoryStreamIngestAdapter()
+        org = uuid.uuid4()
+
+        # No group ever created for this (org, source) -> lag=None, not 0.
+        never = await adapter.consumer_group_health(org, "src", "cg")
+        assert never == ConsumerGroupHealth(
+            pending_count=0, min_pending_id=None, max_pending_id=None,
+            consumer_pending_counts={}, lag=None,
+        )
+
+        await adapter.produce(org, "src", b"one")
+        await adapter.produce(org, "src", b"two")
+        await adapter.produce(org, "src", b"three")
+        await adapter.ensure_consumer_group(org, "src", "cg", start="0")
+        await adapter.consume(org, "src", "cg", "c1", count=1)  # reads only "one"
+
+        health = await adapter.consumer_group_health(org, "src", "cg")
+
+        # This double never simulates a pending-entries-list (documented
+        # gap, matches ack()/reclaim_stale()) -- pending_count stays 0 --
+        # but lag is real: 2 entries ("two", "three") never delivered yet.
+        assert health.pending_count == 0
+        assert health.lag == 2
