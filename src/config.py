@@ -180,6 +180,18 @@ class Settings(BaseSettings):
         description="Absolute path to kronos-plaso-worker.py; None uses computed default",
     )
 
+    # Volatility3 heavy parser (roadmap E5) -- same reasoning as
+    # plaso_worker_path immediately above: path to kronos-volatility-worker.py
+    # inside the container that runs VolatilityLauncher (shares the same
+    # q.parse.plaso Celery consumer/container as Plaso -- see
+    # docker/Dockerfile.plaso-worker's own comment on why volatility3's real
+    # dependency footprint is light enough to share that image rather than
+    # needing its own).
+    volatility_worker_path: str | None = Field(
+        default=None,
+        description="Absolute path to kronos-volatility-worker.py; None uses computed default",
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

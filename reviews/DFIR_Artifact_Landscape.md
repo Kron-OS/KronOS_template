@@ -112,6 +112,40 @@ whether that's a *timeline* depends entirely on the plugin.
 >   real `PAGEDU64`/`PAGEDUMP` magic; LiME format has a real magic too —
 >   neither was verified against a real sample before this PoC was paused.
 
+> **Status (2026-08-02): BUILT and real-verified — `VolatilityModule` +
+> `VolatilityLauncher` land as roadmap E5.** See
+> `docs/NEXTGEN_SOC_ROADMAP.md`'s E5 entry for the full account;
+> highlights specific to this section's own open questions:
+> - **Detection question resolved, for real, against the real sample above:**
+>   `cridex.vmem`'s own first 4 KiB carry **no** `PAGEDUMP`/`PAGEDU64` and
+>   **no** LiME magic — just raw kernel bytes, no header at all. Extension-
+>   only detection (`.vmem`/`.mem`/`.raw`/`.dmp`/`.lime`) is therefore the
+>   honest, now-implemented answer (`src/application/validation.py`'s
+>   `_MEMORY_DUMP_EXTENSIONS`, `VolatilityModule.supports()`). The
+>   `PAGEDUMP`/`PAGEDU64`/LiME magics remain real per public documentation
+>   but still **not independently verified** — no real crash-dump/LiME
+>   sample was downloaded this pass either, only `cridex.vmem`.
+> - **`pstree` (the case this section names explicitly) has a real,
+>   reproduced wrinkle**: `windows.pstree`/`windows.pslist` (the
+>   `PsActiveProcessHead` linked-list walk) return zero rows against this
+>   exact sample + `volatility3==2.28.0` — confirmed via `-vvv`
+>   (no exception, just an empty walk) and cross-checked with `--pid`
+>   filters against PIDs `windows.psscan` confirms exist. Root cause not
+>   fully chased down (XP-era volatility3 support has known rough edges —
+>   see `poc/volatility_memory_module/README.md` for the GitHub-issue
+>   search) but conclusively shown to be a real tool/sample interaction, not
+>   a wrapper bug: reproduced with the bare `vol` CLI directly, zero KronOS
+>   code involved. `windows.psscan` (pool-tag scan, not a linked-list walk)
+>   recovers the real, full 17-process census from the same bytes — the
+>   shipped module runs `pstree` first and automatically falls back to
+>   `psscan` when the primary result is empty, emitting a `StructuredArtifact`
+>   for each (`volatility.pstree`, `volatility.psscan`).
+> - `linux-sample-1.bin.gz`/`win-xp-laptop-2005-06-25.img.gz`/
+>   `win-10_19041-2025_03.dmp.gz` (the official `volatility3-test-data`
+>   releases) were **not** downloaded this pass — `cridex.vmem` alone was
+>   judged sufficient for this item's own gate (Windows XP `pstree`/`psscan`
+>   coverage); real Linux `pslist`/`pstree` coverage remains a follow-up.
+
 **Timeline-shaped (map directly to `TimelineRecord`):**
 - `timeliner` — Volatility's own timeline plugin; aggregates timestamps
   (process create, thread, handle, registry) across other plugins into

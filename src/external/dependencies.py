@@ -453,6 +453,18 @@ def get_parser_registry() -> ParserRegistry:
             registry.register(PlasoParser())
         except ImportError:
             pass
+        # Must be registered LAST (roadmap E5): its own supports() is
+        # extension-only (.vmem/.mem/.raw/.dmp/.lime -- raw memory dumps have
+        # no verified magic bytes, see VolatilityModule's own module
+        # docstring), so every magic-byte-based parser above -- especially
+        # PlasoParser's real ext2/3/4/NTFS/FAT superblock-magic checks for
+        # unwrapped disk images -- must get first refusal on an ambiguous
+        # ".raw"/".dmp" file. No ImportError guard needed: this module has no
+        # hard Python import of volatility3 itself (only its own worker
+        # subprocess does, see src/external/sandbox/volatility_launcher.py).
+        from src.external.parsers.volatility import VolatilityModule  # noqa: PLC0415
+
+        registry.register(VolatilityModule())
         _parser_registry = registry
     return _parser_registry
 

@@ -677,6 +677,7 @@ services:
       TSA_URL: http://tsa:318/api/v1/timestamp
       KRONOS_LOG_FILE: /var/log/kronos/celery-plaso.log
       PLASO_WORKER_PATH: /app/plaso-worker/kronos-plaso-worker.py
+      VOLATILITY_WORKER_PATH: /app/volatility-worker/kronos-volatility-worker.py
     # See celery-worker's identical comment above — execute_parse's ingest
     # step calls OpenSearch directly (ensure_ism_policy, bulk_index) here too.
     depends_on:

@@ -92,6 +92,17 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset(
     {".json", ".jsonl", ".ndjson", ".csv", ".log", ".txt", ".xml"}
 )
 
+# Raw physical memory dumps (roadmap E5, VolatilityModule) -- unlike EWF/ustar,
+# these have no standard magic bytes at a fixed offset. Verified for real
+# against the classic `cridex.vmem` sample (poc/volatility_memory_module/
+# README.md): its first 2 KiB carry no Microsoft crash-dump magic
+# (PAGEDUMP/PAGEDU64) and no LiME magic -- just raw kernel page-table bytes
+# with no header at all. Extension is the only honest signal this format
+# family has; do not invent a fake signature. Same bypass shape as
+# _TEXT_EXTENSIONS (skips the magic-table check entirely, extension alone
+# decides), not a parallel mechanism.
+_MEMORY_DUMP_EXTENSIONS: frozenset[str] = frozenset({".vmem", ".mem", ".raw", ".dmp", ".lime"})
+
 _MAX_HEADER_BYTES = 16  # bytes read from the start of the file for magic detection
 
 
@@ -146,6 +157,12 @@ class MagicByteValidator(EvidenceValidator):
 
         # Text-based formats: no binary magic — accept on extension alone.
         if ext in _TEXT_EXTENSIONS:
+            return
+
+        # Raw memory dumps: no verified magic bytes exist (see
+        # _MEMORY_DUMP_EXTENSIONS's own comment) -- accept on extension alone,
+        # same as the text-format bypass above.
+        if ext in _MEMORY_DUMP_EXTENSIONS:
             return
 
         # Empty file is always invalid.

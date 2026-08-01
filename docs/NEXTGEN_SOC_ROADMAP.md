@@ -1310,6 +1310,94 @@ etc.). Real target already in hand: the 512 MiB `memory.dmp` inside
 `forensic2.E01`. Update `reviews/DFIR_Artifact_Landscape.md`.
 **Depends on:** E1.
 
+**STATUS (2026-08-02): DONE (pstree/psscan proven end-to-end; other plugins
+and full HTTP pipeline are the documented follow-on).** `VolatilityModule`
+(`src/external/parsers/volatility.py`) + `VolatilityLauncher`
+(`src/external/sandbox/volatility_launcher.py`) + a real worker script
+(`docker/volatility/kronos-volatility-worker.py`) mirror
+`PlasoParser`/`FirecrackerLauncher`'s exact subprocess/JSON-io shape
+(CLAUDE.md §G.3). Only `extract_artifacts()` is implemented — every plugin
+wrapped so far (`windows.pstree`, `windows.psscan`) is fundamentally
+non-timeline output; `parse()` is a documented no-op override (required
+because `ForensicParser.parse()` is abstract, unlike `extract_artifacts()`).
+
+Real, downloaded sample: the classic `cridex.vmem` (Windows XP,
+Cridex/Feodo, 512 MiB uncompressed, sha256 documented in
+`poc/volatility_memory_module/README.md`, never committed). Pinned
+`volatility3==2.28.0` (re-confirmed current on PyPI before pinning).
+
+**Real, reproduced finding (the open detection question this item was
+scoped to resolve):** raw physical memory dumps have no verified magic
+bytes — `cridex.vmem`'s own first 4 KiB carry no Microsoft crash-dump
+(`PAGEDUMP`/`PAGEDU64`) or LiME magic, just raw kernel bytes with no header
+at all. Extension-only detection
+(`.vmem`/`.mem`/`.raw`/`.dmp`/`.lime`) is the honest answer, wired into both
+`MagicByteValidator._MEMORY_DUMP_EXTENSIONS` and `VolatilityModule.supports()`.
+`VolatilityModule` is registered **last** in `get_parser_registry()` (after
+`PlasoParser`) so a real disk-image magic always wins the ambiguous
+`.raw`/`.dmp` case first — verified for real that `cridex.vmem`'s own bytes
+don't collide with any of `PlasoParser`'s fixed-offset magics.
+
+**Real, reproduced finding (unplanned, discovered during verification):**
+`windows.pstree`/`windows.pslist` (the kernel `PsActiveProcessHead`
+linked-list walk) return a real, reproducible **zero-row** result against
+`cridex.vmem` + `volatility3==2.28.0` — confirmed via `-vvv` (no exception,
+just an empty walk), `--pid`/`--physical` variants, and `windows.info`
+proving the kernel base/DTB/symbol table all resolve correctly. This is a
+genuine tool/sample-era interaction (XP-era volatility3 support is known
+shaky — see `poc/volatility_memory_module/README.md` for the GitHub-issue
+search), not a bug in this repo's wrapping: proven by running the bare `vol`
+CLI directly, zero KronOS code involved. `windows.psscan` (an independent
+pool-tag scanner) recovers the real, full, well-documented 17-process census
+from the same file. `kronos-volatility-worker.py` therefore always attempts
+the configured primary plugin and automatically re-runs a configured
+fallback plugin when the primary's own result is empty, reporting both;
+`VolatilityModule` yields one `StructuredArtifact` per plugin that ran —
+`kind="volatility.pstree"` (real, honestly empty for this sample) plus
+`kind="volatility.psscan"` (real, 17 rows) when the fallback fires.
+
+**Container/queue decision, made from real evidence, not assumed:**
+`volatility3`'s base install is `pefile` + a ~1.4 MB wheel (verified via
+`pip download`/wheel-metadata inspection) — light enough to add to
+`docker/Dockerfile.plaso-worker`'s existing builder stage rather than
+needing its own Dockerfile variant the way Plaso's much heavier dependency
+set does. Built for real as `kronos-poc-volatility-worker:test`; verified
+*inside* the built image (not assumed) that `vol --help` reports
+`Volatility 3 Framework 2.28.0` and that
+`/app/volatility-worker/kronos-volatility-worker.py` exists at the exact
+path `VOLATILITY_WORKER_PATH` points to — explicitly checked to avoid
+repeating roadmap E4's own left-over gap (that Dockerfile still never
+`COPY`s `kronos-yarax-worker.py` in; still not fixed here, flagged again in
+the Dockerfile's own comment). Also ran the real worker script *inside* the
+built container against the real `cridex.vmem` (bind-mounted in) — same
+pstree-empty/psscan-17-rows result as the host-venv run, proving the
+container's own installed `vol` binary and copied worker script both work,
+not just the Dockerfile syntax. No new Celery queue: `ParserType.HEAVY`
+already shares `q.parse.plaso` across `ZipArchiveParser`/`TarArchiveParser`/
+`PlasoParser` (a pre-existing, if confusingly-named, precedent) —
+`VolatilityModule` reuses it rather than inventing a fourth heavy queue with
+no other current member.
+
+Unit tests: `tests/unit/test_volatility_launcher.py` (12 tests, mirrors
+`test_yara_x_runner.py`'s fake-worker-script idiom; one real-sample test
+gated on `KRONOS_CRIDEX_VMEM_PATH`, skip-not-fail when unset) and
+`tests/unit/parsers/test_volatility.py` (20 tests: detection, kind-mapping,
+artifact construction, the pstree->psscan fallback, graceful degradation on
+`VolatilityScanError`, and the 8 MiB content-cap chunking path). Full real
+run (bare CLI -> real sandboxed launcher -> real `VolatilityModule`) captured
+in `poc/volatility_memory_module/output.txt`.
+
+**Honest gaps, explicitly out of scope this pass (see PoC README's own
+"Gaps" section):** the full HTTP upload → validate → parse → Postgres
+pipeline was not driven end-to-end (stops at real, in-memory
+`StructuredArtifact` construction); `.dmp`/`.lime` magic bytes were not
+verified against real samples of those specific formats (only `.vmem` was
+downloaded); timeline-shaped plugins (`timeliner`, `pslist` CreateTime,
+`windows.netscan`) remain unwired; only `windows.pstree`/`windows.psscan`
+were exercised (`malfind`/`filescan`/`dlllist`/etc. are natural follow-ons);
+only a Windows XP sample was used (Linux/macOS memory samples are out of
+scope per this item's own brief).
+
 ---
 
 ## M5 — Enrichment & correlation

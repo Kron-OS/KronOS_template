@@ -5,6 +5,18 @@
 # path. This is still the dev-simplification (plain subprocess, not real
 # Firecracker/gVisor microVM isolation) documented in
 # src/external/sandbox/firecracker.py's own docstring — out of scope here.
+#
+# ALSO carries volatility3==2.28.0 (roadmap E5, VolatilityModule/
+# VolatilityLauncher): both HEAVY parsers share the q.parse.plaso queue (see
+# celery_app.py -- ParserType.HEAVY always routes there regardless of which
+# parser produced it, already true for ZipArchiveParser/TarArchiveParser
+# before this), so whichever container consumes that queue needs every
+# HEAVY parser's real external tool on PATH. volatility3's own base install
+# is a ~1.4 MB wheel plus `pefile` (verified: `pip install volatility3==2.28.0`
+# pulls in nothing else for the plugins this module uses -- see
+# poc/volatility_memory_module/README.md) -- light enough to share this image
+# rather than needing its own Dockerfile variant the way Plaso's much heavier
+# dependency set does.
 FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 USER root
@@ -17,7 +29,8 @@ COPY kronos_attest/ ./kronos_attest/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir . \
-    && /opt/venv/bin/pip install --no-cache-dir plaso==20260512
+    && /opt/venv/bin/pip install --no-cache-dir plaso==20260512 \
+    && /opt/venv/bin/pip install --no-cache-dir volatility3==2.28.0
 
 RUN mkdir -p /var/log/kronos && touch /var/log/kronos/.keep
 
@@ -30,6 +43,15 @@ COPY --chown=nonroot:nonroot src/ ./src/
 COPY --chown=nonroot:nonroot kronos_attest/ ./kronos_attest/
 COPY --chown=nonroot:nonroot pyproject.toml .
 COPY --chown=nonroot:nonroot docker/plaso/kronos-plaso-worker.py ./plaso-worker/kronos-plaso-worker.py
+# Real, reproduced gap left by roadmap E4 (never fixed): this Dockerfile never
+# COPYs docker/yara/kronos-yarax-worker.py in, so YaraXSandboxRunner's default
+# worker_path resolves to a path that doesn't exist inside this specific
+# image (silently disabled, not crashing -- see get_parser_registry's
+# _yara_runner wiring). Not fixed here (out of scope for this item, and
+# fixing it deserves its own real container-level PoC re-run per CLAUDE.md
+# §F rather than a drive-by one-line change) -- flagged again so the next
+# pass doesn't have to rediscover it.
+COPY --chown=nonroot:nonroot docker/volatility/kronos-volatility-worker.py ./volatility-worker/kronos-volatility-worker.py
 
 COPY --from=builder --chown=nonroot:nonroot /var/log/kronos /var/log/kronos
 
@@ -38,6 +60,7 @@ ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PLASO_WORKER_PATH=/app/plaso-worker/kronos-plaso-worker.py
+ENV VOLATILITY_WORKER_PATH=/app/volatility-worker/kronos-volatility-worker.py
 
 USER nonroot
 

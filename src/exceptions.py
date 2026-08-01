@@ -108,6 +108,17 @@ class YaraRuleCompilationError(YaraScanError):
     """
 
 
+class VolatilityScanError(KronOSException):
+    """Raised when the sandboxed volatility3 worker subprocess fails or times out.
+
+    Covers: the ``vol`` CLI console script missing from the worker runtime,
+    a non-zero exit, malformed/non-JSON stdout, and a real wall-clock
+    timeout. No compilation-style split like ``YaraRuleCompilationError`` --
+    a volatility3 plugin invocation has no attacker-influenced "rule text"
+    step, just an evidence file path and a plugin name we control.
+    """
+
+
 class SealerFallBehindDetectedError(KronOSException):
     """Signals that a stream's oldest pending (unsealed) event has aged past
     ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold

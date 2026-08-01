@@ -1,0 +1,148 @@
+
+==============================================================================
+STEP 1/5: Real sample present + sha256
+==============================================================================
+path:   /home/reca/scratch/kronos-poc-volatility/cridex.vmem
+size:   536870912 bytes
+sha256: 02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d
+
+==============================================================================
+STEP 2/5: Real magic-byte investigation
+==============================================================================
+first 16 bytes:              b'S\xff\x00\xf0S\xff\x00\xf0\xc3\xe2\x00\xf0S\xff\x00\xf0'
+PAGEDUMP (MS crash dump) in first 4096 bytes: False
+PAGEDU64 (MS crash dump) in first 4096 bytes: False
+LiME magic bytes 'LiME' in first 4096 bytes:  False
+Conclusion: no verified magic bytes for this raw .vmem sample -- extension-only detection (.vmem/.mem/.raw/.dmp/.lime) is the honest answer, wired into MagicByteValidator._MEMORY_DUMP_EXTENSIONS and VolatilityModule.supports().
+
+Collision check against PlasoParser's real fixed-offset magics:
+  offset3-11 (NTFS): b'\xf0S\xff\x00\xf0\xc3\xe2\x00'
+  offset54-62 (FAT16/12): b'\x00\xf0W\xef\x00\xf0P\xf5'
+  offset82-90 (FAT32): b'\x00\xf0Y\xf8\x00\xf0e"'
+  offset1080-1082 (ext superblock): b'\x00\x00'
+  offset0-4 (REGF): b'S\xff\x00\xf0'
+  offset0-15 (SQLite): b'S\xff\x00\xf0S\xff\x00\xf0\xc3\xe2\x00\xf0S\xff\x00'
+  offset0-9 (EWF): b'S\xff\x00\xf0S\xff\x00\xf0\xc3'
+
+==============================================================================
+STEP 3/5: Ground truth -- bare `vol` CLI (no KronOS code)
+==============================================================================
+
+--- vol -q -r json -f /home/reca/scratch/kronos-poc-volatility/cridex.vmem windows.info ---
+returncode: 0
+stdout (2191 bytes): [
+  {
+    "Value": "0x804d7000",
+    "Variable": "Kernel Base",
+    "__children": []
+  },
+  {
+    "Value": "0x39000",
+    "Variable": "DTB",
+    "__children": []
+  },
+  {
+    "Value": "file:///home/reca/scratch/kronos-poc-volatility/venv/lib/python3.14/site-packages/volatility3/symbols/windows/ntkrnlpa.pdb/30B5FB31AE7E4ACAABA750AA241FF331-1.json.xz",
+    "Variable": "Symbols",
+    "__children": []
+  },
+  {
+    "Value": "False",
+    "Variable": "Is64Bit",
+    "__children": []
+  },
+  {
+    "Value": "False",
+    "Variable": "IsPAE",
+    "__children": []
+  },
+  {
+    "Value": "0 WindowsIntel",
+   
+stderr (first 300 chars): Volatility 3 Framework 2.28.0
+WARNING  volatility3.framework.layers.vmware: No metadata file found alongside VMEM file. A VMSS or VMSN file may be required to correctly process a VMEM file. These should be placed in the same directory with the same file name, e.g. cridex.vmem and cridex.vmss.
+
+--- vol -q -r json -f /home/reca/scratch/kronos-poc-volatility/cridex.vmem windows.pstree ---
+returncode: 0
+stdout (2 bytes): []
+stderr (first 300 chars): Volatility 3 Framework 2.28.0
+WARNING  volatility3.framework.layers.vmware: No metadata file found alongside VMEM file. A VMSS or VMSN file may be required to correctly process a VMEM file. These should be placed in the same directory with the same file name, e.g. cridex.vmem and cridex.vmss.
+
+--- vol -q -r json -f /home/reca/scratch/kronos-poc-volatility/cridex.vmem windows.psscan ---
+returncode: 0
+stdout (5219 bytes): [
+  {
+    "CreateTime": "2012-07-22T02:42:33+00:00",
+    "ExitTime": null,
+    "File output": "Disabled",
+    "Handles": null,
+    "ImageFileName": "svchost.exe",
+    "Offset(V)": 33725112,
+    "PID": 908,
+    "PPID": 652,
+    "SessionId": null,
+    "Threads": 9,
+    "Wow64": false,
+    "__children": []
+  },
+  {
+    "CreateTime": "2012-07-22T02:42:32+00:00",
+    "ExitTime": null,
+    "File output": "Disabled",
+    "Handles": null,
+    "ImageFileName": "lsass.exe",
+    "Offset(V)": 33727416,
+    "PID": 664,
+    "PPID": 608,
+    "SessionId": null,
+    "Threads": 24,
+    "Wow64": false,
+    "__ch
+stderr (first 300 chars): Volatility 3 Framework 2.28.0
+WARNING  volatility3.framework.layers.vmware: No metadata file found alongside VMEM file. A VMSS or VMSN file may be required to correctly process a VMEM file. These should be placed in the same directory with the same file name, e.g. cridex.vmem and cridex.vmss.
+
+==============================================================================
+STEP 4/5: Real sandboxed VolatilityLauncher
+==============================================================================
+primary plugin:    windows.pstree
+primary rows:      0
+used_fallback:     True
+fallback plugin:   windows.psscan
+fallback rows:     17
+
+Real process rows recovered via windows.psscan fallback:
+  PID=908    PPID=652    svchost.exe
+  PID=664    PPID=608    lsass.exe
+  PID=652    PPID=608    services.exe
+  PID=1640   PPID=1484   reader_sl.exe
+  PID=1512   PPID=652    spoolsv.exe
+  PID=1588   PPID=1004   wuauclt.exe
+  PID=788    PPID=652    alg.exe
+  PID=1484   PPID=1464   explorer.exe
+  PID=1056   PPID=652    svchost.exe
+  PID=1136   PPID=1004   wuauclt.exe
+  PID=1220   PPID=652    svchost.exe
+  PID=608    PPID=368    winlogon.exe
+  PID=584    PPID=368    csrss.exe
+  PID=368    PPID=4      smss.exe
+  PID=1004   PPID=652    svchost.exe
+  PID=824    PPID=652    svchost.exe
+  PID=4      PPID=0      System
+
+==============================================================================
+STEP 5/5: Real VolatilityModule.extract_artifacts()
+==============================================================================
+StructuredArtifacts produced: 2
+
+  kind='volatility.pstree' plugin='windows.pstree' row_count=0 record_index=0
+  kronos.evidence_id=f1a0e7d3-57cd-4300-a2e0-5b3402744d33
+  kronos.parser=volatility3 parser_version=2.28.0
+
+  kind='volatility.psscan' plugin='windows.psscan' row_count=17 record_index=1
+  kronos.evidence_id=f1a0e7d3-57cd-4300-a2e0-5b3402744d33
+  kronos.parser=volatility3 parser_version=2.28.0
+  first row: {'CreateTime': '2012-07-22T02:42:33+00:00', 'ExitTime': None, 'File output': 'Disabled', 'Handles': None, 'ImageFileName': 'svchost.exe', 'Offset(V)': 33725112, 'PID': 908, 'PPID': 652, 'SessionId': None, 'Threads': 9, 'Wow64': False, '__children': []}
+
+==============================================================================
+PoC complete
+==============================================================================
