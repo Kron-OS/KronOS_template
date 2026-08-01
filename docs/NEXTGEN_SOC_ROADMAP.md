@@ -674,6 +674,75 @@ itself would close this, flagged as follow-up.
 surface. Extensible per-source: new source = new registered normalizer.
 **Depends on:** D1, A2, B2.
 
+**STATUS (2026-08-01): DONE.** Real input is a **sealed batch** (D3), never
+the raw pre-seal stream: `StreamProvenance.batch_id` is a required field, so
+a `TimelineRecord` tagged with stream provenance can't exist until that
+event's batch is actually sealed. `src/application/stream_normalization.py`
+(`StreamNormalizationService`) fetches an already-sealed batch's WORM
+manifest, decodes each event, runs it through the `source_id`-registered
+`StreamSourceNormalizer` (`src/application/stream_source_registry.py`,
+mirrors `ECSFieldMappingRegistry`'s registration idiom), and bulk-indexes
+via a new `TimelineIngestionService.ingest_stream_records()` sibling method
+that reuses the exact same bulk_index/ISM/partial-failure-checking `_flush`
+as the file-ingest path (A4's bug fix included, not reimplemented).
+`TimelineRecord.kronos` widened to the `Provenance =
+EvidenceProvenance | StreamProvenance` discriminated union (moved to
+`src/domain/timeline.py`; `ProvenanceBase` extracted to a new dependency-free
+leaf module `src/domain/provenance.py` to avoid a genuine circular import
+between `timeline.py` and `stream.py`). One real concrete normalizer,
+`ZeekConnLogNormalizer` (Zeek's default JSON `conn.log` format) — field
+mapping independently re-verified against Zeek's own source
+(`raw.githubusercontent.com/zeek/zeek/master/scripts/base/protocols/conn/main.zeek`'s
+`Conn::Info` record) both by the implementer and again by this orchestrator
+before trusting it; correctly converts `duration` from Zeek's seconds
+(`interval`, JSON-serialized as a float) to ECS's nanoseconds (`event.duration`,
+`long`) — a real unit conversion, not a bare rename.
+
+PoC: `poc/stream_normalization/` — 15/15 checks passed against the real
+already-running dev stack (real Redis → real `BatchSealingService` (D3) →
+real Postgres/MinIO/openssl-ts TSA → real `StreamNormalizationService` →
+real `OpenSearchClient` → **an independent real `POST <index>/_search`**,
+a separate HTTP round trip from the service's own return value, confirming
+correct ECS fields (`@timestamp`, `source.ip`, `network.transport`,
+`network.protocol`, correctly-unit-converted `event.duration`) and correct
+`kronos.*` `StreamProvenance` fields (`source_id`, `batch_id` matching the
+real sealed batch, `event_offset` 0..3, `case_id` correctly absent).
+
+This item was dispatched to a subagent that died on a spend-limit
+interruption after building the `src/` implementation and its own 45(ish)
+unit tests, but **before** running the mandatory verification checklist
+(mypy/black/ruff) or building the real PoC — the orchestrator (this
+session) picked up from real on-disk state per the roadmap's own §6
+pause/resume protocol, found the `src/` design sound on read-through, and
+completed verification directly:
+- **mypy found 18 real new errors** the dead subagent never checked for
+  (confirmed via a true `git stash -u` baseline of 29 pre-existing errors
+  vs. 47 with D4 applied). Fixed for real: `isinstance()` type-narrowing
+  assertions in `timeline_ingest.py`'s `_fallback_id`/`_fallback_stream_id`
+  and `archive.py`'s `_stamp_source_path` (each accesses one specific
+  provenance subtype's fields on what is now a union type — a genuine
+  runtime guard, not just a mypy appeasement), a `dict[str, Any]`
+  annotation fix, and adding `stream_normalization.py` to the
+  already-established `pyproject.toml` mypy override for pydantic
+  `populate_by_name` construction (same symptom already documented there
+  for `src.external.parsers.*`). Back to exactly the 29-error baseline
+  after fixing, zero new errors.
+- `black` reformatted one file; `ruff` had zero new issues.
+- Independently re-ran the full unit suite (never trusting the subagent's
+  self-report): **868 passed** (850 baseline + 18 new — `stream_source_registry.py`
+  and `stream_normalization.py` unit tests, which the dead subagent hadn't
+  reached yet, written and verified by the orchestrator).
+
+**Explicitly flagged, not yet done:** (1) only one source normalizer exists
+(Zeek conn.log) — the roadmap's own stated gate is architectural
+extensibility, not source coverage, so this is not a gap; (2)
+`StreamSourceNormalizer.source_id` keys on an exact string match, not a
+per-host-collector prefix (D2's own multi-collector example) — flagged as
+follow-up in the normalizer ABC's own docstring, not needed for this one
+source; (3) nothing schedules `normalize_batch()` automatically yet — no
+beat task, no trigger-on-seal wiring, mirroring D3's own explicit
+scheduling follow-up — natural fit for D5/D6.
+
 ### D5 · Backpressure, DLQ, observability — L1
 **Objective.** Lag/queue-depth/trim metrics, dead-letter for unparseable events,
 alerting on sealer fall-behind. **Depends on:** D1.

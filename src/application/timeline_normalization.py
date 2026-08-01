@@ -6,7 +6,8 @@ import re
 from datetime import datetime
 from typing import Any
 
-from src.domain.timeline import TimelineRecord
+from src.domain.stream import StreamProvenance
+from src.domain.timeline import EvidenceProvenance, Provenance, TimelineRecord
 
 
 def build_index_name(org_alias: str, case_id: str, timestamp: datetime) -> str:
@@ -70,23 +71,14 @@ class ECSNormalizer:
                 "pid": record.process_pid,
                 "name": record.process_name,
             },
-            "kronos": {
-                "evidence_id": str(record.kronos.evidence_id),
-                "case_id": str(record.kronos.case_id),
-                "org_id": str(record.kronos.org_id),
-                "org_alias": record.kronos.org_alias,
-                "sha256": record.kronos.sha256,
-                "parser": record.kronos.parser,
-                "parser_version": record.kronos.parser_version,
-                "record_index": record.kronos.record_index,
-                "ingest_timestamp": record.kronos.ingest_timestamp.isoformat(),
-                "source_path": record.kronos.source_path,
-                "container_sha256": record.kronos.container_sha256,
-            },
+            "kronos": _provenance_document(record.kronos),
         }
         if record.message is not None:
             raw["message"] = record.message
-        if record.kronos.source_path is not None:
+        # source_path only exists on EvidenceProvenance (a stream event has
+        # no container/source-path concept -- see StreamProvenance's own
+        # docstring, src/domain/stream.py).
+        if isinstance(record.kronos, EvidenceProvenance) and record.kronos.source_path is not None:
             raw["file"] = {"path": record.kronos.source_path}
 
         doc = _clean_none(raw)
@@ -94,6 +86,49 @@ class ECSNormalizer:
         for key, value in record.extra.items():
             _set_dotted(doc, key, value)
         return doc
+
+
+def _provenance_document(kronos: Provenance) -> dict[str, Any]:
+    """Build the kronos.* sub-document for either provenance shape (roadmap D4).
+
+    ``EvidenceProvenance`` and ``StreamProvenance`` share only
+    ``ProvenanceBase``'s fields (org_id/org_alias/parser/parser_version/
+    ingest_timestamp) -- the rest is genuinely different per kind (an
+    evidence-file record has no source_id/batch_id/event_offset; a stream
+    record has no evidence_id/sha256/record_index), so this branches once,
+    explicitly, rather than trying to force one shared dict shape.
+    """
+    common: dict[str, Any] = {
+        "org_id": str(kronos.org_id),
+        "org_alias": kronos.org_alias,
+        "parser": kronos.parser,
+        "parser_version": kronos.parser_version,
+        "ingest_timestamp": kronos.ingest_timestamp.isoformat(),
+    }
+    if isinstance(kronos, EvidenceProvenance):
+        common.update(
+            {
+                "evidence_id": str(kronos.evidence_id),
+                "case_id": str(kronos.case_id),
+                "sha256": kronos.sha256,
+                "record_index": kronos.record_index,
+                "source_path": kronos.source_path,
+                "container_sha256": kronos.container_sha256,
+            }
+        )
+    else:
+        assert isinstance(
+            kronos, StreamProvenance
+        )  # noqa: S101 -- exhaustiveness, not a runtime guard
+        common.update(
+            {
+                "source_id": kronos.source_id,
+                "batch_id": str(kronos.batch_id),
+                "event_offset": kronos.event_offset,
+                "case_id": str(kronos.case_id) if kronos.case_id is not None else None,
+            }
+        )
+    return common
 
 
 def _clean_none(obj: dict[str, Any]) -> dict[str, Any]:

@@ -6,49 +6,31 @@
   case-scoped evidence file. This is the shape every one of today's six
   parsers (``src/external/parsers/*``) already produces.
 - ``StreamProvenance`` (``src/domain/stream.py``) -- a record ingested from
-  continuous telemetry (a future syslog/EDR/Zeek collector, roadmap M3),
-  which has no owning evidence file, no per-file sha256, and no case at
-  ingest time (a case is attached later, during triage).
+  continuous telemetry (a Zeek/EDR/syslog collector, roadmap M3), which has
+  no owning evidence file, no per-file sha256, and no case at ingest time (a
+  case is attached later, during triage).
 
-Both share ``ProvenanceBase``. ``TimelineRecord.kronos`` is intentionally
-**not yet** widened to the ``EvidenceProvenance | StreamProvenance`` union in
-this pass -- see the follow-up note on ``KronosProvenance`` below for why,
-and ``src/domain/stream.py`` for the discriminated-union type that is ready
-for that follow-up to adopt.
+Both share ``ProvenanceBase`` (``src/domain/provenance.py`` -- moved to its
+own leaf module in this pass precisely so this widening is possible without
+a circular import; see that module's docstring). ``TimelineRecord.kronos``
+is now widened to the ``Provenance = EvidenceProvenance | StreamProvenance``
+discriminated union (roadmap D4 -- the first real producer of a
+``StreamProvenance``, ``StreamNormalizationService``, now exists). Every
+existing construction site (`TimelineRecord(kronos=EvidenceProvenance(...))`
+or the `KronosProvenance` alias) keeps working unmodified: the union is
+additive, and `EvidenceProvenance.kind` already defaults to `"evidence"`.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-
-class ProvenanceBase(BaseModel):
-    """Fields common to every kronos.* provenance block, forensic or streamed.
-
-    ``org_id`` is always computed by the server -- from the authenticated
-    ``TenantContext`` for evidence uploads, or from a verified collector
-    client certificate for streams (roadmap D2) -- and is **never** accepted
-    verbatim from a parser's or collector's own output/payload. This is
-    invariant §1.3 in ``docs/NEXTGEN_SOC_ROADMAP.md``: a stream source lying
-    about its own ``org_id`` in its payload must never be able to write into
-    another tenant's data. Nothing in this domain layer enforces that by
-    itself (it has no notion of "the request" or "the caller") -- the
-    enforcement point is the application-layer service that constructs the
-    provenance object, which is why this is documented here rather than
-    coded as a validator.
-    """
-
-    model_config = {"frozen": True}
-
-    org_id: uuid.UUID
-    org_alias: str = Field(default="", description="Human-readable org alias for querying")
-    parser: str = Field(description="Parser/collector name that produced this record")
-    parser_version: str
-    ingest_timestamp: datetime = Field(description="UTC time the record was written to OpenSearch")
+from src.domain.provenance import ProvenanceBase
+from src.domain.stream import StreamProvenance
 
 
 class EvidenceProvenance(ProvenanceBase):
@@ -132,6 +114,20 @@ class ECSBase(BaseModel):
     model_config = {"frozen": True, "populate_by_name": True}
 
 
+# Discriminated union of every kronos.* provenance shape (roadmap D4).
+# Defined here, before TimelineRecord, rather than in src/domain/stream.py
+# where StreamProvenance itself lives: stream.py no longer imports anything
+# from this module (it now depends only on the shared leaf
+# src/domain/provenance.py) precisely so this module can import
+# StreamProvenance from stream.py without a circular import. Must be
+# defined before TimelineRecord's class body below -- pydantic resolves
+# `from __future__ import annotations` string annotations against this
+# module's globals at class-creation time, not lazily on first use, so a
+# forward reference to a name defined later in the same file would leave
+# the model "incomplete" until a manual model_rebuild() call.
+Provenance = Annotated[EvidenceProvenance | StreamProvenance, Field(discriminator="kind")]
+
+
 class TimelineRecord(BaseModel):
     """A single parsed forensic event, normalized to ECS + kronos.* provenance."""
 
@@ -161,13 +157,8 @@ class TimelineRecord(BaseModel):
 
     # kronos.* provenance block — mandatory for every record.
     #
-    # Still narrowed to EvidenceProvenance, not widened to the
-    # EvidenceProvenance | StreamProvenance union (src/domain/stream.py),
-    # in this pass. Every current producer of a TimelineRecord (the six
-    # parsers under src/external/parsers/, src/external/sandbox/
-    # firecracker.py) is evidence-file-based, so this is not a regression
-    # -- it's the scoped follow-up documented in this task's report:
-    # widening this annotation is only safe once something in the
-    # pipeline actually constructs a StreamProvenance (roadmap D1/D2/D4),
-    # which does not exist yet.
-    kronos: EvidenceProvenance
+    # Widened (roadmap D4) to the discriminated Provenance union defined at
+    # the bottom of this module: EvidenceProvenance for the six file-based
+    # parsers (unchanged), StreamProvenance for StreamNormalizationService's
+    # continuous-telemetry records (src/application/stream_normalization.py).
+    kronos: Provenance

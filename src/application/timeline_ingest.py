@@ -12,9 +12,14 @@ from src.adapter.opensearch.client import AbstractTimelineIndex
 from src.adapter.opensearch.ism_manager import IsmLifecycleManager
 from src.application.audit_log import AuditLogService
 from src.application.ism_tiering import IsmTierResolver
-from src.application.timeline_normalization import ECSNormalizer, build_index_name
+from src.application.timeline_normalization import (
+    ECSNormalizer,
+    build_index_name,
+    build_stream_index_name,
+)
 from src.domain.audit import AuditEventType
-from src.domain.timeline import TimelineRecord
+from src.domain.stream import StreamProvenance
+from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import StorageError
 
@@ -167,6 +172,93 @@ class TimelineIngestionService:
         )
         return total
 
+    async def ingest_stream_records(
+        self,
+        records: AsyncIterable[TimelineRecord],
+        *,
+        org_id: uuid.UUID,
+        org_alias: str,
+        source_id: str,
+        batch_id: uuid.UUID,
+    ) -> int:
+        """Ingest StreamProvenance-tagged TimelineRecords for one sealed batch.
+
+        Sibling to ``ingest_records`` (roadmap D4) for continuous-telemetry
+        records: same template/ISM/tenant-role bootstrap and the exact same
+        ``_flush`` (bulk_index + ISM ensure_managed, including A4's
+        partial-failure check inside ``AbstractTimelineIndex.bulk_index``)
+        reused unchanged -- this method only differs in *which* index a
+        record targets (``build_stream_index_name``, keyed on ``source_id``,
+        not ``build_index_name``'s ``case_id``) and how it audits, since a
+        stream event has no owning ``evidence_id`` (see ``StreamProvenance``'s
+        own docstring, ``src/domain/stream.py``). Called by
+        ``StreamNormalizationService`` (``src/application/
+        stream_normalization.py``), one call per sealed batch.
+        """
+        batch: list[tuple[str, str, dict[str, Any]]] = []
+        total = 0
+        last_flush = time.monotonic()
+        details_base: dict[str, Any] = {"batch_id": str(batch_id), "source_id": source_id}
+
+        try:
+            if not self._template_applied:
+                await self._opensearch.ensure_index_template()
+                self._template_applied = True
+
+            if not self._ism_applied:
+                await self._opensearch.ensure_ism_policy()
+                self._ism_applied = True
+
+            if not self._tenant_role_applied:
+                if self._security_enabled:
+                    await self._opensearch.ensure_generic_tenant_role()
+                elif not self._security_warned:
+                    logger.warning("opensearch_security_disabled_skipping_tenant_role")
+                    self._security_warned = True
+                self._tenant_role_applied = True
+
+            await self._audit.log(
+                AuditEventType.INGEST_STARTED,
+                org_id=org_id,
+                details=dict(details_base),
+            )
+
+            async for record in records:
+                index = build_stream_index_name(org_alias, source_id, record.timestamp)
+                doc_id = record.document_id or _fallback_stream_id(record)
+                body = self._normalizer.to_document(record)
+                batch.append((index, doc_id, body))
+
+                elapsed = time.monotonic() - last_flush
+                if len(batch) >= self._batch_size or elapsed >= _FLUSH_INTERVAL_SECONDS:
+                    total += await self._flush(batch)
+                    batch = []
+                    last_flush = time.monotonic()
+
+            if batch:
+                total += await self._flush(batch)
+
+        except Exception as exc:
+            await self._audit.log(
+                AuditEventType.INGEST_FAILED,
+                org_id=org_id,
+                details={**details_base, "error": str(exc), "error_type": type(exc).__name__},
+            )
+            if not isinstance(exc, StorageError):
+                raise StorageError(
+                    f"Stream normalization ingestion failed: {exc}",
+                    context=details_base,
+                ) from exc
+            raise
+
+        await self._audit.log(
+            AuditEventType.INGEST_COMPLETED,
+            org_id=org_id,
+            details={**details_base, "record_count": total},
+        )
+        logger.info("stream_ingest_completed", extra={**details_base, "record_count": total})
+        return total
+
     async def _flush(self, batch: list[tuple[str, str, dict[str, Any]]]) -> int:
         count = await self._opensearch.bulk_index(batch)
         logger.debug("ingest_flush", extra={"flushed": count})
@@ -191,8 +283,35 @@ class TimelineIngestionService:
 
 
 def _fallback_id(record: TimelineRecord) -> str:
-    """Generate a deterministic fallback doc ID when document_id is not set."""
+    """Generate a deterministic fallback doc ID when document_id is not set.
+
+    Only ever called from ``ingest_records`` (EvidenceProvenance path) --
+    ``record.kronos`` is narrowed to ``EvidenceProvenance`` there by
+    construction (every producer of that path is a ``ForensicParser``). The
+    assertion below is real type-narrowing for mypy (``kronos`` is the
+    ``EvidenceProvenance | StreamProvenance`` union since D4's widening),
+    not defensive dead code -- a stream record reaching this helper would be
+    a genuine caller bug and should fail loudly, not silently misindex.
+    """
+    assert isinstance(record.kronos, EvidenceProvenance)  # noqa: S101
     key = f"{record.kronos.evidence_id}:{record.kronos.parser}:{record.kronos.record_index}"
+    import hashlib  # noqa: PLC0415
+
+    return hashlib.sha1(key.encode()).hexdigest()  # noqa: S324
+
+
+def _fallback_stream_id(record: TimelineRecord) -> str:
+    """Generate a deterministic fallback doc ID for a StreamProvenance record.
+
+    ``batch_id:event_offset`` is already a stable, unique key per event
+    (unlike the evidence path, no ``sha256``/``evidence_id`` is available or
+    needed) -- this exists purely as a defensive fallback, since
+    ``StreamNormalizationService`` always sets ``document_id`` explicitly.
+    The assertion below is real mypy type-narrowing (same rationale as
+    ``_fallback_id``'s own assertion), not defensive dead code.
+    """
+    assert isinstance(record.kronos, StreamProvenance)  # noqa: S101
+    key = f"{record.kronos.batch_id}:{record.kronos.event_offset}"
     import hashlib  # noqa: PLC0415
 
     return hashlib.sha1(key.encode()).hexdigest()  # noqa: S324

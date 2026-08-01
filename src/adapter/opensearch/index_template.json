@@ -87,14 +87,22 @@
         },
         "source": {
           "properties": {
-            "ip":   { "type": "ip" },
-            "port": { "type": "long" }
+            "ip":    { "type": "ip" },
+            "port":  { "type": "long" },
+            "bytes": { "type": "long" }
           }
         },
         "destination": {
           "properties": {
-            "ip":   { "type": "ip" },
-            "port": { "type": "long" }
+            "ip":    { "type": "ip" },
+            "port":  { "type": "long" },
+            "bytes": { "type": "long" }
+          }
+        },
+        "network": {
+          "properties": {
+            "transport": { "type": "keyword" },
+            "protocol":  { "type": "keyword" }
           }
         },
         "dns": {
@@ -209,7 +217,10 @@
             "record_index":      { "type": "long" },
             "ingest_timestamp":  { "type": "date" },
             "source_path":       { "type": "keyword" },
-            "container_sha256":  { "type": "keyword" }
+            "container_sha256":  { "type": "keyword" },
+            "source_id":         { "type": "keyword" },
+            "batch_id":          { "type": "keyword" },
+            "event_offset":      { "type": "long" }
           }
         }
       }

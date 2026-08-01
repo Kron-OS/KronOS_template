@@ -96,6 +96,7 @@ disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 module = [
     "src.external.parsers.*",
     "src.external.sandbox.firecracker",
+    "src.application.stream_normalization",
 ]
 disable_error_code = ["call-arg", "arg-type"]
 

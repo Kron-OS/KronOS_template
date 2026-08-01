@@ -20,8 +20,13 @@ import pytest
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from src.domain.stream import Provenance, StreamProvenance
-from src.domain.timeline import EvidenceProvenance
+# Provenance (the EvidenceProvenance | StreamProvenance discriminated union)
+# now lives in src.domain.timeline, not src.domain.stream (roadmap D4) --
+# stream.py deliberately no longer imports anything from timeline.py (see
+# stream.py's own docstring: that avoided a real circular import once
+# TimelineRecord.kronos needed to import StreamProvenance from this module).
+from src.domain.stream import StreamProvenance
+from src.domain.timeline import EvidenceProvenance, Provenance
 
 
 def _now() -> datetime:

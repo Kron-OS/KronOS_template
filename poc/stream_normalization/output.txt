@@ -1,0 +1,176 @@
+==============================================================================
+PoC: StreamNormalizationService <-> real Redis/MinIO/Postgres/TSA/OpenSearch
+==============================================================================
+Real local TSA responder listening on http://127.0.0.1:20320
+Produced 4 real Zeek conn.log-shaped events onto kronos:stream:85c07047-d8cc-4cf7-b064-d86389e72b89:zeek-conn-log
+[PASS] real batch sealed for real Zeek events
+Sealed batch_id=ff62f5b7-1747-45fd-bcdf-199203cb2b60 event_count=4
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch_security_disabled_skipping_tenant_role
+[PASS] normalize_batch() indexed all 4 events
+StreamNormalizationService.normalize_batch() indexed 4 documents
+
+--- real GET kronos-poc-stream-norm-org-stream-zeek-conn-log-202501/_search response (status=200) ---
+{
+  "took": 0,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 4,
+      "relation": "eq"
+    },
+    "max_score": null,
+    "hits": [
+      {
+        "_index": "kronos-poc-stream-norm-org-stream-zeek-conn-log-202501",
+        "_id": "d505b0f8920d40fed10fa983a2a1595e93ae1e90",
+        "_score": null,
+        "_source": {
+          "@timestamp": "2025-01-01T00:00:00+00:00",
+          "event": {
+            "kind": "event",
+            "category": [
+              "network"
+            ],
+            "type": [
+              "connection"
+            ],
+            "duration": 1500000000
+          },
+          "kronos": {
+            "org_id": "85c07047-d8cc-4cf7-b064-d86389e72b89",
+            "org_alias": "poc-stream-norm-org",
+            "parser": "zeek-conn-log",
+            "parser_version": "1.0.0",
+            "ingest_timestamp": "2026-08-01T04:59:57.041680+00:00",
+            "source_id": "zeek-conn-log",
+            "batch_id": "ff62f5b7-1747-45fd-bcdf-199203cb2b60",
+            "event_offset": 0
+          },
+          "message": "10.0.0.5:50000 -> 93.184.216.34:443 (tcp)",
+          "source": {
+            "ip": "10.0.0.5",
+            "port": 50000,
+            "bytes": 512
+          },
+          "destination": {
+            "ip": "93.184.216.34",
+            "port": 443,
+            "bytes": 4096
+          },
+          "network": {
+            "transport": "tcp",
+            "protocol": "ssl"
+          },
+          "zeek": {
+            "conn": {
+              "uid": "C0000000000000000",
+              "conn_state": "SF",
+              "history": "ShADadFf",
+              "orig_pkts": 6,
+              "resp_pkts": 5
+            }
+          }
+        },
+        "sort": [
+          0
+        ]
+      },
+      {
+        "_index": "kronos-poc-stream-norm-org-stream-zeek-conn-log-202501",
+        "_id": "3225ae6c959b3fa437e91c7dd991598e06122591",
+        "_score": null,
+        "_source": {
+          "@timestamp": "2025-01-01T00:00:01+00:00",
+          "event": {
+            "kind": "event",
+            "category": [
+              "network"
+            ],
+            "type": [
+              "connection"
+            ],
+            "duration": 1750000000
+          },
+          "kronos": {
+            "org_id": "85c07047-d8cc-4cf7-b064-d86389e72b89",
+            "org_alias": "poc-stream-norm-org",
+            "parser": "zeek-conn-log",
+            "parser_version": "1.0.0",
+            "ingest_timestamp": "2026-08-01T04:59:57.041680+00:00",
+            "source_id": "zeek-conn-log",
+            "batch_id": "ff62f5b7-1747-45fd-bcdf-199203cb2b60",
+            "event_offset": 1
+          },
+          "message": "10.0.0.5:50001 -> 93.184.216.34:443 (tcp)",
+          "source": {
+            "ip": "10.0.0.5",
+            "port": 50001,
+            "bytes": 522
+          },
+          "destination": {
+            "ip": "93.184.216.34",
+            "port": 443,
+            "bytes": 4116
+          },
+          "network": {
+            "transport": "tcp",
+            "protocol": "ssl"
+          },
+          "zeek": {
+            "conn": {
+              "uid": "C0000000000000001",
+              "conn_state": "SF",
+              "history": "ShADadFf",
+              "orig_pkts": 6,
+              "resp_pkts": 5
+            }
+          }
+        },
+        "sort": [
+          1
+        ]
+      },
+      {
+        "_index": "kronos-poc-stream-norm-org-stream-zeek-conn-log-202501",
+        "_id": "446d77bf248fb060db61b5073a1de538d4bc186d",
+        "_score": null,
+        "_source": {
+          "@timestamp": "2025-01-01T00:00:02+00:00",
+          "event": {
+            "kind": "event",
+            "category": [
+              "network"
+            ],
+            "type": [
+              "connection"
+            ],
+            "duration": 2000000000
+          },
+          "kronos": {
+            "org_id": "85c07047-d8cc-4cf7-b064-d86389e72b89",
+    
+[PASS] real OpenSearch _search returned 200
+[PASS] real OpenSearch index contains exactly 4 documents
+[PASS] real document has @timestamp (ECS core field)
+[PASS] real document has source.ip == 10.0.0.5 (ECS network field)
+[PASS] real document has network.transport == tcp
+[PASS] real document has network.protocol == ssl
+[PASS] real document's event.duration is nanoseconds (1.5s -> 1_500_000_000)
+[PASS] real document's kronos.source_id == zeek-conn-log
+[PASS] real document's kronos.batch_id matches the real sealed batch_id
+[PASS] real document's kronos.org_id matches the real org_id
+[PASS] real document's kronos.event_offset == 0 for the first sorted hit
+[PASS] real document's kronos.case_id is absent (stream events are un-triaged at ingest)
+[PASS] real documents' event_offsets are exactly [0,1,2,3], one per sealed event
+
+==============================================================================
+PoC PASSED -- all 15 checks passed against real Redis/MinIO/Postgres/TSA/OpenSearch.
+==============================================================================

@@ -18,21 +18,26 @@ is a forensic-integrity bug, not a convenience. ``StreamProvenance`` is a
 distinct, honestly-shaped type instead, sharing only what is genuinely
 common with evidence-file provenance (``ProvenanceBase``).
 
-This module is a real, tested, standalone sibling type this pass -- it is
-**not yet wired** into ``TimelineRecord.kronos`` (still narrowed to
-``EvidenceProvenance`` in ``src/domain/timeline.py``) because nothing in the
-pipeline produces a ``StreamProvenance`` yet (that's D1/D2/D4). See this
-task's final report for the exact follow-up list.
+``StreamProvenance`` is now (roadmap D4) wired into ``TimelineRecord.kronos``
+(``src/domain/timeline.py``) via the discriminated ``Provenance`` union --
+``StreamNormalizationService`` (``src/application/stream_normalization.py``)
+is the first real producer. That union is defined in ``timeline.py``, not
+here: this module deliberately imports ``ProvenanceBase`` from the shared
+leaf module ``src/domain/provenance.py`` rather than from ``timeline.py`` --
+importing from ``timeline.py`` here would be a genuine circular import once
+``timeline.py`` needs to import ``StreamProvenance`` from this module (A
+imports B imports A). Keeping this module's only domain dependency on the
+dependency-free leaf module breaks that cycle structurally.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import Field
 
-from src.domain.timeline import EvidenceProvenance, ProvenanceBase
+from src.domain.provenance import ProvenanceBase
 
 
 class StreamProvenance(ProvenanceBase):
@@ -80,12 +85,3 @@ class StreamProvenance(ProvenanceBase):
         default=None,
         description="Case this event has been triaged into, if any -- NOT required at ingest",
     )
-
-
-# Discriminated union, ready for the (explicitly scoped-out-of-this-pass)
-# follow-up that widens TimelineRecord.kronos to this type. Verified in
-# poc/provenance_split/ and tests/unit/domain/test_stream_provenance.py:
-# pydantic.TypeAdapter(Provenance) correctly round-trips both branches via
-# the `kind` discriminator and rejects a payload with neither/an unknown
-# `kind`.
-Provenance = Annotated[EvidenceProvenance | StreamProvenance, Field(discriminator="kind")]

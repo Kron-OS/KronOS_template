@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 from src.application.parsing import ForensicParser, ParserType
 from src.domain.evidence import Evidence
-from src.domain.timeline import TimelineRecord
+from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import ParsingError
 
@@ -244,7 +244,14 @@ def _stamp_source_path(
     ZipArchiveParser's output already carries the inner container's own
     member path, so this level's member_path is prepended rather than
     overwritten -- producing e.g. ``nested.zip/C/Windows/.../System.evtx``.
+
+    ZipArchiveParser only ever recurses into file-based evidence, never
+    stream telemetry, so ``record.kronos`` is always ``EvidenceProvenance``
+    here -- the assertion is real mypy type-narrowing (``kronos`` is the
+    ``EvidenceProvenance | StreamProvenance`` union since roadmap D4), not
+    defensive dead code.
     """
+    assert isinstance(record.kronos, EvidenceProvenance)  # noqa: S101
     existing = record.kronos.source_path
     full_path = f"{member_path}/{existing}" if existing else member_path
     updated_kronos = record.kronos.model_copy(
