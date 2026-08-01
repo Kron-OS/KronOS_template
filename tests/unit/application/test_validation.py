@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -31,6 +32,34 @@ ZIP_HEADER = b"PK\x03\x04" + b"\x00" * 100
 PREFETCH_HEADER = b"MAM\x04" + b"\x00" * 100
 REAL_SAMPLES = Path(__file__).parents[2] / "fixtures" / "samples" / "real"
 UNKNOWN_BINARY = b"\xff\xfe\x00\x01" * 100  # unrecognised binary
+
+
+def _real_tar_header(fmt: int) -> bytes:
+    """Build a real tar archive via Python's own tarfile module and return
+    its first 8192 bytes (matching production's real header-read window,
+    src/application/evidence_intake.py's own _HEADER_BYTES=65536 truncated
+    further here since a single ustar header block is only 512 bytes)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as tf:
+        info = tarfile.TarInfo(name="a.txt")
+        data = b"hello"
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()[:8192]
+
+
+# Real ext2/3/4 superblock magic 0xEF53 at the real, fixed offset 1080 --
+# verified on this host by building an actual ext4 filesystem
+# (`mke2fs -t ext4`) and inspecting the raw bytes with `xxd` (see
+# poc/tar_container_unwrapping/README.md for the full transcript).
+EXT4_HEADER = b"\x00" * 1080 + b"\x53\xef" + b"\x00" * 100
+# Real NTFS boot sector signature "NTFS    " at the real, fixed offset 3 --
+# verified the same way with `mkntfs`.
+NTFS_HEADER = b"\xeb\x52\x90" + b"NTFS    " + b"\x00" * 100
+# Real FAT16/FAT32 boot sector signatures at their real, fixed offsets (54
+# and 82) -- verified the same way with `mkfs.vfat -F 16`/`-F 32`.
+FAT16_HEADER = b"\x00" * 54 + b"FAT16   " + b"\x00" * 100
+FAT32_HEADER = b"\x00" * 82 + b"FAT32   " + b"\x00" * 100
 
 
 class TestExtensionValidator:
@@ -120,6 +149,58 @@ class TestMagicByteValidator:
 
     def test_accepts_pdf(self) -> None:
         self.validator.validate("report.pdf", "application/octet-stream", 1024, PDF_HEADER)
+
+    def test_accepts_real_gnu_tar(self) -> None:
+        """A tar-wrapped disk-image bundle (roadmap E1: forensic2.E01 was
+        actually a tar of image.dd + memory.dmp) must pass intake validation
+        so it can reach TarArchiveParser -- uses a real tar built via
+        Python's own tarfile module in GNU format, matching real GNU tar
+        1.35 CLI output verified on this host (see tar_archive.py's module
+        docstring for the full byte-level comparison), not a hand-crafted
+        header."""
+        header = _real_tar_header(tarfile.GNU_FORMAT)
+        assert header[257:262] == b"ustar"
+        self.validator.validate("bundle.tar", "application/x-tar", 10240, header)
+
+    def test_accepts_real_pax_format_tar(self) -> None:
+        """Python's tarfile module (and most modern tooling, incl. UAC)
+        defaults to PAX format -- a distinct 8-byte magic value
+        (b"ustar\\x0000") from GNU tar's, but sharing the same 5-byte
+        "ustar" prefix this validator actually checks."""
+        header = _real_tar_header(tarfile.PAX_FORMAT)
+        assert header[257:262] == b"ustar"
+        self.validator.validate("bundle.tar", "application/x-tar", 10240, header)
+
+    def test_accepts_real_ext4_raw_disk_image(self) -> None:
+        """A raw (unwrapped) disk image -- e.g. `image.dd` found tar-wrapped
+        inside a mislabelled forensic2.E01 (roadmap E1) -- must pass intake
+        validation so it can reach PlasoParser's dfVFS whole-image routing.
+        Magic verified for real: `mke2fs -t ext4` on this host, inspected
+        with `xxd` (see poc/tar_container_unwrapping/README.md)."""
+        self.validator.validate(
+            "image.dd", "application/octet-stream", 16 * 1024 * 1024, EXT4_HEADER
+        )
+
+    def test_accepts_real_ntfs_raw_disk_image(self) -> None:
+        """Same raw-disk-image gap, NTFS variant -- verified for real with
+        `mkntfs` on this host (see poc/tar_container_unwrapping/README.md)."""
+        self.validator.validate(
+            "image.dd", "application/octet-stream", 20 * 1024 * 1024, NTFS_HEADER
+        )
+
+    def test_accepts_real_fat16_raw_disk_image(self) -> None:
+        """Same raw-disk-image gap, FAT16 variant -- verified for real with
+        `mkfs.vfat -F 16` on this host."""
+        self.validator.validate(
+            "image.dd", "application/octet-stream", 32 * 1024 * 1024, FAT16_HEADER
+        )
+
+    def test_accepts_real_fat32_raw_disk_image(self) -> None:
+        """Same raw-disk-image gap, FAT32 variant -- verified for real with
+        `mkfs.vfat -F 32` on this host."""
+        self.validator.validate(
+            "image.dd", "application/octet-stream", 40 * 1024 * 1024, FAT32_HEADER
+        )
 
     def test_accepts_json_by_extension_no_magic(self) -> None:
         # JSON has no magic bytes — passes on extension alone.

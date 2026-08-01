@@ -1,0 +1,20 @@
+[
+  {
+    "id": "9816c0b3-a63a-4f6a-9aa1-191e47f40e39",
+    "caseId": "2d04ffca-f397-40c5-8189-00901e57d5af",
+    "filename": "forensic2.E01",
+    "contentType": "application/octet-stream",
+    "sizeBytes": 4249600,
+    "sha256": "63dcb4d21a307895b472d9805a67700fc1e6c8cf478180ed5c289fb7ce38b42a",
+    "md5": "8e7e28a98db07cbd4a7721dde38b1844",
+    "state": "COMPLETE",
+    "errorReason": null,
+    "retryAction": null,
+    "uploadedBy": "10000000-0000-4000-8000-000000000003",
+    "uploadedAt": "2026-08-01T11:14:27.569710+00:00",
+    "updatedAt": "2026-08-01T11:14:42.746488+00:00",
+    "rfc3161Token": null,
+    "legalHold": false,
+    "objectLockUntil": "2027-08-01T11:14:29.367450+00:00"
+  }
+]

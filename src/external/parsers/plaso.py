@@ -1,8 +1,10 @@
 """PlasoParser: heavy forensic parser using Plaso in a Firecracker microVM.
 
 Supports: Windows Registry (REGF), Prefetch, SRUM, SQLite artifacts,
-Amcache, systemd journald, EML email archives, and EWF (E01/Ex01) disk
-images (whole-image fallback via Plaso's own dfVFS-based auto-detection).
+Amcache, systemd journald, EML email archives, EWF (E01/Ex01) disk images,
+and raw/unwrapped disk images (ext2/3/4, NTFS, FAT12/16/32) -- all via
+Plaso's own dfVFS-based whole-image auto-detection, no separate
+DiskImageExtractor needed.
 """
 
 from __future__ import annotations
@@ -41,6 +43,35 @@ _EVTX_MAGIC = b"ElfFile\x00"  # Already handled by FastEvtxParser
 # filesystem inside it directly -- no separate DiskImageExtractor needed,
 # same subprocess invocation as every other PlasoParser artifact.
 _EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
+
+# Raw (unwrapped) disk image signatures -- no EWF/E01 container, a bare
+# filesystem directly on the file (e.g. `image.dd`, `image.img`, `image.raw`).
+# Real, reproduced gap (roadmap E1): a forensic2.E01-named evidence file was
+# actually a tar archive containing exactly this shape (image.dd + a
+# memory.dmp Plaso doesn't parse). Before this fix PlasoParser had no path
+# for a bare raw image at all -- only EWF's own magic was recognised -- so
+# even after TarArchiveParser correctly unwraps the tar, image.dd would
+# still hit "no parser found" and silently vanish, reproducing the same
+# zero-events failure one layer deeper.
+#
+# Verified for real (poc/tar_container_unwrapping/): a real log2timeline/
+# psort run (plaso==20260512, the exact version pinned in
+# docker/Dockerfile.plaso-worker) against real synthetic raw ext4, NTFS, and
+# FAT16 images built on this host auto-detects each one as a "storage media
+# image" via dfVFS with zero extra flags/config -- the exact same subprocess
+# invocation this class already uses for EWF -- and emits real fs:stat
+# events carrying the filesystem's own dfVFS type-indicator prefix
+# (EXT:/NTFS:/FAT:, all three already present in
+# src/external/sandbox/firecracker.py's _DFVFS_TYPE_PREFIXES). No separate
+# DiskImageExtractor or dfVFS "RAW" type-indicator flag was needed; dfVFS's
+# own source-analyzer signature scan already recognises these filesystem
+# superblocks unprompted. Magic offsets below match validation.py's
+# _MAGIC_TABLE entries exactly (same verification, not a second guess).
+_EXT_FS_MAGIC = b"\x53\xef"  # ext2/3/4 superblock magic, fixed offset 1080
+_NTFS_MAGIC = b"NTFS    "  # NTFS boot sector, fixed offset 3
+_FAT16_MAGIC = b"FAT16   "  # FAT16 boot sector, fixed offset 54
+_FAT12_MAGIC = b"FAT12   "  # FAT12 boot sector, fixed offset 54
+_FAT32_MAGIC = b"FAT32   "  # FAT32 boot sector, fixed offset 82
 
 
 class PlasoParser(ForensicParser):
@@ -100,6 +131,18 @@ class PlasoParser(ForensicParser):
 
         # EWF disk image (E01/Ex01) -- whole-image fallback, see _EWF_MAGIC.
         if header_bytes.startswith(_EWF_MAGIC):
+            return True
+
+        # Raw (unwrapped) disk image -- ext2/3/4, NTFS, or FAT filesystem
+        # magic at their real, fixed, non-zero offsets (see the magic
+        # constants' own comments above for verification detail).
+        if header_bytes[1080:1082] == _EXT_FS_MAGIC:
+            return True
+        if header_bytes[3:11] == _NTFS_MAGIC:
+            return True
+        if header_bytes[54:62] in (_FAT16_MAGIC, _FAT12_MAGIC):
+            return True
+        if header_bytes[82:90] == _FAT32_MAGIC:
             return True
 
         ext = Path(filename).suffix.lstrip(".").lower()

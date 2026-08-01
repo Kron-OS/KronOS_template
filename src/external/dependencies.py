@@ -384,6 +384,7 @@ def get_parser_registry() -> ParserRegistry:
         from src.external.parsers.cloudtrail import CloudTrailParser  # noqa: PLC0415
         from src.external.parsers.nginx import NginxParser  # noqa: PLC0415
         from src.external.parsers.suricata import SuricataEveParser  # noqa: PLC0415
+        from src.external.parsers.tar_archive import TarArchiveParser  # noqa: PLC0415
 
         registry = ParserRegistry()
         # Must be registered FIRST: claims the ZIP magic before any other
@@ -391,6 +392,15 @@ def get_parser_registry() -> ParserRegistry:
         # on finding itself in this same registry -- see archive.py's
         # docstring for the full extraction/re-dispatch design.
         registry.register(ZipArchiveParser(registry))
+        # Also registered FIRST, alongside ZipArchiveParser (roadmap E1):
+        # claims the tar/ustar magic before any other parser gets a chance.
+        # Relative order between these two containers themselves doesn't
+        # matter -- their magic bytes are disjoint (PK\x03\x04 at offset 0
+        # vs "ustar" at offset 257, both verified against real archives) --
+        # but both must precede PlasoParser/anything else that could
+        # otherwise misclaim the raw container bytes. See tar_archive.py's
+        # module docstring for the full design.
+        registry.register(TarArchiveParser(registry))
         registry.register(CloudTrailParser())
         registry.register(NginxParser())
         # SuricataEveParser keys on EVE JSON's own "event_type"+"flow_id"

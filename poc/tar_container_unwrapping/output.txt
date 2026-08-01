@@ -1,0 +1,75 @@
+=== poc/tar_container_unwrapping real run output (final) ===
+
+--- build_fixture.py ---
++ touch -d 2024-01-15 10:00:00 /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/srcdir/alpha.txt
++ touch -d 2024-03-22 14:30:00 /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/srcdir/bravo.txt
++ touch -d 2024-06-05 08:15:00 /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/srcdir/sub/charlie.txt
++ dd if=/dev/zero of=/home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/image.dd bs=1K count=4096 status=none
++ mke2fs -F -t ext4 -O ^has_journal -d /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/srcdir /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/_fixture_build/image.dd
+mke2fs 1.47.2 (1-Jan-2025)
+Discarding device blocks:    0/1024         done                            
+Creating filesystem with 1024 4k blocks and 1024 inodes
+
+Allocating group tables: 0/1   done                            
+Writing inode tables: 0/1   done                            
+Copying files into the device: done
+Writing superblocks and filesystem accounting information: 0/1   done
+
+image.dd: 4194304 bytes
+memory.dmp: 44000 bytes
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/forensic2.E01 (4249600 bytes)
+sanity check OK: real ustar magic present at offset 257
+
+--- run_ingest.py ---
+login OK (mfa_path=none)
+create_case -> 201 {"id":"2d04ffca-f397-40c5-8189-00901e57d5af","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","title":"Tar-container-unwrapping test (roadmap E1)","description":"Real upload/finalize of a tar archive (misleadingly named forensic2.E01, exactly mirroring the real incident) containing a real raw ext4 disk image (image.dd) and a placeholder memory.dmp -- verifying TarArchiveParser's recursive unwrap + P
+case_id=2d04ffca-f397-40c5-8189-00901e57d5af
+forensic2.E01 (actually tar): 4249600 bytes, sha256=63dcb4d21a30...
+upload/request -> 201 {"evidenceId":"9816c0b3-a63a-4f6a-9aa1-191e47f40e39","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/2d04ffca-f397-40c5-8189-00901e57d5af/9816c0b3-a63a-4f6a-9aa1-191e47f40e39/forensic2.E01?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F202
+PUT to MinIO -> 200
+finalize -> 202 {"id":"9816c0b3-a63a-4f6a-9aa1-191e47f40e39","caseId":"2d04ffca-f397-40c5-8189-00901e57d5af","filename":"forensic2.E01","contentType":"application/octet-stream","sizeBytes":4249600,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8000-000000000003","uploadedAt":"2026-08-01T11:14:27.569710+00:00","updatedAt":"2026-08-01T11:14:27.710
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/tar_container_unwrapping/evidence_id.json
+{"case_id": "2d04ffca-f397-40c5-8189-00901e57d5af", "evidence_id": "9816c0b3-a63a-4f6a-9aa1-191e47f40e39", "sha256": "63dcb4d21a307895b472d9805a67700fc1e6c8cf478180ed5c289fb7ce38b42a", "filename": "forensic2.E01"}
+
+--- poll_and_verify.py ---
+{'forensic2.E01': 'SCANNING'}
+{'forensic2.E01': 'PARSING'}
+{'forensic2.E01': 'PARSING'}
+{'forensic2.E01': 'COMPLETE'}
+fetch_all_docs: 0 hits on attempt 1, retrying after refresh delay
+fetched 20 real documents for case_id=2d04ffca-f397-40c5-8189-00901e57d5af
+by parser: {'plaso': 20}
+distinct source_paths: ['image.dd/alpha.txt', 'image.dd/bravo.txt', 'image.dd/lost+found', 'image.dd/sub', 'image.dd/sub/charlie.txt']
+flagged parsing-error markers: 0
+container_sha256 mismatches: 0
+verdict: PASS
+{
+  "case_id": "2d04ffca-f397-40c5-8189-00901e57d5af",
+  "total_documents": 20,
+  "by_parser": {
+    "plaso": 20
+  },
+  "real_file_hits": {
+    "alpha.txt": {
+      "expected_source_path": "image.dd/alpha.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    },
+    "bravo.txt": {
+      "expected_source_path": "image.dd/bravo.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    },
+    "sub/charlie.txt": {
+      "expected_source_path": "image.dd/sub/charlie.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    }
+  },
+  "all_image_dd_files_recovered_with_correct_timestamps": true,
+  "memory_dmp_produced_zero_records": true,
+  "flagged_parsing_errors": [],
+  "container_sha256_mismatches": [],
+  "final_evidence_state": "COMPLETE",
+  "verdict": "PASS"
+}

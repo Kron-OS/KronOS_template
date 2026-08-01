@@ -46,6 +46,40 @@ _MAGIC_TABLE: list[tuple[int, bytes, str]] = [
     (0, b"\x1f\x8b", "gzip"),
     # ZIP (container for many log formats)
     (0, b"PK\x03\x04", "zip"),
+    # tar (ustar/GNU/PAX) -- container for tar-wrapped disk-image bundles
+    # (roadmap E1: a forensic2.E01-named evidence file that was actually a
+    # tar of image.dd + memory.dmp) and future UAC .tar.gz-after-decompress
+    # triage output. Magic is the real POSIX-mandated "ustar" 5-byte prefix
+    # at the fixed header offset 257 -- verified on this host against both
+    # GNU tar 1.35's own output (b"ustar  \x00") and Python's own tarfile
+    # module default PAX format (b"ustar\x0000"); both share this 5-byte
+    # prefix (see TarArchiveParser's module docstring for the full byte
+    # dump). Pre-POSIX (V7) tar has no magic at a fixed offset and is out of
+    # scope -- every tar producer a real DFIR workflow encounters on a
+    # reasonably current Linux/macOS (GNU tar, BSD tar, Python tarfile, UAC)
+    # defaults to ustar-compatible headers.
+    (257, b"ustar", "tar"),
+    # Raw (unwrapped) disk images -- no EWF/E01 container, just a bare
+    # filesystem directly on the file, e.g. `image.dd` found tar-wrapped
+    # inside a mislabelled forensic2.E01 (roadmap E1). Real dfVFS (a Plaso
+    # dependency, plaso==20260512 pinned in docker/Dockerfile.plaso-worker)
+    # auto-detects all three of these filesystem types directly -- confirmed
+    # by a real log2timeline/psort run against real synthetic images built
+    # on this host (poc/tar_container_unwrapping/), each producing real
+    # fs:stat timeline events with the filesystem's own dfVFS type-indicator
+    # prefix (EXT:/NTFS:/FAT:) in display_name -- no separate
+    # DiskImageExtractor needed, same as the existing EWF entry below.
+    # ext2/3/4 superblock magic 0xEF53 (little-endian bytes "53 ef"), fixed
+    # at byte offset 1080 regardless of block size.
+    (1080, b"\x53\xef", "ext-filesystem"),
+    # NTFS boot sector "NTFS    " (8 bytes, note the 4 trailing spaces) at
+    # byte offset 3.
+    (3, b"NTFS    ", "ntfs-filesystem"),
+    # FAT12/FAT16 boot sector "FAT12   "/"FAT16   " (8 bytes) at offset 54.
+    (54, b"FAT16   ", "fat16-filesystem"),
+    (54, b"FAT12   ", "fat12-filesystem"),
+    # FAT32 boot sector "FAT32   " (8 bytes) at offset 82.
+    (82, b"FAT32   ", "fat32-filesystem"),
     # PDF (reports)
     (0, b"%PDF", "pdf"),
     # JSON / NDJSON — no magic bytes; identified by extension only

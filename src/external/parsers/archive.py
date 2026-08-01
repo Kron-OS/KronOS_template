@@ -19,8 +19,11 @@ that bound.
 Zip-bomb defense reads each member through a bounded ``read(cap + 1)`` (never
 trusting the archive's own declared ``ZipInfo.file_size``, which a malicious
 zip can lie about) and charges a *shared* budget across the whole recursive
-extraction tree via a ContextVar, so nested zip-in-zip containers can't each
-individually stay "under limit" while the aggregate explodes.
+extraction tree via a ContextVar (``_container_common.py``, shared with
+``TarArchiveParser`` too -- see that module's docstring for why the budget
+must be shared *across container types*, not just within one), so nested
+zip-in-zip (or zip-in-tar-in-zip) containers can't each individually stay
+"under limit" while the aggregate explodes.
 """
 
 from __future__ import annotations
@@ -29,16 +32,21 @@ import logging
 import tempfile
 import zipfile
 from collections.abc import AsyncIterator
-from contextvars import ContextVar
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.application.parsing import ForensicParser, ParserType
 from src.domain.evidence import Evidence
-from src.domain.timeline import EvidenceProvenance, TimelineRecord
+from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import ParsingError
+from src.external.parsers._container_common import (
+    ExtractionBudget,
+    budget_var,
+    depth_var,
+    is_unsafe_member_path,
+    stamp_source_path,
+)
 
 if TYPE_CHECKING:
     from src.application.parser_registry import ParserRegistry
@@ -51,44 +59,6 @@ MAX_CONTAINER_DEPTH = 3
 MAX_MEMBER_COUNT = 50_000
 MAX_TOTAL_UNCOMPRESSED_BYTES = 4 * 1024**3  # 4 GiB
 MAX_PER_FILE_UNCOMPRESSED_BYTES = 1024**3  # 1 GiB -- matches the single-file upload cap
-
-# One shared budget per top-level evidence parse (one Celery task == one
-# asyncio task == one context), so nested containers can't each locally pass
-# a per-call check while the aggregate explodes. Reset when the outermost
-# ZipArchiveParser.parse() call (the one that created it) returns.
-_budget: ContextVar[_ExtractionBudget | None] = ContextVar("_kape_zip_budget", default=None)
-_depth: ContextVar[int] = ContextVar("_kape_zip_depth", default=0)
-
-
-@dataclass
-class _ExtractionBudget:
-    files_used: int = 0
-    bytes_used: int = 0
-
-    def charge(self, n_bytes: int, evidence: Evidence) -> None:
-        self.files_used += 1
-        self.bytes_used += n_bytes
-        if self.files_used > MAX_MEMBER_COUNT:
-            raise ParsingError(
-                "Container exceeds maximum member count",
-                context={"evidence_id": str(evidence.evidence_id), "limit": MAX_MEMBER_COUNT},
-            )
-        if self.bytes_used > MAX_TOTAL_UNCOMPRESSED_BYTES:
-            raise ParsingError(
-                "Container exceeds maximum total extracted bytes",
-                context={
-                    "evidence_id": str(evidence.evidence_id),
-                    "limit": MAX_TOTAL_UNCOMPRESSED_BYTES,
-                },
-            )
-
-
-def _is_unsafe_member_path(name: str) -> bool:
-    """Reject zip-slip paths: absolute, or containing a '..' traversal segment."""
-    if name.startswith("/") or name.startswith("\\"):
-        return True
-    normalized = name.replace("\\", "/")
-    return any(part == ".." for part in normalized.split("/"))
 
 
 class ZipArchiveParser(ForensicParser):
@@ -132,7 +102,7 @@ class ZipArchiveParser(ForensicParser):
         evidence: Evidence,
         tenant: TenantContext,
     ) -> AsyncIterator[TimelineRecord]:
-        depth = _depth.get()
+        depth = depth_var.get()
         if depth >= MAX_CONTAINER_DEPTH:
             raise ParsingError(
                 "Container nesting exceeds maximum depth",
@@ -142,13 +112,13 @@ class ZipArchiveParser(ForensicParser):
                 },
             )
 
-        budget = _budget.get()
+        budget = budget_var.get()
         owns_budget = budget is None
         if owns_budget:
-            budget = _ExtractionBudget()
-            _budget.set(budget)
+            budget = ExtractionBudget()
+            budget_var.set(budget)
 
-        depth_token = _depth.set(depth + 1)
+        depth_token = depth_var.set(depth + 1)
         try:
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                 async for chunk in stream:
@@ -161,9 +131,9 @@ class ZipArchiveParser(ForensicParser):
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
         finally:
-            _depth.reset(depth_token)
+            depth_var.reset(depth_token)
             if owns_budget:
-                _budget.set(None)
+                budget_var.set(None)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -174,7 +144,7 @@ class ZipArchiveParser(ForensicParser):
         zip_path: str,
         evidence: Evidence,
         tenant: TenantContext,
-        budget: _ExtractionBudget,
+        budget: ExtractionBudget,
     ) -> AsyncIterator[TimelineRecord]:
         try:
             zf = zipfile.ZipFile(zip_path)
@@ -188,7 +158,7 @@ class ZipArchiveParser(ForensicParser):
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                if _is_unsafe_member_path(info.filename):
+                if is_unsafe_member_path(info.filename):
                     logger.warning(
                         "zip_member_path_rejected",
                         extra={"evidence_id": str(evidence.evidence_id), "member": info.filename},
@@ -206,7 +176,12 @@ class ZipArchiveParser(ForensicParser):
                     )
                     continue
 
-                budget.charge(len(data), evidence)
+                budget.charge(
+                    len(data),
+                    evidence,
+                    max_member_count=MAX_MEMBER_COUNT,
+                    max_total_bytes=MAX_TOTAL_UNCOMPRESSED_BYTES,
+                )
 
                 async for record in self._dispatch_member(info.filename, data, evidence, tenant):
                     yield record
@@ -232,29 +207,4 @@ class ZipArchiveParser(ForensicParser):
             yield data
 
         async for record in parser.parse(_one_shot(), evidence, tenant):
-            yield _stamp_source_path(record, member_path, evidence)
-
-
-def _stamp_source_path(
-    record: TimelineRecord, member_path: str, evidence: Evidence
-) -> TimelineRecord:
-    """Attach/extend the record's kronos.source_path with this container level.
-
-    A leaf parser's own output has ``source_path`` unset (None); a nested
-    ZipArchiveParser's output already carries the inner container's own
-    member path, so this level's member_path is prepended rather than
-    overwritten -- producing e.g. ``nested.zip/C/Windows/.../System.evtx``.
-
-    ZipArchiveParser only ever recurses into file-based evidence, never
-    stream telemetry, so ``record.kronos`` is always ``EvidenceProvenance``
-    here -- the assertion is real mypy type-narrowing (``kronos`` is the
-    ``EvidenceProvenance | StreamProvenance`` union since roadmap D4), not
-    defensive dead code.
-    """
-    assert isinstance(record.kronos, EvidenceProvenance)  # noqa: S101
-    existing = record.kronos.source_path
-    full_path = f"{member_path}/{existing}" if existing else member_path
-    updated_kronos = record.kronos.model_copy(
-        update={"source_path": full_path, "container_sha256": evidence.sha256}
-    )
-    return record.model_copy(update={"kronos": updated_kronos})
+            yield stamp_source_path(record, member_path, evidence)

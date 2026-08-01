@@ -1,0 +1,30 @@
+{
+  "case_id": "2d04ffca-f397-40c5-8189-00901e57d5af",
+  "total_documents": 20,
+  "by_parser": {
+    "plaso": 20
+  },
+  "real_file_hits": {
+    "alpha.txt": {
+      "expected_source_path": "image.dd/alpha.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    },
+    "bravo.txt": {
+      "expected_source_path": "image.dd/bravo.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    },
+    "sub/charlie.txt": {
+      "expected_source_path": "image.dd/sub/charlie.txt",
+      "event_count": 4,
+      "correct_timestamp_present": true
+    }
+  },
+  "all_image_dd_files_recovered_with_correct_timestamps": true,
+  "memory_dmp_produced_zero_records": true,
+  "flagged_parsing_errors": [],
+  "container_sha256_mismatches": [],
+  "final_evidence_state": "COMPLETE",
+  "verdict": "PASS"
+}

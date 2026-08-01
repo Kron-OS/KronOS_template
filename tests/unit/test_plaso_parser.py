@@ -45,6 +45,48 @@ class TestPlasoParser:
         header = b'192.168.1.1 - - [25/Jun/2026:12:00:00 +0000] "GET / HTTP/1.1" 200'
         assert not parser.supports("access.log", "text/plain", header)
 
+    # -----------------------------------------------------------------
+    # Raw (unwrapped) disk image detection -- roadmap E1's real,
+    # verified sub-gap: before this, PlasoParser had NO path for a bare
+    # `image.dd`/`.img`/`.raw` at all, only real EWF (E01) magic. Magic
+    # offsets/bytes below are the same real, verified values used by
+    # validation.py's _MAGIC_TABLE (mke2fs/mkntfs/mkfs.vfat on this host,
+    # see poc/tar_container_unwrapping/README.md for the full transcript,
+    # including a real log2timeline/psort run against each that produced
+    # real fs:stat events).
+    # -----------------------------------------------------------------
+
+    def test_supports_raw_ext4_disk_image(self) -> None:
+        parser = PlasoParser()
+        header = b"\x00" * 1080 + b"\x53\xef" + b"\x00" * 100
+        assert parser.supports("image.dd", "application/octet-stream", header)
+
+    def test_supports_raw_ntfs_disk_image(self) -> None:
+        parser = PlasoParser()
+        header = b"\xeb\x52\x90" + b"NTFS    " + b"\x00" * 100
+        assert parser.supports("image.dd", "application/octet-stream", header)
+
+    def test_supports_raw_fat16_disk_image(self) -> None:
+        parser = PlasoParser()
+        header = b"\x00" * 54 + b"FAT16   " + b"\x00" * 100
+        assert parser.supports("image.dd", "application/octet-stream", header)
+
+    def test_supports_raw_fat12_disk_image(self) -> None:
+        parser = PlasoParser()
+        header = b"\x00" * 54 + b"FAT12   " + b"\x00" * 100
+        assert parser.supports("image.dd", "application/octet-stream", header)
+
+    def test_supports_raw_fat32_disk_image(self) -> None:
+        parser = PlasoParser()
+        header = b"\x00" * 82 + b"FAT32   " + b"\x00" * 100
+        assert parser.supports("image.dd", "application/octet-stream", header)
+
+    def test_does_not_falsely_claim_short_header_as_raw_image(self) -> None:
+        # A short header (e.g. from a small file, or a truncated read) must
+        # not out-of-range-slice its way into a false positive.
+        parser = PlasoParser()
+        assert not parser.supports("small.bin", "application/octet-stream", b"\x00" * 20)
+
 
 # ---------------------------------------------------------------------------
 # TextChunker

@@ -950,6 +950,89 @@ partition table and Plaso extracted zero events. No recursive unwrapping exists
 for tar-inside-disk-image. Follow the `ZipArchiveParser` recursion pattern; do
 not invent a parallel mechanism. **Blocks:** E3, E5 for real-world images.
 
+**STATUS (2026-08-01): DONE.** `TarArchiveParser`
+(`src/external/parsers/tar_archive.py`) mirrors `ZipArchiveParser` exactly,
+registered first alongside it in `get_parser_registry()`: bounded
+`read(cap+1)` per member (never trusts `TarInfo.size`, which GNU sparse
+members can lie about the same way `ZipInfo.file_size` can), skips
+non-regular members (symlinks/hardlinks/devices are the documented
+`tarfile` traversal-CVE class — never resolved, just skipped), rejects
+absolute/`..` member paths, and never calls `extractall()`. Depth and the
+files/bytes budget now live in a new shared module,
+`src/external/parsers/_container_common.py`, imported by **both**
+`archive.py` and `tar_archive.py` — a real fix, not just factoring: two
+independent per-type budgets would have let a zip-in-tar-in-zip nesting
+tree reset either counter just by alternating container type, verified
+closed by two new cross-type tests in `test_tar_archive.py`
+(`test_depth_is_shared_across_tar_and_zip_nesting`,
+`test_byte_budget_is_shared_across_tar_and_zip_nesting`).
+
+Real, verified tar magic: POSIX ustar's mandated 5-byte `"ustar"` prefix at
+header offset 257 — confirmed identical across GNU tar 1.35's own CLI
+output and Python 3.14's own `tarfile` module (`GNU_MAGIC`/`POSIX_MAGIC`),
+added to `validation.py`'s `_MAGIC_TABLE`. Pre-POSIX (V7) tar has no magic
+at a fixed offset and is out of scope — real DFIR tooling (GNU tar, BSD
+tar, Python `tarfile`, UAC) defaults to ustar-compatible headers.
+
+**The raw-disk-image sub-gap (point 3 of this item's brief) was real and
+has been fixed.** Before this pass, `PlasoParser` only recognised EWF
+(E01) magic — a bare `image.dd`/`.img`/`.raw` (no partition table, no EWF
+wrapper) had no path to Plaso at all, so unwrapping the tar alone would
+not have fixed the actual incident: the tar would explode fine, then
+`image.dd` would hit "no parser found" and vanish, reproducing the same
+zero-events failure one layer deeper. Verified for real (not assumed)
+against the exact pinned `plaso==20260512` in the already-running
+`docker-celery-worker-plaso-1` container: built real ext4 (`mke2fs -d`,
+no root needed), NTFS (`mkntfs` + loop-mount), and FAT16 (`mkfs.vfat` +
+`mtools`) raw images on this host and ran real `log2timeline`/`psort`
+against each with **zero extra flags** — dfVFS's own source-analyzer
+already auto-detects all three filesystem superblocks directly ("Source
+type: storage media image", same as EWF), producing real `fs:stat` events
+with the filesystem's own dfVFS prefix (`EXT:`/`NTFS:`/`FAT:`, all three
+already present in `firecracker.py`'s `_DFVFS_TYPE_PREFIXES` from earlier
+EWF work — `_plaso_source_path()` needed zero changes). Fixed by adding the
+three real, verified magic signatures (ext2/3/4 offset 1080, NTFS offset
+3, FAT16/32 offsets 54/82) to both `PlasoParser.supports()` and
+`validation.py`'s `_MAGIC_TABLE`.
+
+A container member with a recognised type but no parser yet
+(`memory.dmp` — Volatility is E5, not built here) logs
+`tar_member_no_parser` and is skipped, mirroring `ZipArchiveParser`'s own
+pre-existing `zip_member_no_parser` precedent exactly, per this item's own
+instruction not to invent new behaviour for an already-solved case.
+
+Real end-to-end PoC (`poc/tar_container_unwrapping/`, per CLAUDE.md §F):
+built a real synthetic reproduction of the actual incident shape — a tar
+named `forensic2.E01` (the exact misleading extension from the real
+incident, proving detection is magic-byte- not extension-driven)
+containing a real 4 MiB ext4 image (`mke2fs -d`, 3 real files at 3 real
+distinct timestamps) plus a placeholder `memory.dmp` — fed through the
+**real** evidence-intake pipeline (real PKCE login, real case, real
+presigned MinIO upload, real `finalize_upload`) against the real,
+already-running dev stack. Result: 20 real OpenSearch documents, all 3
+real files recovered with their exact real timestamps (previously: zero),
+`memory.dmp` produced zero records without any error marker or evidence
+state regression, all `container_sha256` correct. Full transcript in
+`poc/tar_container_unwrapping/output.txt`/`README.md`.
+
+Verification: `~/venv/bin/python3 -m pytest tests/unit/ -q --no-cov` → 906
+passed (baseline 878 + 28 new tests: `test_tar_archive.py` ×16,
+`test_validation.py` ×6, `test_plaso_parser.py` ×6). mypy: 29 errors,
+unchanged from the pre-existing baseline (confirmed via `git stash -u`),
+none in touched files. ruff: 27 (baseline), fixed one new import-order
+finding introduced by `_container_common.py` before landing. black: clean
+on all touched files.
+
+**Not covered (honest scope boundary), flagged for whoever picks up E3/E5
+next:** `.tar.gz` (UAC's actual output format) is out of scope — gzip
+bytes at offset 0 hide the ustar header, so this parser's magic check
+correctly does not claim it; a future module would need to peel the gzip
+layer first, itself just another link in the same recursive chain. Real
+memory-dump parsing is E5, unchanged. GPT/MBR-partitioned raw images
+(distinct from this PoC's single-filesystem-directly-on-the-file shape)
+resolve via dfVFS's `TSK:` partition-table path instead — not separately
+re-verified here.
+
 ### E2 · YARA-X sandboxed runner — L1
 **Objective.** YARA-X (Rust) over libyara/`yara-python` — the latter compiles
 untrusted rule text **in-process** and libyara has a CVE history; inside an API
