@@ -41,6 +41,15 @@ with the *compressed* tar header buried inside, so it does not match this
 parser's magic check and is out of scope for this item (flagged in
 ``reviews/DFIR_Artifact_Landscape.md`` as a follow-up for UAC output,
 per docs/NEXTGEN_SOC_ROADMAP.md's E1 entry).
+
+**YARA scanning (roadmap E3).** ``extract_artifacts()`` mirrors
+``ZipArchiveParser``'s own implementation exactly -- same shared
+``_iter_members()``-shaped walk, same optional ``YaraXSandboxRunner``/
+``YaraRuleProvider`` collaborators, same "honestly disabled when unset"
+default, same per-member-not-per-rule compile+scan reasoning. See that
+class's ``extract_artifacts()`` docstring for the full rationale (including
+the real measured subprocess-launch-vs-compile numbers); not re-derived
+here to avoid the two copies drifting.
 """
 
 from __future__ import annotations
@@ -49,21 +58,26 @@ import logging
 import tarfile
 import tempfile
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.application.parsing import ForensicParser, ParserType
+from src.application.yara_rules import YaraRuleProvider
+from src.domain.artifact import StructuredArtifact
 from src.domain.evidence import Evidence
-from src.domain.timeline import TimelineRecord
+from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import ParsingError
+from src.exceptions import ParsingError, YaraRuleCompilationError, YaraScanError
 from src.external.parsers._container_common import (
     ExtractionBudget,
     budget_var,
     depth_var,
     is_unsafe_member_path,
+    stamp_artifact_source_path,
     stamp_source_path,
 )
+from src.external.sandbox.yara_x_runner import YaraRuleMatch, YaraXSandboxRunner
 
 if TYPE_CHECKING:
     from src.application.parser_registry import ParserRegistry
@@ -104,8 +118,15 @@ class TarArchiveParser(ForensicParser):
     ``MAX_CONTAINER_DEPTH`` state in ``_container_common.py``.
     """
 
-    def __init__(self, registry: ParserRegistry) -> None:
+    def __init__(
+        self,
+        registry: ParserRegistry,
+        yara_runner: YaraXSandboxRunner | None = None,
+        yara_rule_provider: YaraRuleProvider | None = None,
+    ) -> None:
         self._registry = registry
+        self._yara_runner = yara_runner
+        self._yara_rule_provider = yara_rule_provider
 
     @property
     def parser_name(self) -> str:
@@ -165,6 +186,62 @@ class TarArchiveParser(ForensicParser):
             if owns_budget:
                 budget_var.set(None)
 
+    async def extract_artifacts(
+        self,
+        stream: AsyncIterator[bytes],
+        evidence: Evidence,
+        tenant: TenantContext,
+    ) -> AsyncIterator[StructuredArtifact]:
+        """YARA-scan every tar member's raw bytes, yielding real matches.
+
+        Exact structural mirror of ``ZipArchiveParser.extract_artifacts()``
+        -- see that method's docstring for the full rationale (honest
+        disabled state when no runner/rule provider is configured, why
+        compilation happens once per member rather than once per rule, the
+        real measured numbers behind not also batching multiple members
+        into one subprocess call, and why a compile error aborts the rest
+        of this evidence file's scan while a scan error only skips one
+        member). Not re-derived here to avoid the two copies drifting.
+        """
+        if self._yara_runner is None or self._yara_rule_provider is None:
+            return
+        rule_source = await self._yara_rule_provider.get_rule_source()
+        if not rule_source:
+            return
+
+        depth = depth_var.get()
+        if depth >= MAX_CONTAINER_DEPTH:
+            logger.warning(
+                "tar_yara_scan_skipped_depth_exceeded",
+                extra={"evidence_id": str(evidence.evidence_id), "max_depth": MAX_CONTAINER_DEPTH},
+            )
+            return
+
+        budget = budget_var.get()
+        owns_budget = budget is None
+        if owns_budget:
+            budget = ExtractionBudget()
+            budget_var.set(budget)
+
+        depth_token = depth_var.set(depth + 1)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+                async for chunk in stream:
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            try:
+                async for artifact in self._scan_members_for_yara(
+                    tmp_path, evidence, tenant, budget, rule_source
+                ):
+                    yield artifact
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+        finally:
+            depth_var.reset(depth_token)
+            if owns_budget:
+                budget_var.set(None)
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -176,6 +253,23 @@ class TarArchiveParser(ForensicParser):
         tenant: TenantContext,
         budget: ExtractionBudget,
     ) -> AsyncIterator[TimelineRecord]:
+        async for member_path, data in self._iter_members(tar_path, evidence, budget):
+            async for record in self._dispatch_member(member_path, data, evidence, tenant):
+                yield record
+
+    async def _iter_members(
+        self,
+        tar_path: str,
+        evidence: Evidence,
+        budget: ExtractionBudget,
+    ) -> AsyncIterator[tuple[str, bytes]]:
+        """Yield ``(member_path, data)`` for every safe, budget-charged member.
+
+        Shared by ``parse()`` (dispatches each member to a sub-parser) and
+        ``extract_artifacts()`` (YARA-scans each member's raw bytes) --
+        exact tar analogue of ``ZipArchiveParser._iter_members``, same
+        reasoning: one copy of the container-bomb defenses, not two.
+        """
         try:
             # mode="r:" -- plain tar only, no transparent gzip/bz2/lzma
             # decompression. Our own supports() only ever claims files whose
@@ -232,8 +326,7 @@ class TarArchiveParser(ForensicParser):
                     max_total_bytes=MAX_TOTAL_UNCOMPRESSED_BYTES,
                 )
 
-                async for record in self._dispatch_member(member.name, data, evidence, tenant):
-                    yield record
+                yield member.name, data
 
     async def _dispatch_member(
         self,
@@ -263,3 +356,111 @@ class TarArchiveParser(ForensicParser):
 
         async for record in parser.parse(_one_shot(), evidence, tenant):
             yield stamp_source_path(record, member_path, evidence)
+
+    async def _scan_members_for_yara(
+        self,
+        tar_path: str,
+        evidence: Evidence,
+        tenant: TenantContext,
+        budget: ExtractionBudget,
+        rule_source: str,
+    ) -> AsyncIterator[StructuredArtifact]:
+        """YARA-scan every member yielded by :meth:`_iter_members`.
+
+        Exact tar analogue of ``ZipArchiveParser._scan_members_for_yara``:
+        scans each member's own raw bytes, and additionally recurses into a
+        member that is itself a container (zip/tar) via the same registry
+        ``_dispatch_member`` uses, so nested containers' innermost members
+        get scanned individually with a correctly nested ``source_path``.
+        """
+        record_index = 0
+        async for member_path, data in self._iter_members(tar_path, evidence, budget):
+            try:
+                scan_result = await self._yara_runner.run(rule_source, data)  # type: ignore[union-attr]
+            except YaraRuleCompilationError as exc:
+                # Ruleset-wide problem -- fails identically for every
+                # remaining member, so stop scanning the rest of this
+                # evidence file rather than repeat a guaranteed failure.
+                # Logged once, never re-raised: must never abort parse()'s
+                # independent TimelineRecord pass or evidence completion.
+                logger.warning(
+                    "yara_ruleset_compile_failed",
+                    extra={"evidence_id": str(evidence.evidence_id), "error": str(exc)},
+                )
+                return
+            except YaraScanError as exc:
+                # Specific to this one member -- log and continue, mirroring
+                # tar_member_no_parser's "one bad thing doesn't sink the
+                # container" precedent.
+                logger.warning(
+                    "yara_scan_member_failed",
+                    extra={
+                        "evidence_id": str(evidence.evidence_id),
+                        "member": member_path,
+                        "error": str(exc),
+                    },
+                )
+            else:
+                for rule_match in scan_result.matched_rules:
+                    yield self._build_yara_artifact(rule_match, member_path, evidence, record_index)
+                    record_index += 1
+
+            async for nested_artifact in self._recurse_into_nested_container(
+                member_path, data, evidence, tenant
+            ):
+                yield nested_artifact
+
+    async def _recurse_into_nested_container(
+        self,
+        member_path: str,
+        data: bytes,
+        evidence: Evidence,
+        tenant: TenantContext,
+    ) -> AsyncIterator[StructuredArtifact]:
+        basename = Path(member_path).name
+        header = data[:8192]
+        nested_parser = self._registry.get_parser(basename, "application/octet-stream", header)
+        if nested_parser is None:
+            return
+
+        async def _one_shot() -> AsyncIterator[bytes]:
+            yield data
+
+        async for artifact in nested_parser.extract_artifacts(_one_shot(), evidence, tenant):
+            yield stamp_artifact_source_path(artifact, member_path, evidence)
+
+    def _build_yara_artifact(
+        self,
+        rule_match: YaraRuleMatch,
+        member_path: str,
+        evidence: Evidence,
+        record_index: int,
+    ) -> StructuredArtifact:
+        content = {
+            "rule_identifier": rule_match.identifier,
+            "rule_namespace": rule_match.namespace,
+            "rule_tags": list(rule_match.tags),
+            "matched_strings": [
+                {
+                    "pattern_identifier": s.pattern_identifier,
+                    "offset": s.offset,
+                    "length": s.length,
+                    "xor_key": s.xor_key,
+                }
+                for s in rule_match.matched_strings
+            ],
+        }
+        provenance = EvidenceProvenance(
+            evidence_id=evidence.evidence_id,
+            case_id=evidence.metadata.case_id,
+            org_id=evidence.metadata.org_id,
+            org_alias=evidence.metadata.org_alias,
+            sha256=evidence.sha256 or "",
+            parser=self.parser_name,
+            parser_version=self.parser_version,
+            record_index=record_index,
+            ingest_timestamp=datetime.now(UTC),
+            source_path=member_path,
+            container_sha256=evidence.sha256,
+        )
+        return StructuredArtifact(kind="yara.match", content=content, kronos=provenance)

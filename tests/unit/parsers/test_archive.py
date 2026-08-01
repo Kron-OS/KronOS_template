@@ -16,17 +16,20 @@ import io
 import zipfile
 from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.application.parser_registry import ParserRegistry
+from src.domain.artifact import StructuredArtifact
 from src.domain.timeline import TimelineRecord
-from src.exceptions import ParsingError
+from src.exceptions import ParsingError, YaraRuleCompilationError
 from src.external.parsers import archive as archive_module
 from src.external.parsers.archive import ZipArchiveParser
 from src.external.parsers.chrome_history import ChromeHistoryParser
 from src.external.parsers.cloudtrail import CloudTrailParser
 from src.external.parsers.nginx import NginxParser
+from src.external.sandbox.yara_x_runner import YaraRuleMatch, YaraScanResult, YaraStringMatch
 from tests.fixtures.factories import make_evidence, make_tenant_context
 
 REAL_SAMPLES = Path(__file__).parents[2] / "fixtures" / "samples" / "real"
@@ -283,3 +286,86 @@ class TestRealE01Detection:
         header = self.FIXTURE.read_bytes()[:_HEADER_BYTES]
         assert header.startswith(b"EVF\x09\x0d\x0a\xff\x00")  # ground truth
         assert PlasoParser().supports(self.FIXTURE.name, "application/octet-stream", header)
+
+
+# ---------------------------------------------------------------------------
+# YARA scanning via extract_artifacts() (roadmap E3) -- lighter mirror of
+# test_tar_archive.py's TestTarYaraArtifactExtraction (ZipArchiveParser and
+# TarArchiveParser share the identical extract_artifacts()/_scan_members_for_
+# yara implementation shape by construction -- full coverage lives on the
+# tar side, this confirms the zip side behaves identically, not a second
+# full copy of every case).
+# ---------------------------------------------------------------------------
+
+
+class _StubRuleProvider:
+    def __init__(self, rule_source: str | None) -> None:
+        self._rule_source = rule_source
+
+    async def get_rule_source(self) -> str | None:
+        return self._rule_source
+
+
+class TestZipYaraArtifactExtraction:
+    @pytest.mark.asyncio
+    async def test_no_runner_configured_yields_nothing(self) -> None:
+        parser = ZipArchiveParser(ParserRegistry(), yara_runner=None, yara_rule_provider=None)
+        data = _build_zip({"a.txt": b"hello"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = [
+            a async for a in parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        ]
+
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_real_match_yields_structured_artifact_with_correct_provenance(self) -> None:
+        runner = AsyncMock()
+        runner.run.return_value = YaraScanResult(
+            matched_rules=(
+                YaraRuleMatch(
+                    identifier="evil_rule",
+                    namespace="default",
+                    tags=(),
+                    matched_strings=(YaraStringMatch(pattern_identifier="$a", offset=2, length=5),),
+                ),
+            )
+        )
+        parser = ZipArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("rule x {...}"),
+        )
+        data = _build_zip({"payload.bin": b"xxevilxx"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts: list[StructuredArtifact] = [
+            a async for a in parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        ]
+
+        assert len(artifacts) == 1
+        assert artifacts[0].kind == "yara.match"
+        assert artifacts[0].kronos.source_path == "payload.bin"
+        assert artifacts[0].kronos.org_alias == evidence.metadata.org_alias
+
+    @pytest.mark.asyncio
+    async def test_compile_error_does_not_raise(self) -> None:
+        runner = AsyncMock()
+        runner.run.side_effect = YaraRuleCompilationError("bad syntax")
+        parser = ZipArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("not valid {{{"),
+        )
+        data = _build_zip({"a.txt": b"one"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = [
+            a async for a in parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        ]
+
+        assert artifacts == []

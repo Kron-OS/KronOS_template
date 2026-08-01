@@ -1142,6 +1142,85 @@ admissible statement; *"matched somewhere in a 250 MB blob"* is not. Emit
 `StructuredArtifact(kind="yara.match")` with matched-string offsets so an
 examiner can independently verify. **Depends on:** E1, E2.
 
+**STATUS (2026-08-01): DONE.** `ZipArchiveParser`/`TarArchiveParser` both
+override `extract_artifacts()` (the existing, previously-unoverridden
+`ForensicParser` hook, §G.1): shared container-walk logic was refactored
+out of `parse()`'s own `_walk_zip`/`_walk_tar` into a common
+`_iter_members()` so the same container-bomb defenses (path-traversal
+rejection, bounded reads, shared `ExtractionBudget`) back both passes —
+never two copies that could drift. Each member's raw bytes are scanned via
+E2's `YaraXSandboxRunner` against rule text from a new, deliberately
+minimal `YaraRuleProvider` ABC (`src/application/yara_rules.py`) +
+`DirectoryYaraRuleProvider` (reads `*.yar` files from a directory) — E4
+(ruleset signing/lifecycle) is explicitly not built here; both collaborators
+default to `None`/honestly-disabled, matching the `RFC3161TimestampService`
+pattern already used elsewhere. A rule-*compilation* error aborts the rest
+of that evidence file's scan (fails identically for every member); a
+*scan* error skips just the one member — mirrors the
+`zip_member_no_parser`/`tar_member_no_parser` "one bad thing doesn't sink
+the container" precedent. A container member that is itself a nested
+container is both scanned as raw bytes *and* recursed into (via the
+registry's own registered parser instances — this only works end to end
+when every container parser registered in the DI container shares the same
+`yara_runner`/`yara_rule_provider`, confirmed for real in the PoC below
+after first reproducing the bug when it wasn't true).
+
+This item was dispatched to a subagent that died on a session-wide spend
+limit while mid-edit on `reset_dependencies()` — real, substantial `src/`
+progress existed (the full `extract_artifacts()` implementation on both
+parsers, the rule-provider abstraction, partial DI wiring) but no tests, no
+PoC, and one incomplete edit. The orchestrator (this session) verified
+per §6.2, found the design sound, and finished directly:
+- Completed the interrupted `reset_dependencies()` edit (the two new
+  globals were being set in `configure_dependencies()` but never reset
+  between tests — a real test-isolation gap).
+- Found and fixed a real, minor provenance gap: `_build_yara_artifact` in
+  both parsers omitted `org_alias` (every other real `EvidenceProvenance`
+  construction site in this codebase, e.g. `plaso.py`, sets it from
+  `evidence.metadata.org_alias`) — fixed in both.
+- Wrote the unit tests the subagent hadn't reached (12 in
+  `test_tar_archive.py`, 3 lighter mirror tests in `test_archive.py`, 5 in
+  a new `test_yara_rules.py`).
+- Built the real PoC (`poc/yara_recursion_scanning/`) and, on the first
+  run, found a real bug **in the PoC itself** (not `src/`): registering a
+  `TarArchiveParser` without the yara collaborators into the registry,
+  then calling `extract_artifacts()` on a separately-constructed,
+  correctly-configured `ZipArchiveParser` *not* in the registry — when it
+  recursed into a nested tar member, `_recurse_into_nested_container`
+  resolved the registry's own unconfigured instance, so the inner member
+  was silently never scanned. Fixed by registering both parsers with the
+  same collaborators (the real `get_parser_registry()` wiring already does
+  this correctly) — 12/12 checks passed once corrected.
+- The PoC's real cost measurement (scenario (c)) also corrected a
+  too-optimistic docstring claim: the *complete* `YaraXSandboxRunner.run()`
+  round trip (real worker launch + `yara_x` import + rule/target file I/O)
+  measured ~58ms per member on this host, not the ~16ms an earlier,
+  narrower in-process-only measurement implied. The conclusion is
+  unchanged (even a 500-member container adds only ~29s, still well inside
+  a HEAVY Celery task's budget) but the docstring now states the real,
+  complete number, not the optimistic one.
+- Independently re-ran the full checklist: **935 passed** (920 D5/E1/E2
+  baseline + 15 new), `mypy` **29** (baseline, zero new),
+  `ruff` **27** (one new I001 import-order finding introduced then fixed,
+  back to baseline), `black` clean on all touched files.
+
+**Explicitly flagged, not yet done:**
+- **Plaso-internal per-file scanning is out of scope and confirmed real**:
+  Plaso's own pipeline doesn't expose raw per-file bytes for scanning (it
+  only streams `TimelineRecord`-shaped events *about* files, not their
+  content) — this item only scans container members `ZipArchiveParser`/
+  `TarArchiveParser` themselves unpack, not files Plaso extracts from
+  inside a disk image during its own dfVFS-based parsing. A real, larger,
+  separate integration effort if ever needed.
+- **Nothing wires a real ruleset into production DI** — `configure_dependencies()`
+  accepts `yara_runner`/`yara_rule_provider` but `startup.py` never passes
+  anything non-`None` (E4 doesn't exist yet to provide a real signed
+  ruleset) — this is correct, not a gap, per the "honestly disabled" idiom.
+- `YaraXSandboxRunner.run()` recompiles the combined rule source on every
+  call (per-member, not per-rule, per `YaraRuleProvider`'s own docstring) —
+  fine at measured real cost, flagged as a checked-not-guessed follow-up if
+  a much larger real container ever makes this measurement stale.
+
 ### E4 · Ruleset lifecycle (signed, versioned) — L1
 **Objective.** Same trust model as C3, applied to YARA rulesets.
 

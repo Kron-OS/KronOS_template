@@ -28,6 +28,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from src.domain.artifact import StructuredArtifact
 from src.domain.evidence import Evidence
 from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.exceptions import ParsingError
@@ -112,3 +113,23 @@ def stamp_source_path(
         update={"source_path": full_path, "container_sha256": evidence.sha256}
     )
     return record.model_copy(update={"kronos": updated_kronos})
+
+
+def stamp_artifact_source_path(
+    artifact: StructuredArtifact, member_path: str, evidence: Evidence
+) -> StructuredArtifact:
+    """``StructuredArtifact`` analogue of :func:`stamp_source_path` (roadmap E3).
+
+    Same "prepend this level's member_path, extend rather than overwrite"
+    behavior as the ``TimelineRecord`` version above -- needed now that
+    container parsers produce ``StructuredArtifact`` output too (YARA
+    matches), not just ``TimelineRecord``, when a container member is itself
+    a nested container that ``ZipArchiveParser``/``TarArchiveParser``
+    recursively re-scans.
+    """
+    existing = artifact.kronos.source_path
+    full_path = f"{member_path}/{existing}" if existing else member_path
+    updated_kronos = artifact.kronos.model_copy(
+        update={"source_path": full_path, "container_sha256": evidence.sha256}
+    )
+    return artifact.model_copy(update={"kronos": updated_kronos})

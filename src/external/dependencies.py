@@ -58,6 +58,7 @@ from src.application.sealing_trigger_policy import SealingTriggerPolicy
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator, default_validator_chain
+from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
 from src.external.middleware.step_up_store import (
@@ -66,6 +67,7 @@ from src.external.middleware.step_up_store import (
     TicketStore,
 )
 from src.external.middleware.tenant_context import get_tenant_context as get_tenant_context
+from src.external.sandbox.yara_x_runner import YaraXSandboxRunner
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,16 @@ _evidence_storage: EvidenceStorage | None = None
 _scanner: AntivirusScanner = NoOpScanner()
 _task_queue: TaskQueue = InMemoryTaskQueue()
 _parser_registry: ParserRegistry | None = None
+# Optional YARA-in-recursion-path collaborators (roadmap E3). Both default to
+# None -- "no runner/no ruleset configured" is an honest disabled state
+# (ZipArchiveParser/TarArchiveParser.extract_artifacts() yield nothing), the
+# same pattern already used for _timestamp_service/_detector_provisioner
+# below. E4 (ruleset signing/lifecycle) is what would give a real caller
+# something non-empty to actually pass as yara_rule_provider in production;
+# until then, leaving these unset here is correct, not a gap to "fix" with a
+# fake default ruleset.
+_yara_runner: YaraXSandboxRunner | None = None
+_yara_rule_provider: YaraRuleProvider | None = None
 _opensearch_client: AbstractTimelineIndex = InMemoryOpenSearchClient()
 _max_upload_bytes: int = 1_073_741_824
 _presigned_expiry: int = 900
@@ -391,7 +403,7 @@ def get_parser_registry() -> ParserRegistry:
         # parser, and its own recursive get_parser() calls (zip-in-zip) rely
         # on finding itself in this same registry -- see archive.py's
         # docstring for the full extraction/re-dispatch design.
-        registry.register(ZipArchiveParser(registry))
+        registry.register(ZipArchiveParser(registry, _yara_runner, _yara_rule_provider))
         # Also registered FIRST, alongside ZipArchiveParser (roadmap E1):
         # claims the tar/ustar magic before any other parser gets a chance.
         # Relative order between these two containers themselves doesn't
@@ -400,7 +412,7 @@ def get_parser_registry() -> ParserRegistry:
         # but both must precede PlasoParser/anything else that could
         # otherwise misclaim the raw container bytes. See tar_archive.py's
         # module docstring for the full design.
-        registry.register(TarArchiveParser(registry))
+        registry.register(TarArchiveParser(registry, _yara_runner, _yara_rule_provider))
         registry.register(CloudTrailParser())
         registry.register(NginxParser())
         # SuricataEveParser keys on EVE JSON's own "event_type"+"flow_id"
@@ -678,6 +690,8 @@ def configure_dependencies(
     pack_signature_verifier: PackSignatureVerifier | None = None,
     custom_rule_client: CustomRuleClient | None = None,
     custom_rule_detector_binder: CustomRuleDetectorBinder | None = None,
+    yara_runner: YaraXSandboxRunner | None = None,
+    yara_rule_provider: YaraRuleProvider | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -690,6 +704,7 @@ def configure_dependencies(
     global _findings_client, _detection_repository
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
+    global _yara_runner, _yara_rule_provider
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -728,6 +743,8 @@ def configure_dependencies(
     _pack_signature_verifier = pack_signature_verifier
     _custom_rule_client = custom_rule_client
     _custom_rule_detector_binder = custom_rule_detector_binder
+    _yara_runner = yara_runner
+    _yara_rule_provider = yara_rule_provider
 
 
 def reset_dependencies() -> None:
@@ -743,6 +760,7 @@ def reset_dependencies() -> None:
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _sealed_batch_repository, _batch_sealing_service
+    global _yara_runner, _yara_rule_provider
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -774,3 +792,5 @@ def reset_dependencies() -> None:
     _custom_rule_detector_binder = None
     _sealed_batch_repository = InMemorySealedBatchRepository()
     _batch_sealing_service = None
+    _yara_runner = None
+    _yara_rule_provider = None

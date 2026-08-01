@@ -1,0 +1,43 @@
+==============================================================================
+PoC: YARA scanning in the recursion path -> StructuredArtifact (roadmap E3)
+==============================================================================
+
+==============================================================================
+SCENARIO (a): real zip container, real YARA-X match + nested tar recursion
+==============================================================================
+extract_artifacts() yielded 3 real StructuredArtifact(s)
+  kind=yara.match source_path=evil.bin rule=finds_evil_marker matched_strings=[{'pattern_identifier': '$marker', 'offset': 4, 'length': 18, 'xor_key': None}]
+  kind=yara.match source_path=nested.tar rule=finds_evil_marker matched_strings=[{'pattern_identifier': '$marker', 'offset': 519, 'length': 18, 'xor_key': None}]
+  kind=yara.match source_path=nested.tar/nested_evil.bin rule=finds_evil_marker matched_strings=[{'pattern_identifier': '$marker', 'offset': 7, 'length': 18, 'xor_key': None}]
+[PASS] exactly 3 real matches (evil.bin, nested.tar itself, and its recursed inner member)
+[PASS] real source_paths are evil.bin + nested.tar + its correctly-nested inner member
+
+real Postgres structured_artifacts rows for this evidence_id: 3
+  source_path=evil.bin container_sha256=26f04c0fc5a8bbd6... org_id=def3cb58-2797-42b5-be78-697cde2bd129
+  source_path=nested.tar container_sha256=26f04c0fc5a8bbd6... org_id=def3cb58-2797-42b5-be78-697cde2bd129
+  source_path=nested.tar/nested_evil.bin container_sha256=26f04c0fc5a8bbd6... org_id=def3cb58-2797-42b5-be78-697cde2bd129
+[PASS] real Postgres has exactly 3 rows for this evidence_id
+[PASS] every real row's container_sha256 matches the real top-level evidence sha256
+[PASS] every real row's org_id matches the real tenant org_id (never from payload)
+[PASS] real byte offset for evil.bin's match is correct (expected 4)
+[PASS] real matched length equals len('EVIL_MARKER_STRING')
+[PASS] nested-container member's source_path is correctly prefixed with the outer member path
+
+==============================================================================
+SCENARIO (b): malformed ruleset -- clean compile-error abort, no crash
+==============================================================================
+yara_ruleset_compile_failed
+[PASS] malformed ruleset produces zero artifacts, no exception raised
+[PASS] parse()'s own TimelineRecord output is unaffected by a broken YARA ruleset
+
+==============================================================================
+SCENARIO (c): real measured subprocess-launch/compile/scan cost
+==============================================================================
+cold `python3 -c pass` subprocess launch: 12.8ms
+real end-to-end YaraXSandboxRunner.run() (subprocess launch + compile + scan): 57.9ms
+[PASS] a real end-to-end scan completes well within a HEAVY Celery task's budget (measured 57.9ms per member)
+[PASS] YaraXSandboxRunner.run() actually returned the real match in this timing run
+
+==============================================================================
+PoC PASSED -- all 12 checks passed against real Postgres + real YARA-X.
+==============================================================================

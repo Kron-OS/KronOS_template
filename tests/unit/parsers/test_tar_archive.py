@@ -19,18 +19,21 @@ import tarfile
 import zipfile
 from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.application.parser_registry import ParserRegistry
+from src.domain.artifact import StructuredArtifact
 from src.domain.timeline import TimelineRecord
-from src.exceptions import ParsingError
+from src.exceptions import ParsingError, YaraRuleCompilationError, YaraScanError
 from src.external.parsers import archive as archive_module
 from src.external.parsers import tar_archive as tar_archive_module
 from src.external.parsers.archive import ZipArchiveParser
 from src.external.parsers.cloudtrail import CloudTrailParser
 from src.external.parsers.nginx import NginxParser
 from src.external.parsers.tar_archive import TarArchiveParser
+from src.external.sandbox.yara_x_runner import YaraRuleMatch, YaraScanResult, YaraStringMatch
 from tests.fixtures.factories import make_evidence, make_tenant_context
 
 _HEADER_BYTES = 8192
@@ -379,3 +382,186 @@ class TestSharedCrossContainerTypeDefense:
         assert isinstance(parser, TarArchiveParser)
         with pytest.raises(ParsingError, match="total extracted bytes"):
             await _drain(parser.parse(_bytes_stream(outer_tar), evidence, tenant))
+
+
+# ---------------------------------------------------------------------------
+# YARA scanning via extract_artifacts() (roadmap E3) -- mocks only the real
+# external boundary (YaraXSandboxRunner's own subprocess call), not domain
+# objects, per CLAUDE.md B.5. The real, live YARA-X end-to-end reproduction
+# lives in poc/yara_recursion_scanning/.
+# ---------------------------------------------------------------------------
+
+
+async def _drain_artifacts(it: AsyncIterator[StructuredArtifact]) -> list[StructuredArtifact]:
+    return [a async for a in it]
+
+
+class _StubRuleProvider:
+    def __init__(self, rule_source: str | None) -> None:
+        self._rule_source = rule_source
+
+    async def get_rule_source(self) -> str | None:
+        return self._rule_source
+
+
+def _match_result(
+    identifier: str = "evil_rule", offset: int = 3, length: int = 4
+) -> YaraScanResult:
+    return YaraScanResult(
+        matched_rules=(
+            YaraRuleMatch(
+                identifier=identifier,
+                namespace="default",
+                tags=("malware",),
+                matched_strings=(
+                    YaraStringMatch(pattern_identifier="$a", offset=offset, length=length),
+                ),
+            ),
+        )
+    )
+
+
+class TestTarYaraArtifactExtraction:
+    @pytest.mark.asyncio
+    async def test_no_runner_configured_yields_nothing(self) -> None:
+        parser = TarArchiveParser(ParserRegistry(), yara_runner=None, yara_rule_provider=None)
+        data = _build_tar({"a.txt": b"hello"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_no_rules_configured_yields_nothing(self) -> None:
+        runner = AsyncMock()
+        parser = TarArchiveParser(
+            ParserRegistry(), yara_runner=runner, yara_rule_provider=_StubRuleProvider(None)
+        )
+        data = _build_tar({"a.txt": b"hello"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        assert artifacts == []
+        runner.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_match_yields_structured_artifact_with_correct_provenance(self) -> None:
+        runner = AsyncMock()
+        runner.run.return_value = _match_result()
+        parser = TarArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("rule evil_rule {...}"),
+        )
+        data = _build_tar({"payload.bin": b"xxxevilxxx"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        assert len(artifacts) == 1
+        artifact = artifacts[0]
+        assert artifact.kind == "yara.match"
+        assert artifact.content["rule_identifier"] == "evil_rule"
+        assert artifact.content["matched_strings"][0]["offset"] == 3
+        assert artifact.content["matched_strings"][0]["length"] == 4
+        assert artifact.kronos.source_path == "payload.bin"
+        assert artifact.kronos.container_sha256 == evidence.sha256
+        assert artifact.kronos.org_id == evidence.metadata.org_id
+        assert artifact.kronos.org_alias == evidence.metadata.org_alias
+        assert artifact.kronos.case_id == evidence.metadata.case_id
+
+    @pytest.mark.asyncio
+    async def test_no_match_yields_no_artifact(self) -> None:
+        runner = AsyncMock()
+        runner.run.return_value = YaraScanResult(matched_rules=())
+        parser = TarArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("rule x {...}"),
+        )
+        data = _build_tar({"benign.txt": b"nothing interesting"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_compile_error_aborts_remaining_scan_but_does_not_raise(self) -> None:
+        runner = AsyncMock()
+        runner.run.side_effect = YaraRuleCompilationError("bad syntax")
+        parser = TarArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("not valid {{{"),
+        )
+        data = _build_tar({"a.txt": b"one", "b.txt": b"two"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        assert artifacts == []
+        # Only the first member is attempted -- a ruleset-wide compile error
+        # fails identically for every remaining member, so scanning stops
+        # rather than repeating a guaranteed failure per member.
+        runner.run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_scan_error_on_one_member_does_not_abort_the_rest(self) -> None:
+        runner = AsyncMock()
+        runner.run.side_effect = [YaraScanError("subprocess hiccup"), _match_result()]
+        parser = TarArchiveParser(
+            ParserRegistry(),
+            yara_runner=runner,
+            yara_rule_provider=_StubRuleProvider("rule x {...}"),
+        )
+        data = _build_tar({"a_broken.bin": b"one", "b_evil.bin": b"two"})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        artifacts = await _drain_artifacts(
+            parser.extract_artifacts(_bytes_stream(data), evidence, tenant)
+        )
+
+        # First member's scan error is skipped; second member's real match
+        # still comes through -- one bad member doesn't sink the rest.
+        assert len(artifacts) == 1
+        assert artifacts[0].kronos.source_path == "b_evil.bin"
+        assert runner.run.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_extract_artifacts_never_touches_parse_output(self) -> None:
+        """extract_artifacts() and parse() are independent passes over the
+        same container -- a YARA match/error must never affect the real
+        TimelineRecord output parse() produces for the very same evidence."""
+        runner = AsyncMock()
+        runner.run.side_effect = YaraScanError("boom")
+        registry = ParserRegistry()
+        registry.register(NginxParser())
+        parser = TarArchiveParser(
+            registry, yara_runner=runner, yara_rule_provider=_StubRuleProvider("rule x {...}")
+        )
+        data = _build_tar({"access.log": _ACCESS_LOG})
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        records = await _drain(parser.parse(_bytes_stream(data), evidence, tenant))
+
+        assert len(records) == 1  # parse() unaffected by extract_artifacts()'s own concerns
