@@ -1,0 +1,115 @@
+==============================================================================
+D6 PoC: real mTLS collector -> Redis stream -> sealed batch -> ECS index -> SA detector -> Detection
+==============================================================================
+
+==============================================================================
+0. Real TSA responder + real step-ca client cert issuance
+==============================================================================
+Real local TSA responder listening on http://127.0.0.1:20323
+[PASS] real step CLI reachable in the running step-ca container -- Smallstep CLI/0.30.2 (linux/amd64)
+[PASS] real client cert issued for this run's collector identity (org_id/source_id)
+[PASS] real server cert issued for the mTLS listener itself
+
+==============================================================================
+1. Start the real mTLS collector listener (D2) as a subprocess
+==============================================================================
+[PASS] real mTLS listener process is up and accepts TLS connections
+
+==============================================================================
+2. ROUND 1: real mTLS POST of benign events (establishes the real index)
+==============================================================================
+[PASS] round 1: real mTLS collector ingest accepted (202) -- status=202 body={"results":[{"accepted":true,"duplicate":false,"messageId":"1785569814848-0"},{"accepted":true,"duplicate":false,"messageId":"1785569814848-1"},{"accepted":true,"duplicate":false,"messageId":"17855698
+[PASS] round 1: all 3 real events accepted, none flagged duplicate
+
+==============================================================================
+3. Confirm round-1 events landed on the REAL Redis stream (D1)
+==============================================================================
+[PASS] real Redis XRANGE shows exactly 3 entries after round 1 -- count=3
+[PASS] real stream entry's payload is genuinely near wall-clock 'now' (not a fixed historical constant) -- ts=1785569814.8363652 now=1785569814.8540142
+
+==============================================================================
+4. Real BatchSealingService.seal_pending() -- batch #1 (D3)
+==============================================================================
+[PASS] real batch #1 sealed (real WORM manifest + real TSA token + real Postgres row)
+sealed batch #1: batch_id=e66babf9-2235-4de3-9c35-f97d76f49cae event_count=3
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch_security_disabled_skipping_tenant_role
+
+==============================================================================
+5. Real StreamNormalizationService.normalize_batch() -- batch #1 -> real OpenSearch (D4)
+==============================================================================
+[PASS] real normalize_batch() indexed all 3 round-1 events, 0 dead-lettered -- indexed=3 dead_lettered=0
+[PASS] real OpenSearch _search on the new stream index returns 200 -- {"took":1,"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"total":{"value":3,"relation":"eq"},"max_score":1.0,"hits":[{"_index":"kronos-poc-l3-chain-152f74f2-stream-zeek-conn-log-202608","_id":"eae35dcf80725c13f31617c11e96b03d2b13162f","_score":1.0,"_source":{"@
+[PASS] real OpenSearch index contains exactly 3 documents after round 1 -- count=3
+
+==============================================================================
+6. Real SA field-alias mapping for 'network' log type (C1's own verified table)
+==============================================================================
+[PASS] real SA field-alias mapping POST accepted (200) -- {"acknowledged":true}
+
+==============================================================================
+7. Real per-org SA detector created AFTER the index exists: kronos-poc-l3-chain-152f74f2-network-detector
+==============================================================================
+[PASS] real prepackaged 'network' rules fetched, including our known-good target rule -- count=38 target_present=True
+[PASS] real detector created (201), AFTER round-1 index already existed -- {"_id":"58xBvJ8BG52zb-VTMnR8","_version":1,"detector":{"name":"kronos-poc-l3-chain-152f74f2-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"D6 L3 chain PoC -- scoped to this run's own fresh s
+real detector created: kronos-poc-l3-chain-152f74f2-network-detector id=58xBvJ8BG52zb-VTMnR8 indices=kronos-poc-l3-chain-152f74f2-stream-zeek-conn-log-*
+
+==============================================================================
+8. ROUND 2 (strictly AFTER detector creation): real mTLS POST including the trigger event
+==============================================================================
+[PASS] round 2: real mTLS collector ingest accepted (202) -- status=202
+[PASS] round 2: both real events accepted, none flagged duplicate
+[PASS] round 2's 2 events landed on the same real cert-derived Redis stream key -- total=5
+
+==============================================================================
+9. Real BatchSealingService.seal_pending() -- batch #2 (the trigger event)
+==============================================================================
+[PASS] real batch #2 sealed (contains the RDP-shaped trigger event)
+sealed batch #2: batch_id=c4307a28-36ae-45ee-80d0-c07b79465232 event_count=2
+[PASS] real normalize_batch() indexed both round-2 events, 0 dead-lettered -- indexed=2 dead_lettered=0
+[PASS] real OpenSearch index now also has the 2 round-2 documents (5 total across both batches) -- count=2
+[PASS] the real indexed trigger document's source.ip alias-resolves correctly (public IP, not private) -- hits2 sources.ip=['10.0.0.5', '203.0.113.77']
+
+==============================================================================
+10. Wait for the real SA monitor's own scheduled execution to actually fire
+==============================================================================
+findings poll (monitor=kronos-poc-l3-chain-152f74f2-network-detector): total=0 (elapsed=0s)
+findings poll (monitor=kronos-poc-l3-chain-152f74f2-network-detector): total=0 (elapsed=20s)
+findings poll (monitor=kronos-poc-l3-chain-152f74f2-network-detector): total=0 (elapsed=40s)
+findings poll (monitor=kronos-poc-l3-chain-152f74f2-network-detector): total=2 (elapsed=60s)
+[PASS] at least one real SA finding produced for this run's own fresh detector -- total=2
+  real finding 18a2e892-4046-43e7-ac50-e9fa6ea261bc: monitor=kronos-poc-l3-chain-152f74f2-network-detector related_doc_ids=['e6ed1531f01e9434b53613f1b8d1d68ddf4eaa6a'] queries=[['high', 'network', 'attack.t1021.001']]
+  real finding 83c55d7f-2212-4292-b11c-7b3ab828eaad: monitor=kronos-poc-l3-chain-152f74f2-network-detector related_doc_ids=['41f626db220421ada7bdd040df464b7c1b8149c7'] queries=[['high', 'network', 'attack.t1021.001']]
+[PASS] at least one real finding carries our real target rule's ATT&CK tag -- [['high', 'network', 'attack.t1021.001'], ['high', 'network', 'attack.t1021.001']]
+
+==============================================================================
+11. Real DetectionSyncService.sync_org_findings() -- unmodified src/ code (C4)
+==============================================================================
+[PASS] real sync_org_findings() created at least one new Detection row -- created=2
+[PASS] at least one real Detection row exists for this run's own org_id -- count=2
+[PASS] every real Detection row's org_id == the syncing tenant's real org_id (computed, never read from the finding)
+[PASS] every real Detection row's case_id is None (stream-sourced, correctly un-triaged -- honest, not fabricated)
+[PASS] at least one real Detection row carries the real ATT&CK tag -- ['attack.t1021.001']
+
+==============================================================================
+12. Honest provenance-linkage check: Detection -> matched_document_ids -> real OpenSearch doc -> kronos.batch_id/event_offset
+==============================================================================
+[PASS] a real Detection row's matched_document_ids includes the real trigger document's own _id -- trigger_doc_id=41f626db220421ada7bdd040df464b7c1b8149c7
+[PASS] real GET of that exact document succeeds
+[PASS] the linked document's real kronos.batch_id matches our real sealed batch #2 -- doc kronos.batch_id=c4307a28-36ae-45ee-80d0-c07b79465232
+[PASS] the linked document's real kronos.source_id matches our real source_id -- doc kronos.source_id=zeek-conn-log
+[PASS] the linked document's real kronos.event_offset is a valid int (>=0) within batch #2 -- event_offset=1
+  Honest linkage: Detection 913ffa73-e952-4f38-b24c-5c81a8a2b80d -> finding 83c55d7f-2212-4292-b11c-7b3ab828eaad -> OpenSearch doc 41f626db220421ada7bdd040df464b7c1b8149c7 -> StreamProvenance(batch_id=c4307a28-36ae-45ee-80d0-c07b79465232, source_id=zeek-conn-log, event_offset=1)
+
+==============================================================================
+13. Idempotent re-run (same precedent as C4/C5)
+==============================================================================
+[PASS] re-running sync creates zero new rows for the same real findings (idempotency) -- created=0
+
+==============================================================================
+Cleanup: remove the throwaway detector (not part of any committed src/ path)
+==============================================================================
+NOTE: real Redis stream entries, real sealed batches (Postgres+MinIO+TSA), real OpenSearch documents, real findings, and real Detection/audit_log rows this run created are deliberately left in place as inspectable proof, matching C4/C5's own precedent.
+
+35 passed, 0 failed

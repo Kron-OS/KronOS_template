@@ -899,6 +899,46 @@ the default page-and-continue behavior.
 ### D6 · L3 chain: collector → stream → seal → index → detect
 **Depends on:** D2, D3, D4, C4.
 
+**STATUS (2026-08-01): DONE.** Verification-only item, same shape as C5
+(`poc/chain_detect_from_evidence/`) but for the continuous-telemetry path:
+chains D1–D5/C1/C2/C4's already-separately-verified real components
+together with no new `src/` code needed. `poc/l3_chain_collector_to_detect/`
+— 35/35 checks against the real dev stack: a real mTLS POST (D2) → real
+Redis stream (D1) → real `BatchSealingService.seal_pending()` (D3, real
+WORM/TSA/Postgres) → real `StreamNormalizationService.normalize_batch()`
+(D4, real OpenSearch) → a real per-org Security Analytics detector (C1/C2)
+that actually **fires** on the resulting document → real
+`DetectionSyncService.sync_org_findings()` (C4) writing a real `Detection`
+row → an **honest provenance-linkage check** following that `Detection`'s
+`matched_document_ids` back to the real OpenSearch document and confirming
+its `kronos.batch_id`/`source_id`/`event_offset` match the real sealed
+batch — proving the chain is genuinely connected end to end, not five
+independently-working pieces.
+
+Correctly avoided C5's own documented pitfall (SA monitors evaluate
+documents by whether `@timestamp` falls within a recent execution window,
+not arrival order): every synthetic event used real wall-clock `time.time()`
+timestamps, confirmed in the run itself, not the fixed 2025-01-01 constant
+D4/D5's own narrower PoCs use. Additionally hedged against a second
+plausible mechanism (a monitor baselining a per-shard cursor at creation
+time) by running two rounds — benign events before the detector exists,
+then the real trigger event strictly after — satisfying either candidate
+mechanism rather than guessing at one. Targeted C1's own already-verified
+real firing prepackaged rule (`network`/"Publicly Accessible RDP Service",
+`attack.t1021.001`) rather than fabricating a new one.
+
+No `src/` changes were needed (confirmed via `git status` before
+committing) — every hop worked correctly on the first real run, including
+the honest linkage check, using `Detection.matched_document_ids` (already
+existed from C4) with no new provenance field required.
+
+**Explicitly flagged, not yet done:** same nothing-schedules-this-
+automatically follow-up already flagged by D3/D4/D5 (no beat task for
+`seal_pending()`/`normalize_batch()`/`sync_org_findings()` yet — this PoC
+drives each stage manually); this PoC targeted one specific known-good rule
+and does not attempt to measure broader continuous-telemetry rule coverage
+(a C1-style measurement exercise, not this item's job).
+
 ---
 
 ## M4 — Artifact detection
