@@ -1407,6 +1407,99 @@ scope per this item's own brief).
 enrichers). Enrichment is **derived** — must not overwrite original event
 fields; goes in a separate namespace so the raw record stays pristine.
 
+**STATUS (2026-08-02): DONE.** `Enricher` ABC + `EnrichmentPipeline`
+(`src/application/enrichment.py`) mirror this codebase's established
+ABC+registry extensibility idiom (`FieldMapping`/`ECSFieldMappingRegistry`,
+`StreamSourceNormalizer`/`StreamSourceNormalizerRegistry`). Two real design
+decisions, both deliberate, not defaults:
+
+1. **Derived data lives in `TimelineRecord.extra`, namespaced
+   `"enrichment.<source_name>."`, not a new top-level domain field.**
+   `extra` already exists precisely for this (every parser's own
+   dotted-key convention) and `ECSNormalizer` already flattens it into the
+   indexed document — a new field would touch the normalizer, the index
+   template, and every construction site across six parsers for no real
+   benefit over reusing the existing mechanism. `EnrichmentPipeline.enrich()`
+   enforces the namespace contract itself: a key not prefixed with the
+   calling enricher's own `source_name`, or one that would collide with an
+   existing key, is logged and dropped, never silently applied.
+2. **Enrichment runs once, at ingest, before a record becomes an
+   immutable, indexed artifact** (wired into
+   `ParsingOrchestrationService.execute_parse`, right after
+   `_annotate_records`, before `TimelineIngestionService.ingest_records`)
+   — not as a job that reaches back and edits already-indexed OpenSearch
+   documents. This platform's own chain-of-custody principle (WORM
+   evidence, the append-only audit log, immutable sealed batches) treats
+   an indexed forensic record as never mutated after the fact; enrichment
+   computed before indexing is no different in kind from any other
+   derived field a parser or the ECS field-mapping registry (A2) already
+   attaches. `EnrichmentPipeline.enrich()` is deliberately pure/stateless
+   (record + org_id in, a new record out) specifically so a *future*
+   scheduled re-enrichment pass can re-run it against original records
+   without ever mutating them — proven for real (see PoC below), not
+   built as a scheduled job this pass.
+
+One real, concrete, working enricher: `AssetContextEnricher`
+(`src/application/asset_enrichment.py`) + `Asset`/`AssetRepository`/
+`PostgresAssetRepository` (`src/domain/asset.py`,
+`src/adapter/repository/asset.py`, `postgres_asset.py`) — a real,
+org-scoped, **mutable** asset inventory (deliberately *not* append-only
+like this codebase's other Postgres-backed domain rows — an asset's
+criticality/owner legitimately changes over time; it is not itself
+forensic evidence). Looks up a `TimelineRecord.host_name` and attaches
+`enrichment.asset.{asset_id,criticality,owner,environment}`.
+Identity-via-Keycloak-admin-API and vulnerability-via-external-feed were
+both explicitly out of scope for this pass (no existing Keycloak admin
+REST client in this codebase to build on; an external feed is arguably
+F2's own territory) — one real source proves the extensibility mechanism,
+matching this session's own repeated precedent (E2/E3/D4 each shipped
+exactly one real concrete instance too).
+
+PoC: `poc/enrichment_pipeline/` — 19/19 checks against real Postgres:
+(a) a real seeded asset enriches a matching record with every ORIGINAL
+field individually verified byte-for-byte unchanged; (b) a non-matching
+record gets back the exact same object, an honest no-op, never a
+fabricated match; (c) real cross-org isolation; (d) updating the real
+asset in Postgres and re-running enrichment against the *same* original
+record object reflects the update while the original's own fields stay
+identical — the concrete proof behind design decision 2 above; (e) the
+same pipeline wired into a real `ParsingOrchestrationService` +
+`TimelineIngestionService` call, confirming the enrichment fields land at
+the correct nested `enrichment.asset.*` path in the actual indexed ECS
+document.
+
+This item's dispatched subagent died on a genuine session-wide spend
+limit very early (still reading established patterns, before writing any
+code) — real-state check found nothing written yet (clean git status, no
+`poc/` dir), so the orchestrator implemented it directly rather than
+losing time to a redispatch. One real bug was found and fixed while
+writing the new orchestration-level unit test (not by the PoC, which
+passed first try): a stray, uninitialized `count += 1` in the new
+`_apply_enrichment()` wrapper generator (leftover from drafting against
+the unrelated `_annotate_records` function) — caught immediately by the
+real end-to-end test raising `UnboundLocalError`, not a silent issue.
+Also fixed a real mypy finding in `PostgresAssetRepository.upsert()`
+(chaining `.returning()` onto an `ON CONFLICT DO UPDATE` statement doesn't
+type-check cleanly with this SQLAlchemy version) by switching to a
+separate `SELECT` after the upsert, mirroring
+`postgres_yara_rule_pack.py`'s own existing pattern for the identical
+shape — verified for real that this correctly preserves the *original*
+row's `asset_id` across an update (not the fresh one on the incoming
+domain object), the honest, stable-identity behavior an asset-inventory
+consumer needs.
+
+Independently ran the full checklist: **1011 passed, 1 skipped** (988
+baseline + 23 new), `mypy` at **29** (pre-existing baseline, zero new),
+`ruff` at **26** (pre-existing baseline, zero new after the two fixes
+above), `black` clean on every touched file.
+
+**Explicitly flagged, not yet done:** only one enricher exists (asset
+context) — identity and vulnerability enrichment are real, legitimate
+future work, not this item's gate; no scheduled re-enrichment job exists
+yet (the mechanism is proven re-runnable, not automatically triggered);
+no HTTP route for managing the asset inventory (backend-only scope this
+pass, mirrors E3/E4/E5's own precedent).
+
 ### F2 · Threat intelligence (STIX/TAXII, MISP, SA threat-intel) — L2
 **Objective.** IOC ingestion and matching, using SA's own threat-intel feature
 where it fits. Treat feed content as untrusted input.

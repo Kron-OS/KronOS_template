@@ -1,0 +1,54 @@
+==============================================================================
+PoC: enrichment pipeline -- real asset-context enricher (roadmap F1)
+==============================================================================
+
+==============================================================================
+SCENARIO (a): real Postgres-seeded asset, real match, originals untouched
+==============================================================================
+real asset row: asset_id=a6184dd7-b0a5-4191-8c5d-41fef87cce57 org_id=08959487-fd88-495b-b533-eab060987a9e hostname=WIN-DC01
+enriched.extra = {'enrichment.asset.asset_id': 'a6184dd7-b0a5-4191-8c5d-41fef87cce57', 'enrichment.asset.criticality': 'critical', 'enrichment.asset.owner': 'secops', 'enrichment.asset.environment': 'production'}
+[PASS] real enrichment.asset.criticality attached
+[PASS] real enrichment.asset.owner attached
+[PASS] real enrichment.asset.environment attached
+[PASS] real enrichment.asset.asset_id matches the real Postgres row
+[PASS] original @timestamp unchanged
+[PASS] original message unchanged
+[PASS] original host_name unchanged
+[PASS] original event_kind unchanged
+[PASS] original kronos block unchanged
+[PASS] original document_id unchanged
+[PASS] original input record object itself was never mutated (frozen)
+
+==============================================================================
+SCENARIO (b): no matching asset -- honest 'no enrichment', not an error
+==============================================================================
+result.extra = {}
+[PASS] no fabricated match -- record returned identical (is-identity)
+
+==============================================================================
+SCENARIO (c): real cross-org isolation
+==============================================================================
+org_b's own lookup of the SAME hostname 'WIN-DC01': extra={}
+[PASS] org A's real asset never enriches org B's record
+
+==============================================================================
+SCENARIO (d): real re-runnability after a real asset-inventory update
+==============================================================================
+real asset row updated in Postgres: criticality critical -> low
+re-enriched.extra = {'enrichment.asset.asset_id': 'a6184dd7-b0a5-4191-8c5d-41fef87cce57', 'enrichment.asset.criticality': 'low', 'enrichment.asset.owner': 'secops', 'enrichment.asset.environment': 'production'}
+[PASS] re-running enrichment against the SAME original record reflects the real update
+[PASS] the FIRST enrichment result is untouched by the later update (its own frozen snapshot)
+[PASS] the original record's own fields are still identical after re-enrichment
+
+==============================================================================
+SCENARIO (e): real end-to-end through the orchestration + ingestion pipeline
+==============================================================================
+opensearch_security_disabled_skipping_tenant_role
+real indexed ECS document: {'@timestamp': '2024-01-15T10:00:00+00:00', 'event': {'kind': 'event'}, 'host': {'name': 'WIN-DC01'}, 'kronos': {'org_id': '08959487-fd88-495b-b533-eab060987a9e', 'org_alias': 'testorg', 'parser': 'poc-parser', 'parser_version': '1.0.0', 'ingest_timestamp': '2026-08-02T05:02:10.445590+00:00', 'evidence_id': 'd0ca1c76-855d-40c9-bac5-4bfbfca315ee', 'case_id': '4d58a6c6-72ab-48bf-882f-f88530bf480f', 'sha256': '', 'record_index': 0}, 'enrichment': {'asset': {'asset_id': 'a6184dd7-b0a5-4191-8c5d-41fef87cce57', 'criticality': 'low', 'owner': 'secops', 'environment': 'production'}}}
+[PASS] real end-to-end pipeline indexed exactly 1 document
+[PASS] real indexed document has nested enrichment.asset.criticality (reflects the real update)
+[PASS] real indexed document's own host.name is unaffected
+
+==============================================================================
+PoC PASSED -- all 19 checks passed against real Postgres.
+==============================================================================

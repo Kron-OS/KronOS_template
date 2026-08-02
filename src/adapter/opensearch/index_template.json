@@ -105,6 +105,18 @@
             "protocol":  { "type": "keyword" }
           }
         },
+        "enrichment": {
+          "properties": {
+            "asset": {
+              "properties": {
+                "asset_id":     { "type": "keyword" },
+                "criticality":  { "type": "keyword" },
+                "owner":        { "type": "keyword" },
+                "environment":  { "type": "keyword" }
+              }
+            }
+          }
+        },
         "dns": {
           "properties": {
             "question": {

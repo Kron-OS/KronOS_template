@@ -9,14 +9,20 @@ from pathlib import Path
 
 import pytest
 
+from src.adapter.opensearch.client import InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue
+from src.adapter.repository.asset import InMemoryAssetRepository
 from src.adapter.storage.local import LocalEvidenceStorage
+from src.application.asset_enrichment import AssetContextEnricher
 from src.application.audit_log import AuditLogService
+from src.application.enrichment import EnrichmentPipeline
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
 from src.application.parsing_orchestration import ParsingOrchestrationService, _make_document_id
+from src.application.timeline_ingest import TimelineIngestionService
 from src.application.yara_rules import yara_scan_org_var
 from src.domain.artifact import StructuredArtifact
+from src.domain.asset import Asset
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.timeline import KronosProvenance, TimelineRecord
@@ -102,6 +108,32 @@ class _OrgContextCapturingParser(_FakeCloudTrailParser):
         self.observed_org_ids.append(yara_scan_org_var.get())
         return
         yield  # pragma: no cover -- makes this an async generator
+
+
+class _HostNamedParser(_FakeCloudTrailParser):
+    """Yields one record with a real host_name set (roadmap F1 enrichment
+    test needs a first-class ECS field to match an Asset against)."""
+
+    def __init__(self, host_name: str) -> None:
+        self._host_name = host_name
+
+    async def parse(  # type: ignore[override]
+        self, stream: AsyncIterator[bytes], evidence: Evidence, tenant: TenantContext
+    ) -> AsyncIterator[TimelineRecord]:
+        yield TimelineRecord(
+            **{"@timestamp": datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC), "event.kind": "event"},
+            host_name=self._host_name,
+            kronos=KronosProvenance(
+                evidence_id=evidence.evidence_id,
+                case_id=evidence.metadata.case_id,
+                org_id=evidence.metadata.org_id,
+                sha256="",
+                parser=self.parser_name,
+                parser_version=self.parser_version,
+                record_index=0,
+                ingest_timestamp=datetime.now(UTC),
+            ),
+        )
 
 
 class _FailingParser(_FakeCloudTrailParser):
@@ -617,6 +649,75 @@ class TestExecuteParse:
 
         assert parser.observed_org_ids == [tenant.org_id]
         assert yara_scan_org_var.get() is None  # reset after the call, no leakage
+
+    @pytest.mark.asyncio
+    async def test_enrichment_pipeline_applies_real_derived_fields_before_indexing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Roadmap F1: an EnrichmentPipeline configured on the orchestrator
+        must run before indexing, attaching real derived enrichment.asset.*
+        fields for a record whose host_name matches a real seeded Asset --
+        end to end through the real TimelineIngestionService/
+        InMemoryOpenSearchClient, not just the pipeline in isolation."""
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        asset_repo = InMemoryAssetRepository()
+        await asset_repo.upsert(
+            Asset(org_id=tenant.org_id, hostname="WIN-DC01", criticality="critical", owner="secops")
+        )
+        pipeline = EnrichmentPipeline([AssetContextEnricher(asset_repo)])
+        opensearch = InMemoryOpenSearchClient()
+        ingest = TimelineIngestionService(opensearch, AuditLogService(audit_repo))
+        registry = ParserRegistry()
+        registry.register(_HostNamedParser("WIN-DC01"))
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+            timeline_ingest=ingest,
+            enrichment_pipeline=pipeline,
+        )
+
+        await orchestrator.execute_parse(evidence.evidence_id, tenant)
+
+        docs = [
+            d for idx in opensearch.all_indices() for d in opensearch.get_documents(idx).values()
+        ]
+        assert len(docs) == 1
+        assert docs[0]["enrichment"]["asset"]["criticality"] == "critical"
+        assert docs[0]["enrichment"]["asset"]["owner"] == "secops"
+        # Every original field is untouched by enrichment.
+        assert docs[0]["host"]["name"] == "WIN-DC01"
+        assert docs[0]["event"]["kind"] == "event"
+
+    @pytest.mark.asyncio
+    async def test_no_enrichment_pipeline_configured_is_a_true_no_op(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Honest disabled state (roadmap F1): no enrichment_pipeline means
+        records are indexed exactly as parsed, no enrichment.* keys at all."""
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        opensearch = InMemoryOpenSearchClient()
+        ingest = TimelineIngestionService(opensearch, AuditLogService(audit_repo))
+        registry = ParserRegistry()
+        registry.register(_HostNamedParser("WIN-DC01"))
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+            timeline_ingest=ingest,
+        )
+
+        await orchestrator.execute_parse(evidence.evidence_id, tenant)
+
+        docs = [
+            d for idx in opensearch.all_indices() for d in opensearch.get_documents(idx).values()
+        ]
+        assert len(docs) == 1
+        assert "enrichment" not in docs[0]
 
     @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:

@@ -26,6 +26,7 @@ from src.adapter.repository.artifact_repository import (
     ArtifactRepository,
     InMemoryArtifactRepository,
 )
+from src.adapter.repository.asset import AssetRepository, InMemoryAssetRepository
 from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
 from src.adapter.repository.dead_letter import DeadLetterSink, InMemoryDeadLetterSink
@@ -49,6 +50,7 @@ from src.application.collector_ingest import CollectorIngestService
 from src.application.cost_gate import RuleCostGate
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
+from src.application.enrichment import EnrichmentPipeline
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
 from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
@@ -126,6 +128,12 @@ _yara_rule_pack_repository: YaraRulePackRepository = InMemoryYaraRulePackReposit
 _sealed_batch_repository: SealedBatchRepository = InMemorySealedBatchRepository()
 _batch_sealing_service: BatchSealingService | None = None
 _dead_letter_sink: DeadLetterSink = InMemoryDeadLetterSink()
+# Enrichment (roadmap F1). _enrichment_pipeline defaults to None -- "no
+# enrichers configured" is an honest disabled state
+# (ParsingOrchestrationService skips the enrichment pass entirely), the
+# same pattern already used for _timestamp_service/_yara_runner above.
+_asset_repository: AssetRepository = InMemoryAssetRepository()
+_enrichment_pipeline: EnrichmentPipeline | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +309,17 @@ def get_rule_pack_repository() -> RulePackRepository:
 
 def get_yara_rule_pack_repository() -> YaraRulePackRepository:
     return _yara_rule_pack_repository
+
+
+def get_asset_repository() -> AssetRepository:
+    return _asset_repository
+
+
+def get_enrichment_pipeline() -> EnrichmentPipeline | None:
+    """Return the configured EnrichmentPipeline, or None if enrichment is
+    disabled (roadmap F1) -- an honest state, never a fake pass-through
+    pipeline."""
+    return _enrichment_pipeline
 
 
 def get_pack_signature_verifier() -> PackSignatureVerifier | None:
@@ -545,6 +564,7 @@ def get_parsing_orchestration_service(
         task_queue=get_task_queue(),
         timeline_ingest=timeline_ingest,
         artifact_ingest=artifact_ingest,
+        enrichment_pipeline=get_enrichment_pipeline(),
     )
 
 
@@ -744,6 +764,8 @@ def configure_dependencies(
     yara_runner: YaraXSandboxRunner | None = None,
     yara_rule_provider: YaraRuleProvider | None = None,
     yara_rule_pack_repository: YaraRulePackRepository | None = None,
+    asset_repository: AssetRepository | None = None,
+    enrichment_pipeline: EnrichmentPipeline | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -757,6 +779,7 @@ def configure_dependencies(
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
+    global _asset_repository, _enrichment_pipeline
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -799,6 +822,9 @@ def configure_dependencies(
     _yara_rule_provider = yara_rule_provider
     if yara_rule_pack_repository is not None:
         _yara_rule_pack_repository = yara_rule_pack_repository
+    if asset_repository is not None:
+        _asset_repository = asset_repository
+    _enrichment_pipeline = enrichment_pipeline
 
 
 def reset_dependencies() -> None:
@@ -815,6 +841,7 @@ def reset_dependencies() -> None:
     global _custom_rule_client, _custom_rule_detector_binder
     global _sealed_batch_repository, _batch_sealing_service
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
+    global _asset_repository, _enrichment_pipeline
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -849,3 +876,5 @@ def reset_dependencies() -> None:
     _yara_runner = None
     _yara_rule_provider = None
     _yara_rule_pack_repository = InMemoryYaraRulePackRepository()
+    _asset_repository = InMemoryAssetRepository()
+    _enrichment_pipeline = None

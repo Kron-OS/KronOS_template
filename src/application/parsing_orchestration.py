@@ -12,6 +12,7 @@ from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
+from src.application.enrichment import EnrichmentPipeline
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
 from src.application.yara_rules import yara_scan_org_var
@@ -55,6 +56,7 @@ class ParsingOrchestrationService:
         task_queue: TaskQueue,
         timeline_ingest: TimelineIngestionService | None = None,
         artifact_ingest: ArtifactIngestService | None = None,
+        enrichment_pipeline: EnrichmentPipeline | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -63,6 +65,10 @@ class ParsingOrchestrationService:
         self._task_queue = task_queue
         self._timeline_ingest = timeline_ingest
         self._artifact_ingest = artifact_ingest
+        # Honestly disabled (roadmap F1) when unset -- no enrichers configured
+        # is a valid, real state (matches every other optional collaborator
+        # in this codebase), never a fake pass-through pipeline.
+        self._enrichment_pipeline = enrichment_pipeline
 
     async def start_parsing(
         self,
@@ -270,6 +276,8 @@ class ParsingOrchestrationService:
                 parser.parser_name,
                 tenant.org_alias,
             )
+            if self._enrichment_pipeline is not None:
+                annotated = _apply_enrichment(annotated, self._enrichment_pipeline, tenant.org_id)
 
             if self._timeline_ingest is not None:
                 count = await self._timeline_ingest.ingest_records(annotated, tenant, evidence_id)
@@ -491,6 +499,22 @@ async def _annotate_records(
         updated_kronos = record.kronos.model_copy(update={"org_alias": org_alias})
         yield record.model_copy(update={"document_id": doc_id, "kronos": updated_kronos})
         count += 1
+
+
+async def _apply_enrichment(
+    source: AsyncIterator[TimelineRecord],
+    pipeline: EnrichmentPipeline,
+    org_id: uuid.UUID,
+) -> AsyncGenerator[TimelineRecord, None]:
+    """Wrap a record stream, applying every configured Enricher (roadmap F1).
+
+    Runs after ``_annotate_records`` (document_id/org_alias already set) and
+    before indexing, so enrichment becomes part of the same immutable,
+    indexed record as any other derived field -- see
+    ``src/application/enrichment.py``'s own module docstring for why.
+    """
+    async for record in source:
+        yield await pipeline.enrich(record, org_id)
 
 
 async def _annotate_artifacts(

@@ -43,6 +43,7 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
         PostgresArtifactRepository,
     )
+    from src.adapter.repository.postgres_asset import PostgresAssetRepository  # noqa: PLC0415
     from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
         PostgresAuditLogRepository,
     )
@@ -66,6 +67,8 @@ async def wire_dependencies_async() -> None:
         PostgresYaraRulePackRepository,
     )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
+    from src.application.asset_enrichment import AssetContextEnricher  # noqa: PLC0415
+    from src.application.enrichment import EnrichmentPipeline  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
@@ -90,6 +93,7 @@ async def wire_dependencies_async() -> None:
     detection_repo = PostgresDetectionRepository(engine)
     rule_pack_repo = PostgresRulePackRepository(engine)
     yara_rule_pack_repo = PostgresYaraRulePackRepository(engine)
+    asset_repo = PostgresAssetRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
@@ -98,6 +102,7 @@ async def wire_dependencies_async() -> None:
     await PostgresDetectionRepository.create_tables(engine)
     await PostgresRulePackRepository.create_tables(engine)
     await PostgresYaraRulePackRepository.create_tables(engine)
+    await PostgresAssetRepository.create_tables(engine)
     await PostgresSealedBatchRepository.create_tables(engine)
     # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
     # nothing configures a Postgres-backed sink into the DI container below
@@ -293,6 +298,13 @@ async def wire_dependencies_async() -> None:
         # for whoever completes E2/E3's own production activation, not
         # silently worked around here.
         yara_rule_pack_repository=yara_rule_pack_repo,
+        # Enrichment (roadmap F1): wired ON by default, unlike yara_runner
+        # above -- AssetContextEnricher is a pure Postgres lookup with no
+        # subprocess/Dockerfile-activation concern (nothing to verify against
+        # a built container image the way E2/E3's sandboxed tool wrapping
+        # does), so there is no "unverified in production" gap here.
+        asset_repository=asset_repo,
+        enrichment_pipeline=EnrichmentPipeline([AssetContextEnricher(asset_repo)]),
     )
     configure_clamav_from_settings()
 
