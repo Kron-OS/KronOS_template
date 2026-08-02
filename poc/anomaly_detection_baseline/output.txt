@@ -1,0 +1,32 @@
+[2026-08-02T22:59:11.049280+00:00] === Scenario 1: index real synthetic per-entity documents ===
+[2026-08-02T22:59:11.152883+00:00] PASS: real _bulk indexed all 600 docs with zero errors
+[2026-08-02T22:59:11.174775+00:00] PASS: real _count == 600
+[2026-08-02T22:59:11.174793+00:00] === Scenario 2: create real AD detector (category_field=host.name) ===
+[2026-08-02T22:59:11.206869+00:00] real create detector response [201]: {"_id":"gcyzxJ8BG52zb-VT4nvS","_version":1,"_seq_no":7,"anomaly_detector":{"name":"kronos-poc-anomaly-32361e-network-ad-detector","description":"KronOS PoC per-org behavioral anomaly detector","time_field":"@timestamp","indices":["kronos-poc-anomaly-32361e-*"],"filter_query":{"match_all":{"boost":1.0}},"detection_interval":{"period":{"interval":1,"unit":"Minutes"}},"window_delay":{"period":{"interval":0,"unit":"Seconds"}},"shingle_size":8,"schema_version":0,"feature_attributes":[{"feature_id":"f
+[2026-08-02T22:59:11.206881+00:00] PASS: real detector create returned HTTP 201
+[2026-08-02T22:59:11.206935+00:00] PASS: real detector response includes detector_type == MULTI_ENTITY
+[2026-08-02T22:59:11.206939+00:00] real detector_id=gcyzxJ8BG52zb-VT4nvS
+[2026-08-02T22:59:11.206942+00:00] === Scenario 5: real per-org detector idempotency probe ===
+[2026-08-02T22:59:11.215695+00:00] real duplicate-name create response [500]: {"error":{"root_cause":[{"type":"status_exception","reason":"Cannot create anomaly detector with name [kronos-poc-anomaly-32361e-network-ad-detector] as it's already used by detector [gcyzxJ8BG52zb-VT4nvS]"}],"type":"status_exception","reason":"Cannot create anomaly detector with name [kronos-poc-anomaly-32361e-network-ad-detector] as it's already used by detector [gcyzxJ8BG52zb-VT4nvS]"},"status":500}
+[2026-08-02T22:59:11.215724+00:00] PASS: real duplicate-name CREATE is rejected with HTTP 500 and an explicit 'already used by detector' message (AD enforces unique detector names server-side; SA's detector API does not)
+[2026-08-02T22:59:11.247412+00:00] real PUT-update-in-place response [200]: {"_id":"gcyzxJ8BG52zb-VT4nvS","_version":2,"_seq_no":8,"anomaly_detector":{"name":"kronos-poc-anomaly-32361e-network-ad-detector","description":"KronOS PoC per-org behavioral anomaly detector","time_field":"@timestamp","indices":["kronos-poc-anomaly-32361e-*"],"filter_query":{"match_all":{"boost":1.0}},"detection_interval":{"period":{"interval":1,"unit":"Minutes"}},"window_delay":{"period":{"interval":0,"unit":"Seconds"}},"shingle_size":8,"schema_version":0,"feature_attributes":[{"feature_id":"h
+[2026-08-02T22:59:11.247424+00:00] PASS: real PUT-update-in-place to an EXISTING AD detector succeeds cleanly (unlike SecurityAnalyticsDetectorProvisioner's own documented 2.11.1 detector-PUT 500 defect -- AD does NOT share that bug)
+[2026-08-02T22:59:11.247427+00:00] === Scenario 3: real historical analysis run (_start?historical=true) ===
+[2026-08-02T22:59:11.261401+00:00] real historical _start response [200]: {"_id":"kMyzxJ8BG52zb-VT43sT","_version":1,"_seq_no":32,"_primary_term":1}
+[2026-08-02T22:59:11.261429+00:00] PASS: real historical analysis _start returned HTTP 200
+[2026-08-02T22:59:11.261447+00:00] real historical task_id=kMyzxJ8BG52zb-VT43sT
+[2026-08-02T22:59:11.261451+00:00] === Scenario 4: poll real task status, then read real anomaly results ===
+[2026-08-02T22:59:11.266374+00:00]   poll 0: state=CREATED task_progress=0.0
+[2026-08-02T22:59:14.278852+00:00]   poll 1: state=FINISHED task_progress=1.0
+[2026-08-02T22:59:14.278899+00:00] PASS: real historical task reached FINISHED (last state=FINISHED)
+[2026-08-02T22:59:14.343816+00:00] real anomaly-results search returned 598 hits for task_id=kMyzxJ8BG52zb-VT43sT
+[2026-08-02T22:59:14.343834+00:00] PASS: real anomaly-results search returned at least one hit
+[2026-08-02T22:59:14.343862+00:00] real top result by anomaly_grade: {'detector_id': 'gcyzxJ8BG52zb-VT4nvS', 'relevant_attribution': [{'feature_id': 'h8yzxJ8BG52zb-VT4nvw', 'data': 1.0}], 'confidence': 0.8801892438983826, 'task_id': 'kMyzxJ8BG52zb-VT43sT', 'threshold': 0.8506158695187269, 'model_id': 'gcyzxJ8BG52zb-VT4nvS_entity_host-anomalous', 'schema_version': 5, 'anomaly_score': 6.836714971409553, 'execution_start_time': 1785711551603, 'data_end_time': 1785709800000, 'data_start_time': 1785709740000, 'feature_data': [{'feature_id': 'h8yzxJ8BG52zb-VT4nvw', 'feature_name': 'avg_bytes_out', 'data': 8040.0}], 'expected_values': [{'likelihood': 1.0, 'value_list': [{'feature_id': 'h8yzxJ8BG52zb-VT4nvw', 'data': 99.95229047436086}]}], 'execution_end_time': 1785711551680, 'user': {'backend_roles': ['admin'], 'custom_attribute_names': [], 'roles': ['own_index', 'all_access'], 'name': 'admin', 'user_requested_tenant': None}, 'anomaly_grade': 1.0, 'entity': [{'name': 'host.name', 'value': 'host-anomalous'}], 'approx_anomaly_start_time': 1785709740000}
+[2026-08-02T22:59:14.343866+00:00] PASS: real top-ranked anomaly result has anomaly_grade > 0 (the injected spike was actually detected, not assumed)
+[2026-08-02T22:59:14.343870+00:00] PASS: real top-ranked anomalous result's entity is host-anomalous, NOT host-normal -- category_field correctly attributed the anomaly to the right entity
+[2026-08-02T22:59:14.343884+00:00] PASS: real top-ranked anomaly's data_end_time falls within/after the injected spike window, not before it
+[2026-08-02T22:59:14.344174+00:00] real max anomaly_grade among host-normal results: 0.0
+[2026-08-02T22:59:14.344178+00:00] PASS: real host-normal's own max anomaly_grade stays much lower than host-anomalous's top grade (the uneventful entity was NOT flagged the same way)
+[2026-08-02T22:59:14.369144+00:00] cleaned up real detector gcyzxJ8BG52zb-VT4nvS
+[2026-08-02T22:59:14.388750+00:00] cleaned up real indices kronos-poc-anomaly-32361e-*
+[2026-08-02T22:59:14.389001+00:00] PoC PASSED -- all 13 checks passed against the real, live OpenSearch 2.11.1 AD plugin.

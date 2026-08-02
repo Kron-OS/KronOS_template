@@ -1909,6 +1909,143 @@ it is **not reproducible months later and must never be the evidentiary basis of
 a finding.** Triage prioritization and hunting leads only; must be labelled as
 such in the API and UI. **Depends on:** G1.
 
+**STATUS (2026-08-02): DONE.** Real, live-cluster PoC
+(`poc/anomaly_detection_baseline/`, 13/13 checks) against
+`opensearch-anomaly-detection 2.11.1.0` (confirmed installed and alive on
+`docker-opensearch-1` before this pass started), driven by the plugin's
+own pinned-`2.11`-branch source (`AnomalyDetector.java`,
+`AnomalyResult.java`, `RestAnomalyDetectorJobAction.java`,
+`RestSearchAnomalyResultAction.java`, `CommonName.java`) rather than the
+general docs site, which repeatedly returned bare redirect stubs for
+version-pinned pages via `WebFetch` (flagged, not silently worked around).
+
+**Real API shape confirmed, not assumed:** historical analysis is the SAME
+`_start` endpoint real-time jobs use, disambiguated by
+`?historical=true` plus a `{"start_time", "end_time"}` body -- there is no
+separate endpoint, contrary to what the docs summary's own hedge implied.
+A real 600-doc (2-entity x 300-minute), deliberately stable-then-spike
+corpus, run through historical analysis, reached `FINISHED` in ~3 seconds
+and produced a real `anomaly_grade: 1.0` for the injected spike, correctly
+attributed via `category_field` to the right entity (`host-anomalous`,
+not `host-normal`) -- confirming historical analysis was the right choice
+for a verification PoC that needs real, inspectable output without
+waiting out real-time cold start (docs-confirmed: 400+ data points or
+"more than an hour").
+
+**Five real, load-bearing findings, three of them genuine surprises
+relative to what was assumed going in (`poc/anomaly_detection_baseline/
+README.md` has full detail + captured request/response bodies for all
+five):**
+1. Detector-CREATE runs a real validation query against the feature
+   aggregation and 500s with "returning empty aggregated data" for any
+   field not actually indexed under `kronos-*`'s own `dynamic: false`
+   mapping (a made-up `network.bytes_out` hit this for real; switched to
+   `source.bytes`, a real mapped ECS `long` field).
+2. That same validation also requires the data to be "recent" relative to
+   wall-clock `now()`, not just non-empty anywhere -- a fixed past-dated
+   corpus failed until anchored to `datetime.now(UTC)`.
+3. **The raw results index (`.opendistro-anomaly-results*`) is
+   security-plugin-protected and silently returns zero hits to a direct
+   `_search`, even as `admin`, even though `_cat/indices`/`_stats` on the
+   identical concrete index proved thousands of real documents present.**
+   The plugin ships its own dedicated, privileged read path,
+   `POST /_plugins/_anomaly_detection/detectors/results/_search`
+   (confirmed from `RestSearchAnomalyResultAction.java`), which is the
+   ONLY way `OpenSearchAnomalyDetectionResultsClient` reads results --
+   getting this wrong would have silently produced "zero hunting leads,
+   forever" with no error anywhere.
+4. **AD detector names ARE server-side unique** (real HTTP 500,
+   "already used by detector [...]" on a duplicate-name create) -- the
+   opposite of `SecurityAnalyticsDetectorProvisioner` (C2)'s own detector
+   API, and a real backstop `OpenSearchAnomalyDetectorProvisioner`'s
+   check-then-create relies on for race safety.
+5. **AD's detector PUT-update-in-place works cleanly** (real HTTP 200,
+   incremented `_version`) -- confirmed NOT to share C2's own documented
+   2.11.1 detector-PUT-500 defect; independently tested rather than
+   assumed to match either C2's (broken) or F3's `SecurityAnalyticsCorrelationRuleProvisioner`
+   (clean) precedent, since AD is a third, distinct plugin.
+
+**Design decision -- per-org scoping is the detector's own `indices`
+pattern; `category_field` is an orthogonal, intra-org entity-slicing
+mechanism, never the tenant boundary.** Mirrors C2's own reasoning for
+Security Analytics detectors exactly: `OpenSearchAnomalyDetectorProvisioner`
+(`src/adapter/opensearch/anomaly_detector_provisioner.py`) computes
+`kronos-{org_alias}-*` from the caller's own `org_alias`
+(roadmap invariant #3) and does not use `category_field` in its v1 body at
+all (the PoC's own `category_field=host.name` was to prove the mechanism
+works, not to ship it yet -- a per-entity slicing dimension is real,
+useful follow-up scope, not required for a first per-org volume-anomaly
+detector). Feature choice is a generic `value_count` on `@timestamp`
+("event volume anomaly"), not a format-specific numeric field -- the one
+signal every org's detector can legitimately compute regardless of which
+parsers fed it (a format-specific field would silently 500 for log types
+lacking it, finding #1 above). The roadmap text's own "behavioural-profile
+leak" parenthetical is independently confirmed at the cluster-observability
+layer: `GET _plugins/_anomaly_detection/stats` reports flat cluster/node
+totals with no per-org breakdown, mirroring the A3 gate's own
+already-documented finding for Security Analytics -- AD's stats surface
+must never be exposed to a tenant-scoped session either.
+
+**Design decision -- `BehavioralAnomalySignal` (`src/domain/anomaly.py`)
+is query-time-only: no repository, no persistence, no DI wiring, no HTTP
+route yet**, mirroring G1's own precedent for a stronger, G2-specific
+reason than G1's "no consumer yet": a stored snapshot of a live,
+continuously-mutating RCF score would create a row that LOOKS like a
+`Detection` row (an id, a timestamp, "a fact on file") while carrying none
+of `Detection`'s actual replayability guarantee -- exactly the risk G3
+exists to prevent, one layer removed. `BehavioralAnomalyScorer.
+fetch_org_signals()` (`src/application/anomaly_scoring.py`) orchestrates
+`AnomalyDetectorProvisioner.ensure_org_detector()` +
+`AnomalyDetectionResultsClient.search_results()` and maps the raw response
+into `BehavioralAnomalySignal` tuples entirely in memory, on every call.
+
+**Structural separation from `Detection` (binds G3), not a docstring
+warning:** `BehavioralAnomalySignal` is a new, standalone Pydantic model
+in its own module -- not a field on `Detection`, not a subtype, never
+touched by anything resembling `DetectionSyncService`. It carries TWO
+independent, mechanically-checkable non-reproducibility markers: a
+class-level `NOT_REPRODUCIBLE: ClassVar[Literal[True]]` (checkable via
+introspection, no instantiation needed) and a required, frozen instance
+field `not_reproducible: Literal[True]` (checkable on an already-
+serialized object, e.g. an API response body -- confirmed to survive
+`model_dump(mode="json")`). There is no `DetectionRepository` method for
+it and no triage FSM applies to it -- it has no state machine at all,
+because it is an observation for a human to go look at, not a KronOS
+verdict. `org_id`/`org_alias` are still always the calling
+`TenantContext`'s own values, the one invariant genuinely shared with
+`Detection` because it is a universal tenant-isolation rule, not because
+the two types are secretly related.
+
+**Files:** `poc/anomaly_detection_baseline/{README.md,run_poc.py,
+output.txt}`; `src/domain/anomaly.py`
+(`BehavioralAnomalySignal`/`AnomalyEntityDimension`/
+`AnomalyFeatureObservation`); `src/adapter/opensearch/
+anomaly_detection_client.py` (`AnomalyDetectionResultsClient`/
+`OpenSearchAnomalyDetectionResultsClient`); `src/adapter/opensearch/
+anomaly_detector_provisioner.py` (`AnomalyDetectorProvisioner`/
+`OpenSearchAnomalyDetectorProvisioner`); `src/application/
+anomaly_scoring.py` (`BehavioralAnomalyScorer`); four new test modules
+under `tests/unit/{domain,adapter,application}/`.
+
+**Explicitly flagged gaps, not this item's scope (mirrors G1's own "not
+this pass" list):** no HTTP route, no DI wiring in `dependencies.py`/
+`startup.py`, no `category_field` in the shipped v1 body (proven viable
+in the PoC only), no real-time (continuous) job provisioning -- only
+historical-analysis capability and detector-existence are exercised by
+the shipped code path today; a future consumer that wants a continuously
+warm, always-on real-time job is real follow-up scope, not silently
+implied here.
+
+Independently re-ran the full checklist: **1174 passed, 1 skipped**
+(28 of those new, across four new test modules), coverage **87.43%**
+(gate 80%, no regression from G1's 87.46%), mypy **29** (identical
+pre-existing baseline confirmed via a full `mypy src/` re-run, zero new
+errors in any of the four new production files), ruff/black clean on
+every touched file (`ruff check src/ tests/` still shows the same 83
+pre-existing baseline errors elsewhere in the tree, none in this item's
+files -- confirmed by grepping the full-tree ruff output for this item's
+own file paths).
+
 ### G3 · GATE · Explainability + replayability harness — L2
 **Objective.** Prove that every court-facing verdict reproduces from pinned
 version + stored input, and that non-reproducible signals (G2) are structurally
