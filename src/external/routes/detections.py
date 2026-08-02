@@ -44,6 +44,15 @@ class DetectionRuleMatchOut(BaseModel):
     tags: list[str]
 
 
+class RiskFactorOut(BaseModel):
+    """API response DTO for one RiskScoreBreakdown factor (roadmap M5/F4)."""
+
+    name: str
+    weight: float
+    normalizedValue: float | None
+    detail: str
+
+
 class DetectionOut(BaseModel):
     """API response DTO — field names match the frontend TypeScript Detection interface."""
 
@@ -60,6 +69,8 @@ class DetectionOut(BaseModel):
     triageState: str
     syncedAt: str
     updatedAt: str
+    riskScore: float | None
+    riskFactors: list[RiskFactorOut]
 
 
 class PaginatedDetections(BaseModel):
@@ -197,4 +208,11 @@ def _to_detection_out(detection: Detection) -> DetectionOut:
         triageState=detection.triage_state.value,
         syncedAt=detection.synced_at.isoformat(),
         updatedAt=detection.updated_at.isoformat(),
+        riskScore=detection.risk_score,
+        riskFactors=[
+            RiskFactorOut(
+                name=f.name, weight=f.weight, normalizedValue=f.normalized_value, detail=f.detail
+            )
+            for f in detection.risk_factors
+        ],
     )

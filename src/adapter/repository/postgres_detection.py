@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from src.adapter.repository._schema_lock import acquire_schema_creation_lock
 from src.adapter.repository.detection import DetectionRepository
 from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState
+from src.domain.risk import RiskFactor
 from src.exceptions import StorageError
 
 _metadata = sa.MetaData()
@@ -39,6 +40,21 @@ detections_table = sa.Table(
     sa.Column("triage_state", sa.String(32), nullable=False, server_default="NEW"),
     sa.Column("synced_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False),
+    # Risk scoring (roadmap M5/F4) -- computed once at sync time by
+    # DetectionSyncService, frozen here alongside every other
+    # captured-once-at-sync column above (rule_matches, matched_document_ids).
+    # Nullable: None is the honest "could not be scored at all" case (see
+    # RiskScoreBreakdown.score's own docstring), not a missing-column default.
+    # Additive columns, same caveat as postgres_evidence.py's own precedent:
+    # `create_all` only adds missing TABLES, not columns to an existing one
+    # -- safe on a fresh schema, but an already-running deployment's
+    # `detections` table (this repo's own live dev Postgres included, at the
+    # moment this landed) needs a real, one-time manual
+    # `ALTER TABLE detections ADD COLUMN risk_score double precision;
+    #  ALTER TABLE detections ADD COLUMN risk_factors json NOT NULL DEFAULT '[]';`
+    # since no migration tool is wired yet.
+    sa.Column("risk_score", sa.Float, nullable=True),
+    sa.Column("risk_factors", sa.JSON, nullable=False, default=list),
     sa.UniqueConstraint("org_id", "finding_id", name="uq_detections_org_finding"),
 )
 
@@ -129,7 +145,9 @@ class PostgresDetectionRepository(DetectionRepository):
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_case(self, case_id: uuid.UUID, org_id: uuid.UUID) -> AsyncIterator[Detection]:
+    async def stream_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> AsyncIterator[Detection]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 detections_table.select()
@@ -161,6 +179,16 @@ class PostgresDetectionRepository(DetectionRepository):
             "triage_state": d.triage_state.value,
             "synced_at": d.synced_at,
             "updated_at": d.updated_at,
+            "risk_score": d.risk_score,
+            "risk_factors": [
+                {
+                    "name": f.name,
+                    "weight": f.weight,
+                    "normalized_value": f.normalized_value,
+                    "detail": f.detail,
+                }
+                for f in d.risk_factors
+            ],
         }
 
     @staticmethod
@@ -175,7 +203,9 @@ class PostgresDetectionRepository(DetectionRepository):
             source_index=row["source_index"],
             rule_matches=tuple(
                 DetectionRuleMatch(
-                    rule_id=m["rule_id"], rule_name=m.get("rule_name"), tags=tuple(m.get("tags", []))
+                    rule_id=m["rule_id"],
+                    rule_name=m.get("rule_name"),
+                    tags=tuple(m.get("tags", [])),
                 )
                 for m in (row["rule_matches"] or [])
             ),
@@ -184,6 +214,16 @@ class PostgresDetectionRepository(DetectionRepository):
             triage_state=DetectionTriageState(row["triage_state"]),
             synced_at=_ensure_utc(row["synced_at"]),
             updated_at=_ensure_utc(row["updated_at"]),
+            risk_score=row.get("risk_score"),
+            risk_factors=tuple(
+                RiskFactor(
+                    name=f["name"],
+                    weight=f["weight"],
+                    normalized_value=f.get("normalized_value"),
+                    detail=f["detail"],
+                )
+                for f in (row.get("risk_factors") or [])
+            ),
         )
 
 

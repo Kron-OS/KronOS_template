@@ -1724,6 +1724,102 @@ pre-existing baseline line this pass's own edit happened to sit next to in
 **Objective.** Deterministic, explainable scoring combining asset criticality,
 identity privilege, IOC confidence, rule severity.
 
+**STATUS (2026-08-02): DONE. Milestone M5 complete.** Confirmed the real
+Sigma severity vocabulary against the live 2.11.1 cluster's own 2077
+pre-packaged rules (`GET .../rules/_search?pre_packaged=true`): exactly
+`informational` (23), `low` (205), `medium` (720), `high` (972), `critical`
+(157) -- `src/domain/detection.py`'s new `SIGMA_SEVERITY_LEVELS` matches
+this real set exactly, not a guessed enum. A real finding's `tags` array
+was already observed (F3's own captured PoC output) mixing a bare severity
+token in with ATT&CK/category tags; `highest_rule_severity()` extracts it
+with the same "filter one tag family" idiom `Detection.attack_tags` already
+established.
+
+IOC confidence (F2) and asset criticality (F1) live on the INDEXED
+TIMELINE DOCUMENT, not on `Detection` -- there was no read path back to
+them. Added `AbstractTimelineIndex.get_documents_by_id()` (real OpenSearch
+`_mget`, verified against the live cluster in
+`poc/detection_risk_scoring/`: confirmed the real `docs[].found` response
+shape, and that a missing id is honestly omitted, never a fabricated
+placeholder) plus the obvious `InMemoryOpenSearchClient` equivalent.
+`DetectionSyncService._resolve_risk_inputs()` fetches a finding's own
+`matched_document_ids` from its own `source_index` and combines multiple
+matched documents by taking the MAX normalized value per factor ("a
+finding is exactly as risky as its riskiest matched document").
+
+**Design decision: score computed ONCE at sync time, frozen onto
+`Detection`, never recomputed in place.** This mirrors `Detection`'s
+existing "frozen snapshot of what was known when it was synced" contract
+(`case_id`/`rule_matches` are captured the same way) -- a Detection stays
+reproducible from the real inputs recorded alongside it
+(`Detection.risk_factors`), even though the underlying asset inventory
+(F1) is itself legitimately mutable and could drift afterward. A future
+re-scoring pass is real, deliberate follow-up scope, not silently implied.
+`DetectionRiskScorer` (`src/application/risk_scoring.py`) is a small, pure,
+stateless class (mirrors `RuleCostGate`'s shape) with hardcoded weight
+constants -- deliberately code, not `Settings` fields, since the formula
+that produced a frozen score must be reproducible from the codebase at
+that commit, not an ops-editable env var that could silently drift
+per-deployment.
+
+**Identity privilege is honestly always absent.** F1 never built an
+identity-context enricher; this scorer accepts an `identity_privilege`
+parameter for a future real signal but no caller in this codebase has one
+yet. `RiskFactor(name="identity_privilege", normalized_value=None, ...)`
+is always present in the breakdown with an explicit "why absent" detail
+string -- never a fabricated neutral default, and never silently dropped
+from the explanation. Every other absent input (unscoreable rule tag,
+unresolved matched document, unrecognized tenant-free-text criticality
+value) degrades the same honest way: omitted from both the weighted sum
+and its own weight denominator, never defaulted to 0.
+
+PoC: `poc/detection_risk_scoring/` -- **17/17 checks passed** against the
+real, live OpenSearch 2.11.1 cluster (real Sigma vocabulary query, real
+`_mget` round-trip including a real `indices.refresh()` timing fact, and a
+real end-to-end sync through the unmodified `DetectionSyncService`
+producing four real, reproducible scores: 84.41 for high-severity +
+critical-asset + ioc-85, 56.82 for the same rule but only a low-criticality
+asset match, 75.0 falling back honestly to rule-severity-only when the
+matched document id never resolves, and `None` when no factor has any
+usable value at all).
+
+**Real gap found and fixed by the orchestrator during independent
+verification (CLAUDE.md SS F, "plausible code without a captured real run
+is an automatic fail"):** the dispatched subagent's own PoC used
+`InMemoryDetectionRepository`, never exercising `PostgresDetectionRepository`
+against the real live dev Postgres. `sa.MetaData.create_all(checkfirst=True)`
+only creates missing TABLES, never adds columns to an existing one (the
+same documented caveat `postgres_evidence.py` already carries for its own
+additive legal-hold/WORM columns) -- so the real, already-existing
+`detections` table on this host's dev Postgres was missing `risk_score`/
+`risk_factors` entirely; any real `PostgresDetectionRepository.save()`
+call after this landed would have failed loudly with a real "column does
+not exist" error. Fixed two ways: (1) ran the real, one-time `ALTER TABLE
+detections ADD COLUMN risk_score double precision; ALTER TABLE detections
+ADD COLUMN risk_factors json NOT NULL DEFAULT '[]';` against the live
+`docker-postgres-1` container and confirmed via `\d detections` that both
+columns now exist; (2) added the same doc comment `postgres_evidence.py`
+already uses for this exact caveat, so a future fresh deployment (where
+`create_tables()` creates the table from scratch, including these columns)
+and an existing one (needing this same manual `ALTER TABLE`) are both
+documented. Then ran a real, independent script that saves and re-fetches
+a `Detection` with real `risk_score=84.41`/`risk_factors` through
+`PostgresDetectionRepository` against the now-patched live table --
+confirmed the exact round-trip, not just an in-memory one.
+
+Extended the existing Detection API DTO (`src/external/routes/detections.py`,
+C6) with `riskScore`/`riskFactors` rather than a parallel endpoint.
+
+Independently re-ran the full checklist: **1135 passed, 1 skipped**,
+coverage **87.33%** (gate 80%, no regression), mypy **29** (identical
+pre-existing baseline, zero new -- confirmed none in any file this pass
+touched), ruff/black clean on every touched file (no lint gaps this time,
+unlike the prior F3 cycle).
+
+**This completes Milestone M5** (F1 enrichment, F2 threat intel, F3
+correlation, F4 risk scoring). Milestone M6 (G1-G3, deterministic baseline
+scoring / AD-RCF / explainability gate) is next.
+
 ---
 
 ## M6 — Analytics

@@ -162,6 +162,54 @@ class TestListDetections:
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
 
+    def test_risk_score_and_factors_surface_in_the_response(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Roadmap M5/F4: risk_score/risk_factors are plain frozen fields on
+        Detection (set once at sync time by DetectionSyncService) -- this
+        confirms they actually round-trip through the existing triage list
+        route, camelCased like every other field on this DTO."""
+        from src.domain.risk import RiskFactor
+
+        detection = _make_detection(org_id=ORG_A).model_copy(
+            update={
+                "risk_score": 82.65,
+                "risk_factors": (
+                    RiskFactor(
+                        name="rule_severity",
+                        weight=0.35,
+                        normalized_value=0.75,
+                        detail="highest matched rule severity is 'high'",
+                    ),
+                    RiskFactor(
+                        name="identity_privilege",
+                        weight=0.15,
+                        normalized_value=None,
+                        detail="no identity-context enricher exists yet",
+                    ),
+                ),
+            }
+        )
+        asyncio.run(detection_repo.save(detection))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections")
+        item = resp.json()["items"][0]
+        assert item["riskScore"] == 82.65
+        assert item["riskFactors"][0]["name"] == "rule_severity"
+        assert item["riskFactors"][0]["normalizedValue"] == 0.75
+        assert item["riskFactors"][1]["name"] == "identity_privilege"
+        assert item["riskFactors"][1]["normalizedValue"] is None
+
+    def test_risk_score_defaults_to_null_when_never_computed(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections")
+        item = resp.json()["items"][0]
+        assert item["riskScore"] is None
+        assert item["riskFactors"] == []
+
 
 class TestGetDetection:
     def test_returns_detail_for_own_org(self, detection_repo: InMemoryDetectionRepository) -> None:

@@ -27,7 +27,38 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from src.domain.risk import RiskFactor
 from src.exceptions import DetectionStateError
+
+# Real Sigma `level:` vocabulary (roadmap M5/F4) -- confirmed against the
+# live, pinned OpenSearch 2.11.1 dev cluster's own 2077 pre-packaged
+# Security Analytics rules (GET
+# _plugins/_security_analytics/rules/_search?pre_packaged=true), not
+# assumed from memory: every one of these 5 values appears in the real
+# corpus (informational=23, low=205, medium=720, high=972, critical=157 --
+# see poc/detection_risk_scoring/output.txt). Ordered ascending so
+# ``highest_rule_severity`` below can pick the max via index comparison.
+SIGMA_SEVERITY_LEVELS: tuple[str, ...] = ("informational", "low", "medium", "high", "critical")
+
+
+def highest_rule_severity(rule_matches: tuple[DetectionRuleMatch, ...]) -> str | None:
+    """Highest real Sigma severity level among *rule_matches*' own tags.
+
+    A real finding's ``tags`` list mixes a bare severity token in with
+    ATT&CK/category tags (e.g. ``['high', 'network', 'attack.t1021.001']`` --
+    confirmed against a real captured finding, see
+    ``poc/security_analytics_correlation/output.txt``) -- mirrors
+    ``Detection.attack_tags``'s own "filter one tag family out of the same
+    list" idiom. Returns None -- an honest absence, never a fabricated
+    default -- when no matched rule carries a recognized severity token
+    (roadmap F4's binding "never substitute a fabricated neutral value"
+    constraint applies here too, not just to the identity-privilege gap).
+    """
+    levels = [tag for match in rule_matches for tag in match.tags if tag in SIGMA_SEVERITY_LEVELS]
+    if not levels:
+        return None
+    return max(levels, key=SIGMA_SEVERITY_LEVELS.index)
+
 
 # ---------------------------------------------------------------------------
 # Triage state machine: NEW -> INVESTIGATING -> TRUE_POSITIVE | FALSE_POSITIVE
@@ -115,6 +146,21 @@ class Detection(BaseModel):
     triage_state: DetectionTriageState = DetectionTriageState.NEW
     synced_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Risk scoring (roadmap M5/F4). Computed ONCE by DetectionSyncService at
+    # sync time, from this exact Detection's own rule_matches plus whatever
+    # enrichment.ioc.*/enrichment.asset.* fields its matched_document_ids
+    # resolved to AT THAT MOMENT -- then frozen here, never recomputed
+    # in-place later. This mirrors case_id/rule_matches' own "captured once,
+    # replayable" contract (module docstring, roadmap invariant #6): a
+    # Detection stays a faithful record of what was known when it was
+    # synced, even though the underlying asset inventory (F1) is itself
+    # legitimately mutable and could change afterward. A future re-scoring
+    # pass (mirroring enrichment's own re-run precedent) is real, deliberate
+    # follow-up scope, not silently implied by this field's presence. None
+    # only in the degenerate case where literally no factor had a usable
+    # value (see RiskScoreBreakdown.score's own docstring).
+    risk_score: float | None = None
+    risk_factors: tuple[RiskFactor, ...] = Field(default_factory=tuple)
 
     @property
     def attack_tags(self) -> tuple[str, ...]:
@@ -125,6 +171,13 @@ class Detection(BaseModel):
                 if tag.startswith("attack.") and tag not in seen:
                     seen.append(tag)
         return tuple(seen)
+
+    @property
+    def rule_severity(self) -> str | None:
+        """Highest real Sigma severity level among all matched rules -- see
+        ``highest_rule_severity`` module function (single source of truth,
+        also used by DetectionSyncService before this Detection exists)."""
+        return highest_rule_severity(self.rule_matches)
 
     def with_triage_state(self, target: DetectionTriageState) -> Detection:
         """Return a new Detection with the triage FSM advanced to *target*.

@@ -59,6 +59,23 @@ class AbstractTimelineIndex(ABC):
     async def close(self) -> None:
         """Release any network resources (aiohttp session, etc.)."""
 
+    @abstractmethod
+    async def get_documents_by_id(
+        self, index: str, doc_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch specific already-indexed documents by id (roadmap M5/F4).
+
+        Read counterpart to ``bulk_index`` -- added so a consumer (e.g.
+        ``DetectionRiskScorer`` via ``DetectionSyncService``) can resolve a
+        Detection's own ``matched_document_ids`` back to their real
+        ``enrichment.ioc.*``/``enrichment.asset.*`` fields without a full
+        search. Returns only the documents that were actually found, keyed
+        by doc id -- a missing id is simply absent from the result (an
+        honest partial result, never a fabricated placeholder), verified
+        for real in ``poc/detection_risk_scoring/`` against the real
+        OpenSearch 2.11.1 ``_mget`` response shape (``docs[].found``).
+        """
+
 
 class OpenSearchClient(AbstractTimelineIndex):
     """Async OpenSearch client backed by opensearch-py AsyncOpenSearch."""
@@ -128,9 +145,10 @@ class OpenSearchClient(AbstractTimelineIndex):
         # Fail loudly (CLAUDE.md §1.8): any partial failure is an error, not silent data loss.
         if errors:
             raise StorageError(
-                f"OpenSearch bulk indexing had {len(errors)} document(s) fail out of {len(documents)} total. "
-                f"Successfully indexed: {len(documents) - len(errors)}. This is not a silent failure; "
-                f"the documents that failed are listed in context['failed_documents'].",
+                f"OpenSearch bulk indexing had {len(errors)} document(s) fail out of "
+                f"{len(documents)} total. Successfully indexed: {len(documents) - len(errors)}. "
+                f"This is not a silent failure; the documents that failed are listed in "
+                f"context['failed_documents'].",
                 context={
                     "total_documents": len(documents),
                     "failed_count": len(errors),
@@ -204,6 +222,33 @@ class OpenSearchClient(AbstractTimelineIndex):
     async def close(self) -> None:
         await self._client.close()
 
+    async def get_documents_by_id(
+        self, index: str, doc_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not doc_ids:
+            return {}
+
+        # Real opensearch-py 3.2 AsyncOpenSearch.mget signature (verified
+        # via inspect.signature against the pinned version --
+        # poc/detection_risk_scoring/): body={"docs": [{"_id": ...}, ...]},
+        # index=<default index for entries with no _index override>.
+        response = await self._client.mget(
+            index=index,
+            body={"docs": [{"_id": doc_id} for doc_id in doc_ids]},
+        )
+
+        # Real response shape confirmed against the live 2.11.1 cluster: a
+        # top-level "docs" array, one entry per requested id, in the SAME
+        # order requested, each carrying its own "found" bool -- a missing
+        # id comes back {"found": false, ...} rather than being omitted
+        # from the array entirely, so "found" must be checked explicitly
+        # rather than assuming every returned entry has a "_source".
+        found: dict[str, dict[str, Any]] = {}
+        for doc in response.get("docs", []):
+            if doc.get("found"):
+                found[doc["_id"]] = doc["_source"]
+        return found
+
 
 class InMemoryOpenSearchClient(AbstractTimelineIndex):
     """In-memory OpenSearch stand-in for unit and integration tests."""
@@ -232,6 +277,12 @@ class InMemoryOpenSearchClient(AbstractTimelineIndex):
 
     async def close(self) -> None:
         pass
+
+    async def get_documents_by_id(
+        self, index: str, doc_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        docs = self._indices.get(index, {})
+        return {doc_id: docs[doc_id] for doc_id in doc_ids if doc_id in docs}
 
     # ------------------------------------------------------------------
     # Test-inspection helpers

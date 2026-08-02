@@ -84,10 +84,14 @@ async def test_ensure_generic_tenant_role_creates_one_role_and_one_mapping() -> 
     assert role_call.kwargs["body"]["index_permissions"][0]["index_patterns"] == ["kronos-*"]
 
     assert mapping_call.args == (
-        "PUT", "/_plugins/_security/api/rolesmapping/kronos-generic-tenant",
+        "PUT",
+        "/_plugins/_security/api/rolesmapping/kronos-generic-tenant",
     )
     assert mapping_call.kwargs["body"]["backend_roles"] == [
-        "org-admin", "case-lead", "analyst", "read-only",
+        "org-admin",
+        "case-lead",
+        "analyst",
+        "read-only",
     ]
 
 
@@ -236,7 +240,10 @@ async def test_bulk_index_context_includes_all_failure_details() -> None:
                         "status": 400,
                         "error": {
                             "type": "mapper_parsing_exception",
-                            "reason": "failed to parse field [@timestamp] with format [strict_date_time]",
+                            "reason": (
+                                "failed to parse field [@timestamp] with format "
+                                "[strict_date_time]"
+                            ),
                         },
                     }
                 },
@@ -255,3 +262,89 @@ async def test_bulk_index_context_includes_all_failure_details() -> None:
     assert failed_doc["status"] == 400
     assert failed_doc["error"]["type"] == "mapper_parsing_exception"
     assert "strict_date_time" in failed_doc["error"]["reason"]
+
+
+# ============================================================================
+# get_documents_by_id (roadmap M5/F4) -- new mget-style read path, mocking
+# ONLY the transport (AsyncOpenSearch.mget), not the logic under test,
+# matching this file's own established style above. Real response shape
+# confirmed against the live OpenSearch 2.11.1 cluster -- see
+# poc/detection_risk_scoring/output.txt.
+# ============================================================================
+
+
+async def test_get_documents_by_id_empty_list_returns_empty_dict_without_a_call() -> None:
+    client = _make_client()
+    client._client.mget = AsyncMock()  # type: ignore[method-assign]
+
+    result = await client.get_documents_by_id("kronos-test", [])
+
+    assert result == {}
+    client._client.mget.assert_not_awaited()
+
+
+async def test_get_documents_by_id_returns_only_found_documents() -> None:
+    """Real _mget response shape: a top-level "docs" array, one entry per
+    requested id, each carrying its own "found" bool -- a missing id comes
+    back {"found": false, ...} rather than being omitted from the array."""
+    client = _make_client()
+    client._client.mget = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "docs": [
+                {
+                    "_index": "kronos-test",
+                    "_id": "doc-1",
+                    "found": True,
+                    "_source": {"enrichment": {"ioc": {"confidence": 80}}},
+                },
+                {
+                    "_index": "kronos-test",
+                    "_id": "doc-missing",
+                    "found": False,
+                },
+            ]
+        }
+    )
+
+    result = await client.get_documents_by_id("kronos-test", ["doc-1", "doc-missing"])
+
+    assert result == {"doc-1": {"enrichment": {"ioc": {"confidence": 80}}}}
+    client._client.mget.assert_awaited_once_with(
+        index="kronos-test",
+        body={"docs": [{"_id": "doc-1"}, {"_id": "doc-missing"}]},
+    )
+
+
+async def test_get_documents_by_id_none_found_returns_empty_dict() -> None:
+    client = _make_client()
+    client._client.mget = AsyncMock(  # type: ignore[method-assign]
+        return_value={"docs": [{"_id": "doc-1", "found": False}]}
+    )
+
+    result = await client.get_documents_by_id("kronos-test", ["doc-1"])
+
+    assert result == {}
+
+
+async def test_in_memory_get_documents_by_id_returns_only_indexed_documents() -> None:
+    """InMemoryOpenSearchClient test-double equivalent -- reuses the same
+    get_documents(index) inspection helper's underlying store, filtered to
+    the requested ids, mirroring the real client's "found only" contract."""
+    from src.adapter.opensearch.client import InMemoryOpenSearchClient
+
+    client = InMemoryOpenSearchClient()
+    await client.bulk_index([("kronos-test", "doc-1", {"field": "value1"})])
+
+    result = await client.get_documents_by_id("kronos-test", ["doc-1", "doc-missing"])
+
+    assert result == {"doc-1": {"field": "value1"}}
+
+
+async def test_in_memory_get_documents_by_id_unknown_index_returns_empty_dict() -> None:
+    from src.adapter.opensearch.client import InMemoryOpenSearchClient
+
+    client = InMemoryOpenSearchClient()
+
+    result = await client.get_documents_by_id("kronos-never-indexed", ["doc-1"])
+
+    assert result == {}

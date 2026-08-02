@@ -1,0 +1,35 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+[2026-08-02T19:04:49.874475+00:00] === Scenario 0: real Sigma severity vocabulary (live 2.11.1 cluster) ===
+[2026-08-02T19:04:50.251815+00:00] PASS: real GET pre-packaged rules search returned 200
+[2026-08-02T19:04:50.296696+00:00] real total pre-packaged rules: 2077, level distribution: {'low': 205, 'medium': 720, 'high': 972, 'informational': 23, 'critical': 157}
+[2026-08-02T19:04:50.296742+00:00] PASS: real corpus contains exactly the 5 documented Sigma levels
+[2026-08-02T19:04:50.296751+00:00] PASS: src/domain/detection.py's SIGMA_SEVERITY_LEVELS matches the real corpus exactly
+[2026-08-02T19:04:50.297034+00:00] === Scenario 1: real OpenSearch get_documents_by_id (_mget) round-trip ===
+[2026-08-02T19:04:50.452461+00:00] real PUT _index_template/kronos-template succeeded
+[2026-08-02T19:04:50.525148+00:00] PASS: real bulk_index indexed all 3 real documents
+[2026-08-02T19:04:50.533457+00:00] real mget result keys: ['poc-doc-high-2abe230d-1e2e-42c5-99ea-239351427c5a', 'poc-doc-low-7c49277a-2c2d-4836-91fc-59cdf9365318', 'poc-doc-plain-cabc96fc-f1d3-4bc0-ad05-caaadfc057b1']
+[2026-08-02T19:04:50.533474+00:00] PASS: real mget found exactly the 3 indexed documents
+[2026-08-02T19:04:50.533478+00:00] PASS: real mget honestly omits the never-indexed id
+[2026-08-02T19:04:50.533481+00:00] PASS: real mget round-trips enrichment.ioc.confidence exactly
+[2026-08-02T19:04:50.533484+00:00] PASS: real mget round-trips enrichment.asset.criticality exactly
+[2026-08-02T19:04:50.533486+00:00] === Scenario 2: end-to-end risk scoring through DetectionSyncService ===
+[2026-08-02T19:04:50.539941+00:00] PASS: real sync created exactly 4 new Detection rows
+[2026-08-02T19:04:50.539965+00:00] high+critical-asset+ioc85 detection: risk_score=84.41
+[2026-08-02T19:04:50.539970+00:00] high+low-asset (no ioc) detection:    risk_score=56.82
+[2026-08-02T19:04:50.539972+00:00] high severity, doc never resolved:    risk_score=75.0
+[2026-08-02T19:04:50.539975+00:00] no severity tag, no matched doc:       risk_score=None
+[2026-08-02T19:04:50.539981+00:00]   critical-case factor: rule_severity weight=0.35 normalized=0.75 detail="highest matched rule severity is 'high'"
+[2026-08-02T19:04:50.539986+00:00]   critical-case factor: ioc_confidence weight=0.3 normalized=0.85 detail='matched document(s) carry IOC confidence 85/100'
+[2026-08-02T19:04:50.539989+00:00]   critical-case factor: asset_criticality weight=0.2 normalized=1.0 detail="matched document(s) resolve to asset criticality 'critical'"
+[2026-08-02T19:04:50.539993+00:00]   critical-case factor: identity_privilege weight=0.15 normalized=None detail='no identity-context enricher exists yet (roadmap F1 STATUS: explicitly flagged, unbuilt follow-up scope) -- omitted from the formula, never defaulted'
+[2026-08-02T19:04:50.539996+00:00] PASS: same rule severity + real matched-doc enrichment (critical asset, ioc 85) scores strictly higher than the same finding whose matched doc has NO enrichment at all
+[2026-08-02T19:04:50.539999+00:00] PASS: same rule severity + critical asset scores strictly higher than + low asset (documented delta, not a fabricated one)
+[2026-08-02T19:04:50.540001+00:00] PASS: finding whose matched doc never resolves falls back honestly to rule-severity-only (75.0 = 0.35*0.75/0.35*100, the documented rule_severity-only formula)
+[2026-08-02T19:04:50.540004+00:00] PASS: finding with no severity tag and no matched doc is honestly un-scorable (None, not 0.0)
+[2026-08-02T19:04:50.540009+00:00] PASS: d_critical's ioc_confidence factor reflects the real indexed value (85 -> 0.85)
+[2026-08-02T19:04:50.540013+00:00] PASS: d_critical's asset_criticality factor reflects the real indexed value (critical -> 1.0)
+[2026-08-02T19:04:50.540016+00:00] PASS: d_low_asset's asset_criticality factor reflects the real indexed value (low -> 0.25)
+[2026-08-02T19:04:50.540025+00:00] PASS: identity_privilege factor is honestly absent on every real Detection produced this run
+[2026-08-02T19:04:50.564941+00:00] cleaned up real PoC index kronos-poc-risk-scoring-org-case-bbd303c6-202608
+[2026-08-02T19:04:50.565284+00:00] PoC PASSED -- all 17 checks passed against the real, live OpenSearch 2.11.1 cluster.

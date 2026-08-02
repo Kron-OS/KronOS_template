@@ -116,6 +116,67 @@ class TestDetectionAttackTags:
         assert d.attack_tags == ()
 
 
+class TestDetectionRuleSeverity:
+    """Roadmap M5/F4: real Sigma severity vocabulary (confirmed against the
+    live OpenSearch 2.11.1 cluster's own 2077 pre-packaged rules -- see
+    poc/detection_risk_scoring/), extracted the same way attack_tags
+    filters ATT&CK tags out of the same real, mixed tags list."""
+
+    def test_rule_severity_extracts_the_bare_severity_token(self) -> None:
+        d = make_detection()  # tags=("high", "network", "attack.t1021.001")
+        assert d.rule_severity == "high"
+
+    def test_rule_severity_picks_the_highest_across_multiple_rule_matches(self) -> None:
+        d = make_detection().model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(rule_id="r1", tags=("low", "attack.t1006")),
+                    DetectionRuleMatch(rule_id="r2", tags=("critical", "attack.t1210")),
+                    DetectionRuleMatch(rule_id="r3", tags=("medium",)),
+                )
+            }
+        )
+        assert d.rule_severity == "critical"
+
+    def test_rule_severity_none_when_no_recognized_severity_tag(self) -> None:
+        d = make_detection().model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(rule_id="r1", tags=("network", "attack.t1210")),
+                )
+            }
+        )
+        assert d.rule_severity is None
+
+    def test_rule_severity_none_when_no_rule_matches(self) -> None:
+        d = make_detection().model_copy(update={"rule_matches": ()})
+        assert d.rule_severity is None
+
+    def test_rule_severity_recognizes_every_real_sigma_level(self) -> None:
+        for level in ("informational", "low", "medium", "high", "critical"):
+            d = make_detection().model_copy(
+                update={"rule_matches": (DetectionRuleMatch(rule_id="r1", tags=(level,)),)}
+            )
+            assert d.rule_severity == level
+
+
+class TestDetectionRiskScore:
+    """Detection.risk_score/risk_factors are plain frozen fields, set once at
+    construction (by DetectionSyncService in real use) -- see
+    tests/unit/application/test_detection_sync.py for the full,
+    real, end-to-end scoring path exercised through the sync service."""
+
+    def test_risk_score_defaults_to_none(self) -> None:
+        d = make_detection()
+        assert d.risk_score is None
+        assert d.risk_factors == ()
+
+    def test_risk_score_and_factors_are_frozen(self) -> None:
+        d = make_detection().model_copy(update={"risk_score": 75.0})
+        with pytest.raises(Exception):  # noqa: B017
+            d.risk_score = 10.0  # type: ignore[misc]
+
+
 class TestDetectionRuleMatch:
     def test_frozen(self) -> None:
         m = DetectionRuleMatch(rule_id="r1", tags=("high",))

@@ -65,6 +65,7 @@ from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
+from src.application.risk_scoring import DetectionRiskScorer
 from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
@@ -606,13 +607,17 @@ def get_parsing_orchestration_service(
 def get_detection_sync_service(
     detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    timeline_index: Annotated[AbstractTimelineIndex, Depends(get_opensearch_client)],
 ) -> DetectionSyncService | None:
     """FastAPI dependency for DetectionSyncService.
 
     None (no-op) when no FindingsClient is configured -- the same "honestly
     disabled" pattern as get_timestamp_service/get_dashboards_index_pattern_
     provisioner: callers must treat None as "sync disabled", never fabricate
-    a result.
+    a result. ``timeline_index`` (roadmap M5/F4) is always real (defaults to
+    InMemoryOpenSearchClient, mirroring get_opensearch_client's own "never
+    None" contract) -- used to resolve a finding's matched documents' own
+    enrichment fields for risk scoring at sync time.
     """
     findings_client = get_findings_client()
     if findings_client is None:
@@ -621,6 +626,8 @@ def get_detection_sync_service(
         findings_client=findings_client,
         detection_repository=detection_repository,
         audit_log=audit_log,
+        timeline_index=timeline_index,
+        risk_scorer=DetectionRiskScorer(),
     )
 
 
