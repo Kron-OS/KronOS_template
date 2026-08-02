@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState
+from src.domain.detection import (
+    Detection,
+    DetectionCorrelation,
+    DetectionRuleMatch,
+    DetectionTriageState,
+)
 from src.exceptions import DetectionStateError
 
 
@@ -98,7 +103,9 @@ class TestDetectionAttackTags:
             update={
                 "rule_matches": (
                     DetectionRuleMatch(rule_id="r1", tags=("high", "attack.t1021.001")),
-                    DetectionRuleMatch(rule_id="r2", tags=("medium", "attack.t1021.001", "attack.t1210")),
+                    DetectionRuleMatch(
+                        rule_id="r2", tags=("medium", "attack.t1021.001", "attack.t1210")
+                    ),
                 )
             }
         )
@@ -118,3 +125,40 @@ class TestDetectionRuleMatch:
     def test_tags_default_empty(self) -> None:
         m = DetectionRuleMatch(rule_id="r1")
         assert m.tags == ()
+
+
+def make_correlation(**overrides: object) -> DetectionCorrelation:
+    defaults: dict[str, object] = {
+        "org_id": uuid.uuid4(),
+        "detection_id_a": uuid.uuid4(),
+        "detection_id_b": uuid.uuid4(),
+        "finding_id_a": str(uuid.uuid4()),
+        "finding_id_b": str(uuid.uuid4()),
+        "rule_ids": ("rule-1",),
+    }
+    defaults.update(overrides)
+    return DetectionCorrelation(**defaults)  # type: ignore[arg-type]
+
+
+class TestDetectionCorrelation:
+    def test_frozen(self) -> None:
+        c = make_correlation()
+        with pytest.raises(Exception):  # noqa: B017
+            c.org_id = uuid.uuid4()  # type: ignore[misc]
+
+    def test_rule_ids_default_empty(self) -> None:
+        c = make_correlation(rule_ids=())
+        assert c.rule_ids == ()
+
+    def test_rule_ids_preserves_multiple_real_rule_ids(self) -> None:
+        c = make_correlation(rule_ids=("rule-1", "rule-2"))
+        assert c.rule_ids == ("rule-1", "rule-2")
+
+    def test_correlation_id_auto_generated_and_unique(self) -> None:
+        c1 = make_correlation()
+        c2 = make_correlation()
+        assert c1.correlation_id != c2.correlation_id
+
+    def test_synced_at_defaults_to_now(self) -> None:
+        c = make_correlation()
+        assert c.synced_at is not None

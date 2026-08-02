@@ -54,6 +54,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_detection import (  # noqa: PLC0415
         PostgresDetectionRepository,
     )
+    from src.adapter.repository.postgres_detection_correlation import (  # noqa: PLC0415
+        PostgresDetectionCorrelationRepository,
+    )
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
@@ -95,6 +98,7 @@ async def wire_dependencies_async() -> None:
     case_repo = PostgresCaseRepository(engine)
     artifact_repo = PostgresArtifactRepository(engine)
     detection_repo = PostgresDetectionRepository(engine)
+    correlation_repo = PostgresDetectionCorrelationRepository(engine)
     rule_pack_repo = PostgresRulePackRepository(engine)
     yara_rule_pack_repo = PostgresYaraRulePackRepository(engine)
     asset_repo = PostgresAssetRepository(engine)
@@ -105,6 +109,7 @@ async def wire_dependencies_async() -> None:
     await PostgresCaseRepository.create_tables(engine)
     await PostgresArtifactRepository.create_tables(engine)
     await PostgresDetectionRepository.create_tables(engine)
+    await PostgresDetectionCorrelationRepository.create_tables(engine)
     await PostgresRulePackRepository.create_tables(engine)
     await PostgresYaraRulePackRepository.create_tables(engine)
     await PostgresAssetRepository.create_tables(engine)
@@ -241,6 +246,30 @@ async def wire_dependencies_async() -> None:
         admin_password=settings.opensearch_password.get_secret_value(),
     )
 
+    # Correlation (roadmap M2/F3, poc/security_analytics_correlation/):
+    # evaluated SA's native correlation engine (real, live on the pinned
+    # 2.11.1 cluster -- 20/20 real checks passed) before considering a
+    # bespoke entity graph. Same always-required opensearch_url/username/
+    # password construction as findings_client/detector_provisioner above --
+    # no "not configured" honest-disable case here either.
+    from src.adapter.opensearch.correlation_client import (  # noqa: PLC0415
+        SecurityAnalyticsCorrelationClient,
+    )
+    from src.adapter.opensearch.correlation_rule_provisioner import (  # noqa: PLC0415
+        SecurityAnalyticsCorrelationRuleProvisioner,
+    )
+
+    correlation_client = SecurityAnalyticsCorrelationClient(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+    correlation_rule_provisioner = SecurityAnalyticsCorrelationRuleProvisioner(
+        base_url=settings.opensearch_url,
+        admin_username=settings.opensearch_username.get_secret_value(),
+        admin_password=settings.opensearch_password.get_secret_value(),
+    )
+
     # Rule-pack lifecycle (roadmap M2/C3, poc/rule_pack_lifecycle/): custom
     # rule publish + detector wiring, admin-only per the A3 gate exactly like
     # detector_provisioner/findings_client above. CosignPackSignatureVerifier
@@ -272,6 +301,9 @@ async def wire_dependencies_async() -> None:
         case_repository=case_repo,
         artifact_repository=artifact_repo,
         detection_repository=detection_repo,
+        correlation_repository=correlation_repo,
+        correlation_client=correlation_client,
+        correlation_rule_provisioner=correlation_rule_provisioner,
         evidence_storage=storage,
         task_queue=task_queue,
         opensearch_client=opensearch,

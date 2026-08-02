@@ -133,6 +133,53 @@ class Detection(BaseModel):
         (DetectionTriageService) are responsible for auditing both outcomes.
         """
         new_state = self.triage_state.transition_to(target)
-        return self.model_copy(
-            update={"triage_state": new_state, "updated_at": datetime.now(UTC)}
-        )
+        return self.model_copy(update={"triage_state": new_state, "updated_at": datetime.now(UTC)})
+
+
+class DetectionCorrelation(BaseModel):
+    """An immutable, audited mirror of one real SA correlation-engine match
+    linking two already-synced Detection rows for the SAME org.
+
+    Roadmap M2/F3 (docs/NEXTGEN_SOC_ROADMAP.md) -- evaluated OpenSearch
+    Security Analytics' native correlation engine (real, live on the pinned
+    2.11.1 cluster, see poc/security_analytics_correlation/) rather than
+    building a bespoke entity graph. A real correlation-rule match is
+    reported by SA as a (finding_a, finding_b, rule_ids) triple via
+    ``GET /_plugins/_security_analytics/correlations`` -- a cluster-wide,
+    UNSCOPED endpoint with no org/tenant filter of its own (confirmed: its
+    only real params are start_timestamp/end_timestamp). Tenant isolation
+    is therefore enforced the same way roadmap invariant #3 requires
+    everywhere else: computed by CorrelationSyncService from which
+    Detection rows *this org* already synced (via
+    DetectionRepository.get_by_finding_id), never from anything the
+    correlations API itself claims to scope.
+
+    Deliberately a SIBLING fact type, not a mutation of either linked
+    Detection -- Detection is frozen/immutable-once-created (roadmap
+    invariant #6: a Detection is a frozen snapshot of what SA reported at
+    sync time), and a correlation between two findings can genuinely be
+    discovered *after* both underlying Detections already exist (the
+    correlation engine is a real-time listener on NEW findings, confirmed
+    empirically to NOT retroactively correlate pre-existing ones -- see the
+    PoC README's "Real bugs/gaps found #2"). Recording it as a new,
+    append-only link avoids retrofitting mutability onto an entity whose
+    whole point is to never change after creation.
+    """
+
+    model_config = {"frozen": True}
+
+    correlation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    # Always the syncing caller's own TenantContext.org_id -- never derived
+    # from the correlations API response (roadmap invariant #3), mirroring
+    # Detection.org_id's own contract.
+    org_id: uuid.UUID
+    detection_id_a: uuid.UUID
+    detection_id_b: uuid.UUID
+    finding_id_a: str
+    finding_id_b: str
+    # The real SA correlation rule id(s) that produced this link -- a real
+    # pair can be tagged by more than one rule simultaneously (the same
+    # "don't collapse a real list into a single value" lesson
+    # DetectionRuleMatch's own docstring already recorded for rule_matches).
+    rule_ids: tuple[str, ...] = Field(default_factory=tuple)
+    synced_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

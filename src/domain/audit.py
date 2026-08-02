@@ -87,6 +87,12 @@ class AuditEventType(StrEnum):
     DETECTION_TRIAGE_TRANSITIONED = "detection.triage_transitioned"
     DETECTION_TRIAGE_TRANSITION_FAILED = "detection.triage_transition_failed"
 
+    # Correlation (roadmap M2/F3) -- SA's native correlation-engine matches
+    # mirrored into KronOS's own audited DetectionCorrelation entity; see
+    # src/application/correlation_sync.py.
+    DETECTION_CORRELATED = "detection.correlated"
+    DETECTION_CORRELATION_SYNC_FAILED = "detection.correlation_sync_failed"
+
     # Rule-pack lifecycle (roadmap M2/C3) -- versioned custom-rule packs;
     # see src/application/rule_pack_service.py.
     RULE_PACK_VERSION_CREATED = "rule_pack.version_created"

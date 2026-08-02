@@ -1624,6 +1624,102 @@ not a foregone "replace it" conclusion.
 **Objective.** Evaluate SA's native correlation engine **before** building
 anything; only then consider an entity graph for attack-chain assembly.
 
+**STATUS (2026-08-02): DONE — native engine evaluated real, GO, entity graph
+NOT built.** Confirmed SA's correlation engine genuinely exists and is live
+on the pinned OpenSearch 2.11.1 dev cluster (`POST .../correlation/rules`
+route registered, distinct from F2's threat-intel finding where the route
+didn't exist at all). Read the real Java source for the pinned `2.11` branch
+(`opensearch-project/security-analytics` commit
+`0092714047145972f990931e0d06595caa019185`) rather than trusting "latest"
+docs, confirming the exact request/response schema
+(`{"name": ..., "correlate": [{"index", "query", "category"}, ...]}`).
+
+**Real PoC** (`poc/security_analytics_correlation/`, 20/20 checks passed):
+created two real detectors over two real test indices using two Sigma rules
+already proven to fire against real KronOS data in C1 (`db809f10-...`
+windows/T1006, `1fc0809e-...` network/T1021.001), created a real correlation
+rule joining `category: windows` with `category: network`, and got a real
+cross-log-type match back from `GET .../findings/correlate`: a real network
+finding returned with `score: 1.0`, tagged with this run's own real
+correlation rule id. Two real, non-obvious operational facts found and
+designed around: (1) the correlation engine only correlates findings created
+**after** the rule exists — no retroactive re-scan of pre-existing findings
+(rule must be provisioned first); (2) unlike detectors, a real PUT-update
+against a correlation rule works cleanly (`_version` 1→2, no error) — no
+delete-and-recreate workaround needed here.
+
+**Multi-tenant scoping answer:** a correlation rule has **no dedicated
+tenant field** (confirmed from `CorrelationRule.java`/`CorrelationQuery.java`
+directly, and empirically — a rule with `kronos-poc-tenanta-*`/
+`kronos-poc-tenantb-*` index strings was accepted with **201**, no
+validation). `index` is exactly as free-form as a Detector's own `indices`
+list, so C2's existing per-org convention extends cleanly: KronOS computes
+`kronos-{org_alias}-*` for every category leg itself, never from rule
+content. Also confirmed the real `GET .../correlations` list endpoint is
+**cluster-wide with no org/tenant filter at all** (only start/end
+timestamps) — a genuinely more permissive gap than detectors/findings
+(which are at least scoped by `monitor_name`), so **all** tenant isolation
+for correlation data is enforced application-side by
+`CorrelationSyncService`, which discards any pair unless BOTH finding ids
+already resolve to a Detection this exact org previously synced.
+
+**Design decision: GO on the native engine, entity graph not built.** No
+real defect was found (the two facts above are operational constraints to
+design around, not the kind of concrete bug that forced C2/A3's own
+workarounds) and the native engine already produces real cross-log-type
+matches, so building a parallel bespoke correlator now would be exactly the
+premature-shortcut pattern CLAUDE.md SS G.3 warns against. Revisit only if a
+future need requires dynamic field-value joins ("same IP across any two log
+types") the engine's declarative-query-pair model can't express.
+
+**Built:** `src/domain/detection.py` (`DetectionCorrelation`, a new,
+immutable sibling fact type — not a mutation of `Detection`, which stays
+frozen-once-created); `src/adapter/repository/detection_correlation.py` +
+`postgres_detection_correlation.py` (ABC/in-memory/Postgres, mirroring
+`DetectionRepository` exactly); `src/adapter/opensearch/correlation_client.py`
+(read-only `CorrelationClient`/`SecurityAnalyticsCorrelationClient`, mirrors
+`FindingsClient`); `src/adapter/opensearch/correlation_rule_provisioner.py`
+(`CorrelationRuleProvisioner`/`SecurityAnalyticsCorrelationRuleProvisioner`,
+check-then-create-or-PUT-update, mirrors C2/C3's provisioner shape but with
+the simpler update-in-place strategy the real PUT test justified);
+`src/application/correlation_sync.py` (`CorrelationSyncService`, a new sync
+path reusing `DetectionRepository`/`AuditLogService` rather than duplicating
+their tenant-scoping/audit logic, exactly as this item's brief required);
+two new `AuditEventType` entries (`DETECTION_CORRELATED`,
+`DETECTION_CORRELATION_SYNC_FAILED`); DI wiring in
+`src/external/dependencies.py` (checked `reset_dependencies()` explicitly
+for the exact omission bug hit once already on E3/F2) and
+`src/external/startup.py`.
+
+**Not built this pass (explicitly flagged, not silently dropped):** no
+curated set of production scenario rules (which category/query pairs are
+worth shipping is real, separate product-definition work — this PoC used
+one synthetic windows/network pair to prove the mechanism); no HTTP route
+exposing correlation sync or the provisioner (backend-only scope, mirrors
+F2/F1's own precedent — `get_correlation_sync_service()` is DI-wired and
+ready for a future route/beat task, exactly like `get_detection_sync_service()`
+already sits unrouted today); no >2-category rule chains tried (a natural
+extrapolation of the same `correlate` array, not verified this pass);
+`docker-compose.test.yml`/`docker-compose.prod.yml` pin OpenSearch 2.13.0,
+not re-verified against the 2.11.1 dev cluster this PoC actually ran
+against.
+
+**Tests:** real unit coverage for the domain model, both repositories, both
+new adapters (mocked httpx, mirroring `test_detector_provisioner.py`'s own
+style), and a true end-to-end `CorrelationSyncService` suite exercising the
+real `InMemoryDetectionRepository`/`InMemoryDetectionCorrelationRepository`/
+`AuditLogService` together (only the OpenSearch client is faked) — including
+the tenant-isolation gate itself (a pair is dropped when either finding
+belongs to another org) and idempotency under the real API's own
+unordered-pair reporting. Full suite: **1095 passed, 1 skipped** (was 1063
+after F2, 32 new this pass), coverage **87.08%** (was 86.92%, no regression
+— `--cov-fail-under=80` gate holds with margin), `mypy` **29** (identical
+pre-existing baseline, zero new — verified line-by-line none of the 29 are
+in any file this pass touched), `ruff`/`black` clean on every new/touched
+file (verified via `git show HEAD:<file>` diffing against the one
+pre-existing baseline line this pass's own edit happened to sit next to in
+`tests/unit/domain/test_detection.py`).
+
 ### F4 · Risk scoring + alert prioritization — L2
 **Objective.** Deterministic, explainable scoring combining asset criticality,
 identity privilege, IOC confidence, rule severity.

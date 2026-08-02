@@ -13,6 +13,8 @@ from typing import Annotated, Any
 from fastapi import Depends
 
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
+from src.adapter.opensearch.correlation_client import CorrelationClient
+from src.adapter.opensearch.correlation_rule_provisioner import CorrelationRuleProvisioner
 from src.adapter.opensearch.custom_rule_client import CustomRuleClient
 from src.adapter.opensearch.custom_rule_detector_provisioner import CustomRuleDetectorBinder
 from src.adapter.opensearch.dashboards_client import DashboardsIndexPatternProvisioner
@@ -31,6 +33,10 @@ from src.adapter.repository.audit_log import AuditLogRepository
 from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseRepository
 from src.adapter.repository.dead_letter import DeadLetterSink, InMemoryDeadLetterSink
 from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
+from src.adapter.repository.detection_correlation import (
+    DetectionCorrelationRepository,
+    InMemoryDetectionCorrelationRepository,
+)
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.ioc_feed import InMemoryIOCFeedRepository, IOCFeedRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
@@ -48,6 +54,7 @@ from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.batch_sealing import BatchSealingService
 from src.application.collector_ingest import CollectorIngestService
+from src.application.correlation_sync import CorrelationSyncService
 from src.application.cost_gate import RuleCostGate
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
@@ -114,6 +121,13 @@ _event_dedup_checker: EventDedupChecker = InMemoryEventDedupChecker()
 _collector_ingest_service: CollectorIngestService | None = None
 _findings_client: FindingsClient | None = None
 _detection_repository: DetectionRepository = InMemoryDetectionRepository()
+# Correlation (roadmap M2/F3) -- same "honestly disabled" shape as
+# _findings_client above: None means "no CorrelationClient configured",
+# never a fabricated result. _correlation_repository defaults to a real
+# (if in-memory) repository the same way _detection_repository does.
+_correlation_client: CorrelationClient | None = None
+_correlation_repository: DetectionCorrelationRepository = InMemoryDetectionCorrelationRepository()
+_correlation_rule_provisioner: CorrelationRuleProvisioner | None = None
 _timestamp_service: RFC3161TimestampService | None = None
 _default_retention_days: int = 365
 _opensearch_security_enabled: bool = False
@@ -306,6 +320,18 @@ def get_findings_client() -> FindingsClient | None:
 
 def get_detection_repository() -> DetectionRepository:
     return _detection_repository
+
+
+def get_correlation_client() -> CorrelationClient | None:
+    return _correlation_client
+
+
+def get_correlation_repository() -> DetectionCorrelationRepository:
+    return _correlation_repository
+
+
+def get_correlation_rule_provisioner() -> CorrelationRuleProvisioner | None:
+    return _correlation_rule_provisioner
 
 
 def get_rule_pack_repository() -> RulePackRepository:
@@ -598,6 +624,29 @@ def get_detection_sync_service(
     )
 
 
+def get_correlation_sync_service(
+    detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
+    correlation_repository: Annotated[
+        DetectionCorrelationRepository, Depends(get_correlation_repository)
+    ],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> CorrelationSyncService | None:
+    """FastAPI dependency for CorrelationSyncService (roadmap M2/F3).
+
+    None (no-op) when no CorrelationClient is configured -- the same
+    "honestly disabled" pattern as get_detection_sync_service above.
+    """
+    correlation_client = get_correlation_client()
+    if correlation_client is None:
+        return None
+    return CorrelationSyncService(
+        correlation_client=correlation_client,
+        detection_repository=detection_repository,
+        correlation_repository=correlation_repository,
+        audit_log=audit_log,
+    )
+
+
 def get_detection_triage_service(
     detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
@@ -763,6 +812,9 @@ def configure_dependencies(
     stream_ingest_adapter: StreamIngestAdapter | None = None,
     findings_client: FindingsClient | None = None,
     detection_repository: DetectionRepository | None = None,
+    correlation_client: CorrelationClient | None = None,
+    correlation_repository: DetectionCorrelationRepository | None = None,
+    correlation_rule_provisioner: CorrelationRuleProvisioner | None = None,
     timestamp_service: RFC3161TimestampService | None = None,
     default_retention_days: int = 365,
     opensearch_security_enabled: bool = False,
@@ -786,6 +838,7 @@ def configure_dependencies(
     global _dashboards_index_pattern_provisioner, _detector_provisioner
     global _ism_manager, _ism_tier_resolver, _stream_ingest_adapter
     global _findings_client, _detection_repository
+    global _correlation_client, _correlation_repository, _correlation_rule_provisioner
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
@@ -809,6 +862,10 @@ def configure_dependencies(
         _artifact_repository = artifact_repository
     if detection_repository is not None:
         _detection_repository = detection_repository
+    if correlation_repository is not None:
+        _correlation_repository = correlation_repository
+    _correlation_client = correlation_client
+    _correlation_rule_provisioner = correlation_rule_provisioner
     _max_upload_bytes = max_upload_bytes
     _presigned_expiry = presigned_expiry_seconds
     _opensearch_dashboards_url = opensearch_dashboards_url
@@ -849,6 +906,7 @@ def reset_dependencies() -> None:
     global _ism_manager, _ism_tier_resolver, _stream_ingest_adapter
     global _event_dedup_checker, _collector_ingest_service
     global _findings_client, _detection_repository
+    global _correlation_client, _correlation_repository, _correlation_rule_provisioner
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _sealed_batch_repository, _batch_sealing_service
@@ -862,6 +920,9 @@ def reset_dependencies() -> None:
     _artifact_repository = InMemoryArtifactRepository()
     _detection_repository = InMemoryDetectionRepository()
     _findings_client = None
+    _correlation_repository = InMemoryDetectionCorrelationRepository()
+    _correlation_client = None
+    _correlation_rule_provisioner = None
     _scanner = NoOpScanner()
     _task_queue = InMemoryTaskQueue()
     _parser_registry = None
