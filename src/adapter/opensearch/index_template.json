@@ -114,6 +114,17 @@
                 "owner":        { "type": "keyword" },
                 "environment":  { "type": "keyword" }
               }
+            },
+            "ioc": {
+              "properties": {
+                "matched":      { "type": "boolean" },
+                "ioc_type":     { "type": "keyword" },
+                "value":        { "type": "keyword" },
+                "feed_name":    { "type": "keyword" },
+                "confidence":   { "type": "long" },
+                "description":  { "type": "text" },
+                "source_ref":   { "type": "keyword" }
+              }
             }
           }
         },

@@ -12,10 +12,12 @@ import pytest
 from src.adapter.opensearch.client import InMemoryOpenSearchClient
 from src.adapter.queue.task_queue import InMemoryTaskQueue
 from src.adapter.repository.asset import InMemoryAssetRepository
+from src.adapter.repository.ioc_feed import InMemoryIOCFeedRepository
 from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.asset_enrichment import AssetContextEnricher
 from src.application.audit_log import AuditLogService
 from src.application.enrichment import EnrichmentPipeline
+from src.application.ioc_enrichment import IOCMatchEnricher
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
 from src.application.parsing_orchestration import ParsingOrchestrationService, _make_document_id
@@ -25,6 +27,7 @@ from src.domain.artifact import StructuredArtifact
 from src.domain.asset import Asset
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceState
+from src.domain.ioc_feed import IOCFeedVersion, IOCIndicator, IOCType
 from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import EvidenceStateConflictError, ParsingError
@@ -123,6 +126,33 @@ class _HostNamedParser(_FakeCloudTrailParser):
         yield TimelineRecord(
             **{"@timestamp": datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC), "event.kind": "event"},
             host_name=self._host_name,
+            kronos=KronosProvenance(
+                evidence_id=evidence.evidence_id,
+                case_id=evidence.metadata.case_id,
+                org_id=evidence.metadata.org_id,
+                sha256="",
+                parser=self.parser_name,
+                parser_version=self.parser_version,
+                record_index=0,
+                ingest_timestamp=datetime.now(UTC),
+            ),
+        )
+
+
+class _SourceIpParser(_FakeCloudTrailParser):
+    """Yields one record with a real extra["source.ip"] set (roadmap F2
+    enrichment test needs a real, currently-matchable field for
+    IOCMatchEnricher to check)."""
+
+    def __init__(self, source_ip: str) -> None:
+        self._source_ip = source_ip
+
+    async def parse(  # type: ignore[override]
+        self, stream: AsyncIterator[bytes], evidence: Evidence, tenant: TenantContext
+    ) -> AsyncIterator[TimelineRecord]:
+        yield TimelineRecord(
+            **{"@timestamp": datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC), "event.kind": "event"},
+            extra={"source.ip": self._source_ip},
             kronos=KronosProvenance(
                 evidence_id=evidence.evidence_id,
                 case_id=evidence.metadata.case_id,
@@ -718,6 +748,64 @@ class TestExecuteParse:
         ]
         assert len(docs) == 1
         assert "enrichment" not in docs[0]
+
+    @pytest.mark.asyncio
+    async def test_ioc_match_enricher_applies_real_derived_fields_before_indexing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Roadmap F2: an EnrichmentPipeline configured with IOCMatchEnricher
+        must run before indexing, attaching real derived enrichment.ioc.*
+        fields for a record whose extra["source.ip"] matches a real,
+        ingested IOC -- end to end through the real
+        TimelineIngestionService/InMemoryOpenSearchClient, mirroring F1's
+        own enrichment.asset.* end-to-end test exactly."""
+        evidence = await self._seed_parsing_evidence(evidence_repo, local_storage, tenant)
+        ioc_repo = InMemoryIOCFeedRepository()
+        feed = await ioc_repo.get_or_create_feed(tenant.org_id, "poc-feed")
+        await ioc_repo.save_version(
+            IOCFeedVersion(
+                feed_id=feed.feed_id,
+                version=1,
+                org_id=tenant.org_id,
+                source_format="stix2.1",
+                indicators=(
+                    IOCIndicator(
+                        ioc_type=IOCType.IP,
+                        value="203.0.113.66",
+                        confidence=85,
+                        description="C2 IP",
+                    ),
+                ),
+            )
+        )
+        pipeline = EnrichmentPipeline([IOCMatchEnricher(ioc_repo)])
+        opensearch = InMemoryOpenSearchClient()
+        ingest = TimelineIngestionService(opensearch, AuditLogService(audit_repo))
+        registry = ParserRegistry()
+        registry.register(_SourceIpParser("203.0.113.66"))
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+            timeline_ingest=ingest,
+            enrichment_pipeline=pipeline,
+        )
+
+        await orchestrator.execute_parse(evidence.evidence_id, tenant)
+
+        docs = [
+            d for idx in opensearch.all_indices() for d in opensearch.get_documents(idx).values()
+        ]
+        assert len(docs) == 1
+        assert docs[0]["enrichment"]["ioc"]["matched"] is True
+        assert docs[0]["enrichment"]["ioc"]["ioc_type"] == "ip"
+        assert docs[0]["enrichment"]["ioc"]["feed_name"] == "poc-feed"
+        assert docs[0]["enrichment"]["ioc"]["confidence"] == 85
+        # Every original field is untouched by enrichment.
+        assert docs[0]["source"]["ip"] == "203.0.113.66"
+        assert docs[0]["event"]["kind"] == "event"
 
     @pytest.mark.asyncio
     async def test_document_id_is_stable_across_calls(self) -> None:

@@ -32,6 +32,7 @@ from src.adapter.repository.case_repository import CaseRepository, InMemoryCaseR
 from src.adapter.repository.dead_letter import DeadLetterSink, InMemoryDeadLetterSink
 from src.adapter.repository.detection import DetectionRepository, InMemoryDetectionRepository
 from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.repository.ioc_feed import InMemoryIOCFeedRepository, IOCFeedRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
 from src.adapter.repository.sealed_batch import (
     InMemorySealedBatchRepository,
@@ -134,6 +135,10 @@ _dead_letter_sink: DeadLetterSink = InMemoryDeadLetterSink()
 # same pattern already used for _timestamp_service/_yara_runner above.
 _asset_repository: AssetRepository = InMemoryAssetRepository()
 _enrichment_pipeline: EnrichmentPipeline | None = None
+# IOC feed lifecycle (roadmap M5/F2) -- same "honestly disabled" shape as
+# _enrichment_pipeline above: an empty in-memory repository by default is
+# real (queries succeed, just find nothing), not a fake pass-through.
+_ioc_feed_repository: IOCFeedRepository = InMemoryIOCFeedRepository()
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +318,10 @@ def get_yara_rule_pack_repository() -> YaraRulePackRepository:
 
 def get_asset_repository() -> AssetRepository:
     return _asset_repository
+
+
+def get_ioc_feed_repository() -> IOCFeedRepository:
+    return _ioc_feed_repository
 
 
 def get_enrichment_pipeline() -> EnrichmentPipeline | None:
@@ -766,6 +775,7 @@ def configure_dependencies(
     yara_rule_pack_repository: YaraRulePackRepository | None = None,
     asset_repository: AssetRepository | None = None,
     enrichment_pipeline: EnrichmentPipeline | None = None,
+    ioc_feed_repository: IOCFeedRepository | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -779,7 +789,7 @@ def configure_dependencies(
     global _rule_pack_repository, _pack_signature_verifier
     global _custom_rule_client, _custom_rule_detector_binder
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
-    global _asset_repository, _enrichment_pipeline
+    global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -825,6 +835,8 @@ def configure_dependencies(
     if asset_repository is not None:
         _asset_repository = asset_repository
     _enrichment_pipeline = enrichment_pipeline
+    if ioc_feed_repository is not None:
+        _ioc_feed_repository = ioc_feed_repository
 
 
 def reset_dependencies() -> None:
@@ -841,7 +853,7 @@ def reset_dependencies() -> None:
     global _custom_rule_client, _custom_rule_detector_binder
     global _sealed_batch_repository, _batch_sealing_service
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
-    global _asset_repository, _enrichment_pipeline
+    global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -878,3 +890,4 @@ def reset_dependencies() -> None:
     _yara_rule_pack_repository = InMemoryYaraRulePackRepository()
     _asset_repository = InMemoryAssetRepository()
     _enrichment_pipeline = None
+    _ioc_feed_repository = InMemoryIOCFeedRepository()

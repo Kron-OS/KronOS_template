@@ -1504,6 +1504,122 @@ pass, mirrors E3/E4/E5's own precedent).
 **Objective.** IOC ingestion and matching, using SA's own threat-intel feature
 where it fits. Treat feed content as untrusted input.
 
+**STATUS (2026-08-02): DONE (STIX 2.1, KronOS-native path).** First, real
+finding, not a foregone conclusion: OpenSearch Security Analytics' native
+threat-intel feature (source configs, IoC-feed monitors) does **not exist**
+on either OpenSearch version this repo pins. Verified two ways:
+
+1. A real `curl` against the live dev cluster
+   (`docker-opensearch-1`, 2.11.1) for
+   `_plugins/_security_analytics/threat_intel/sources` returned **HTTP
+   400, "no handler found for uri"** -- OpenSearch's own signal that the
+   REST action isn't registered at all, not a 404/empty result. A control
+   call to a real, known-working SA endpoint on the SAME cluster
+   (`detectors/_search`) returned a normal 200, ruling out "SA is just
+   down".
+2. Checked against the real `opensearch-project/security-analytics`
+   GitHub history: threat-intel work was originally targeted at the 2.11
+   line itself, then **reverted** before release (PR #717, "Revert Threat
+   Intel Changes for 2.11", merged into the `2.11` branch 2023-11-08 --
+   three weeks before 2.11.1 itself shipped). Real feature work (source
+   CRUD, monitors, REST APIs) only resumes in the PR history starting
+   May-June 2024; every backport found for later threat-intel fixes goes
+   back only as far as 2.15. `docker-compose.test.yml`/
+   `docker-compose.prod.yml`'s pinned 2.13.0 predates the feature too. See
+   `poc/threat_intel_sa_native/` (README + real captured `output.txt`).
+
+Design decision: build the KronOS-native fallback the roadmap's own
+objective text anticipates ("where it fits") -- extend F1's `Enricher`/
+`EnrichmentPipeline` (`src/application/enrichment.py`, unmodified) with a
+second concrete enricher, `IOCMatchEnricher`
+(`src/application/ioc_enrichment.py`). Mirrors `RulePack`/
+`RulePackVersion`'s exact versioned-repository shape (append-only,
+tenant-scoped): `IOCFeed`/`IOCFeedVersion`/`IOCIndicator`/`IOCMatch`
+(`src/domain/ioc_feed.py`), `IOCFeedRepository` ABC + `InMemory*`
+(`src/adapter/repository/ioc_feed.py`) + `PostgresIOCFeedRepository`
+(`postgres_ioc_feed.py` -- adds one materialized, indexed
+"current indicators" projection table alongside the append-only
+`ioc_feed_versions` table specifically so a per-record match lookup at
+ingest stays a cheap indexed query, not a JSON-blob scan). Ingestion is
+`IOCFeedIngestionService.ingest_stix_bundle()`
+(`src/application/ioc_feed_ingestion.py`), parsing via a hand-written,
+regex-only extractor (`src/application/stix_ioc_parser.py`) -- never
+`eval`/`exec` against feed content, real enforced caps on bundle size/
+object count/pattern length, and unsupported/malformed indicator objects
+are honestly skipped (logged) rather than failing the whole feed. Real
+STIX 2.1 pattern shapes were confirmed against two official, trusted
+sources (OASIS's own STIX 2.1 spec and the official
+`oasis-open/cti-python-stix2` reference implementation's test suite), not
+invented from memory. Matchable fields were surveyed from what today's six
+parsers actually emit (`source.ip`/`destination.ip`, `url.domain`,
+`kronos.sha256` -- the evidence file's own hash) rather than invented;
+MISP/TAXII-poll ingestion are real, legitimate follow-ups, not built this
+pass (same "one real source proves the mechanism" precedent as F1's own
+asset-only enricher). `enrichment.ioc.*` fields added to
+`src/adapter/opensearch/index_template.json`, mirroring F1's
+`enrichment.asset.*`.
+
+PoC: `poc/threat_intel_stix_ingest/` -- **25/25 checks passed** against the
+real, already-running dev Postgres AND the real live OpenSearch 2.11.1
+cluster (not `InMemoryOpenSearchClient` -- specifically to prove the NEW
+`enrichment.ioc.*` mapping is actually accepted by the real pinned
+cluster, via a real `ensure_index_template()` PUT +
+`indices.get_mapping()` read-back). Covers: defensive parsing of a
+7-object real-shaped STIX bundle (3 real matchable indicators + an
+MD5-only indicator + a real compound-`AND` pattern from the OASIS spec +
+a deliberately malformed non-string `pattern` field, all three honestly
+skipped, never crashing the other 3); a structurally invalid bundle
+raising `ValidationError`; real append-only versioning against real
+Postgres (re-ingest creates version 2, version 1 never lost); real
+`match_indicator()` queries (case-insensitive, cross-org isolated, honest
+`None` on no match); the real `IOCMatchEnricher` through the real
+`EnrichmentPipeline` (IP match, file-hash match via the evidence's own
+`kronos.sha256`, most-specific-first priority when both would match, real
+no-op on no match); and the real OpenSearch round-trip (bulk-indexed
+document's `enrichment.ioc.matched`/`confidence` come back with the exact
+real mapping types the updated `index_template.json` declares).
+
+Added a real, true end-to-end unit test mirroring F1's own
+(`test_ioc_match_enricher_applies_real_derived_fields_before_indexing` in
+`tests/unit/application/test_parsing_orchestration.py`) through
+`ParsingOrchestrationService` -> `EnrichmentPipeline` ->
+`TimelineIngestionService` -> `InMemoryOpenSearchClient`, plus full unit
+coverage for the parser (`test_stix_ioc_parser.py`), ingestion service
+(`test_ioc_feed_ingestion.py`), enricher (`test_ioc_enrichment.py`), and
+`InMemoryIOCFeedRepository` (`test_ioc_feed_repository.py`).
+
+Wired into `src/external/dependencies.py` (new `_ioc_feed_repository`
+global, `get_ioc_feed_repository()`, added to both
+`configure_dependencies()` **and** `reset_dependencies()` -- this exact
+omission from `reset_dependencies()` was a real mistake made once already
+this session on E3 and had to be fixed there; checked for it explicitly
+here) and `src/external/startup.py` (`PostgresIOCFeedRepository` +
+`create_tables()`, `IOCMatchEnricher` added alongside
+`AssetContextEnricher` in the real `EnrichmentPipeline`).
+
+Independently ran the full checklist: **1063 passed, 1 skipped** (988 F1
+baseline + ~75 new across this and other work landed since), coverage
+**86.92%** (was 86.65%, no regression -- `pyproject.toml`'s
+`--cov-fail-under=80` gate still passes with real margin), `mypy` at
+**29** (identical pre-existing baseline, zero new -- checked line-by-line
+that none of the 29 errors are in any file this pass touched), `ruff` and
+`black` clean on every touched file.
+
+**Explicitly flagged, not yet done:** only STIX 2.1 bundle ingestion is
+wired -- MISP-JSON export and live TAXII 2.1 polling (a scheduled job with
+its own URL/credentials/interval, meaningfully more work: discovery,
+collections, auth) are real, legitimate follow-ups, not this item's gate.
+No HTTP route for managing IOC feeds (backend-only scope this pass,
+mirrors F1/E3/E4/E5's own precedent). `IOCMatchEnricher` reports only the
+single MOST-SPECIFIC match per record when multiple fields would match
+(file hash > IP > domain) -- surfacing every simultaneous match is
+legitimate future scope, not a defect. Compound STIX patterns (`AND`/`OR`/
+`FOLLOWEDBY`) and non-sha256 file hashes (MD5/SHA-1) are honestly
+unsupported, not silently mismapped. Once OpenSearch is upgraded to 2.15+
+in some future pass, revisiting SA's now-real native threat-intel feature
+against this KronOS-native path is the natural next evaluation point --
+not a foregone "replace it" conclusion.
+
 ### F3 · Correlation (SA correlation rules first, then entity graph) — L2/L3
 **Objective.** Evaluate SA's native correlation engine **before** building
 anything; only then consider an entity graph for attack-chain assembly.

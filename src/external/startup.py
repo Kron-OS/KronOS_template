@@ -57,6 +57,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
+    from src.adapter.repository.postgres_ioc_feed import (  # noqa: PLC0415
+        PostgresIOCFeedRepository,
+    )
     from src.adapter.repository.postgres_rule_pack import (  # noqa: PLC0415
         PostgresRulePackRepository,
     )
@@ -69,6 +72,7 @@ async def wire_dependencies_async() -> None:
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.application.asset_enrichment import AssetContextEnricher  # noqa: PLC0415
     from src.application.enrichment import EnrichmentPipeline  # noqa: PLC0415
+    from src.application.ioc_enrichment import IOCMatchEnricher  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
@@ -94,6 +98,7 @@ async def wire_dependencies_async() -> None:
     rule_pack_repo = PostgresRulePackRepository(engine)
     yara_rule_pack_repo = PostgresYaraRulePackRepository(engine)
     asset_repo = PostgresAssetRepository(engine)
+    ioc_feed_repo = PostgresIOCFeedRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
@@ -103,6 +108,7 @@ async def wire_dependencies_async() -> None:
     await PostgresRulePackRepository.create_tables(engine)
     await PostgresYaraRulePackRepository.create_tables(engine)
     await PostgresAssetRepository.create_tables(engine)
+    await PostgresIOCFeedRepository.create_tables(engine)
     await PostgresSealedBatchRepository.create_tables(engine)
     # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
     # nothing configures a Postgres-backed sink into the DI container below
@@ -304,7 +310,13 @@ async def wire_dependencies_async() -> None:
         # a built container image the way E2/E3's sandboxed tool wrapping
         # does), so there is no "unverified in production" gap here.
         asset_repository=asset_repo,
-        enrichment_pipeline=EnrichmentPipeline([AssetContextEnricher(asset_repo)]),
+        # Threat-intel IOC matching (roadmap F2): a pure Postgres lookup,
+        # same "no unverified subprocess/container-activation gap" reasoning
+        # as asset_repository above -- wired on by default.
+        ioc_feed_repository=ioc_feed_repo,
+        enrichment_pipeline=EnrichmentPipeline(
+            [AssetContextEnricher(asset_repo), IOCMatchEnricher(ioc_feed_repo)]
+        ),
     )
     configure_clamav_from_settings()
 

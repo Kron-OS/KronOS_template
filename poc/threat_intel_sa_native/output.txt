@@ -1,0 +1,55 @@
+=== 1. Real cluster version (confirms which build we're actually testing) ===
+{
+  "name" : "c494e4910d0b",
+  "cluster_name" : "docker-cluster",
+  "cluster_uuid" : "NzvyBjWLSHS4H81yysOMtQ",
+  "version" : {
+    "distribution" : "opensearch",
+    "number" : "2.11.1",
+    "build_type" : "tar",
+    "build_hash" : "6b1986e964d440be9137eba1413015c31c5a7752",
+    "build_date" : "2023-11-29T21:43:10.135035992Z",
+    "build_snapshot" : false,
+    "lucene_version" : "9.7.0",
+    "minimum_wire_compatibility_version" : "7.10.0",
+    "minimum_index_compatibility_version" : "7.0.0"
+  },
+  "tagline" : "The OpenSearch Project: https://opensearch.org/"
+}
+
+=== 2. Real installed plugin list (confirms security-analytics IS present, at 2.11.1.0) ===
+name         component                            version
+c494e4910d0b opensearch-alerting                  2.11.1.0
+c494e4910d0b opensearch-anomaly-detection         2.11.1.0
+c494e4910d0b opensearch-asynchronous-search       2.11.1.0
+c494e4910d0b opensearch-cross-cluster-replication 2.11.1.0
+c494e4910d0b opensearch-custom-codecs             2.11.1.0
+c494e4910d0b opensearch-geospatial                2.11.1.0
+c494e4910d0b opensearch-index-management          2.11.1.0
+c494e4910d0b opensearch-job-scheduler             2.11.1.0
+c494e4910d0b opensearch-knn                       2.11.1.0
+c494e4910d0b opensearch-ml                        2.11.1.0
+c494e4910d0b opensearch-neural-search             2.11.1.0
+c494e4910d0b opensearch-notifications             2.11.1.0
+c494e4910d0b opensearch-notifications-core        2.11.1.0
+c494e4910d0b opensearch-observability             2.11.1.0
+c494e4910d0b opensearch-performance-analyzer      2.11.1.0
+c494e4910d0b opensearch-reports-scheduler         2.11.1.0
+c494e4910d0b opensearch-security                  2.11.1.0
+c494e4910d0b opensearch-security-analytics        2.11.1.0
+c494e4910d0b opensearch-sql                       2.11.1.0
+
+=== 3. Real probe: does the threat-intel REST namespace exist at all? ===
+--- GET /_plugins/_security_analytics/threat_intel/sources ---
+{"error":"no handler found for uri [/_plugins/_security_analytics/threat_intel/sources] and method [GET]"}
+HTTP_STATUS:400
+
+--- GET /_plugins/_security_analytics/threatintel/sources (alt spelling) ---
+{"error":"no handler found for uri [/_plugins/_security_analytics/threatintel/sources] and method [GET]"}
+HTTP_STATUS:400
+
+=== 4. Control: a REAL, KNOWN-GOOD SA endpoint on this same cluster, for contrast ===
+--- GET /_plugins/_security_analytics/detectors/_search (known to exist, per detector_provisioner.py) ---
+{"took":0,"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"total":{"value":0,"relation":"eq"},"max_score":null,"hits":[]}}
+HTTP_STATUS:200
+

@@ -1,0 +1,82 @@
+==============================================================================
+PoC: STIX 2.1 IOC ingestion + matching (roadmap M5/F2)
+==============================================================================
+
+==============================================================================
+SCENARIO (a): parse_stix21_bundle() against the real sample bundle
+==============================================================================
+stix_indicator_pattern_unsupported
+stix_indicator_pattern_unsupported
+stix_indicator_missing_pattern
+parsed 3 matchable indicator(s) from 7 bundle objects:
+  - ip: '203.0.113.66' (confidence=85)
+  - domain: 'evil-poc-example.test' (confidence=70)
+  - sha256: '3059be08a17bebc0f4edb82e52a0297f32347b556c474a3f252d3b149a7b17ba' (confidence=95)
+[PASS] exactly 3 matchable indicators extracted (ip, domain, sha256)
+[PASS] ipv4-addr indicator extracted
+[PASS] domain-name indicator extracted
+[PASS] file:hashes.SHA-256 indicator extracted
+[PASS] MD5-only / compound / malformed indicators honestly skipped (not 6, not a crash)
+
+==============================================================================
+SCENARIO (b): a non-bundle payload must raise ValidationError
+==============================================================================
+real ValidationError raised: Not a STIX bundle (missing/incorrect top-level "type")
+[PASS] structurally invalid bundle raises ValidationError
+
+==============================================================================
+SCENARIO (c): real ingestion into real Postgres (PostgresIOCFeedRepository)
+==============================================================================
+stix_indicator_pattern_unsupported
+stix_indicator_pattern_unsupported
+stix_indicator_missing_pattern
+real IOCFeedVersion row: feed_id=1a5d4b59-8bfa-465f-9915-c8e822515755 version=1 indicator_count=3
+[PASS] first ingestion creates version 1
+[PASS] version has the 3 real parsed indicators
+stix_indicator_pattern_unsupported
+stix_indicator_pattern_unsupported
+stix_indicator_missing_pattern
+re-ingested same bundle: version=2
+[PASS] re-ingesting the same feed name creates version 2, not overwrite
+[PASS] both versions survive -- append-only, version 1 never lost
+
+==============================================================================
+SCENARIO (d): real IOCFeedRepository.match_indicator() against real Postgres
+==============================================================================
+IP match: feed_name='poc-feed' indicator=IOCIndicator(indicator_id=UUID('c8899970-777b-41c5-b7a9-af3d7c51dd29'), ioc_type=<IOCType.IP: 'ip'>, value='203.0.113.66', confidence=85, description='C2 IP observed in KronOS PoC scenario', source_ref='indicator--10000000-0000-4000-8000-000000000001')
+[PASS] real IP match found
+[PASS] domain match is case-insensitive
+[PASS] non-matching IP returns an honest None
+[PASS] cross-org isolation: org B never matches org A's feed
+
+==============================================================================
+SCENARIO (e): real IOCMatchEnricher through EnrichmentPipeline
+==============================================================================
+IP-matching record enriched.extra = {'source.ip': '203.0.113.66', 'enrichment.ioc.matched': True, 'enrichment.ioc.ioc_type': 'ip', 'enrichment.ioc.value': '203.0.113.66', 'enrichment.ioc.feed_name': 'poc-feed', 'enrichment.ioc.confidence': 85, 'enrichment.ioc.description': 'C2 IP observed in KronOS PoC scenario', 'enrichment.ioc.source_ref': 'indicator--10000000-0000-4000-8000-000000000001'}
+[PASS] real enrichment.ioc.matched=True for source.ip hit
+[PASS] real enrichment.ioc.feed_name attached
+[PASS] real enrichment.ioc.confidence attached from the STIX indicator's own value
+sha256-matching record enriched.extra = {'enrichment.ioc.matched': True, 'enrichment.ioc.ioc_type': 'sha256', 'enrichment.ioc.value': '3059be08a17bebc0f4edb82e52a0297f32347b556c474a3f252d3b149a7b17ba', 'enrichment.ioc.feed_name': 'poc-feed', 'enrichment.ioc.confidence': 95, 'enrichment.ioc.description': 'Known-bad file hash (KronOS PoC scenario evidence file)', 'enrichment.ioc.source_ref': 'indicator--10000000-0000-4000-8000-000000000003'}
+[PASS] real enrichment.ioc.ioc_type=sha256 for evidence-file-hash match
+[PASS] no match -- honest no-op (record returned identical, no fabricated match)
+
+==============================================================================
+SCENARIO (f): real OpenSearchClient against the real live 2.11.1 cluster
+==============================================================================
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+real PUT _index_template/kronos-template succeeded (new enrichment.ioc.* mapping)
+real bulk_index() call: indexed_count=1
+[PASS] real bulk_index reports 1 document indexed, no partial-failure exception
+real GET response _source: {'@timestamp': '2024-01-15T10:00:00+00:00', 'message': 'poc-f2-event', 'event': {'kind': 'event'}, 'source': {'ip': '203.0.113.66'}, 'enrichment': {'ioc': {'matched': True, 'ioc_type': 'ip', 'value': '203.0.113.66', 'feed_name': 'poc-feed', 'confidence': 85, 'description': 'C2 IP observed in KronOS PoC scenario'}}, 'kronos': {'parser': 'poc', 'org_id': '5050d9cb-6254-471f-a765-c6fa08dbcbe2'}}
+[PASS] real indexed document's enrichment.ioc.matched round-trips as boolean true
+[PASS] real indexed document's enrichment.ioc.confidence round-trips as 85
+real applied mapping for enrichment.ioc.*: {'confidence': {'type': 'long'}, 'description': {'type': 'text'}, 'feed_name': {'type': 'keyword'}, 'ioc_type': {'type': 'keyword'}, 'matched': {'type': 'boolean'}, 'source_ref': {'type': 'keyword'}, 'value': {'type': 'keyword'}}
+[PASS] real mapping: enrichment.ioc.matched is type boolean
+[PASS] real mapping: enrichment.ioc.confidence is type long
+[PASS] real mapping: enrichment.ioc.feed_name is type keyword
+cleaned up real PoC document poc-f2-512aaa60-0107-4d8c-b07d-871f335ae252 from kronos-poc-threatintel-org
+
+==============================================================================
+PoC PASSED -- all 25 checks passed against real Postgres + OpenSearch 2.11.1.
+==============================================================================
