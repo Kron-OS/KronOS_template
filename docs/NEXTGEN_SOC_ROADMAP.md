@@ -1830,6 +1830,76 @@ aggregations (`terms`, `cardinality`, first-seen/last-seen on `@timestamp`). No
 ML. Fully replayable. **Ship before any ML** — it delivers most of the value
 attributed to UEBA and gives a labelled baseline to measure models against.
 
+**STATUS (2026-08-02): DONE. Starts Milestone M6.** No existing hunting/
+aggregation module to extend (unlike F1-F4, each of which extended an
+existing mechanism) -- this is a fresh, standalone, read-only analytics
+capability, deliberately NOT wired into `DetectionRiskScorer`/`Detection`
+(F4): the roadmap's own text ("gives a labelled baseline to measure models
+against") means G2's future RCF detectors get benchmarked against this
+class's output, not the reverse.
+
+Mirrors `CorrelationClient`/`FindingsClient`'s established ABC + real +
+in-memory-test-double shape: `RarityBaselineClient`/
+`OpenSearchRarityBaselineClient` (`src/adapter/opensearch/
+rarity_baseline_client.py`) is a thin, read-only `_search` (`size: 0`)
+wrapper; `RarityBaselineScorer` (`src/application/rarity_scoring.py`)
+computes the org-scoped `kronos-{org_alias}-*` index pattern from the
+caller's own `TenantContext` (never a caller-supplied string) and parses
+the response into `RarityBaselineResult`/`FieldValueRarity`
+(`src/domain/rarity.py`, mirrors `RiskFactor`/`RiskScoreBreakdown`'s frozen
+shape).
+
+**Rarity formula: `1 - (count / total_docs)`, not a percentile rank.** A
+percentile rank among only the *returned* buckets would depend on the
+query's own `max_distinct_values` cap, so two identical queries differing
+only in that cap could score the same real value differently -- failing
+this item's own "fully replayable" requirement. The chosen formula depends
+on nothing but one value's real count and the query's real total document
+count, reproducible from the stored inputs alone (same reasoning
+`DetectionRiskScorer`'s hardcoded-formula precedent already established).
+
+**Two real, load-bearing gaps found and fixed against the live OpenSearch
+2.11.1 cluster, not assumed from memory (`poc/rarity_baseline_scoring/`,
+16/16 checks):**
+1. OpenSearch's `terms` aggregation defaults to `_count` DESCENDING —
+   exactly backwards for "least-frequency-of-occurrence" hunting. A real,
+   deliberately skewed 236-doc/30-distinct-value corpus proved this
+   concretely: the default order with `size=10` returned only the 10 MOST
+   common values (zero of the 20 genuinely rare ones); explicit
+   `order: {"_count": "asc"}` correctly surfaced all of the rare tail.
+   `OpenSearchRarityBaselineClient` always requests ascending order.
+2. A wildcard `index_pattern` matching ZERO real indices (e.g. a brand-new
+   org with no ingested data) returns real HTTP 200 with the
+   `"aggregations"` key **absent entirely** — not an empty dict, and no
+   404 the way a concrete missing index produces elsewhere in this
+   codebase. `_parse_aggregation_response` never assumes that key exists.
+
+Also confirmed for real: first-seen/last-seen via a nested `min`/`max`
+sub-aggregation under the `terms` bucket returns the correct real
+timestamps (verified against documents of known indexed time), and
+re-running the identical query against the identical unchanged index
+produces byte-identical output — the concrete, demonstrated contrast with
+G2's coming online RCF model.
+
+**Explicitly flagged gaps, not this item's scope:** no HTTP route exposes
+this yet, AND (unlike F1-F4, which were at least wired into
+`dependencies.py`/`startup.py` even without a route) this pass adds **no
+DI wiring at all** — `OpenSearchRarityBaselineClient`/`RarityBaselineScorer`
+are constructed directly by whatever future caller needs them (a hunting
+UI, a scheduled job), not yet reachable from the running application.
+`InMemoryOpenSearchClient` also has no aggregation support, so tests use a
+test-local `_FakeRarityBaselineClient` (mirrors `test_correlation_sync.py`'s
+own fake idiom) rather than a shared production `InMemory*` double — real
+aggregation semantics (bucket ordering, nested sub-aggs) are exactly what
+an in-memory double cannot faithfully replicate, so real coverage instead
+comes from the PoC's own live-cluster run plus unit tests built on
+verbatim-captured real response JSON.
+
+Independently re-ran the full checklist: **1146 passed, 1 skipped**,
+coverage **87.46%** (gate 80%, no regression), mypy **29** (identical
+pre-existing baseline, zero new), ruff/black clean on every touched file
+(no lint gaps this cycle).
+
 ### G2 · AD/RCF per-org detectors for triage prioritization — L2
 **Objective.** Use the in-cluster Anomaly Detection plugin per-org (scoped to
 `kronos-{org}-*`, which also contains the behavioural-profile leak).

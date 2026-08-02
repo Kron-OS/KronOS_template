@@ -1,0 +1,104 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+[2026-08-02T21:02:34.731109+00:00] real PUT _index_template/kronos-template succeeded
+[2026-08-02T21:02:34.731123+00:00] === Scenario 1: index a real, deliberately skewed distribution ===
+[2026-08-02T21:02:34.833304+00:00] PASS: real bulk_index indexed all 236 real documents
+[2026-08-02T21:02:34.840644+00:00] === Confirming the real terms-aggregation ordering gap ===
+[2026-08-02T21:02:34.889659+00:00] real DEFAULT (descending) order, size=10 top keys: ['svchost.exe', 'cmd.exe', 'explorer.exe', 'conhost.exe', 'powershell.exe', 'notepad.exe', 'chrome.exe', 'outlook.exe', 'teams.exe', 'onedrive.exe']
+[2026-08-02T21:02:34.889676+00:00] PASS: real DEFAULT descending order with size=10<cardinality=30 finds ZERO rare values (the exact bug this repo's ascending-order query exists to avoid)
+[2026-08-02T21:02:34.889907+00:00] === Scenario 2: real RarityBaselineScorer.score_field_rarity() ===
+[2026-08-02T21:02:34.899413+00:00] real result: total_docs=236 distinct_value_count=30 returned_value_count=10 index_pattern=kronos-poc-rarity-3d5350-*
+[2026-08-02T21:02:34.899427+00:00] PASS: real total_docs == 236
+[2026-08-02T21:02:34.899431+00:00] PASS: real distinct_value_count == 30
+[2026-08-02T21:02:34.899434+00:00] PASS: real index_pattern computed from TenantContext only
+[2026-08-02T21:02:34.899437+00:00] PASS: real returned_value_count capped at 10 (< cardinality 30) -- the cap was hit
+[2026-08-02T21:02:34.899458+00:00] PASS: with ascending ordering, ALL 10 returned values are genuinely rare (count==1), none of the 10 common ones leaked in
+[2026-08-02T21:02:34.899469+00:00]   rare value='raretool_00.exe' count=1 first_seen=2026-07-15T00:00:00+00:00 last_seen=2026-07-15T00:00:00+00:00 rarity_score=0.9958
+[2026-08-02T21:02:34.899476+00:00]   rare value='raretool_01.exe' count=1 first_seen=2026-07-16T00:00:00+00:00 last_seen=2026-07-16T00:00:00+00:00 rarity_score=0.9958
+[2026-08-02T21:02:34.899482+00:00]   rare value='raretool_02.exe' count=1 first_seen=2026-07-17T00:00:00+00:00 last_seen=2026-07-17T00:00:00+00:00 rarity_score=0.9958
+[2026-08-02T21:02:34.899489+00:00] PASS: every returned rare value's rarity_score == 1 - 1/236 = 0.9958
+[2026-08-02T21:02:34.899492+00:00] === Scenario 2b: uncapped query proves rare-vs-common ranking ===
+[2026-08-02T21:02:34.908509+00:00] PASS: uncapped query returns all 30 distinct values
+[2026-08-02T21:02:34.908531+00:00] raretool_00.exe (count=1) rarity_score=0.9958 vs svchost.exe (count=50) rarity_score=0.7881
+[2026-08-02T21:02:34.908535+00:00] PASS: the genuinely rare value (count=1) scores strictly higher than the most common one (count=50)
+[2026-08-02T21:02:34.908539+00:00] PASS: svchost.exe (50/236) rarity_score == 1 - 50/236
+[2026-08-02T21:02:34.908541+00:00] === Scenario 3: real first-seen/last-seen correctness ===
+[2026-08-02T21:02:34.908545+00:00] PASS: raretool_05.exe's real first_seen matches the known indexed timestamp exactly
+[2026-08-02T21:02:34.908547+00:00] PASS: raretool_05.exe's real last_seen == first_seen (single occurrence)
+[2026-08-02T21:02:34.908550+00:00] PASS: svchost.exe's real first_seen/last_seen span the full 28-day spread it was indexed across (first_seen != last_seen for a multi-occurrence value)
+[2026-08-02T21:02:34.908552+00:00] === Scenario 4: real zero-matching-indices edge case ===
+[2026-08-02T21:02:34.915231+00:00] PASS: real query against an org with zero ingested indices returns an honest empty result, no crash
+[2026-08-02T21:02:34.915256+00:00] === Scenario 5: real replayability -- identical query, identical result ===
+[2026-08-02T21:02:34.923840+00:00] PASS: re-running the exact same aggregation against the exact same (unchanged) index produces byte-identical output -- the defining contrast with G2's online RCF model
+[2026-08-02T21:02:34.943580+00:00] cleaned up real PoC indices kronos-poc-rarity-3d5350-*
+[2026-08-02T21:02:34.943976+00:00] PoC PASSED -- all 16 checks passed against the real, live OpenSearch 2.11.1 cluster.
+
+---
+Appendix: raw query/response shape exploration (ad hoc, run before writing
+src/, informed the design) -- real captured output, live OpenSearch 2.11.1.
+
+Exploration A (small 7-doc, 3-value corpus; confirms nested min/max
+sub-agg shape under a terms agg, order=ascending):
+
+BULK STATUS 200 False
+SEARCH STATUS 200
+{
+  "took": 22,
+  "timed_out": false,
+  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+  "hits": {"total": {"value": 7, "relation": "eq"}, "max_score": null, "hits": []},
+  "aggregations": {
+    "distinct_value_count": {"value": 3},
+    "value_frequency": {
+      "doc_count_error_upper_bound": 0,
+      "sum_other_doc_count": 0,
+      "buckets": [
+        {"key": "cobalt.exe", "doc_count": 1,
+         "first_seen": {"value": 1784170800000.0, "value_as_string": "2026-07-16T03:00:00.000Z"},
+         "last_seen":  {"value": 1784170800000.0, "value_as_string": "2026-07-16T03:00:00.000Z"}},
+        {"key": "mimikatz.exe", "doc_count": 1,
+         "first_seen": {"value": 1784084400000.0, "value_as_string": "2026-07-15T03:00:00.000Z"},
+         "last_seen":  {"value": 1784084400000.0, "value_as_string": "2026-07-15T03:00:00.000Z"}},
+        {"key": "svchost.exe", "doc_count": 5,
+         "first_seen": {"value": 1783641600000.0, "value_as_string": "2026-07-10T00:00:00.000Z"},
+         "last_seen":  {"value": 1783987200000.0, "value_as_string": "2026-07-14T00:00:00.000Z"}}
+      ]
+    }
+  }
+}
+
+Exploration B (236-doc, 30-distinct-value corpus; proves default
+descending order with size=10 misses all 20 rare values, ascending order
+with size=10 correctly surfaces them):
+
+BULK errors? False total docs indexed: 236
+DESC top10 keys: ['svchost.exe', 'cmd.exe', 'explorer.exe', 'conhost.exe', 'powershell.exe', 'notepad.exe', 'chrome.exe', 'outlook.exe', 'teams.exe', 'onedrive.exe']
+any rare in desc top10? False
+ASC top10 keys: ['raretool_00.exe', 'raretool_01.exe', 'raretool_02.exe', 'raretool_03.exe', 'raretool_04.exe', 'raretool_05.exe', 'raretool_06.exe', 'raretool_07.exe', 'raretool_08.exe', 'raretool_09.exe']
+all rare in asc top10? True
+total_docs: 236 cardinality: 30
+
+Exploration C (wildcard index_pattern matching ZERO real indices -- the
+real, load-bearing "aggregations key absent entirely" finding):
+
+STATUS 200
+{
+  "took": 0,
+  "timed_out": false,
+  "_shards": {"total": 0, "successful": 0, "skipped": 0, "failed": 0},
+  "hits": {"total": {"value": 0, "relation": "eq"}, "max_score": 0.0, "hits": []}
+}
+(note: no "aggregations" key present at all in this response)
+
+Exploration D (existing index, but field entirely absent from every doc):
+
+{
+  "took": 1,
+  "timed_out": false,
+  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+  "hits": {"total": {"value": 1, "relation": "eq"}, "max_score": null, "hits": []},
+  "aggregations": {
+    "distinct_value_count": {"value": 0},
+    "value_frequency": {"doc_count_error_upper_bound": 0, "sum_other_doc_count": 0, "buckets": []}
+  }
+}
