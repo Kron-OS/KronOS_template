@@ -70,6 +70,28 @@ ASSET_CRITICALITY_NORMALIZED_LEVELS: dict[str, float] = {
 }
 
 
+def score_from_factors(factors: tuple[RiskFactor, ...]) -> float | None:
+    """Recompute the weighted-average risk score from an already-built
+    ``RiskFactor`` tuple alone -- no ``rule_severity``/``ioc_confidence``/
+    ``asset_criticality`` inputs, no OpenSearch re-fetch.
+
+    This is the exact replayability contract roadmap G3 requires: given
+    ONLY what ``DetectionSyncService`` froze onto ``Detection.risk_factors``
+    at sync time, this reproduces the identical ``Detection.risk_score`` --
+    even though the underlying asset/IOC enrichment that originally
+    produced those factors may have legitimately changed since (module
+    docstring). ``DetectionRiskScorer.score()`` below calls this SAME
+    function on the factors it just built, so there is exactly one place
+    the weighted-average formula is expressed, not a second
+    reimplementation that could silently drift from the original.
+    """
+    weighted_sum = sum(
+        f.weight * f.normalized_value for f in factors if f.normalized_value is not None
+    )
+    weight_total = sum(f.weight for f in factors if f.normalized_value is not None)
+    return round(weighted_sum / weight_total * 100, 2) if weight_total > 0 else None
+
+
 class DetectionRiskScorer:
     """Computes a 0-100 weighted risk score from up to 4 factors, 3 of which
     are real and wired today (rule severity, IOC confidence, asset
@@ -114,15 +136,11 @@ class DetectionRiskScorer:
                 this yet, and none may fabricate one.
         """
         factors: list[RiskFactor] = []
-        weighted_sum = 0.0
-        weight_total = 0.0
 
         normalized_severity = (
             SEVERITY_NORMALIZED_LEVELS.get(rule_severity) if rule_severity is not None else None
         )
         if normalized_severity is not None:
-            weighted_sum += self.RULE_SEVERITY_WEIGHT * normalized_severity
-            weight_total += self.RULE_SEVERITY_WEIGHT
             severity_detail = f"highest matched rule severity is '{rule_severity}'"
         elif rule_severity is None:
             severity_detail = "no matched rule carried a recognized Sigma severity tag"
@@ -142,8 +160,6 @@ class DetectionRiskScorer:
         normalized_confidence = None
         if ioc_confidence is not None:
             normalized_confidence = max(0.0, min(1.0, ioc_confidence / 100))
-            weighted_sum += self.IOC_CONFIDENCE_WEIGHT * normalized_confidence
-            weight_total += self.IOC_CONFIDENCE_WEIGHT
             confidence_detail = f"matched document(s) carry IOC confidence {ioc_confidence}/100"
         else:
             confidence_detail = "no matched document carried an enrichment.ioc.confidence value"
@@ -162,8 +178,6 @@ class DetectionRiskScorer:
             else None
         )
         if normalized_criticality is not None:
-            weighted_sum += self.ASSET_CRITICALITY_WEIGHT * normalized_criticality
-            weight_total += self.ASSET_CRITICALITY_WEIGHT
             criticality_detail = (
                 f"matched document(s) resolve to asset criticality '{asset_criticality}'"
             )
@@ -190,8 +204,6 @@ class DetectionRiskScorer:
         normalized_identity = None
         if identity_privilege is not None:
             normalized_identity = max(0.0, min(1.0, identity_privilege))
-            weighted_sum += self.IDENTITY_PRIVILEGE_WEIGHT * normalized_identity
-            weight_total += self.IDENTITY_PRIVILEGE_WEIGHT
             identity_detail = f"identity privilege signal {identity_privilege:.2f}"
         else:
             identity_detail = (
@@ -207,5 +219,8 @@ class DetectionRiskScorer:
             )
         )
 
-        score = round(weighted_sum / weight_total * 100, 2) if weight_total > 0 else None
+        # Reuses the SAME pure function the G3 replayability harness calls on
+        # a stored Detection.risk_factors tuple later -- one formula, one
+        # place, never a parallel reimplementation that could drift.
+        score = score_from_factors(tuple(factors))
         return RiskScoreBreakdown(score=score, factors=tuple(factors))

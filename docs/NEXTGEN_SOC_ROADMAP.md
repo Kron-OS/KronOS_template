@@ -2051,6 +2051,95 @@ own file paths).
 version + stored input, and that non-reproducible signals (G2) are structurally
 prevented from being presented as evidentiary. **Depends on:** G1, G2, C4.
 
+**STATUS (2026-08-03): GATE RESOLVED — GO, real-verified.** See
+`poc/explainability_replayability_gate/` (20/20 real checks, real
+OpenSearch 2.11.1 + real Postgres 16 round-trips). Closes M6.
+
+**Definition nailed down first (the subtle part):** "reproduces from pinned
+version + stored input" does NOT mean re-querying live OpenSearch state
+reproduces the same score — F1/F2 enrichment and rule-pack content are both
+legitimately mutable over time. It means: given ONLY what was already
+frozen at verdict-computation time, recomputing the deterministic formula
+from that stored input alone reproduces the identical output, even when a
+live re-fetch of the same underlying data would (correctly) now return
+something different.
+
+**Claim 1a (F4 risk-score replay) — refactor required, confirmed by
+reading `src/application/risk_scoring.py` first.** `DetectionRiskScorer.
+score()` took raw inputs (`rule_severity`/`ioc_confidence`/
+`asset_criticality`/`identity_privilege`), not a pre-built `RiskFactor`
+tuple, with the weighted-average formula computed inline while building
+each factor — there was no standalone function operating on a stored
+`RiskFactor` tuple alone. Extracted `score_from_factors(factors:
+tuple[RiskFactor, ...]) -> float | None` into the same module;
+`DetectionRiskScorer.score()` now builds its `RiskFactor` list exactly as
+before, then calls this same function — one formula, one place, so
+production scoring and the replay path can never silently drift apart.
+Real proof: synced one real Detection (via the real, unmodified
+`DetectionSyncService` against a real OpenSearch 2.11.1 document with
+`enrichment.ioc.confidence=70`/`enrichment.asset.criticality="high"`),
+producing a real frozen `risk_score=83.53`. `score_from_factors(detection.
+risk_factors)` alone reproduces `83.53` exactly. Negative control: updated
+the real underlying document's `asset.criticality` to `"low"` post-sync
+(confirmed via a real re-fetch that the live value did change) — replay
+from the STORED `risk_factors` still returns `83.53`, proving the replay
+is over the frozen input, never a live query.
+
+**Claim 1b (C3 cost-gate replay) — no refactor needed.**
+`RuleCostGate.evaluate(sigma_yaml: str) -> CostGateVerdict` was already a
+pure function of its own string input, confirmed by reading
+`src/application/cost_gate.py` in full first. Real proof: created one
+accepted and one `|contains`-rejected `CustomRule` via the real,
+unmodified `RulePackService.add_custom_rule()` against a real Postgres 16
+instance; re-evaluating each rule's own stored `sigma_yaml` through a
+brand-new `RuleCostGate()` instance reproduces the identical
+`CostGateVerdict` (decision + full findings, including the exact reason
+string) for both.
+
+**Claim 2 (G2 structural exclusion) — confirmed clean, now a permanent
+regression, not just a one-time finding.** Independently re-verified the
+orchestrator's own grep: none of `src/domain/detection.py`,
+`src/application/detection_sync.py`, `src/application/detection_triage.py`,
+`src/adapter/repository/detection.py`,
+`src/adapter/repository/postgres_detection.py`,
+`src/external/routes/detections.py` reference the anomaly module in any
+way. Also confirmed on a real constructed `BehavioralAnomalySignal`: both
+`NOT_REPRODUCIBLE` (class constant) and `not_reproducible` (instance
+field) are `True`; `model_dump(mode="json")` retains
+`not_reproducible: True` and correctly omits the `ClassVar`; constructing
+an instance with `not_reproducible=False` raises `pydantic.
+ValidationError` — the marker cannot be forged even by a caller that
+tries.
+
+**Binding conditions for any future item that touches `Detection` or the
+anomaly module** (enforced going forward by
+`tests/unit/test_g3_explainability_replayability_gate.py`, which fails the
+moment any of these is violated): (1) never import
+`src/domain/anomaly.py`/`src/application/anomaly_scoring.py`/either
+anomaly adapter into any Detection-related file, or vice versa — a future
+feature correlating the two for display must do so ABOVE both layers,
+never by constructing a `Detection` from anomaly data or adding an
+anomaly field onto `Detection`; (2) any new "verdict" field added to
+`Detection` beyond `risk_score` must be replayable from data already
+frozen on that same row (the `risk_factors`/`score_from_factors` pattern),
+never requiring a live re-query to reconstruct; (3) `BehavioralAnomalySignal`
+must never gain a repository, a triage FSM, or a route that returns it as
+if it were a `Detection`.
+
+**Files:** `poc/explainability_replayability_gate/{README.md,run_poc.py,
+output.txt}`; `src/application/risk_scoring.py` (`score_from_factors`
+extraction + `DetectionRiskScorer.score()` refactored to call it, no
+behavior change — confirmed by the full pre-existing
+`tests/unit/application/test_risk_scoring.py` and
+`tests/unit/application/test_detection_sync.py` suites passing unchanged);
+`tests/unit/test_g3_explainability_replayability_gate.py` (new, 18 tests).
+
+Full checklist re-run: **1192 passed, 1 skipped** (18 of those new),
+coverage **87.68%** (gate 80%, no regression from G2's 87.43%), mypy
+**29** (identical pre-existing baseline, zero new errors in any touched
+file), ruff **83** pre-existing baseline errors elsewhere in the tree
+(zero in any file this item touched), black clean on every touched file.
+
 ---
 
 ## M7 — Response / SOAR

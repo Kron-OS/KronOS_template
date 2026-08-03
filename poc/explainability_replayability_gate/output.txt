@@ -1,0 +1,32 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+[2026-08-03T01:03:57.482571+00:00] === Claim 1a: F4 risk_score replays from STORED risk_factors alone (real OpenSearch) ===
+[2026-08-03T01:03:57.699962+00:00] PASS: real bulk_index indexed the 1 real document
+[2026-08-03T01:03:57.707093+00:00] PASS: real sync created exactly 1 new Detection
+[2026-08-03T01:03:57.707116+00:00] original stored Detection.risk_score = 83.53
+[2026-08-03T01:03:57.707124+00:00]   stored factor: rule_severity weight=0.35 normalized=1.0 detail="highest matched rule severity is 'critical'"
+[2026-08-03T01:03:57.707129+00:00]   stored factor: ioc_confidence weight=0.3 normalized=0.7 detail='matched document(s) carry IOC confidence 70/100'
+[2026-08-03T01:03:57.707134+00:00]   stored factor: asset_criticality weight=0.2 normalized=0.75 detail="matched document(s) resolve to asset criticality 'high'"
+[2026-08-03T01:03:57.707138+00:00]   stored factor: identity_privilege weight=0.15 normalized=None detail='no identity-context enricher exists yet (roadmap F1 STATUS: explicitly flagged, unbuilt follow-up scope) -- omitted from the formula, never defaulted'
+[2026-08-03T01:03:57.707150+00:00] PASS: replayed score (from stored risk_factors alone) == original stored risk_score, byte-identical -- replayed=83.53 stored=83.53
+[2026-08-03T01:03:57.719398+00:00] PASS: sanity: the REAL underlying document's asset criticality legitimately changed post-sync (high -> low)
+[2026-08-03T01:03:57.719422+00:00] PASS: replay from STORED risk_factors is UNAFFECTED by the live document's drift -- still reproduces the exact original stored score (this IS the replayability contract; re-querying live OpenSearch state would NOT reproduce it and would be testing the wrong thing)
+[2026-08-03T01:03:57.738990+00:00] cleaned up real PoC index kronos-poc-g3-replay-org-case-d6bacdd5-202608
+[2026-08-03T01:03:57.739530+00:00] === Claim 1b: C3 cost_gate_verdict replays from STORED sigma_yaml alone (real Postgres) ===
+[2026-08-03T01:03:57.843661+00:00] PASS: accepted rule's stored cost_gate_verdict is ACCEPTED
+[2026-08-03T01:03:57.843673+00:00] PASS: rejected rule's stored cost_gate_verdict is REJECTED
+[2026-08-03T01:03:57.845897+00:00] PASS: replayed verdict for the accepted rule == original stored verdict, byte-identical (decision + findings) -- replayed=CostGateVerdict(decision=<CostGateDecision.ACCEPTED: 'accepted'>, findings=()) stored=CostGateVerdict(decision=<CostGateDecision.ACCEPTED: 'accepted'>, findings=())
+[2026-08-03T01:03:57.845935+00:00] PASS: replayed verdict for the rejected rule == original stored verdict, byte-identical (decision + findings) -- replayed=CostGateVerdict(decision=<CostGateDecision.REJECTED: 'rejected'>, findings=(CostGateFinding(heuristic='leading_wildcard', reason="field 'process.command_line' uses modifier(s) ['contains'], confirmed against OpenSearch 2.11.1 to compile to a leading wildcard query (|contains -> '*x*', |endswith -> '*x') -- cannot use the term-dictionary prefix structure, forces a full per-term scan"),)) stored=CostGateVerdict(decision=<CostGateDecision.REJECTED: 'rejected'>, findings=(CostGateFinding(heuristic='leading_wildcard', reason="field 'process.command_line' uses modifier(s) ['contains'], confirmed against OpenSearch 2.11.1 to compile to a leading wildcard query (|contains -> '*x*', |endswith -> '*x') -- cannot use the term-dictionary prefix structure, forces a full per-term scan"),))
+[2026-08-03T01:03:57.849181+00:00] === Claim 2: G2 anomaly signals are structurally excluded from Detection-land ===
+[2026-08-03T01:03:57.849365+00:00] PASS: src/domain/detection.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849433+00:00] PASS: src/application/detection_sync.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849477+00:00] PASS: src/application/detection_triage.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849520+00:00] PASS: src/adapter/repository/detection.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849568+00:00] PASS: src/adapter/repository/postgres_detection.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849647+00:00] PASS: src/external/routes/detections.py contains no 'anomaly' substring (case-insensitive)
+[2026-08-03T01:03:57.849655+00:00] PASS: BehavioralAnomalySignal.NOT_REPRODUCIBLE class-level constant is True
+[2026-08-03T01:03:57.849696+00:00] PASS: BehavioralAnomalySignal instance's not_reproducible field is True
+[2026-08-03T01:03:57.849754+00:00] PASS: model_dump(mode='json') retains not_reproducible == True (survives serialization to what an actual API response body would carry)
+[2026-08-03T01:03:57.849759+00:00] PASS: model_dump(mode='json') correctly excludes the class-level NOT_REPRODUCIBLE ClassVar from instance data (it is not a per-instance field)
+[2026-08-03T01:03:57.849783+00:00] PASS: constructing a BehavioralAnomalySignal with not_reproducible=False is REJECTED by pydantic's Literal[True] validation -- the marker cannot be forged even by a caller that tries
+[2026-08-03T01:03:57.849793+00:00] GATE PASSED -- all 20 checks passed against real, live infrastructure.
