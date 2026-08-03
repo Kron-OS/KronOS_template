@@ -115,6 +115,18 @@ class AuditEventType(StrEnum):
     YARA_RULE_PACK_VERSION_PUBLISHED = "yara_rule_pack.version_published"
     YARA_RULE_PACK_PUBLISH_FAILED = "yara_rule_pack.publish_failed"
 
+    # Playbook engine (roadmap M7/H1) -- deterministic, fully audited
+    # response automation; see src/application/playbook_execution.py. One
+    # event per step (never batched) so a single execution's audit rows are
+    # sufficient, on their own, to fully reconstruct what happened (action
+    # name, params, output/error) without needing anything external --
+    # exactly the "explainable" contract G3 already gated for the analytics
+    # milestone, applied here to response actions instead.
+    PLAYBOOK_EXECUTION_STARTED = "playbook.execution_started"
+    PLAYBOOK_STEP_EXECUTED = "playbook.step_executed"
+    PLAYBOOK_STEP_FAILED = "playbook.step_failed"
+    PLAYBOOK_EXECUTION_COMPLETED = "playbook.execution_completed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

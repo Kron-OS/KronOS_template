@@ -2149,6 +2149,86 @@ file), ruff **83** pre-existing baseline errors elsewhere in the tree
 playbook definitions as data. Deterministic and fully audited — every step,
 input, output and decision recorded. New action = registration, not an edit.
 
+**STATUS (2026-08-03): DONE. Starts Milestone M7 (Response/SOAR).**
+Implemented directly by the orchestrator after the dispatched subagent
+died to a genuine session spend-limit error at the very start of its turn
+(no files written -- confirmed via `git status`/`ls poc/`, recorded in
+task #59's `dispatch_log`).
+
+**Scope boundary enforced (binding, not incidental):** H2 (next item) is a
+separate, explicitly-gated item for real containment actions with an
+external, destructive side effect (isolate a host, block an IP, revoke a
+session). Nothing in this pass has any such side effect. The two shipped
+example actions are deliberately heterogeneous, non-destructive, real
+(never fabricated no-ops): `TransitionDetectionTriageAction`
+(`src/application/playbook_actions.py`) drives the real, already-existing
+`DetectionTriageService.transition()` (C4) -- a real, non-destructive,
+already-audited FSM move entirely within KronOS's own data; and
+`LogNotificationAction`, entirely stateless.
+
+Mirrors this codebase's established ABC+registry extensibility idiom
+(`ForensicParser`/`ParserRegistry`, `Enricher`/`EnrichmentPipeline`,
+`CostGateHeuristic`/`RuleCostGate`): `PlaybookAction`/`PlaybookActionRegistry`
+(`src/application/playbook.py`) -- a new action is a new
+`registry.register()` call, zero edits to the registry or
+`PlaybookExecutionService`. `Playbook`/`PlaybookStep`
+(`src/domain/playbook.py`) are pure, frozen Pydantic data (an ordered
+sequence of `action_name` + `params`), never Python control flow -- mirrors
+`RulePack`/`CustomRule`'s own "content is data, not code" precedent.
+
+**Design decision: fail-fast, not continue-on-error.** A playbook step
+often depends causally on the one before it -- a later step describing
+"what was done" would be actively misleading if an earlier step silently
+failed but execution continued as if nothing happened. `PlaybookExecutionService`
+(`src/application/playbook_execution.py`) halts on the first failed step
+(`PlaybookExecutionResult.halted_early`), recording an honest, incomplete
+trace rather than pretending the rest ran. A future per-step
+"continue on failure" flag is real, legitimate follow-up scope, not built
+speculatively here.
+
+**Every step, input, output, and decision recorded** via four new
+`AuditEventType`s (`PLAYBOOK_EXECUTION_STARTED`/`PLAYBOOK_STEP_EXECUTED`/
+`PLAYBOOK_STEP_FAILED`/`PLAYBOOK_EXECUTION_COMPLETED`) -- one audit row per
+step (never batched), each carrying the exact action name, params, and
+real output/error, so a single execution's own audit rows are sufficient
+on their own to fully reconstruct what happened, without needing anything
+external (the same "explainable" contract G3 already gated for the
+analytics milestone, applied here to response actions).
+
+PoC: `poc/playbook_engine/` -- **16/16 checks passed** against the real,
+live Postgres 16 instance (`docker-postgres-1`), using the real,
+unmodified `PostgresDetectionRepository`/`PostgresAuditLogRepository`, not
+`InMemory*` doubles. Covers: a real success run (a real `Detection` row's
+`triage_state` actually changes in Postgres; every step's real audit row
+exists with the exact recorded output; `AuditLogService.verify_chain()`
+confirms the real hash chain is intact); a real failure run (an illegal
+`NEW`→`TRUE_POSITIVE` FSM jump halts the second step, the real Detection
+row is confirmed UNCHANGED afterward, a real `PLAYBOOK_STEP_FAILED` row
+exists, and the hash chain is confirmed STILL intact after a failure --
+never corrupted by one); and a concrete proof (not an assertion) that both
+independently-authored example actions ran through the identical
+`PlaybookExecutionService.execute()` code path with zero engine
+differences.
+
+**Explicitly flagged gaps, not this item's scope:** no HTTP route or
+scheduled/Detection-triggered trigger wiring this pass (mirrors F1/F3/F4/
+G1/G2's own precedent) -- `PlaybookExecutionService`/`PlaybookActionRegistry`
+are not yet wired into `dependencies.py`/`startup.py` or reachable from the
+running application. No playbook persistence -- a `Playbook` is pure
+in-memory data this pass; a versioned `PlaybookRepository` (mirroring
+`RulePack`'s own shape) is real follow-up scope for whenever an authoring
+UI/API exists, not required to prove this item's mechanism. Only two
+example actions ship; H2 will add the first genuinely destructive ones
+behind its own approval-gate mechanism.
+
+Ran the full checklist: **1212 passed, 1 skipped**, coverage **87.88%**
+(gate 80%, up from G3's 87.68%), mypy **29** (identical pre-existing
+baseline, zero new), ruff/black -- found and fixed several real line-length/
+unused-import issues in this pass's own new files (a `black`/`ruff --fix`
+pass, then a manual wrap for one remaining line), re-ran affected tests and
+the PoC afterward to confirm no regression; clean on every touched file
+after the fix.
+
 ### H2 · GATE · Action adapters + approval gates — L2
 **Objective.** Containment adapters (isolate host, block IP, revoke session)
 behind an ABC. **Gate:** prove no destructive action can execute without either

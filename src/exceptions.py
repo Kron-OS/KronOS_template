@@ -55,6 +55,11 @@ class RulePackError(KronOSException):
     rejection surfaced as a hard error, or publish/detector-wiring failure."""
 
 
+class PlaybookError(KronOSException):
+    """Raised when a playbook step references an unregistered action, or a
+    registered action raises during execution (roadmap M7/H1)."""
+
+
 class TimestampingError(KronOSException):
     """Raised when RFC 3161 timestamp acquisition or verification fails closed.
 

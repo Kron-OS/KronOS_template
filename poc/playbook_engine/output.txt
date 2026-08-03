@@ -1,0 +1,23 @@
+[2026-08-03T05:02:58.482399+00:00] === Scenario 1: real success run against a real Postgres Detection row ===
+[2026-08-03T05:02:58.486969+00:00] real seeded Detection: detection_id=9cb4a314-081e-4ad2-bb19-7a24b595bce1 triage_state=NEW
+[2026-08-03T05:02:58.513800+00:00] PASS: real execution succeeded (both steps ran, no halt)
+[2026-08-03T05:02:58.513811+00:00] PASS: real execution result has exactly 2 step results
+[2026-08-03T05:02:58.513820+00:00] real step 1 output: {'detection_id': '9cb4a314-081e-4ad2-bb19-7a24b595bce1', 'triage_state': 'INVESTIGATING'} real step 2 output: {'message': 'Detection 9cb4a314-081e-4ad2-bb19-7a24b595bce1 moved to INVESTIGATING'}
+[2026-08-03T05:02:58.515158+00:00] PASS: real Detection row's triage_state actually changed in Postgres to INVESTIGATING
+[2026-08-03T05:02:58.517438+00:00] PASS: real PLAYBOOK_EXECUTION_STARTED row exists
+[2026-08-03T05:02:58.517449+00:00] PASS: real PLAYBOOK_STEP_EXECUTED rows: exactly 2 (one per real step)
+[2026-08-03T05:02:58.517452+00:00] PASS: real PLAYBOOK_EXECUTION_COMPLETED row exists
+[2026-08-03T05:02:58.517463+00:00] PASS: real step-1 audit row's own recorded output matches what actually happened
+[2026-08-03T05:02:58.518907+00:00] PASS: real hash chain intact after success run (detail=None)
+[2026-08-03T05:02:58.518915+00:00] === Scenario 2: real failure run halts remaining steps, still audited, chain still intact ===
+[2026-08-03T05:02:58.532011+00:00] PASS: real failure run halted early
+[2026-08-03T05:02:58.532021+00:00] PASS: real failure run did not succeed
+[2026-08-03T05:02:58.532025+00:00] PASS: only the failing step ran -- the second step never executed
+[2026-08-03T05:02:58.532029+00:00] real captured step error: Invalid detection triage transition: NEW → TRUE_POSITIVE
+[2026-08-03T05:02:58.533167+00:00] PASS: real Detection row's triage_state is UNCHANGED after the illegal transition (still NEW)
+[2026-08-03T05:02:58.534401+00:00] PASS: real PLAYBOOK_STEP_FAILED row exists for the illegal transition
+[2026-08-03T05:02:58.535968+00:00] PASS: real hash chain STILL intact after a failure run (detail=None)
+[2026-08-03T05:02:58.535975+00:00] === Scenario 3: 'new action = registration, not an edit' proved concretely ===
+[2026-08-03T05:02:58.535980+00:00] PASS: both TransitionDetectionTriageAction and LogNotificationAction are registered in the SAME registry with zero PlaybookExecutionService code differences
+[2026-08-03T05:02:58.535986+00:00] PASS: scenario 1's single execution already ran both real, independently-registered actions through the identical PlaybookExecutionService.execute() code path
+[2026-08-03T05:02:58.539025+00:00] PoC PASSED -- 16/16 checks passed against real, live Postgres 16.
