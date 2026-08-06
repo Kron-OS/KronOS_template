@@ -1,0 +1,33 @@
+[2026-08-06T14:37:38.141478+00:00] real kronos-dev org id resolved via Admin API: 482072f5-8086-4815-be03-879cc2eaecb5
+[2026-08-06T14:37:38.141492+00:00] === Scenario 0: real scripted PKCE login creates a real Keycloak session ===
+[2026-08-06T14:37:38.239996+00:00] real login succeeded, JWT sid=aa901083-0761-468d-9252-e28e57cc329e
+[2026-08-06T14:37:38.245612+00:00] PASS: real analyst session appears in a fresh, independent Admin API sessions list
+[2026-08-06T14:37:38.304421+00:00] === Scenario 1: DENIED -- destructive step attempted with NO approval ===
+[2026-08-06T14:37:38.323377+00:00] PASS: denied run halted (no unapproved execution)
+[2026-08-06T14:37:38.323390+00:00] PASS: denied run's real captured error names the ContainmentActionDeniedError reason
+[2026-08-06T14:37:38.328522+00:00] PASS: real session STILL ALIVE after the denied attempt (independent fresh Admin API re-check)
+[2026-08-06T14:37:38.341286+00:00] PASS: real CONTAINMENT_ACTION_ATTEMPTED row exists for the denied attempt
+[2026-08-06T14:37:38.341301+00:00] PASS: real CONTAINMENT_ACTION_DENIED row exists for the denied attempt
+[2026-08-06T14:37:38.341306+00:00] PASS: NO CONTAINMENT_ACTION_EXECUTED row exists yet for THIS run's session (nothing has run for real yet)
+[2026-08-06T14:37:38.341308+00:00] === Scenario 2: APPROVED -- a real step-up ticket authorizes the same revoke ===
+[2026-08-06T14:37:38.341338+00:00] real step-up ticket issued (mirrors POST /api/step-up/ticket): 1e3e8c03-bb73-4bf3-bce1-9a42e3ea5352
+[2026-08-06T14:37:38.412094+00:00] PASS: approved run succeeded (real revoke executed)
+[2026-08-06T14:37:38.412108+00:00] PASS: approved run's real output confirms revocation
+[2026-08-06T14:37:38.416400+00:00] PASS: real session is GONE after the approved attempt (independent fresh Admin API re-check)
+[2026-08-06T14:37:38.426888+00:00] PASS: real CONTAINMENT_ACTION_EXECUTED row now exists for THIS run's session
+[2026-08-06T14:37:38.448578+00:00] PASS: real hash chain intact after denied+approved sequence (detail=None)
+[2026-08-06T14:37:38.463054+00:00] PASS: replaying the SAME ticket a second time is denied, not re-authorized
+[2026-08-06T14:37:38.463064+00:00] === Scenario 3: tenant isolation -- a second real org's real session ===
+[2026-08-06T14:37:38.562601+00:00] real second org created: alias=kronos-poc-h2-org-ceabb2a6 id=99a32fa8-e5e0-452f-9d04-bb42c03bc3b7 user=0a2e4c47-84e0-44d6-ab30-0d41e4e4326c
+[2026-08-06T14:37:38.679417+00:00] real login for the second org's user succeeded, sid=8f13c751-39b2-4d91-a0e0-3bd16773c1ff
+[2026-08-06T14:37:38.707602+00:00] PASS: cross-org attempt halted (tenant isolation enforced even WITH a valid ticket)
+[2026-08-06T14:37:38.707615+00:00] PASS: cross-org failure reason names the real org-membership rejection
+[2026-08-06T14:37:38.712857+00:00] PASS: the second org's real session is STILL ALIVE (independent fresh Admin API re-check)
+[2026-08-06T14:37:38.723717+00:00] PASS: real CONTAINMENT_ACTION_FAILED row exists for THIS run's cross-org attempt (never CONTAINMENT_ACTION_EXECUTED for it)
+[2026-08-06T14:37:38.723732+00:00] === Scenario 4: StaticPolicyApprovalGate (explicit policy, no ticket) ===
+[2026-08-06T14:37:38.808221+00:00] real case-lead login succeeded, sid=dbe6408f-d5a5-46e7-be8d-d019b016ddf4
+[2026-08-06T14:37:38.862854+00:00] PASS: StaticPolicyApprovalGate authorizes with ZERO ContainmentAction/engine changes
+[2026-08-06T14:37:38.867307+00:00] PASS: real case-lead session is GONE after the policy-gated revoke (independent fresh Admin API re-check)
+[2026-08-06T14:37:38.867320+00:00] === Cleanup: removing the temporary second org/user ===
+[2026-08-06T14:37:38.916471+00:00] cleanup complete
+[2026-08-06T14:37:38.920127+00:00] PoC PASSED -- 19/19 checks passed against real, live Keycloak 26.2.5 and Postgres 16.

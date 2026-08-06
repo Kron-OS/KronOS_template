@@ -2236,6 +2236,106 @@ an explicit policy authorization or human approval, and that every attempt is
 audited whether or not it succeeded. Ties to existing step-up auth.
 **Depends on:** H1, C4.
 
+**STATUS (2026-08-06): GATE PASSED — one real containment action shipped,
+two scoped out with evidence, not fabricated.** Investigated all three
+roadmap-named examples for a genuinely real, destructive backend before
+writing anything: **revoke session** has one (Keycloak 26.2.5's real Admin
+REST API, `docker-keycloak-1`, already running) and is the one shipped
+this pass; **block IP** was checked against the real dev stack and has no
+real, safely-reachable enforcement point (`docker-nginx-1`'s config is
+baked into the image at build time, no live-editable mount, no WAF/
+ipset/security-group API anywhere) — scoped out, not faked; **isolate
+host** was re-confirmed via `grep -rEn "EDR|osquery|Fleet[A-Z]|HostAgent|
+host_agent|isolate_host|IsolateHost" src/` to have zero host-management/
+EDR/agent component anywhere in `src/` (only two docstring mentions of a
+*future* collector) — scoped out, not faked. One real, deeply-verified
+adapter beats three of which two would have been hollow.
+
+`src/domain/approval.py` (`ApprovalDecision`, pure frozen data),
+`src/application/approval_gate.py` (`ApprovalGate` ABC +
+`StepUpApprovalGate` — ties into the REAL, already-existing
+`POST /api/step-up/ticket`/`TicketStore` mechanism, one-shot ticket
+consumption — + `StaticPolicyApprovalGate` — explicit admin-configured
+allow-list, no human ticket, proving the gate's "policy... or human
+approval" *either* is real, not just human-approval-shaped),
+`src/application/containment_action.py` (`ContainmentAction` — a
+template-method `PlaybookAction` base that owns the gate-consult-then-
+audit sequence once: `CONTAINMENT_ACTION_ATTEMPTED` is logged *before*
+the gate is even consulted, so a bug inside the gate itself can never
+erase the fact an attempt happened; `_DENIED` is a distinct event from
+`_FAILED` — "no approval present" vs. "the real backend rejected the
+call" are different facts an audit trail must not conflate — so a future
+gated action needs zero bespoke approval/audit logic of its own, only
+`_perform()`), `src/application/containment_actions.py`
+(`RevokeKeycloakSessionAction` — independently re-verifies via the real
+Keycloak Admin API that the target user is a member of the acting
+tenant's own org *and* that the named session actually belongs to that
+user, both before ever calling the real, destructive `DELETE`, per
+roadmap invariant #3), `src/adapter/keycloak/admin_client.py`
+(`KeycloakAdminClient` ABC + `HttpxKeycloakAdminClient`, using the
+already-provisioned `kronos-backend` service account's existing
+`manage-users`/`view-users` grant — no new credentials).
+
+Real verification (`poc/containment_approval_gate/`, **19/19 checks
+passed**, re-run twice to confirm idempotency) against the live Keycloak
+26.2.5 and Postgres 16: a real scripted Authorization Code + PKCE login
+(reusing `poc/auth_flow/auth_helpers.py`, no password grant) creates a
+real session; attempting to revoke it with **no** approval is denied and
+independently re-confirmed **still alive** via a fresh, separate Admin
+API call, with real `CONTAINMENT_ACTION_ATTEMPTED`/`_DENIED` Postgres
+rows and no `_EXECUTED` row; the identical step **with** a real one-shot
+step-up ticket executes for real, independently re-confirmed **gone** via
+a fresh Admin API call, with a real `_EXECUTED` row and an intact hash
+chain (`AuditLogService.verify_chain()`); replaying the same
+already-consumed ticket is denied, not re-authorized; a real second
+Keycloak org + real second user's real session is **not** revocable by
+the original tenant **even with a valid ticket** — rejected with
+`AuthorizationError`, independently confirmed still alive, a real
+`_FAILED` row (never `_EXECUTED`) — proving tenant isolation holds even
+against an approved-but-cross-tenant attempt; `StaticPolicyApprovalGate`
+then authorizes a real revoke of a *third* real session through the
+identical `ContainmentAction`/`PlaybookExecutionService` code with zero
+changes, concretely proving "new approval mechanism = new class."
+
+Four real Keycloak 26.2.5 findings surfaced by actually running this, not
+by reading docs (full account in the PoC's own README): organization
+creation rejects `domains: []` with a real 400; organization `name` (not
+just `alias`) must be unique, a real 409 if reused while a prior run's
+org still exists; this realm's Declarative User Profile requires
+`firstName`/`lastName` or a real login redirects to a real
+`VERIFY_PROFILE` required-action page instead of completing; `DELETE
+.../sessions/{id}` on an already-gone session returns a real, literal
+`{"error":"Sesssion not found"}` (Keycloak's own typo, reproduced
+verbatim in `src/` and in the unit tests) and is treated as a legitimate
+terminal outcome, not a KronOS failure. Also found and cleaned up: a
+stray leftover PoC-only Keycloak user and an empty
+`poc/containment_approval_gate/` directory from an apparently earlier,
+incomplete attempt at this exact item that died before writing any real
+code — reported, not silently absorbed.
+
+**Explicitly flagged gaps, not this item's scope:** no HTTP route or
+scheduled/Detection-triggered trigger wiring this pass (mirrors H1's own
+precedent) — `ContainmentAction`/`ApprovalGate`/`HttpxKeycloakAdminClient`
+are not yet wired into `dependencies.py`/`startup.py`; "block IP" and
+"isolate host" remain real, reported gaps needing an actual owned
+enforcement point (a dedicated nftables/security-group API, an EDR/
+osquery integration) that doesn't exist in this dev stack yet, not a
+missing adapter class; `StaticPolicyApprovalGate`'s allow-list is
+constructor-only (in-memory) — a persisted, admin-editable policy store
+is real follow-up scope once an authoring UI/API exists. Unit tests:
+`tests/unit/domain/test_approval.py`,
+`tests/unit/application/test_approval_gate.py`,
+`tests/unit/application/test_containment_action.py`,
+`tests/unit/application/test_containment_actions.py`,
+`tests/unit/adapter/test_keycloak_admin_client.py` (36 tests, mocking
+only the external `TicketStore`/`KeycloakAdminClient` collaborators per
+CLAUDE.md SS B.5). Full suite: **1248 passed, 1 skipped** (1212 baseline +
+36 new, zero regressions), coverage **88.11%** (gate 80%, up from H1's
+87.88%), mypy **29**/ruff **22**/black **13 pre-existing files** — all
+three independently confirmed via a true `git stash -u` baseline to be
+byte-for-byte identical with and without this item's changes, zero new
+issues in any of the three.
+
 ### H3 · Automated evidence collection on detection — L3
 **Objective.** A detection triggers forensically-sound collection (memory, disk,
 logs) that enters the *existing* evidence pipeline with full custody — the

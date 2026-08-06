@@ -127,6 +127,19 @@ class AuditEventType(StrEnum):
     PLAYBOOK_STEP_FAILED = "playbook.step_failed"
     PLAYBOOK_EXECUTION_COMPLETED = "playbook.execution_completed"
 
+    # Containment / destructive action adapters (roadmap M7/H2) -- the
+    # gate's own binding requirement is "every attempt is audited whether
+    # or not it succeeded," so ATTEMPTED is logged before the approval gate
+    # is even consulted (a bug inside the gate itself must never erase the
+    # fact an attempt happened), and DENIED is its own distinct event from
+    # FAILED -- "no approval" and "a real backend error" are different
+    # facts a court-facing audit trail must not conflate. See
+    # src/application/containment_action.py.
+    CONTAINMENT_ACTION_ATTEMPTED = "containment.action_attempted"
+    CONTAINMENT_ACTION_DENIED = "containment.action_denied"
+    CONTAINMENT_ACTION_EXECUTED = "containment.action_executed"
+    CONTAINMENT_ACTION_FAILED = "containment.action_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

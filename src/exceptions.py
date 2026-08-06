@@ -124,6 +124,26 @@ class VolatilityScanError(KronOSException):
     """
 
 
+class ContainmentActionDeniedError(KronOSException):
+    """Raised when an ``ApprovalGate`` denies a destructive ``ContainmentAction``
+    (roadmap M7/H2) -- no explicit policy authorization and no valid human
+    approval were present. Distinct from a generic failure: this is the
+    gate working correctly, not a defect. ``ContainmentAction.execute()``
+    always audits ``CONTAINMENT_ACTION_DENIED`` before raising this, so a
+    caller catching it can trust the audit trail is already complete.
+    """
+
+
+class KeycloakAdminError(KronOSException):
+    """Raised when a real Keycloak Admin REST API call fails: unreachable,
+    a non-2xx/404 response, or a malformed response body (roadmap M7/H2's
+    ``KeycloakAdminClient``). Deliberately never silently swallowed --
+    CLAUDE.md SS1#8 requires a containment adapter that can't reach its real
+    backend to fail loudly, not no-op as if the destructive action
+    succeeded (or, just as dangerously, as if it were safely denied).
+    """
+
+
 class SealerFallBehindDetectedError(KronOSException):
     """Signals that a stream's oldest pending (unsealed) event has aged past
     ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold
