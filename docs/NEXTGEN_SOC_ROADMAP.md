@@ -2407,6 +2407,33 @@ pre-existing 29-error baseline confirmed via `git stash -u` both before
 and after — zero new; `ruff`/`black` clean on both touched files.
 
 ### H4 · Case / ticket integration — L2
+**Objective (added by the orchestrator 2026-08-07 — this item shipped with
+only a title, unlike every other roadmap entry; filled in before dispatch
+rather than leaving a cold subagent to invent the whole scope).** KronOS's
+own `Case`/`Detection` entities are internal-only today — no code path
+exists to an external ITSM/ticketing system (Jira, ServiceNow, PagerDuty,
+generic webhook), so an analyst working a real incident has to manually
+copy context out of KronOS. Close M7 by building a pluggable outbound
+integration: when a `Detection` is triaged (or a playbook step runs), a
+real ticket/ticket-update is created in an external system, with the
+external ticket id stored back on the KronOS side for traceability —
+never the reverse (KronOS never takes externally-supplied state as
+authoritative over its own audited FSMs, mirroring invariant #5).
+**Depends on:** C4 (Detection, DONE), H1 (PlaybookAction, DONE).
+**Scope note for the dispatched agent:** no real external ITSM product
+is deployed anywhere in this dev stack (confirm via the same kind of grep
+H2/H3 already ran) and standing up a live third-party SaaS ticketing
+account is out of scope for an unattended pass — do not reach out to any
+live public SaaS API as part of this work. Design a generic
+`TicketingSystem`(ABC) (mirrors `EvidenceStorage`/`KeycloakAdminClient`'s
+own "one small ABC, not a passthrough" idiom) with one concrete
+implementation verified against a REAL local HTTP receiver the PoC itself
+stands up (a real network round trip, real request/response bytes
+inspected — CLAUDE.md SSF's "real or realistically containerized
+dependency" is satisfied by a real local server, it does not require a
+live external vendor). A generic outbound-webhook implementation
+(HTTP POST, real JSON payload, real response code checked) is the most
+defensible real target absent a specific named vendor.
 
 ---
 
