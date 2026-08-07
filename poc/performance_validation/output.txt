@@ -1,0 +1,367 @@
+############################################################
+# poc/performance_validation/output.txt -- real captured runs
+# I5: CLAUDE.md SS B.6 performance baselines, KronOS M8
+# captured 2026-08-08, against the live dev stack already running
+# (docker-compose.dev.yml, project "docker" / "kronos-dev")
+############################################################
+
+============================================================
+1. EVTX INGEST RATE (target: >5000 records/sec/core)
+   evtx==0.12.1 (docker-kronos-backend-1), FastEvtxParser.parse()
+   called directly, single-core-pinned via os.sched_setaffinity(0,{0}),
+   against tests/fixtures/samples/real/system.evtx (194 real records,
+   200,000 bytes -- the largest real EVTX fixture anywhere in this repo,
+   confirmed via `find -iname "*.evtx"` across the whole tree)
+============================================================
+$ docker exec docker-kronos-backend-1 python3 /tmp/evtx_rate.py /tmp/system.evtx
+
+file: /tmp/system.evtx  size_bytes=200000
+pid=440  sched_affinity={0}  cpu_count=4
+iter=00 records=194 elapsed_s=0.007531 rate_rec_per_s=25760.4
+iter=01 records=194 elapsed_s=0.006343 rate_rec_per_s=30586.8
+iter=02 records=194 elapsed_s=0.006290 rate_rec_per_s=30841.4
+iter=03 records=194 elapsed_s=0.006389 rate_rec_per_s=30362.8
+iter=04 records=194 elapsed_s=0.006495 rate_rec_per_s=29867.6
+iter=05 records=194 elapsed_s=0.006462 rate_rec_per_s=30020.9
+iter=06 records=194 elapsed_s=0.006496 rate_rec_per_s=29862.5
+iter=07 records=194 elapsed_s=0.006342 rate_rec_per_s=30588.4
+iter=08 records=194 elapsed_s=0.006593 rate_rec_per_s=29425.8
+iter=09 records=194 elapsed_s=0.006336 rate_rec_per_s=30617.4
+iter=10 records=194 elapsed_s=0.006249 rate_rec_per_s=31046.2
+iter=11 records=194 elapsed_s=0.006316 rate_rec_per_s=30717.4
+iter=12 records=194 elapsed_s=0.006235 rate_rec_per_s=31115.7
+iter=13 records=194 elapsed_s=0.006375 rate_rec_per_s=30433.0
+iter=14 records=194 elapsed_s=0.006475 rate_rec_per_s=29962.0
+iter=15 records=194 elapsed_s=0.006233 rate_rec_per_s=31126.7
+iter=16 records=194 elapsed_s=0.006383 rate_rec_per_s=30391.2
+iter=17 records=194 elapsed_s=0.006382 rate_rec_per_s=30398.8
+iter=18 records=194 elapsed_s=0.006531 rate_rec_per_s=29702.4
+iter=19 records=194 elapsed_s=0.006488 rate_rec_per_s=29901.6
+---
+record_count_per_run=194
+n_iterations=20
+rate_min=25760.4
+rate_max=31126.7
+rate_mean=30136.5
+rate_median=30395.0
+BASELINE_TARGET=5000 records/sec/core
+VERDICT (median vs target, this fixture only)=PASS
+
+CAVEAT (see README.md for full discussion): no EVTX fixture larger than
+this 194-event/200KB sample exists anywhere in this repo (poc/*/ included).
+This is a real, reproducible measurement for this fixture; it does not
+validate throughput at realistic multi-thousand-event/multi-MB scale.
+
+============================================================
+2. OPENSEARCH QUERY P95 (target: <500ms)
+   OpenSearch 2.11.1 (docker-opensearch-1), real kronos-* indices left by
+   this session's own H1-I2 PoC history, 80 real queries (4 shapes x 20)
+============================================================
+$ docker exec docker-opensearch-1 bash /tmp/opensearch_query_p95.sh
+
+=== cluster/indices context ===
+{"cluster_name":"docker-cluster","status":"yellow","timed_out":false,"number_of_nodes":1,"number_of_data_nodes":1,"discovered_master":true,"discovered_cluster_manager":true,"active_primary_shards":104,"active_shards":104,"relocating_shards":0,"initializing_shards":0,"unassigned_shards":98,"delayed_unassigned_shards":0,"number_of_pending_tasks":0,"number_of_in_flight_fetch":0,"task_max_waiting_in_queue_millis":0,"active_shards_percent_as_number":51.48514851485149}
+{"count":1570,"_shards":{"total":54,"successful":54,"skipped":0,"failed":0}}
+
+NOTE: "yellow" status / unassigned_shards=98 is expected and pre-existing
+for a single-node dev cluster with replica count 1 (no second node to host
+the replica shards) -- not a real fault, not something this PoC changed.
+
+=== running 80 real queries (4 shapes x 20) ===
+count_all iter=1 time_s=0.010854
+count_all iter=2 time_s=0.007734
+count_all iter=3 time_s=0.007137
+count_all iter=4 time_s=0.007626
+count_all iter=5 time_s=0.009344
+count_all iter=6 time_s=0.007829
+count_all iter=7 time_s=0.007460
+count_all iter=8 time_s=0.008807
+count_all iter=9 time_s=0.008383
+count_all iter=10 time_s=0.008233
+count_all iter=11 time_s=0.008359
+count_all iter=12 time_s=0.007614
+count_all iter=13 time_s=0.008099
+count_all iter=14 time_s=0.009112
+count_all iter=15 time_s=0.007585
+count_all iter=16 time_s=0.007623
+count_all iter=17 time_s=0.007799
+count_all iter=18 time_s=0.008030
+count_all iter=19 time_s=0.007216
+count_all iter=20 time_s=0.007346
+match_all_size20 iter=1 time_s=0.011170
+match_all_size20 iter=2 time_s=0.011002
+match_all_size20 iter=3 time_s=0.010628
+match_all_size20 iter=4 time_s=0.010544
+match_all_size20 iter=5 time_s=0.010689
+match_all_size20 iter=6 time_s=0.010096
+match_all_size20 iter=7 time_s=0.010493
+match_all_size20 iter=8 time_s=0.012344
+match_all_size20 iter=9 time_s=0.012046
+match_all_size20 iter=10 time_s=0.012230
+match_all_size20 iter=11 time_s=0.012018
+match_all_size20 iter=12 time_s=0.011331
+match_all_size20 iter=13 time_s=0.013003
+match_all_size20 iter=14 time_s=0.011071
+match_all_size20 iter=15 time_s=0.011300
+match_all_size20 iter=16 time_s=0.011115
+match_all_size20 iter=17 time_s=0.011180
+match_all_size20 iter=18 time_s=0.012151
+match_all_size20 iter=19 time_s=0.010720
+match_all_size20 iter=20 time_s=0.010609
+term_event_code iter=1 time_s=0.008758
+term_event_code iter=2 time_s=0.008111
+term_event_code iter=3 time_s=0.008985
+term_event_code iter=4 time_s=0.008669
+term_event_code iter=5 time_s=0.009414
+term_event_code iter=6 time_s=0.008826
+term_event_code iter=7 time_s=0.008408
+term_event_code iter=8 time_s=0.008693
+term_event_code iter=9 time_s=0.008676
+term_event_code iter=10 time_s=0.008234
+term_event_code iter=11 time_s=0.008784
+term_event_code iter=12 time_s=0.008406
+term_event_code iter=13 time_s=0.009406
+term_event_code iter=14 time_s=0.010782
+term_event_code iter=15 time_s=0.010857
+term_event_code iter=16 time_s=0.011613
+term_event_code iter=17 time_s=0.008208
+term_event_code iter=18 time_s=0.008382
+term_event_code iter=19 time_s=0.008259
+term_event_code iter=20 time_s=0.009044
+terms_agg_parser iter=1 time_s=0.007880
+terms_agg_parser iter=2 time_s=0.007985
+terms_agg_parser iter=3 time_s=0.007719
+terms_agg_parser iter=4 time_s=0.007780
+terms_agg_parser iter=5 time_s=0.007935
+terms_agg_parser iter=6 time_s=0.008307
+terms_agg_parser iter=7 time_s=0.007856
+terms_agg_parser iter=8 time_s=0.008508
+terms_agg_parser iter=9 time_s=0.008849
+terms_agg_parser iter=10 time_s=0.008970
+terms_agg_parser iter=11 time_s=0.008393
+terms_agg_parser iter=12 time_s=0.008706
+terms_agg_parser iter=13 time_s=0.008672
+terms_agg_parser iter=14 time_s=0.008690
+terms_agg_parser iter=15 time_s=0.008992
+terms_agg_parser iter=16 time_s=0.008783
+terms_agg_parser iter=17 time_s=0.015358
+terms_agg_parser iter=18 time_s=0.010731
+terms_agg_parser iter=19 time_s=0.010519
+terms_agg_parser iter=20 time_s=0.010992
+=== computing p50/p95 across all 80 requests ===
+n_requests=80
+min_s=0.007137
+p50_s=0.008783
+p95_s=0.012151
+max_s=0.015358
+mean_s=0.009376
+BASELINE_TARGET=0.500s p95
+VERDICT=PASS
+
+============================================================
+3a. PLASO HEAVY TASK -- single Prefetch file (light case)
+    plaso==20260512, kronos-poc-plaso:20260512 (real image from
+    docker/plaso/Dockerfile, reused from poc/plaso/), real docker run + time
+    sample: tests/fixtures/samples/real/CMD.EXE-087B4001.pf (11,986 bytes)
+============================================================
+$ time docker run --rm \
+    -v "$(pwd)/tests/fixtures/samples/real/CMD.EXE-087B4001.pf:/mnt/evidence/CMD.EXE-087B4001.pf:ro" \
+    kronos-poc-plaso:20260512 \
+    --evidence-path /mnt/evidence/CMD.EXE-087B4001.pf \
+    --evidence-id 00000000-0000-0000-0000-000000000001 \
+    --case-id 00000000-0000-0000-0000-00000000000c \
+    --org-id test-org-id --org-alias testorg --sha256 deadbeef \
+    > /tmp/plaso_pf_output.jsonl 2> /tmp/plaso_pf_stderr.txt
+
+--- worker stderr (real log2timeline/psort invocation trace) ---
+INFO Starting Plaso parse: /mnt/evidence/CMD.EXE-087B4001.pf
+INFO Running log2timeline: /opt/plaso-venv/bin/log2timeline --quiet --status_view none --storage-file /tmp/tmpl88rlvt0.plaso /mnt/evidence/CMD.EXE-087B4001.pf
+INFO Running psort: /opt/plaso-venv/bin/psort --quiet -o json_line -w /tmp/tmpdaoe5cul.jsonl /tmp/tmpl88rlvt0.plaso
+INFO Plaso parse complete: 5 events
+
+--- shell 'time' output (captured directly from the terminal run) ---
+real    0m6.538s
+user    0m0.013s
+sys     0m0.007s
+exit=0
+
+--- record count ---
+5 /tmp/plaso_pf_output.jsonl
+
+============================================================
+3b. PLASO HEAVY TASK -- whole-disk E01 image parse (heavier, representative
+    real "heavy" invocation: PlasoParser's EWF routing sends the whole disk
+    image through log2timeline/psort with dfVFS walking the filesystem)
+    same pinned image; sample: tests/fixtures/samples/real/kape/kape_triage.E01
+    (62,050 bytes) -- same fixture poc/kape_ingestion_test/ used
+    (414 events last time); re-timed here.
+============================================================
+$ time docker run --rm \
+    -v "$(pwd)/tests/fixtures/samples/real/kape/kape_triage.E01:/mnt/evidence/kape_triage.E01:ro" \
+    kronos-poc-plaso:20260512 \
+    --evidence-path /mnt/evidence/kape_triage.E01 \
+    --evidence-id 00000000-0000-0000-0000-000000000002 \
+    --case-id 00000000-0000-0000-0000-00000000000c \
+    --org-id test-org-id --org-alias testorg --sha256 deadbeef \
+    > /tmp/plaso_e01_output.jsonl 2> /tmp/plaso_e01_stderr.txt
+
+--- worker stderr (real log2timeline/psort invocation trace) ---
+INFO Starting Plaso parse: /mnt/evidence/kape_triage.E01
+INFO Running log2timeline: /opt/plaso-venv/bin/log2timeline --quiet --status_view none --storage-file /tmp/tmp6ng1can6.plaso /mnt/evidence/kape_triage.E01
+INFO Running psort: /opt/plaso-venv/bin/psort --quiet -o json_line -w /tmp/tmpj799goj2.jsonl /tmp/tmp6ng1can6.plaso
+INFO Plaso parse complete: 414 events
+
+--- shell 'time' output (captured directly from the terminal run) ---
+real    0m12.608s
+user    0m0.006s
+sys     0m0.020s
+exit=0
+
+--- record count ---
+414 /tmp/plaso_e01_output.jsonl
+
+BASELINE_TARGET=600s (10 minutes)
+VERDICT=PASS (12.6s << 600s target)
+CAVEAT: both fixtures are KB-scale test/PoC samples, not GB-scale real
+forensic images -- see README.md for full discussion. This does not
+validate the 10-minute ceiling at realistic scale, because no fixture of
+that scale exists in this repo.
+
+============================================================
+4. UNIT SUITE WALL TIME (target: <5s)
+   pytest 9.1.1, host venv (/home/reca/venv), tests/unit/ against this
+   worktree (reset to origin/feat/nextgen-soc-cert-platform @ 000423d)
+============================================================
+=== run A: default (with coverage per pyproject.toml addopts) ===
+src/external/sandbox/yara_x_runner.py                           92      0   100%
+src/external/startup.py                                        124    124     0%   7-448
+------------------------------------------------------------------------------------------
+TOTAL                                                         7949    912    89%
+Required test coverage of 80% reached. Total coverage: 88.53%
+1315 passed, 1 skipped, 16 warnings in 10.77s
+
+=== run B: repeat, with coverage ===
+src/external/sandbox/yara_x_runner.py                           92      0   100%
+src/external/startup.py                                        124    124     0%   7-448
+------------------------------------------------------------------------------------------
+TOTAL                                                         7949    912    89%
+Required test coverage of 80% reached. Total coverage: 88.53%
+1315 passed, 1 skipped, 16 warnings in 10.85s
+
+=== run C: --no-cov ===
+tests/unit/test_auth_routes.py::test_refresh_returns_503_when_keycloak_unreachable
+  /home/reca/venv/lib/python3.14/site-packages/starlette/testclient.py:454: DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.
+    return super().request(
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1315 passed, 1 skipped, 16 warnings in 9.43s
+
+=== run D: --no-cov repeat ===
+tests/unit/test_auth_routes.py::test_refresh_returns_503_when_keycloak_unreachable
+  /home/reca/venv/lib/python3.14/site-packages/starlette/testclient.py:454: DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.
+    return super().request(
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1315 passed, 1 skipped, 16 warnings in 9.36s
+
+=== collection time (baseline overhead, no test execution) ===
+TOTAL                                                         7949   4506    43%
+FAIL Required test coverage of 80% not reached. Total coverage: 43.31%
+1316 tests collected in 2.43s
+
+BASELINE_TARGET=5s
+VERDICT=FAIL (confirmed 4x independently: 10.77s, 10.85s with coverage;
+9.43s, 9.36s without coverage -- all consistently >5s, not measurement
+noise). Coverage instrumentation accounts for ~1.4s (~13%) of the default
+run; even with it fully disabled the suite still takes ~9.4s, ~2x the
+target. See README.md "Baseline 4 analysis" for the suite-growth
+explanation (1316 tests collected vs. "under 700" when SS B.6 was written).
+
+============================================================
+5a. FASTAPI BLOCKING AUDIT -- grep for sync-blocking patterns
+    in src/external/routes/*.py
+============================================================
+$ grep -rn "requests\.\(get\|post\|put\|delete\)\|time\.sleep\|subprocess\.run\|subprocess\.call\|subprocess\.check_\|open(\|urllib\.request\|psycopg2\|pymongo\.\|boto3\.client(" src/external/routes/
+
+(no output -- grep exit code 1, zero matches across all 8 route modules:
+admin.py, audit.py, auth.py, cases.py, collector_ingest.py, detections.py,
+evidence.py, sse.py, step_up.py)
+
+--- structural check: every function immediately after @router.<verb> is async def ---
+$ python3 -c "<AST-free line-scan over every @router.get/post/put/delete/patch, see script inline in this section's command>"
+
+src/external/routes/admin.py:108: async def list_org_users(
+src/external/routes/admin.py:124: async def invite_user(
+src/external/routes/admin.py:181: async def update_user_role(
+src/external/routes/admin.py:205: async def remove_user(
+src/external/routes/admin.py:231: async def get_org_settings(
+src/external/routes/admin.py:245: async def update_org_settings(
+src/external/routes/audit.py:59: async def verify_chain(
+src/external/routes/audit.py:75: async def merkle_proof(
+src/external/routes/auth.py:17: async def refresh_token(request: Request) -> JSONResponse:
+src/external/routes/cases.py:122: async def create_case(
+src/external/routes/cases.py:182: async def list_cases(
+src/external/routes/cases.py:199: async def get_case(
+src/external/routes/cases.py:213: async def add_case_member(
+src/external/routes/cases.py:243: async def delete_case(
+src/external/routes/cases.py:273: async def list_case_evidence(
+src/external/routes/cases.py:304: async def get_dashboard_url(
+src/external/routes/cases.py:379: async def list_case_audit_events(
+src/external/routes/collector_ingest.py:40: async def ingest_events(
+src/external/routes/detections.py:95: async def list_detections(
+src/external/routes/detections.py:137: async def get_detection(
+src/external/routes/detections.py:155: async def triage_detection(
+src/external/routes/evidence.py:119: async def request_upload(
+src/external/routes/evidence.py:169: async def finalize_upload(
+src/external/routes/evidence.py:216: async def retry_intake(
+src/external/routes/evidence.py:271: async def retry_parse(
+src/external/routes/evidence.py:330: async def start_parsing(
+src/external/routes/evidence.py:361: async def delete_evidence(
+src/external/routes/evidence.py:429: async def set_legal_hold(
+src/external/routes/sse.py:45: async def create_sse_ticket(
+src/external/routes/sse.py:60: async def evidence_sse_stream(
+src/external/routes/step_up.py:38: async def issue_step_up_ticket(
+
+non_async_route_handlers_found = []
+
+============================================================
+5b. FASTAPI CONCURRENCY CHECK -- real 40-request burst vs sequential
+    against live docker-kronos-backend-1 (localhost:8000/healthz, real
+    uvicorn process, real HTTP over the exposed :8000 port mapping)
+============================================================
+$ python3 poc/performance_validation/concurrency_check.py
+
+=== sequential baseline: 40 requests, one at a time ===
+sequential total_wall_s=1.8532
+sequential mean_s=0.046330
+sequential p50_s=0.046898
+sequential p95_s=0.047239
+
+=== concurrent burst: 40 requests fired at once (asyncio.gather) ===
+concurrent total_wall_s=0.1453
+concurrent mean_s=0.078727
+concurrent p50_s=0.080312
+concurrent p95_s=0.110651
+
+=== verdict ===
+single_request_latency_estimate_s=0.046894
+fully_serialized_estimate_for_N=40_s=1.875758
+actual_concurrent_wall_s=0.145299
+concurrent_wall / fully_serialized_estimate = 0.0775
+VERDICT=PASS (non-blocking)
+
+BASELINE (5, overall)=PASS: zero sync-blocking patterns found, 100% of
+route handlers confirmed async def, and a real concurrent burst completed
+in 7.7% of the fully-serialized-time estimate -- consistent with a
+non-blocked event loop. Caveat: the concurrency test itself only exercises
+/healthz (dependency-free, no auth needed); see README.md for why a
+broader authenticated cross-route load test was not run on this shared
+dev host.
+
+############################################################
+# SUMMARY TABLE
+############################################################
+# 1. EVTX ingest >5000 rec/s/core       -> median 30,395 rec/s   -> PASS (6x margin; small-fixture caveat)
+# 2. OpenSearch query p95 <500ms        -> p95 = 12.2ms          -> PASS (41x margin)
+# 3. Plaso heavy task <10 min           -> 12.6s (E01 image)     -> PASS (48x margin; small-fixture caveat)
+# 4. Unit suite <5s                     -> 9.36s-10.85s          -> FAIL (confirmed, not noise)
+# 5. No blocking on FastAPI thread      -> grep clean + burst 7.7% of serialized -> PASS
+############################################################

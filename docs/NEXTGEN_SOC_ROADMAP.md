@@ -2852,6 +2852,51 @@ the time available — otherwise a targeted `grep` audit for synchronous
 blocking calls (`requests.`, unwrapped `open()`/file I/O, sync DB calls)
 inside `async def` route handlers is an honest, real, if narrower, check.
 
+**STATUS (2026-08-08): 4/5 baselines PASS, 1 confirmed FAIL — real-verified,
+no `src/` changes.** See `poc/performance_validation/` (README.md +
+`evtx_rate.py`/`opensearch_query_p95.sh`/`concurrency_check.py` +
+`output.txt` with every captured raw run). All 5 CLAUDE.md §B.6 baselines
+measured against the live dev stack (`docker-kronos-backend-1`,
+`docker-opensearch-1`, real fixtures, `evtx==0.12.1`/OpenSearch
+`2.11.1`/Plaso `20260512` pinned per §F.2):
+
+| # | Baseline | Real measured result | Verdict |
+|---|---|---|---|
+| 1 | EVTX ingest >5000 rec/s/core | median **30,395 rec/s** (`FastEvtxParser.parse()` called directly, single-core-pinned via `os.sched_setaffinity`, `tests/fixtures/samples/real/system.evtx` — 194 events, confirmed the **largest EVTX fixture anywhere in this repo**) | **PASS** (6x margin) — caveat: no larger fixture exists to validate at realistic multi-thousand-event scale |
+| 2 | OpenSearch query p95 <500ms | **p95 = 12.2ms** (80 real queries, 4 shapes x 20, against the real `kronos-*` indices left by this session's own H1–I2 work — 1,570 real docs across 50+ real case-scoped indices) | **PASS** (41x margin) |
+| 3 | Plaso heavy task <10 min | **12.6s** real wall time (`kronos-poc-plaso:20260512`, whole-disk E01 image parse via `log2timeline`/`psort`, 414 real events, reusing `poc/kape_ingestion_test/`'s fixture); 6.5s for a single Prefetch file | **PASS** (~48x margin) — caveat: fixtures are KB-scale (62KB/12KB), not GB-scale; does not validate the ceiling at realistic forensic-image size |
+| 4 | Unit suite <5s | **9.36s–10.85s**, confirmed 4x (2 runs with coverage, 2 with `--no-cov`) — 1315 passed, 1 skipped, 1316 collected | **FAIL**, confirmed real, not measurement noise |
+| 5 | No blocking on FastAPI thread | Zero sync-blocking patterns (`requests.`/`time.sleep`/`subprocess.*`/`open(`/`psycopg2`/etc.) in any of the 8 route modules; 100% of route handlers confirmed `async def`; a real 40-request concurrent burst against the live backend's `/healthz` completed in 7.7% of the fully-serialized-time estimate | **PASS** |
+
+**Baseline 4 root-cause (investigated per the scope note, not just flagged):**
+coverage instrumentation costs ~1.4s (~13%) of the default run, but even
+`--no-cov` still measures ~9.4s — ~2x the target on its own. `--collect-only`
+shows **1,316 tests collected**, consistent with the scope note's own
+observation that the suite has grown from "under 700" to "over 1300" since
+§B.6 was written: at the measured ~7.1ms/test average, a ~700-test suite
+would plausibly land right at/under 5s. This reads as a real, current
+**miss** against the letter of §B.6, explained by legitimate suite growth
+(more subsystems, more coverage) rather than a newly-introduced
+inefficiency — reported plainly per invariant #8 (fail loudly) rather than
+silently rebaselined or explained away as a pass.
+
+**Not fixed, by design:** no `src/` files touched — this is a
+measurement/reporting item per the dispatch brief, and baseline 4's two
+real causes (suite size, coverage overhead) are legitimate trade-offs, not
+a bug with a safe one-line fix.
+
+**Not measured, and why:** EVTX/Plaso throughput at realistic GB-scale (no
+fixture that size exists anywhere in this repo — synthesizing one would
+measure synthetic-data generation, not the real parser); a full
+authenticated cross-route concurrent load test for baseline 5 (judged
+disproportionate for a shared, modest dev host — the `/healthz` burst +
+full route-handler grep audit together stand as the real evidence instead).
+
+**M8 status:** with I1 (DONE), I2 (4/7 KPIs implemented and real-verified),
+I3 (3/4 sub-items complete, 1 substantially addressed), and now I5 (4/5
+baselines PASS, 1 honest FAIL reported) all landed/reported, **M8's only
+remaining scope is I4** — the blocking GLOBAL L4 end-to-end gate.
+
 ---
 
 ## 4. Agent brief template
