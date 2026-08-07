@@ -34,4 +34,6 @@ spec:
           port: 8080   # Keycloak
         - protocol: TCP
           port: 318    # TSA
+        - protocol: TCP
+          port: {{ .Values.clamav.port }}   # ClamAV clamd (CLAMD_HOST/PORT, roadmap I3)
 {{- end }}

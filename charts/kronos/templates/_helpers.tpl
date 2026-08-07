@@ -103,6 +103,26 @@ Common environment variables for backend containers.
     configMapKeyRef:
       name: {{ include "kronos.fullname" . }}-config
       key: opensearch-url
+- name: OPENSEARCH_SECURITY_ENABLED
+  # Was entirely missing from this shared helper before (roadmap I3) --
+  # every backend/celery Deployment silently ran with
+  # src/config.py's opensearch_security_enabled default (False), which
+  # skips ensure_generic_tenant_role() even against a real
+  # security-enabled cluster. See values.yaml opensearch.securityEnabled
+  # for the full account.
+  value: {{ .Values.opensearch.securityEnabled | default false | quote }}
+- name: CLAMD_HOST
+  valueFrom:
+    configMapKeyRef:
+      name: {{ include "kronos.fullname" . }}-config
+      key: clamd-host
+- name: CLAMD_PORT
+  value: {{ .Values.clamav.port | quote }}
+- name: MAX_UPLOAD_BYTES
+  # Must stay <= whatever clamav.host/port above is actually configured
+  # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+  # maxUploadBytes for the full root-cause account.
+  value: {{ .Values.maxUploadBytes | quote }}
 - name: KEYCLOAK_URL
   valueFrom:
     configMapKeyRef:

@@ -106,11 +106,82 @@ opensearch:
   url: https://opensearch:9200
   dashboardsUrl: https://dashboards.kronos.example.com
   existingSecret: kronos-opensearch-secret
+  # Real OpenSearch Security plugin genuinely enabled on the cluster
+  # opensearch.url points to (as opposed to a DISABLE_SECURITY_PLUGIN=true
+  # dev-only cluster) -- gates
+  # TimelineIngestionService.ensure_generic_tenant_role() in src/config.py
+  # (Settings.opensearch_security_enabled, default False). Must be true for
+  # any cluster with security enabled, or per-org DLS enforcement is
+  # silently never provisioned. Mirrors docker-compose.{dev,prod}.yml's
+  # identical OPENSEARCH_SECURITY_ENABLED var (a real, separate bug found
+  # and fixed in docker-compose.prod.yml while wiring this same value here
+  # -- it was missing on that file's celery-worker service even though the
+  # backend service had it).
+  securityEnabled: true
+  # Post-install/upgrade hook Job that bootstraps OpenSearch's openid authc
+  # domain (trusting keycloak.url/realm below) + the generic DLS tenant
+  # role -- the Helm equivalent of docker-compose.{dev,prod}.yml's
+  # opensearch-init / opensearch-security-init services. Reuses the
+  # identical shared script (scripts/provision_opensearch_security.py,
+  # chart-local copy at files/provision_opensearch_security.py because
+  # Helm's .Files.Get cannot read outside the chart directory -- same
+  # reason keycloak.provisionOrg below ships its own files/ copy). Opt-in
+  # like keycloak.provisionOrg, for the same reason: it mutates
+  # cluster-wide OpenSearch Security config using admin credentials, so an
+  # operator should consciously enable it per environment rather than have
+  # every `helm install` silently touch a shared cluster's security config.
+  # NOTE: per-org Security Analytics/Anomaly-Detection detectors and the
+  # ISM rollover policy/index template do NOT need this Job -- those are
+  # already auto-provisioned at runtime by the running backend/celery
+  # workers (ensure_index_template/ensure_ism_policy/ensure_org_detectors).
+  # Only this cluster-level openid+DLS bootstrap step is genuinely missing
+  # without it.
+  securityInit:
+    enabled: false
+    image: python:3.12-alpine
+    backoffLimit: 6
+    # Secret holding OpenSearch Security superuser creds, keys:
+    # admin-user / admin-password (the security plugin's own bootstrap
+    # admin, NOT the kronos_backend service account referenced by
+    # opensearch.existingSecret above -- that account is deliberately a
+    # non-superuser so DLS actually applies to it).
+    adminSecret: kronos-opensearch-admin
 
 minio:
   endpoint: minio:9000
   useTls: true
   existingSecret: kronos-minio-secret
+
+# ClamAV is NOT deployed as a Kubernetes resource by this chart -- the same
+# convention already used for OpenSearch/Keycloak/Vault/MinIO/TSA above,
+# none of which get a Deployment/Service here either (only postgresql/redis
+# do, via the Bitnami subcharts below). All of those are referenced purely
+# by endpoint value (opensearch.url, keycloak.url, minio.endpoint), assumed
+# pre-provisioned by whatever manages this chart's target cluster. host/port
+# here follow that identical pattern -- this is not a new architecture
+# decision. Previously this chart had ZERO reference to ClamAV anywhere
+# (roadmap I3: "Helm has no CLAMD_HOST wiring at all") -- confirmed via
+# `grep -rn CLAMD charts/kronos/` before this change, zero hits. If the
+# intent is instead for THIS chart to own and deploy the ClamAV instance
+# itself (unlike Keycloak/Vault/etc.), that is a materially bigger, separate
+# scope decision (Deployment + Service + PVC for the virus DB + its own
+# resource/security-context template) that was NOT made here -- flagging
+# for an explicit decision rather than silently picking one.
+clamav:
+  host: clamav
+  port: 3310
+
+# Real ceiling shared between the backend's own upload-size enforcement
+# (src/config.py Settings.max_upload_bytes, MAX_UPLOAD_BYTES env var) and
+# clamd's own StreamMaxLength/MaxFileSize/MaxScanSize -- see
+# poc/clamav/README_large_file_fix.md and docker-compose.{dev,prod}.yml's
+# identical KRONOS_MAX_UPLOAD_BYTES-driven vars for the full root-cause
+# account (a real 239 MB E01 upload silently BrokenPipeError'd against
+# clamd's compiled-in 100 MB default). This chart cannot enforce the
+# corresponding ceiling on whatever external ClamAV instance clamav.host
+# above actually points to -- that must be configured to match by whoever
+# operates it, exactly as MAX_UPLOAD_BYTES here must be kept <= it.
+maxUploadBytes: 5368709120
 
 vault:
   addr: https://vault:8200

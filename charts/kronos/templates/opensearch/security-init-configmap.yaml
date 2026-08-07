@@ -1,0 +1,20 @@
+{{- if .Values.opensearch.securityInit.enabled }}
+# Ships the shared OpenSearch security-bootstrap script (mirrors
+# scripts/provision_opensearch_security.py; chart-local copy because Helm
+# .Files.Get cannot reach outside the chart directory -- same reason
+# keycloak/provision-org-configmap.yaml ships its own copy).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kronos.fullname" . }}-opensearch-security-init
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  provision_opensearch_security.py: |
+{{ .Files.Get "files/provision_opensearch_security.py" | indent 4 }}
+{{- end }}

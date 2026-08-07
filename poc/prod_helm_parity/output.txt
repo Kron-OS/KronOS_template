@@ -1,0 +1,277 @@
+==========================================================
+1. helm version
+==========================================================
+version.BuildInfo{Version:"v3.16.4", GitCommit:"7877b45b63f95635153b29a42c0c2f4273ec45ca", GitTreeState:"clean", GoVersion:"go1.22.7"}
+
+==========================================================
+2. helm dependency build (fetches Bitnami postgresql/redis subcharts)
+==========================================================
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "bitnami" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Saving 2 charts
+Downloading postgresql from repo https://charts.bitnami.com/bitnami
+Pulled: registry-1.docker.io/bitnamicharts/postgresql:18.8.6
+Digest: sha256:4732d70b577d4b437a2f3ce9263c5037cd52d1ff73acc5576b9b757e620566e6
+Downloading redis from repo https://charts.bitnami.com/bitnami
+Pulled: registry-1.docker.io/bitnamicharts/redis:28.0.0
+Digest: sha256:87ff56e2a7a4e2fe201d4dc8017c2d9120c47b71a3714debae7137c1c545f19a
+Deleting outdated charts
+
+==========================================================
+3. helm lint charts/kronos
+==========================================================
+==> Linting charts/kronos
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+
+==========================================================
+4. helm template (DEFAULT values -- hooks opt-in, disabled)
+==========================================================
+exit code: 0
+total rendered lines: 2459
+
+--- grep: OPENSEARCH_SECURITY_ENABLED present on all 5 workloads ---
+5
+--- grep: CLAMD_HOST/CLAMD_PORT/MAX_UPLOAD_BYTES present on all 5 workloads ---
+5
+5
+5
+--- grep: NetworkPolicy now allows port 3310 (clamd) App->Data ---
+110:          port: 3310   # ClamAV clamd (CLAMD_HOST/PORT, roadmap I3)
+1116:              value: "3310"
+1252:              value: "3310"
+1387:              value: "3310"
+1517:              value: "3310"
+1652:              value: "3310"
+--- grep: opensearch-security-init Job/ConfigMap correctly ABSENT when disabled (default) ---
+0
+
+==========================================================
+5. helm template (opensearch.securityInit.enabled=true, keycloak.provisionOrg.enabled=true)
+==========================================================
+exit code: 0
+--- grep: opensearch-security-init resources now present ---
+      1 1013:kind: Service
+      1 1042:kind: Deployment
+      1 115:kind: NetworkPolicy
+      1 1189:kind: Deployment
+      1 1305:kind: Deployment
+      1 1440:kind: Deployment
+      1 1570:kind: Deployment
+      1 15:kind: NetworkPolicy
+      1 164:kind: NetworkPolicy
+      1 1707:kind: Deployment
+      1 1816:kind: HorizontalPodAutoscaler
+      1 1844:kind: StatefulSet
+      1 2035:kind: StatefulSet
+      1 212:kind: NetworkPolicy
+      1 2221:kind: StatefulSet
+      1 2422:kind: Ingress
+      1 2466:kind: ConfigMap
+      1 253:kind: PodDisruptionBudget
+      1 2655:kind: ConfigMap
+      1 274:kind: PodDisruptionBudget
+      1 2850:kind: Job
+      1 2936:kind: Job
+      1 295:kind: PodDisruptionBudget
+      1 316:kind: PodDisruptionBudget
+      1 337:kind: ServiceAccount
+      1 351:kind: ServiceAccount
+      1 365:kind: ServiceAccount
+      1 379:kind: ServiceAccount
+      1 393:kind: ConfigMap
+      1 429:kind: ConfigMap
+      1 43:kind: NetworkPolicy
+      1 4:kind: Namespace
+      1 538:kind: ConfigMap
+      1 626:kind: ConfigMap
+      1 647:kind: ConfigMap
+      1 71:kind: NetworkPolicy
+      1 858:kind: Service
+      1 888:kind: Service
+      1 913:kind: Service
+      1 936:kind: Service
+      1 962:kind: Service
+      1 988:kind: Service
+2657:  name: kronos-test-opensearch-security-init
+2938:  name: kronos-test-opensearch-security-init
+2994:            name: kronos-test-opensearch-security-init
+
+--- full rendered opensearch-security-init Job (batch/v1) ---
+# Source: kronos/templates/opensearch/security-init-job.yaml
+# Post-install/upgrade hook that bootstraps OpenSearch's own Security
+# plugin config: the openid authc domain trusting keycloak.url/realm, plus
+# the generic DLS tenant role that TimelineIngestionService's per-request
+# path otherwise only creates lazily on first ingest. This is the Helm
+# equivalent of docker-compose.{dev,prod}.yml's opensearch-init /
+# opensearch-security-init services -- same shared script, see
+# scripts/provision_opensearch_security.py's own docstring for the full
+# design (this is "the single source of truth shared by dev/prod compose
+# and any future Helm provisioning Job").
+#
+# Tenant isolation note (roadmap invariant #3): this Job provisions ONE
+# cluster-wide role/authc-domain pair, never anything org-scoped -- it
+# takes no org id as input at all, so there is nothing here for an
+# untrusted caller to supply. Per-org DLS enforcement itself is templated
+# from each request's own authenticated JWT (${attr.jwt.org_id}, baked
+# into the role body by the shared script), not from anything this Job
+# passes in.
+#
+# Disabled by default (opt-in), same reasoning as keycloak.provisionOrg:
+# mutates a real cluster's security config using admin credentials.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kronos-test-opensearch-security-init
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos-test
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-security-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos
+        app.kubernetes.io/instance: kronos-test
+        app.kubernetes.io/component: opensearch-security-init
+        # Needs egress to both OpenSearch and Keycloak's well-known
+        # endpoint (embedded into the authc domain config, not fetched by
+        # this Job itself -- see the script's own comment) -- App zone
+        # already has both per app-to-data.yaml / deny-app-egress.yaml.
+        app.kubernetes.io/zone: app
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: provision
+          image: "python:3.12-alpine"
+          command: ["python3", "/scripts/provision_opensearch_security.py"]
+          env:
+            - name: OS_BASE
+              value: "https://opensearch:9200"
+            - name: OS_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: "kronos-opensearch-admin"
+                  key: admin-user
+            - name: OS_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "kronos-opensearch-admin"
+                  key: admin-password
+            - name: KC_BASE
+              value: "https://auth.kronos.example.com"
+            - name: KC_REALM
+              value: "kronos"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: kronos-test-opensearch-security-init
+            defaultMode: 0555
+
+==========================================================
+6. YAML sanity: full hook-enabled render actually parses as valid YAML
+   (catches indentation bugs in the embedded provision script)
+==========================================================
+Parsed 42 documents OK
+ConfigMap: 7
+Deployment: 6
+HorizontalPodAutoscaler: 1
+Ingress: 1
+Job: 2
+Namespace: 1
+NetworkPolicy: 6
+PodDisruptionBudget: 4
+Service: 7
+ServiceAccount: 4
+StatefulSet: 3
+
+==========================================================
+7. docker compose config -- re-run AFTER all my edits (exit code + no NEW warnings)
+==========================================================
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_CLIENT_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"MINIO_ROOT_USER\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_HOSTNAME\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_HOSTNAME\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"VAULT_TOKEN\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"POSTGRES_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"MINIO_ROOT_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"OPENSEARCH_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_HOSTNAME\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"MINIO_ROOT_USER\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"OPENSEARCH_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_HOSTNAME\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_CLIENT_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"MINIO_ROOT_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"VAULT_TOKEN\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"REDIS_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"POSTGRES_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KRONOS_DB_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_ADMIN_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="The \"KEYCLOAK_HOSTNAME\" variable is not set. Defaulting to a blank string."
+time="2026-08-07T11:24:22+02:00" level=warning msg="/home/reca/Claude/Kronos/KronOS_template/.claude/worktrees/agent-a84308f1d95a7a96b/docker/docker-compose.prod.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+exit code: 0
+
+--- confirm MAX_UPLOAD_BYTES / OPENSEARCH_SECURITY_ENABLED render correctly, and honor override ---
+      KEYCLOAK_URL: http://keycloak:8080
+      MAX_UPLOAD_BYTES: "9999999999"
+--
+      OPENSEARCH_PASSWORD: ""
+      OPENSEARCH_SECURITY_ENABLED: "true"
+--
+      KEYCLOAK_URL: http://keycloak:8080
+      MAX_UPLOAD_BYTES: "9999999999"
+--
+      OPENSEARCH_PASSWORD: ""
+      OPENSEARCH_SECURITY_ENABLED: "true"
+
+==========================================================
+8. Item 4: test_sse_routes.py slow-test investigation + fix
+==========================================================
+
+--- BEFORE fix: reproduction that test_valid_ticket_consumed_once hangs past 15s ---
+(command: timeout 15 pytest tests/unit/test_sse_routes.py::TestSSEStream::test_valid_ticket_consumed_once -q)
+result at the time: 'Terminated', exit code 143 -- confirmed hang, not flaky slowness
+
+--- AFTER fix: same file, full run ---
+src/external/startup.py                                        124    124     0%   7-448
+------------------------------------------------------------------------------------------
+TOTAL                                                         7675   5257    32%
+FAIL Required test coverage of 80% not reached. Total coverage: 31.50%
+7 passed, 1 warning in 1.88s
+
+==========================================================
+9. Full unit suite -- regression check against stated baseline
+   (baseline: 1283 passed, 1 skipped, mypy 29 pre-existing errors)
+==========================================================
+TOTAL                                                         7701    897    88%
+Required test coverage of 80% reached. Total coverage: 88.35%
+1283 passed, 1 skipped, 16 warnings in 10.78s
+
+==========================================================
+10. mypy src/ -- regression check (same 29 pre-existing errors, same files)
+==========================================================
+src/adapter/opensearch/custom_rule_detector_provisioner.py:137: error: Missing type arguments for generic type "dict"  [type-arg]
+src/application/evidence_intake.py:681: error: Item "None" of "IsmLifecycleManager | None" has no attribute "resolve_indices"  [union-attr]
+src/application/evidence_intake.py:686: error: Item "None" of "IsmLifecycleManager | None" has no attribute "place_legal_hold"  [union-attr]
+src/application/evidence_intake.py:695: error: Item "None" of "IsmLifecycleManager | None" has no attribute "release_legal_hold"  [union-attr]
+Found 29 errors in 10 files (checked 171 source files)

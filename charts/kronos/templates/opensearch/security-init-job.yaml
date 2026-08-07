@@ -1,0 +1,78 @@
+{{- if .Values.opensearch.securityInit.enabled }}
+# Post-install/upgrade hook that bootstraps OpenSearch's own Security
+# plugin config: the openid authc domain trusting keycloak.url/realm, plus
+# the generic DLS tenant role that TimelineIngestionService's per-request
+# path otherwise only creates lazily on first ingest. This is the Helm
+# equivalent of docker-compose.{dev,prod}.yml's opensearch-init /
+# opensearch-security-init services -- same shared script, see
+# scripts/provision_opensearch_security.py's own docstring for the full
+# design (this is "the single source of truth shared by dev/prod compose
+# and any future Helm provisioning Job").
+#
+# Tenant isolation note (roadmap invariant #3): this Job provisions ONE
+# cluster-wide role/authc-domain pair, never anything org-scoped -- it
+# takes no org id as input at all, so there is nothing here for an
+# untrusted caller to supply. Per-org DLS enforcement itself is templated
+# from each request's own authenticated JWT (${attr.jwt.org_id}, baked
+# into the role body by the shared script), not from anything this Job
+# passes in.
+#
+# Disabled by default (opt-in), same reasoning as keycloak.provisionOrg:
+# mutates a real cluster's security config using admin credentials.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kronos.fullname" . }}-opensearch-security-init
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opensearch-security-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.opensearch.securityInit.backoffLimit | default 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kronos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opensearch-security-init
+        # Needs egress to both OpenSearch and Keycloak's well-known
+        # endpoint (embedded into the authc domain config, not fetched by
+        # this Job itself -- see the script's own comment) -- App zone
+        # already has both per app-to-data.yaml / deny-app-egress.yaml.
+        app.kubernetes.io/zone: app
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: provision
+          image: {{ .Values.opensearch.securityInit.image | quote }}
+          command: ["python3", "/scripts/provision_opensearch_security.py"]
+          env:
+            - name: OS_BASE
+              value: {{ .Values.opensearch.url | quote }}
+            - name: OS_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.opensearch.securityInit.adminSecret | quote }}
+                  key: admin-user
+            - name: OS_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.opensearch.securityInit.adminSecret | quote }}
+                  key: admin-password
+            - name: KC_BASE
+              value: {{ .Values.keycloak.url | quote }}
+            - name: KC_REALM
+              value: {{ .Values.keycloak.realm | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "kronos.fullname" . }}-opensearch-security-init
+            defaultMode: 0555
+{{- end }}

@@ -139,11 +139,59 @@ services:
       ORG_DESCRIPTION: KronOS production organization
       ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
 
+  # Adds the openid authc domain (trusting Keycloak) and the generic DLS
+  # tenant role to OpenSearch's security config -- the exact same one-time
+  # cluster bootstrap docker-compose.dev.yml's opensearch-init runs, using
+  # the identical shared script (scripts/provision_opensearch_security.py,
+  # its own docstring already names this as "the single source of truth
+  # shared by dev/prod compose and any future Helm provisioning Job").
+  # Previously this compose file had NO equivalent of dev's opensearch-init
+  # at all (roadmap I3 "SA/AD/ISM provisioning" gap) -- note the per-org
+  # Security Analytics/Anomaly-Detection detectors and the ISM
+  # rollover/index-template themselves do NOT need this step: those are
+  # already auto-provisioned by the running backend/celery-worker (see
+  # ensure_index_template/ensure_ism_policy in TimelineIngestionService,
+  # ensure_org_detectors in the case-creation route, ensure_org_detector in
+  # anomaly_scoring.py) using the same OPENSEARCH_URL/USERNAME/PASSWORD
+  # already wired below -- that part already worked in this file before
+  # this change. What was genuinely missing is this openid+DLS bootstrap,
+  # which only the app's *tenant-scoped* Dashboards/DLS path depends on.
+  opensearch-security-init:
+    image: python:3.12-alpine
+    restart: "no"
+    depends_on:
+      - opensearch
+    volumes:
+      - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
+    environment:
+      OS_BASE: http://opensearch:9200
+      OS_ADMIN_USER: ${OPENSEARCH_ADMIN_USER:-admin}
+      OS_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?OPENSEARCH_ADMIN_PASSWORD is required to bootstrap OpenSearch security}
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+    entrypoint: ["python3", "/provision_opensearch_security.py"]
+
   clamav:
     image: clamav/clamav:stable
     ports: ["3310:3310"]
     volumes:
       - clamav_db:/var/lib/clamav
+    # Reconciles clamd's own real stream/file/scan size ceiling with
+    # KronOS's upload ceiling (src/config.py Settings.max_upload_bytes) --
+    # identical mechanism to docker-compose.dev.yml (see
+    # poc/clamav/README_large_file_fix.md for the full root-cause account:
+    # without this, clamd's compiled-in 100 MB default silently closes the
+    # INSTREAM connection -- BrokenPipeError -- on any real forensic image
+    # above that size, even though KronOS itself accepts up to 5 GiB). The
+    # clamav/clamav:stable image's own /init entrypoint reads any
+    # CLAMD_CONF_<Setting> env var and rewrites the matching clamd.conf
+    # directive -- verified against the real pinned image, not guessed.
+    # Must stay >= MAX_UPLOAD_BYTES below (kronos-backend/celery-worker),
+    # hence the single shared KRONOS_MAX_UPLOAD_BYTES var driving both.
+    environment:
+      CLAMD_CONF_StreamMaxLength: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxFileSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      CLAMD_CONF_MaxScanSize: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
     healthcheck:
       test: ["CMD", "clamdcheck.sh"]
       interval: 60s
@@ -191,6 +239,20 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Real, separate gap found while reconciling clamav's own
+      # CLAMD_CONF_StreamMaxLength/MaxFileSize/MaxScanSize below with this
+      # value (see clamav service comment + poc/clamav/README_large_file_fix.md):
+      # this var was never set here at all, so the backend silently fell
+      # back to src/config.py's compiled-in 5 GiB Python default. That
+      # happens to equal clamd's own default ceiling today, but the two
+      # would silently drift apart the moment anyone overrides
+      # KRONOS_MAX_UPLOAD_BYTES (e.g. to raise the ceiling) without
+      # touching this file — clamd would honor the new ceiling and accept
+      # the larger stream, but the backend would still reject/mis-track it
+      # at the old default. Mirrors docker-compose.dev.yml's identical var
+      # on both kronos-backend and celery-worker (dev's own comment there
+      # documents the same real 239 MB E01 upload root-cause trace).
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
       # MINIO_ENDPOINT is host:port only — startup.py prepends the scheme from MINIO_USE_TLS.
       MINIO_ENDPOINT: minio:9000
       # MinIO is not published outside the compose network here, so evidence
@@ -211,6 +273,13 @@ services:
       # Non-superuser service account (a superuser bypasses OpenSearch DLS).
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # Real OpenSearch Security plugin is genuinely enabled on the `opensearch`
+      # image/config above (unlike a DISABLE_SECURITY_PLUGIN=true dev-only
+      # cluster) -- this was previously unset here (defaults False,
+      # src/config.py), which silently skipped
+      # TimelineIngestionService.ensure_generic_tenant_role() on every real
+      # ingest. Mirrors docker-compose.dev.yml's own OPENSEARCH_SECURITY_ENABLED.
+      OPENSEARCH_SECURITY_ENABLED: "true"
       # KEYCLOAK_URL = internal URL used to fetch JWKS; KEYCLOAK_PUBLIC_URL = issuer in the token.
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
@@ -263,6 +332,12 @@ services:
       # better a loud crash than silently scanning nothing.
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
+      # Same real gap as kronos-backend above (this is the service that
+      # actually runs process_intake's clamd scan, so it must agree with
+      # kronos-backend's value or the two silently drift the moment
+      # KRONOS_MAX_UPLOAD_BYTES is overridden) -- mirrors
+      # docker-compose.dev.yml's identical var on this same worker.
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
       MINIO_ENDPOINT: minio:9000
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
@@ -270,6 +345,18 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # This worker consumes q.index (dispatch_parse/finalize_evidence), which
+      # is exactly the code path that calls
+      # TimelineIngestionService.ensure_generic_tenant_role() -- the same
+      # real gap fixed on kronos-backend above applies here too (it was
+      # missing on this service specifically, even though kronos-backend
+      # had it, and docker-compose.dev.yml sets it on ALL FOUR of its
+      # backend/celery-worker/celery-worker-plaso services). Confirmed via
+      # `grep -rn ensure_generic_tenant_role src/` that only
+      # timeline_ingest.py calls it, and celery_app.py routes
+      # dispatch_parse/finalize_evidence to q.index, which this worker
+      # consumes (-Q q.parse.fast,q.index,q.intake below).
+      OPENSEARCH_SECURITY_ENABLED: "true"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: kronos

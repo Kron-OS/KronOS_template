@@ -2510,6 +2510,77 @@ MTTD, MTTR, FP rate, rule coverage, ingest lag, sealer lag, analyst workload.
 `docker-compose.dev.yml` only; SA/AD/ISM provisioning must be added for prod and
 Helm. Also: the pre-existing ~300 s `test_sse_routes.py` slow test.
 
+**STATUS (2026-08-07): all 4 sub-items addressed (3 complete, 1 substantially
+complete with an explicitly flagged follow-up).** Full verified output at
+`poc/prod_helm_parity/README.md` + `output.txt`. Summary:
+
+1. **`docker-compose.prod.yml` ClamAV/`MAX_UPLOAD_BYTES` reconciliation —
+   DONE.** `CLAMD_CONF_StreamMaxLength/MaxFileSize/MaxScanSize` wiring (from
+   a prior, uncommitted session pass) reviewed and kept. Found and fixed two
+   further real gaps while reviewing: `celery-worker` was missing
+   `OPENSEARCH_SECURITY_ENABLED` even though `kronos-backend` had just been
+   given it (celery-worker is the service that actually consumes `q.index`
+   and calls `ensure_generic_tenant_role()`); and `MAX_UPLOAD_BYTES` itself
+   was never set on either `kronos-backend` or `celery-worker` in prod at
+   all (silently relying on `src/config.py`'s Python default, which would
+   silently drift from ClamAV's ceiling the moment
+   `KRONOS_MAX_UPLOAD_BYTES` is overridden). Both fixed, mirroring
+   `docker-compose.dev.yml` exactly. Re-verified with
+   `docker compose -f docker/docker-compose.prod.yml config` — exit 0,
+   override propagation confirmed for both services.
+   **Flagged, NOT fixed (out of scope for this item):** `OPENSEARCH_URL` is
+   `http://` on both prod services, but the `opensearch` service's own
+   config does not disable the security plugin's demo-installer HTTPS —
+   the same `opensearch.yml` on `docker-compose.dev.yml` correctly uses
+   `https://`. This looks like a real, pre-existing (not introduced here)
+   scheme mismatch that may mean prod cannot actually reach OpenSearch as
+   configured. Needs its own verified pass (TLS/cert-trust decision), not
+   folded into this item.
+2. **Helm `CLAMD_HOST` wiring — DONE, with an explicit scope note.** No
+   ClamAV Deployment exists in `charts/kronos/` — confirmed this is the
+   same pattern already used for OpenSearch/Keycloak/Vault/MinIO/TSA (none
+   of those are chart-managed Deployments either; only Postgres/Redis are,
+   via Bitnami subcharts). Wired `clamav.host`/`clamav.port` as an external
+   endpoint value (matching that existing convention) into
+   `kronos.commonEnv` (`_helpers.tpl`, shared by all 5 workload
+   Deployments), added `clamd-host` to the shared ConfigMap, and added
+   ClamAV's port 3310 to the App→Data `NetworkPolicy`. **If the real intent
+   is for this chart to own a ClamAV Deployment** (unlike its peers), that
+   is a bigger, separate decision not made unilaterally here.
+3. **SA/AD/ISM provisioning for prod and Helm — DONE for the
+   cluster-level OpenSearch Security bootstrap; ISM/index-template/
+   per-org SA-AD were already covered.** Confirmed
+   `ensure_index_template`/`ensure_ism_policy`/`ensure_org_detectors` are
+   already auto-provisioned at runtime by the backend/celery workers in
+   both prod and Helm topologies — no gap there. The genuine gap was the
+   one-time openid-authc-domain + generic-DLS-role cluster bootstrap
+   (`scripts/provision_opensearch_security.py`, already real and
+   committed): prod compose now runs it via a new
+   `opensearch-security-init` one-shot service; Helm now has the
+   equivalent as an opt-in `post-install`/`post-upgrade` hook Job
+   (`charts/kronos/templates/opensearch/security-init-{configmap,job}.yaml`,
+   `opensearch.securityInit.enabled`, default `false` — same
+   opt-in-by-default reasoning as `keycloak.provisionOrg`). Verified via
+   `helm template --set opensearch.securityInit.enabled=true`: Job +
+   ConfigMap render correctly with the full embedded script, all rendered
+   YAML parses. **NOT verified against a real Kubernetes cluster** — no
+   cluster was available in this session; only `helm lint`/`helm template`
+   + YAML-parse verification was possible. The script's own *logic* was
+   previously verified against a real OpenSearch+Keycloak by
+   `poc/opensearch_dashboards_sso/`/`poc/keycloak_opensearch_dls/`.
+4. **`test_sse_routes.py` ~300s slow test — DONE, root-caused and fixed.**
+   `test_valid_ticket_consumed_once` seeded no evidence for its case, so
+   the SSE endpoint's real "stop once all evidence is terminal" early-exit
+   never fired (`current` stayed `{}`), and the test's non-streaming
+   `client.get()` forced a full drain of the real, unmocked 300s poll
+   loop. Reproduced directly (`timeout 15 pytest ...` reliably timed out
+   before the fix). Fixed at the test level only (no `src/` change): seed
+   one evidence record already in a terminal state so the real early-exit
+   fires on the first poll. Full file now passes in 1.88s (was: hung past
+   300s). Full unit suite re-run after the fix: **1283 passed, 1 skipped**
+   (exact match to the pre-existing baseline), `mypy src/` **29 errors,
+   same 10 files** as baseline — zero regressions.
+
 ### I4 · GATE · GLOBAL L4 end-to-end — L4
 **Objective.** Realistic multi-tenant adversary scenario spanning continuous
 ingest + evidence upload + detection + correlation + triage + response +
