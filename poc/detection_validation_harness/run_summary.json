@@ -1,0 +1,57 @@
+{
+  "run_id": "e621bca6",
+  "case_id": "8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4",
+  "evidence_ids": {
+    "windows": "691edf7f-1da0-4bbe-bd67-b5ebcd9d0bfe",
+    "network": "8f38dffa-6d4c-4ee5-ac80-81609cecdf90",
+    "cloudtrail": "171f65cd-cf7b-44bb-b33f-0391298f0eb5"
+  },
+  "final_states": {
+    "windows": "COMPLETE",
+    "network": "COMPLETE",
+    "cloudtrail": "COMPLETE"
+  },
+  "doc_counts": {
+    "windows": 194,
+    "network": 1,
+    "cloudtrail": 1
+  },
+  "detector_ids": {
+    "windows": "IM26258BG52zb-VTnaNU",
+    "network": "I826258BG52zb-VTnqNQ",
+    "cloudtrail": "Js26258BG52zb-VTnqPR"
+  },
+  "total_findings": 393,
+  "coverage": {
+    "techniques_attempted": 3,
+    "techniques_with_real_detection_row": 3,
+    "per_technique": {
+      "windows": {
+        "attack_technique": "T1110.003",
+        "attack_tag": "attack.t1110.003",
+        "source": "REUSED real captured telemetry (tests/fixtures/samples/real/system.evtx)",
+        "sa_finding_fired": false,
+        "detection_row_created": true
+      },
+      "network": {
+        "attack_technique": "T1021.001",
+        "attack_tag": "attack.t1021.001",
+        "source": "HAND-CONSTRUCTED, real Suricata EVE 'flow' shape (suricata-8.0.6 userguide)",
+        "sa_finding_fired": true,
+        "detection_row_created": true
+      },
+      "cloudtrail": {
+        "attack_technique": "T1562.001 (rule's own tag; more precise ATT&CK subtechnique is T1562.008, no ART atomic exists for it)",
+        "attack_tag": "attack.t1562.001",
+        "source": "HAND-CONSTRUCTED, real AWS CloudTrail record shape (AWS CloudTrail record-contents docs)",
+        "sa_finding_fired": true,
+        "detection_row_created": true
+      }
+    }
+  },
+  "checks_passed": 38,
+  "checks_failed": 1,
+  "failures": [
+    "[windows] real SA finding fired with expected ATT&CK tag attack.t1110.003"
+  ]
+}

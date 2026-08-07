@@ -1,0 +1,135 @@
+login OK (mfa_path=none)
+created fresh case 8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4
+[windows] evidence_id=691edf7f-1da0-4bbe-bd67-b5ebcd9d0bfe sha256=ed6ad162c5a5391f42f4c819697bd1cbf3fe45d3d09ad9190eff74a3193b4224
+[network] evidence_id=8f38dffa-6d4c-4ee5-ac80-81609cecdf90 sha256=8ae255d165f72fee3ec153c3198cee9cbb47758aa495e2a2e69de1fb8ba8ddd4
+[cloudtrail] evidence_id=171f65cd-cf7b-44bb-b33f-0391298f0eb5 sha256=9773cbe3cb878045547b1419f53f61bad73db9d828f0c83c74bce9b7d4e2ef32
+poll: {'windows': 'HASHING', 'network': 'SCANNING', 'cloudtrail': 'UPLOADING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'PARSING'}
+poll: {'windows': 'COMPLETE', 'network': 'COMPLETE', 'cloudtrail': 'COMPLETE'}
+[windows] concrete_index=kronos-kronos-dev-case-8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4-201508 unmapped_field_aliases count=168 (winlog.event_id present=True)
+[windows] detector kronos-kronos-dev-windows-detector id=IM26258BG52zb-VTnaNU
+[network] detector kronos-kronos-dev-network-detector id=I826258BG52zb-VTnqNQ
+[cloudtrail] detector kronos-kronos-dev-cloudtrail-detector id=Js26258BG52zb-VTnqPR
+[windows] post-detector timestamp fixup updated 194 docs (now=2026-08-07T10:17:48.505Z)
+[network] post-detector timestamp fixup updated 1 docs (now=2026-08-07T10:17:48.505Z)
+[cloudtrail] post-detector timestamp fixup updated 1 docs (now=2026-08-07T10:17:48.505Z)
+findings poll (case_id=8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4): total=0
+findings poll (case_id=8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4): total=0
+findings poll (case_id=8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4): total=0
+findings poll (case_id=8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4): total=0
+findings poll (case_id=8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4): total=16
+total real findings for this case: 393
+  real finding ab4fcb4d-1200-44c7-9f4c-8161a4bd159b: monitor=kronos-kronos-dev-cloudtrail-detector tags=[['medium', 'cloudtrail', 'attack.defense_evasion', 'attack.t1562.001']]
+  real finding 6a617b70-d898-448a-a40a-0b7c6ef45691: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding 98890962-8ee5-4a96-9e1c-3657e517a546: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding a57de764-32a7-4bd7-8a70-162cfc1425a5: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding b282e72c-35a6-4729-8da7-aebcffedf714: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding 3124468d-65e7-41ef-b948-6c86bd8805fe: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding 29ac34aa-dc96-4325-8613-26e8ac7b43b8: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding 7a837580-d713-4e80-9c92-dd9a52e53a84: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding e5cb2faf-5a0a-43ef-a367-eb45fa70183a: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+  real finding e9167aa7-7808-4ee2-b28f-521724c7c31a: monitor=kronos-kronos-dev-network-detector tags=[['high', 'network', 'attack.t1021.001']]
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+sync created 393 new Detection rows
+deleted detector IM26258BG52zb-VTnaNU (windows)
+deleted detector I826258BG52zb-VTnqNQ (network)
+deleted detector Js26258BG52zb-VTnqPR (cloudtrail)
+=== Step 1: real login (case-lead, kronos-dev) ===
+[PASS] real JWT carries org_id/organization claims -- org_id=482072f5-8086-4815-be03-879cc2eaecb5 org_alias=kronos-dev
+
+=== Step 2: real, fresh case creation (tenant-isolated per invariant #3) ===
+[PASS] real POST /api/cases succeeds (201) -- status=201 body={"id":"8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","title":"I1 detection-validation-harness e621bca6","description":"Regression harness: ATT&CK-technique-shaped samples -> real Detection rows","reference":null,"status":"open","createdAt":"2026-08-07T10:17:05.
+
+=== Step 3: real upload+finalize for each ATT&CK-technique-shaped sample ===
+[PASS] [windows] upload/request -> 201 -- status=201 body={"evidenceId":"691edf7f-1da0-4bbe-bd67-b5ebcd9d0bfe","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4/691edf7f-1da0-4bbe-bd67-b5ebcd9d0bfe/i1-windows-e621bca6.evtx?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_
+[PASS] [windows] real presigned PUT to MinIO succeeds -- status=200
+[PASS] [windows] finalize_upload -> 202 (autonomous pipeline, CLAUDE.md E.1) -- status=202 body={"id":"691edf7f-1da0-4bbe-bd67-b5ebcd9d0bfe","caseId":"8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4","filename":"i1-windows-e621bca6.evtx","contentType":"application/octet-stream","sizeBytes":200000,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-000
+[PASS] [network] upload/request -> 201 -- status=201 body={"evidenceId":"8f38dffa-6d4c-4ee5-ac80-81609cecdf90","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4/8f38dffa-6d4c-4ee5-ac80-81609cecdf90/i1-network-e621bca6-eve.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kro
+[PASS] [network] real presigned PUT to MinIO succeeds -- status=200
+[PASS] [network] finalize_upload -> 202 (autonomous pipeline, CLAUDE.md E.1) -- status=202 body={"id":"8f38dffa-6d4c-4ee5-ac80-81609cecdf90","caseId":"8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4","filename":"i1-network-e621bca6-eve.json","contentType":"application/json","sizeBytes":479,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-
+[PASS] [cloudtrail] upload/request -> 201 -- status=201 body={"evidenceId":"171f65cd-cf7b-44bb-b33f-0391298f0eb5","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4/171f65cd-cf7b-44bb-b33f-0391298f0eb5/i1-cloudtrail-e621bca6.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kron
+[PASS] [cloudtrail] real presigned PUT to MinIO succeeds -- status=200
+[PASS] [cloudtrail] finalize_upload -> 202 (autonomous pipeline, CLAUDE.md E.1) -- status=202 body={"id":"171f65cd-cf7b-44bb-b33f-0391298f0eb5","caseId":"8a0b4f5f-9da0-4b61-8a79-f7e1ccf84fd4","filename":"i1-cloudtrail-e621bca6.json","contentType":"application/json","sizeBytes":803,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"10000000-0000-4000-8
+
+=== Step 4: poll for real Celery-driven parse -> OpenSearch indexing ===
+[PASS] [windows] real evidence reached COMPLETE via the autonomous pipeline -- state=COMPLETE
+[PASS] [network] real evidence reached COMPLETE via the autonomous pipeline -- state=COMPLETE
+[PASS] [cloudtrail] real evidence reached COMPLETE via the autonomous pipeline -- state=COMPLETE
+
+=== Step 5: confirm real fresh documents indexed ===
+[PASS] [windows] real fresh documents indexed -- count=194
+[PASS] [network] real fresh documents indexed -- count=1
+[PASS] [cloudtrail] real fresh documents indexed -- count=1
+
+=== Step 6: real alias mappings for cloudtrail/network (reused verbatim from C1) ===
+[PASS] [windows] discovered a real concrete index to inspect for alias mappings -- hits=1
+[PASS] [windows] real GET mappings/view succeeds -- status=200 body={"properties":{"process.command_line":{"path":"process.command_line","type":"alias"},"windows.message":{"path":"message","type":"alias"}},"unmapped_index_fields":["winlog.provider_name","winlog.event_data.WorkstationName","winlog.event_data.UserWorkstations","winlog.event_data.UserPrincipalName","wi
+[PASS] [cloudtrail] real alias mapping POST accepted (reused verbatim from C1) -- status=200 body={"acknowledged":true}
+[PASS] [network] real alias mapping POST accepted (reused verbatim from C1) -- status=200 body={"acknowledged":true}
+[PASS] [windows] real alias mapping POST accepted (reused verbatim from C1) -- status=200 body={"acknowledged":true}
+
+=== Step 7: real case-scoped detectors, admin creds (A3) ===
+[PASS] [windows] fetched real prepackaged rule ids -- count=1580
+[PASS] [windows] real case-scoped detector created (201) -- status=201 body={"_id":"IM26258BG52zb-VTnaNU","_version":1,"detector":{"name":"kronos-kronos-dev-windows-detector","detector_type":"windows","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"I1 detection-validation-harness detector (windows)","indices":
+[PASS] [network] fetched real prepackaged rule ids -- count=38
+[PASS] [network] real case-scoped detector created (201) -- status=201 body={"_id":"I826258BG52zb-VTnqNQ","_version":1,"detector":{"name":"kronos-kronos-dev-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"I1 detection-validation-harness detector (network)","indices":
+[PASS] [cloudtrail] fetched real prepackaged rule ids -- count=32
+[PASS] [cloudtrail] real case-scoped detector created (201) -- status=201 body={"_id":"Js26258BG52zb-VTnqPR","_version":1,"detector":{"name":"kronos-kronos-dev-cloudtrail-detector","detector_type":"cloudtrail","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"inputs":[{"detector_input":{"description":"I1 detection-validation-harness detector (cloudtrail)","
+
+=== Step 8: timestamp fixup for ALL 3 techniques, run AFTER detector creation (fix for real problem A -- see README) ===
+[PASS] [windows] real _update_by_query sets @timestamp=now AFTER detector creation (fix for real problem A) -- status=200 body={"took":32,"timed_out":false,"total":194,"updated":194,"deleted":0,"batches":1,"version_conflicts":0,"noops":0,"retries":{"bulk":0,"search":0},"throttled_millis":0,"requests_per_second":-1.0,"throttled_until_millis":0,"failures":[]}
+[PASS] [network] real _update_by_query sets @timestamp=now AFTER detector creation (fix for real problem A) -- status=200 body={"took":10,"timed_out":false,"total":1,"updated":1,"deleted":0,"batches":1,"version_conflicts":0,"noops":0,"retries":{"bulk":0,"search":0},"throttled_millis":0,"requests_per_second":-1.0,"throttled_until_millis":0,"failures":[]}
+[PASS] [cloudtrail] real _update_by_query sets @timestamp=now AFTER detector creation (fix for real problem A) -- status=200 body={"took":10,"timed_out":false,"total":1,"updated":1,"deleted":0,"batches":1,"version_conflicts":0,"noops":0,"retries":{"bulk":0,"search":0},"throttled_millis":0,"requests_per_second":-1.0,"throttled_until_millis":0,"failures":[]}
+
+=== Step 9: wait for real detector schedule cycles to fire ===
+[FAIL] [windows] real SA finding fired with expected ATT&CK tag attack.t1110.003
+[PASS] [network] real SA finding fired with expected ATT&CK tag attack.t1021.001
+[PASS] [cloudtrail] real SA finding fired with expected ATT&CK tag attack.t1562.001
+
+=== Step 10: real DetectionSyncService.sync_org_findings() -- unmodified src/ code ===
+[PASS] real Detection rows exist for THIS run's fresh case_id -- count=393
+[PASS] every real Detection row's org_id == the syncing tenant's real org_id (invariant #3) -- {'482072f5-8086-4815-be03-879cc2eaecb5'}
+[PASS] [windows] real audited Detection row carries expected ATT&CK tag attack.t1110.003 -- all_tags_this_case=['attack.credential_access', 'attack.defense_evasion', 'attack.initial_access', 'attack.privilege_escalation', 'attack.t1006', 'attack.t1021.001', 'attack.t1110.003', 'attack.t1212', 'attack.t1562.001']
+[PASS] [network] real audited Detection row carries expected ATT&CK tag attack.t1021.001 -- all_tags_this_case=['attack.credential_access', 'attack.defense_evasion', 'attack.initial_access', 'attack.privilege_escalation', 'attack.t1006', 'attack.t1021.001', 'attack.t1110.003', 'attack.t1212', 'attack.t1562.001']
+[PASS] [cloudtrail] real audited Detection row carries expected ATT&CK tag attack.t1562.001 -- all_tags_this_case=['attack.credential_access', 'attack.defense_evasion', 'attack.initial_access', 'attack.privilege_escalation', 'attack.t1006', 'attack.t1021.001', 'attack.t1110.003', 'attack.t1212', 'attack.t1562.001']
+
+=== Step 11: real coverage number ===
+{
+  "techniques_attempted": 3,
+  "techniques_with_real_detection_row": 3,
+  "per_technique": {
+    "windows": {
+      "attack_technique": "T1110.003",
+      "attack_tag": "attack.t1110.003",
+      "source": "REUSED real captured telemetry (tests/fixtures/samples/real/system.evtx)",
+      "sa_finding_fired": false,
+      "detection_row_created": true
+    },
+    "network": {
+      "attack_technique": "T1021.001",
+      "attack_tag": "attack.t1021.001",
+      "source": "HAND-CONSTRUCTED, real Suricata EVE 'flow' shape (suricata-8.0.6 userguide)",
+      "sa_finding_fired": true,
+      "detection_row_created": true
+    },
+    "cloudtrail": {
+      "attack_technique": "T1562.001 (rule's own tag; more precise ATT&CK subtechnique is T1562.008, no ART atomic exists for it)",
+      "attack_tag": "attack.t1562.001",
+      "source": "HAND-CONSTRUCTED, real AWS CloudTrail record shape (AWS CloudTrail record-contents docs)",
+      "sa_finding_fired": true,
+      "detection_row_created": true
+    }
+  }
+}
+
+=== Cleanup: remove throwaway case-scoped detectors ===
+NOTE: real findings + real Detection/audit_log rows this run created are left in place as inspectable proof (matches C4/C5 precedent).
+
+38 passed, 1 failed
+FAILURES: ['[windows] real SA finding fired with expected ATT&CK tag attack.t1110.003']

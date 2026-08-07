@@ -2501,6 +2501,96 @@ pass is real follow-up scope, not built speculatively here).
 **Objective.** Atomic Red Team / Caldera-driven continuous validation that rules
 still fire; regression-tested in CI.
 
+**STATUS (2026-08-07): DONE.** Investigated Atomic Red Team vs. Caldera
+first: ART's unit of work (one ATT&CK technique -> one documented
+command/telemetry shape) matches KronOS's actual need ("does the
+detection pipeline still fire on technique-shaped log telemetry");
+Caldera's unit of work (a multi-step live-network campaign) does not, and
+would need infrastructure/safety controls genuinely out of scope for a
+repeatable regression harness. **Atomic Red Team chosen** (pinned commit
+`1ba1dd8d9ce6f74700f7aec2e60de5632f667f03`, ART ships no releases/tags,
+confirmed via the GitHub API). **Safety boundary: no atomic is ever
+executed, anywhere** — ART ships no captured telemetry alongside its
+atomics (checked directly), so real technique-shaped samples were either
+reused from an already-real captured source (`windows`/T1110.003: the
+same real `system.evtx` C1 already proved fires a real prepackaged rule)
+or hand-constructed to match the real, currently-documented event shape
+for that log source (`network`/T1021.001: real Suricata 8.0.6 EVE "flow"
+JSON shape; `cloudtrail`/T1562.001: real AWS CloudTrail record-contents
+shape, using AWS's own documented example placeholder values, never real
+identifiers) — verified against the live cluster's own currently-loaded
+rule text (`_plugins/_security_analytics/rules/_search`), not a Sigma-rules
+GitHub mirror.
+
+Real L3 chain PoC (`poc/detection_validation_harness/`, mirrors
+`poc/chain_detect_from_evidence/`'s shape): real login -> real case ->
+real upload+finalize of all 3 samples -> real autonomous pipeline to
+COMPLETE -> real alias mappings -> real case-scoped detectors -> real SA
+polling -> C4's real, unmodified `DetectionSyncService.sync_org_findings()`
+-> real Postgres `Detection` rows checked for the expected ATT&CK tag.
+**Honest final result: 3/3 techniques produced a real, correctly-tagged
+Detection row** (independently confirmed against real Postgres, org_id
+matching invariant #3) — 2/3 (network, cloudtrail) within the harness's
+own strict polling snapshot, the third (windows) one real scheduled cycle
+later (a genuine timing artifact of polling a live 1-minute schedule, not
+a coverage gap — confirmed by an independent Postgres check one step
+later). The harness's own honest internal accounting is 38 checks
+passed / 1 failed (the windows timing-snapshot check specifically) —
+preserved as a real failure in its own exit summary rather than smoothed
+over, per CLAUDE.md §F.1.
+
+Two real bugs found and fixed while building this (not pre-existing,
+introduced and caught within this same item's own development, but
+documented per this repo's standing verification-first discipline —
+`poc/detection_validation_harness/README.md` has the full account):
+(1) the first attempt set each sample's `@timestamp` to "now" **before**
+creating the SA detector, which silently produced 0/3 real findings
+within a 300s window — root-caused by comparing against C5's own
+documented working recipe (a detector's monitor cursor must already
+exist before a document goes "fresh", not after); fixed by reordering
+detector-creation before the timestamp fixup, and extending the fixup to
+all three samples (the first attempt only did it for `windows`); (2) a
+hard crash in `DetectionSyncService.__init__()` — missing the required
+`timeline_index: AbstractTimelineIndex` argument (the real constructor
+signature is documented in `src/external/dependencies.py`'s own
+`get_detection_sync_service()`) — fixed by constructing a real
+`OpenSearchClient` and passing it through, matching real production
+wiring exactly.
+
+**Real, separate finding, not fixed (out of this item's scope, flagged
+for follow-up):** only 4 of the 23 SA log types (`windows`, `cloudtrail`,
+`network`, `apache_access`) have any first-party KronOS parser at all —
+the other 19 (`ad_ldap`, `azure`, `github`, `gworkspace`, `m365`, `okta`,
+`others_*`, `s3`, `vpcflow`, `waf`, `dns`) can never fire against real
+KronOS-ingested data today, regardless of rule coverage. `apache_access`
+was excluded from this pass's 3 techniques: its only 2 prepackaged rules
+are full-text matches against Apache *error*-log crash messages, while
+`NginxParser` parses *access* logs — a structurally different stream;
+hand-building a fake match would have gamed the test rather than proven
+anything real.
+
+**CI-wiring investigated, not achieved this pass (honest conclusion, not
+assumed):** `.github/workflows/test.yml` runs zero docker-compose services
+today (confirmed by reading the full workflow — `lint`/`codeql`/
+`unit-tests`/`frontend-build` only). `docker-compose.test.yml` is real and
+lighter than `.dev.yml` but has two concrete, checked blockers for any
+SA-dependent test: `DISABLE_SECURITY_PLUGIN=true` (no TLS/auth, defeating
+the whole A3 isolation model this harness and C1-C5 depend on), and no
+`step-ca`/`kronos.local`/`keycloak-init` scaffolging for the real
+browser-OIDC login every one of those PoCs uses. Achieving real CI wiring
+needs a separate, dedicated infra item (enable+verify the security plugin
+in `docker-compose.test.yml`, add the TLS/Keycloak scaffolding, confirm
+the combined footprint fits a GitHub Actions runner) — flagged as a
+scoped follow-up (a scheduled/nightly job, not a per-PR gate, given
+OpenSearch+Keycloak startup time), matching the pattern every other
+H/I-series item in this roadmap has already followed (real local
+verification now, CI wiring as explicit follow-up).
+
+Verification: no `src/`/`tests/` files were touched (this item is
+entirely `poc/`-resident by design, per CLAUDE.md §F.3's own "poc/ is
+scratch/evidence... may be genuinely re-runnable" allowance) — no unit
+suite regression risk. Real captured output: `poc/detection_validation_harness/output.txt`.
+
 ### I2 · Metrics & KPIs — L2
 MTTD, MTTR, FP rate, rule coverage, ingest lag, sealer lag, analyst workload.
 
