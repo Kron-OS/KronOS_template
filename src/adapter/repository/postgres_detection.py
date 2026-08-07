@@ -55,6 +55,15 @@ detections_table = sa.Table(
     # since no migration tool is wired yet.
     sa.Column("risk_score", sa.Float, nullable=True),
     sa.Column("risk_factors", sa.JSON, nullable=False, default=list),
+    # External ticket traceability (roadmap M7/H4) -- same additive-column
+    # caveat as risk_score/risk_factors immediately above: `create_all` only
+    # adds missing TABLES, not columns to an existing one, so an
+    # already-running deployment's `detections` table needs a real,
+    # one-time manual
+    # `ALTER TABLE detections ADD COLUMN external_ticket_id varchar(256);`
+    # since no migration tool is wired yet. Nullable: None until the first
+    # successful SyncDetectionTicketAction run.
+    sa.Column("external_ticket_id", sa.String(256), nullable=True),
     sa.UniqueConstraint("org_id", "finding_id", name="uq_detections_org_finding"),
 )
 
@@ -189,6 +198,7 @@ class PostgresDetectionRepository(DetectionRepository):
                 }
                 for f in d.risk_factors
             ],
+            "external_ticket_id": d.external_ticket_id,
         }
 
     @staticmethod
@@ -224,6 +234,7 @@ class PostgresDetectionRepository(DetectionRepository):
                 )
                 for f in (row.get("risk_factors") or [])
             ),
+            external_ticket_id=row.get("external_ticket_id"),
         )
 
 

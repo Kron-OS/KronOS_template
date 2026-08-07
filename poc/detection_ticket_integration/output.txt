@@ -1,0 +1,43 @@
+[2026-08-07T04:58:18.772785+00:00] === real local HTTP receiver listening on http://127.0.0.1:40713/webhook ===
+[2026-08-07T04:58:18.835325+00:00] === real tenant org_id=bd59683b-955e-4213-ac18-912bca30e8be org_alias=h4poc5b05ecba ===
+
+=== Step 1: real Detection row seeded in Postgres ===
+[2026-08-07T04:58:18.840316+00:00] PASS: real Detection row persisted
+[2026-08-07T04:58:18.840331+00:00] PASS: real Detection starts with no external_ticket_id
+
+=== Step 2: real playbook CREATE run (sync_detection_ticket, 1st sync) ===
+[2026-08-07T04:58:18.912203+00:00] PASS: real CREATE playbook execution succeeded (no halt)
+[2026-08-07T04:58:18.912215+00:00] PASS: real CREATE step produced a real external_ticket_id
+[2026-08-07T04:58:18.912223+00:00] real CREATE output: {'detection_id': '88227134-e03c-403b-95a9-a2c57fd17bd2', 'operation': 'create', 'external_ticket_id': 'ITSM-de27a17f', 'ticket_url': 'http://127.0.0.1:40713/tickets/ITSM-de27a17f'}
+[2026-08-07T04:58:18.912227+00:00] PASS: real local receiver got exactly 1 request so far
+[2026-08-07T04:58:18.912230+00:00] PASS: real request event == kronos.ticket.create
+[2026-08-07T04:58:18.912233+00:00] PASS: real request severity == real Detection's own rule_severity (high)
+[2026-08-07T04:58:18.912238+00:00] PASS: real request metadata.org_id is the REAL tenant org_id, NOT the smuggled one
+[2026-08-07T04:58:18.912242+00:00] PASS: real request metadata.case_id is the REAL Detection.case_id, NOT the smuggled one
+
+=== Step 3: independent fresh-connection re-read after CREATE ===
+[2026-08-07T04:58:18.947331+00:00] PASS: fresh read: Detection.external_ticket_id persisted
+[2026-08-07T04:58:18.947348+00:00] PASS: fresh read: Detection.triage_state UNCHANGED (invariant #5 -- still NEW)
+
+=== Step 4: real playbook UPDATE run (sync_detection_ticket, 2nd sync) ===
+[2026-08-07T04:58:18.983966+00:00] PASS: real UPDATE playbook execution succeeded (no halt)
+[2026-08-07T04:58:18.983982+00:00] real UPDATE output: {'detection_id': '88227134-e03c-403b-95a9-a2c57fd17bd2', 'operation': 'update', 'external_ticket_id': 'ITSM-de27a17f', 'ticket_url': 'http://127.0.0.1:40713/tickets/ITSM-de27a17f'}
+[2026-08-07T04:58:18.983987+00:00] PASS: real UPDATE reuses the SAME ticket_id -- never a second, duplicate ticket
+[2026-08-07T04:58:18.983991+00:00] PASS: real local receiver now has exactly 2 requests total
+[2026-08-07T04:58:18.983995+00:00] PASS: real 2nd request event == kronos.ticket.update
+[2026-08-07T04:58:18.983997+00:00] PASS: real 2nd request carries the real note
+[2026-08-07T04:58:18.984000+00:00] PASS: real 2nd request references the SAME real ticket_id
+
+=== Step 5: fail loudly -- a real unreachable webhook backend (invariant #8) ===
+[2026-08-07T04:58:19.056126+00:00] PASS: real playbook run against an unreachable backend HALTS (does not silently succeed)
+[2026-08-07T04:58:19.056143+00:00] PASS: real failed step's own recorded error is a real, non-empty error message, not swallowed -- Real webhook POST to ticketing backend failed to complete
+[2026-08-07T04:58:19.090762+00:00] PASS: fresh read: failed sync left external_ticket_id None -- never a fabricated ticket id
+
+=== Step 6: tenant isolation -- other tenant cannot sync this Detection ===
+[2026-08-07T04:58:19.103574+00:00] PASS: real cross-tenant sync attempt halts with a real failed step (not found in other org)
+
+=== Step 7: real audit hash chain intact end-to-end (fresh connection) ===
+[2026-08-07T04:58:19.138788+00:00] PASS: fresh read: real TICKET_SYNC_ATTEMPTED/_EXECUTED rows exist for the CREATE+UPDATE runs
+[2026-08-07T04:58:19.138802+00:00] PASS: fresh read: real TICKET_SYNC_FAILED row exists for the unreachable-backend run
+[2026-08-07T04:58:19.140574+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-07T04:58:19.467155+00:00] PoC PASSED -- 24/24 checks passed against the real, live dev-stack Postgres 16 + a real local HTTP receiver.

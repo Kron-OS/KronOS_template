@@ -144,6 +144,16 @@ class KeycloakAdminError(KronOSException):
     """
 
 
+class TicketingError(KronOSException):
+    """Raised when a real outbound call to a ``TicketingSystem`` backend
+    fails: unreachable, a non-2xx response, or a malformed response body
+    (roadmap M7/H4). Deliberately never silently swallowed -- CLAUDE.md
+    SS1#8 requires a ticketing call that can't reach its real backend to
+    fail loudly, never no-op as if a ticket were created/updated, and
+    never fabricate a ticket id.
+    """
+
+
 class SealerFallBehindDetectedError(KronOSException):
     """Signals that a stream's oldest pending (unsealed) event has aged past
     ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold

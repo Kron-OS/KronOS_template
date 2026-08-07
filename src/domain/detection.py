@@ -161,6 +161,16 @@ class Detection(BaseModel):
     # value (see RiskScoreBreakdown.score's own docstring).
     risk_score: float | None = None
     risk_factors: tuple[RiskFactor, ...] = Field(default_factory=tuple)
+    # External ticket/case-tracker traceability (roadmap M7/H4). A PURE
+    # traceability pointer -- the id an external ITSM/ticketing system
+    # assigned when SyncDetectionTicketAction created or last updated a
+    # ticket for this Detection. None until the first successful sync.
+    # Deliberately NOT part of the triage FSM and NEVER set by anything
+    # other than `with_external_ticket_id()` below: a response FROM the
+    # external system must never be trusted to move `triage_state` (roadmap
+    # invariant #5, mirroring how `risk_score` is a derived, sibling fact
+    # that never feeds back into the FSM either).
+    external_ticket_id: str | None = None
 
     @property
     def attack_tags(self) -> tuple[str, ...]:
@@ -187,6 +197,19 @@ class Detection(BaseModel):
         """
         new_state = self.triage_state.transition_to(target)
         return self.model_copy(update={"triage_state": new_state, "updated_at": datetime.now(UTC)})
+
+    def with_external_ticket_id(self, ticket_id: str) -> Detection:
+        """Return a new Detection recording *ticket_id* from a real external
+        ticketing-system response -- a pure traceability update, never an
+        FSM transition (roadmap invariant #5). Callers
+        (``SyncDetectionTicketAction``) are responsible for auditing this
+        the same way ``DetectionTriageService`` audits ``with_triage_state``.
+        """
+        if not ticket_id:
+            raise ValueError("external_ticket_id must be a non-empty string")
+        return self.model_copy(
+            update={"external_ticket_id": ticket_id, "updated_at": datetime.now(UTC)}
+        )
 
 
 class DetectionCorrelation(BaseModel):

@@ -177,6 +177,45 @@ class TestDetectionRiskScore:
             d.risk_score = 10.0  # type: ignore[misc]
 
 
+class TestDetectionExternalTicketId:
+    """Roadmap M7/H4: a pure traceability pointer, never part of the triage
+    FSM -- see with_external_ticket_id's own docstring."""
+
+    def test_defaults_to_none(self) -> None:
+        d = make_detection()
+        assert d.external_ticket_id is None
+
+    def test_with_external_ticket_id_sets_it(self) -> None:
+        d = make_detection()
+        d2 = d.with_external_ticket_id("TICKET-123")
+        assert d2.external_ticket_id == "TICKET-123"
+
+    def test_with_external_ticket_id_does_not_mutate_triage_state(self) -> None:
+        d = make_detection(DetectionTriageState.INVESTIGATING)
+        d2 = d.with_external_ticket_id("TICKET-123")
+        assert d2.triage_state == DetectionTriageState.INVESTIGATING
+
+    def test_with_external_ticket_id_updates_updated_at(self) -> None:
+        d = make_detection()
+        d2 = d.with_external_ticket_id("TICKET-123")
+        assert d2.updated_at >= d.updated_at
+
+    def test_with_external_ticket_id_rejects_empty_string(self) -> None:
+        d = make_detection()
+        with pytest.raises(ValueError, match="non-empty"):
+            d.with_external_ticket_id("")
+
+    def test_with_external_ticket_id_does_not_mutate_original(self) -> None:
+        d = make_detection()
+        d.with_external_ticket_id("TICKET-123")
+        assert d.external_ticket_id is None
+
+    def test_frozen_field(self) -> None:
+        d = make_detection()
+        with pytest.raises(Exception):  # noqa: B017
+            d.external_ticket_id = "TICKET-123"  # type: ignore[misc]
+
+
 class TestDetectionRuleMatch:
     def test_frozen(self) -> None:
         m = DetectionRuleMatch(rule_id="r1", tags=("high",))

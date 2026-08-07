@@ -140,6 +140,19 @@ class AuditEventType(StrEnum):
     CONTAINMENT_ACTION_EXECUTED = "containment.action_executed"
     CONTAINMENT_ACTION_FAILED = "containment.action_failed"
 
+    # Case/ticket integration (roadmap M7/H4) -- mirrors CONTAINMENT_ACTION's
+    # own ATTEMPTED-before-the-call / distinct-FAILED discipline exactly:
+    # ATTEMPTED is logged before the real outbound TicketingSystem call is
+    # even made, so a crash inside that call can never erase the fact an
+    # attempt happened; FAILED means "the real backend was unreachable or
+    # rejected the call," never silently absorbed. There is no separate
+    # DENIED event here -- unlike H2's destructive actions, creating/
+    # updating an external ticket has no approval-gate concept in this
+    # pass. See src/application/ticket_sync_action.py.
+    TICKET_SYNC_ATTEMPTED = "ticket.sync_attempted"
+    TICKET_SYNC_EXECUTED = "ticket.sync_executed"
+    TICKET_SYNC_FAILED = "ticket.sync_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

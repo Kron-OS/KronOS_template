@@ -2435,6 +2435,64 @@ live external vendor). A generic outbound-webhook implementation
 (HTTP POST, real JSON payload, real response code checked) is the most
 defensible real target absent a specific named vendor.
 
+**STATUS (2026-08-07): DONE. Closes Milestone M7 (Response/SOAR).**
+`TicketingSystem`(ABC) + `WebhookTicketingSystem`
+(`src/adapter/ticketing/ticketing_system.py`) — a small, typed interface
+(`create_ticket`/`update_ticket`, never a generic passthrough, mirrors
+`EvidenceStorage`/`KeycloakAdminClient`'s own idiom) whose one concrete
+implementation is a generic outbound-webhook POST. Judgment call taken as
+scoped: no live third-party SaaS call was made anywhere in this pass; the
+webhook envelope shape is deliberately generic (not modeled on one named
+vendor's SDK) since that is the real lowest-common-denominator every major
+ITSM product's own "inbound webhook" feature already reduces to.
+`SyncDetectionTicketAction` (`src/application/ticket_sync_action.py`, a new
+`PlaybookAction`, zero edits to `PlaybookActionRegistry`/
+`PlaybookExecutionService`) decides CREATE vs. UPDATE purely from whether
+`Detection.external_ticket_id` is already set — never from a caller-supplied
+params flag, so a step can't be tricked into creating a duplicate ticket.
+`Detection.external_ticket_id` (new, nullable, `src/domain/detection.py` +
+`postgres_detection.py` — existing deployments need a real, one-time manual
+`ALTER TABLE detections ADD COLUMN external_ticket_id varchar(256);`, same
+caveat already documented for `risk_score`/`risk_factors`) is a pure
+traceability pointer set via `Detection.with_external_ticket_id()` — never
+an FSM transition; the persist itself uses `expected_state=` optimistic
+concurrency so a triage transition racing this action is a real, audited
+conflict, never a silent stale overwrite. Audit discipline mirrors H2's
+`ContainmentAction` exactly: `TICKET_SYNC_ATTEMPTED` logged before the real
+outbound call, `TICKET_SYNC_FAILED` distinct from a generic step failure.
+
+Real PoC (`poc/detection_ticket_integration/`, 24/24 checks) against the
+live dev-stack Postgres 16 plus a REAL local HTTP receiver the PoC itself
+stands up on `127.0.0.1` (real bytes over a real socket, real status codes
+inspected — satisfies CLAUDE.md §F's "real or realistically containerized
+dependency" without a live vendor account): a real CREATE run producing a
+real `external_ticket_id`, with the request's own `org_id`/`case_id`
+independently confirmed to be the real tenant/Detection values, not the
+attacker-smuggled ones the playbook step's own params deliberately
+included; a real UPDATE run reusing the same ticket id (never a duplicate);
+a real unreachable-backend run correctly halting with no fabricated ticket
+id (invariant #8); a real cross-tenant sync attempt rejected; and a fresh,
+independent Postgres re-read confirming the full audit trail
+(`TICKET_SYNC_ATTEMPTED`/`_EXECUTED`/`_FAILED`) with the hash chain intact
+end-to-end.
+
+Verification (independently re-run by the orchestrator, not trusted from
+the subagent's self-report): 54/54 relevant unit tests passed; `mypy src/`
+at the pre-existing 29-error baseline confirmed via `git stash -u` both
+before and after — zero new; `ruff`/`black` clean on every touched file.
+
+**Explicitly flagged gaps, matching H1/H2/H3's own precedent:** no
+automatic Detection-event → ticket-sync trigger wired this pass (this PoC
+invokes the playbook directly, same as every prior H-item); no per-org
+webhook URL override — `ticketing_webhook_url` is one deployment-wide
+setting today, matching this codebase's existing pattern for every other
+external adapter's own URL setting (`keycloak_url`/`opensearch_url`/etc.
+are also deployment-wide, never per-org); no reconciliation pass for the
+narrow case where the real external call succeeds but persisting
+`external_ticket_id` locally then fails (reported, audited loudly as
+`TICKET_SYNC_FAILED`, not silently dropped — a future retry-with-fresh-read
+pass is real follow-up scope, not built speculatively here).
+
 ---
 
 ## M8 — Validation, ops, parity, global E2E

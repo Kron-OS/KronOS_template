@@ -192,6 +192,19 @@ class Settings(BaseSettings):
         description="Absolute path to kronos-volatility-worker.py; None uses computed default",
     )
 
+    # Case/ticket integration (roadmap M7/H4) -- a single, deployment-wide
+    # outbound webhook URL for WebhookTicketingSystem, the same "one global
+    # endpoint, not per-org config" shape this codebase already uses for
+    # every other external adapter (keycloak_url, opensearch_url, vault_url
+    # above are all deployment-wide too, never looked up per-org) -- see
+    # ticket_sync_action.py's own module docstring for why no per-org
+    # override was built this pass. None until an operator configures a
+    # real external ticketing system's inbound-webhook URL.
+    ticketing_webhook_url: str | None = Field(
+        default=None,
+        description="Outbound webhook URL for the external ITSM/ticketing system, e.g. https://itsm.example.com/webhooks/kronos",
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")
