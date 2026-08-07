@@ -2594,6 +2594,43 @@ suite regression risk. Real captured output: `poc/detection_validation_harness/o
 ### I2 · Metrics & KPIs — L2
 MTTD, MTTR, FP rate, rule coverage, ingest lag, sealer lag, analyst workload.
 
+**Objective (added by the orchestrator 2026-08-07 — this item shipped as a
+bare list of KPI names, unlike most roadmap entries; scoped before dispatch
+rather than leaving a cold subagent to invent the whole thing).** KronOS has
+no way today to answer "how well is detection actually performing for this
+org" other than reading raw rows by hand. Build a real, extensible metrics
+computation capability over data this platform already produces and already
+has sitting in the live dev cluster from this session's own H1-I1 PoC runs
+(real `Detection`/audit rows in Postgres, real sealed batches from D3, real
+indexed timeline docs in OpenSearch) — not synthetic data manufactured just
+to compute a number against.
+**Scope note for the dispatched agent:** seven metrics is a lot for one
+pass — mirror I1's own "start small" precedent. Design the extensibility
+shape first (an ABC + registry, matching this codebase's established idiom
+— `PlaybookAction`/`ECSFieldMappingRegistry`/`ApprovalGate` etc. — so a new
+metric is a new registration, not an edit to a central function), then
+implement and REALLY VERIFY 3-4 of the 7 that have a clear, unambiguous
+real data source already in this repo: **MTTD** (Detection.created_at vs.
+the real finding's own matched-document `@timestamp` — the actual detection
+latency), **FP rate** (real `DETECTION_TRIAGE_TRANSITIONED` audit rows,
+`FALSE_POSITIVE` transitions / total terminal transitions, per org), **rule
+coverage** (this is NOT new work — C1/C5 already measured real fired-rule
+counts per log type; I2's job is to make that a queryable, persisted metric
+rather than a one-off PoC printout), and **sealer lag** (D3's
+`BatchSealingService`/D5's own `consumer_group_health`/fall-behind-alerting
+already computed real lag numbers — I2 should surface, not reinvent, this).
+**MTTR** and **analyst workload** need a real "who/when responded" signal
+this platform may or may not fully have yet (H2's containment actions,
+H4's ticket sync, and C4's triage FSM all have partial signal) — investigate
+whether a real, honest MTTR/workload metric is computable from what
+actually exists before building one; if not, say so and scope it as
+follow-up rather than fabricating from incomplete signal. **Ingest lag**
+(event timestamp vs. index timestamp) needs real streaming telemetry
+(D-milestone) to be meaningful for continuously-arriving data — for
+file-based evidence uploads it measures upload-to-index latency instead,
+which is a real but different number; decide and document which you're
+measuring and why.
+
 ### I3 · Prod / Helm parity debt — L2
 **Known-open, already documented:** Helm has **no `CLAMD_HOST` wiring at all**;
 `MAX_UPLOAD_BYTES`/`CLAMD_CONF_*` reconciliation was scoped to
