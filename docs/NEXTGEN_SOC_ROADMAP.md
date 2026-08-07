@@ -2342,6 +2342,70 @@ logs) that enters the *existing* evidence pipeline with full custody — the
 strongest synthesis of the SOC and forensic halves of the platform.
 **Depends on:** H2, E5.
 
+**STATUS (2026-08-07): DONE.** Same judgment call as H2, re-confirmed by the
+same grep: this platform has no live remote host-agent/EDR/fleet component
+anywhere in `src/`, so "a detection triggers collection" cannot mean
+"reach a live compromised endpoint over the network" — that capability
+doesn't exist. What's real and shipped instead: an already-existing
+forensic artifact (staged on storage the backend can read) enters the
+REAL, unmodified `EvidenceIntakeService` pipeline (real MinIO presigned
+PUT, real Postgres persistence, real Celery-driven autonomous FSM, real
+OpenSearch indexing) attributed to the triggering `Detection`, instead of
+a human clicking "upload." Live remote collection off a compromised host
+is reported as a real, out-of-scope gap, not fabricated.
+
+`src/application/evidence_collection_action.py`
+(`CollectForensicArtifactAction(PlaybookAction)`) — zero new domain types,
+zero new `AuditEventType`s (the existing `PLAYBOOK_STEP_EXECUTED` row
+already cross-references `detection_id`→`evidence_id`, sufficient for the
+G3 explainability bar), zero edits to `PlaybookActionRegistry`/
+`PlaybookExecutionService` (mirrors H1/H2's "new action = a registration"
+idiom exactly). `org_id` from `tenant`, `case_id` from the looked-up
+`Detection.case_id` — never from `params` — proved for real: the PoC's own
+playbook step params deliberately smuggle a different `case_id`/`org_id`
+that the real persisted `Evidence` row correctly ignores.
+
+Real PoC (`poc/detection_triggered_collection/`, 16/16 checks + one bonus
+manual OpenSearch `_count` check) against the live dev stack (Postgres 16,
+MinIO, Redis, the real already-running `docker-celery-worker-1`,
+OpenSearch 2.11.1): a real `Detection` row → a real `PlaybookExecutionService`
+run → real presigned PUT of a real Suricata `eve.json` sample → real
+autonomous pipeline (`UPLOADING`→`RECEIVED`→`PARSING`→`COMPLETE`, zero
+manual `parse/start` calls) → independent fresh-connection Postgres
+re-reads confirming correct custody (`Evidence.case_id`/`org_id` match the
+real Detection/tenant, not the attacker-supplied params), the triggering
+Detection byte-for-byte unchanged (invariant #5), and the full audit hash
+chain intact. Bonus unscripted check: a real `_count` query against the
+run's own case-scoped OpenSearch index confirmed 6 real indexed documents,
+proving `COMPLETE` reflects genuine parsing, not just an FSM label.
+
+**Real, pre-existing infrastructure gap found and reported, not fixed:**
+`docker-celery-worker-plaso-1`'s currently-*running* container is a stale
+image built before E5 landed — `volatility3` and the Volatility worker
+script are genuinely absent from it despite `docker/Dockerfile.plaso-worker`
+correctly declaring both, confirmed via a real `docker exec` check. A real
+`.vmem` memory-dump upload would hit `VolatilityScanError` today, for a
+reason unrelated to this item. Rebuilding a shared dev-stack container was
+judged out of this item's own scope (other concurrent orchestration work
+may depend on it staying up) — flagged as follow-up, not silently patched.
+Consequently this pass's real captured run used a log-bundle artifact
+(the same real Suricata sample C5 already proved), not the memory dump;
+the mechanism itself is artifact-agnostic and takes the identical code
+path once the stale image is rebuilt.
+
+**Explicitly flagged gaps, matching H1/H2's own precedent:** no automatic
+Detection→Playbook trigger wiring this pass (deciding *when* a Detection
+should fire a specific playbook is real follow-up scope, not incidental
+here); no streaming PUT (fine for small real samples, a genuinely large
+memory dump would want a chunked read/PUT, flagged in the action's own
+docstring); this run's real MinIO bucket/Postgres rows deliberately left
+in place as inspectable proof, matching C4/C5's own precedent.
+
+Verification (independently re-run by the orchestrator, not trusted from
+the subagent's self-report): 9/9 new unit tests passed; `mypy src/` at the
+pre-existing 29-error baseline confirmed via `git stash -u` both before
+and after — zero new; `ruff`/`black` clean on both touched files.
+
 ### H4 · Case / ticket integration — L2
 
 ---

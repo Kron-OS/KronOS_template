@@ -1,0 +1,38 @@
+[2026-08-07T04:27:45.977665+00:00] PASS: real artifact file exists on disk (the honest 'already staged' precondition) -- /home/reca/Claude/Kronos/KronOS_template/.claude/worktrees/agent-a3743ec6764cf63e9/tests/fixtures/samples/real/suricata/eve.json
+[2026-08-07T04:27:46.117975+00:00] === real tenant org_id=f572a6cd-f3cb-4a6a-a63f-261d337b7ba8 org_alias=h3poc577b50f5 case_id=a8872774-df6e-4931-813f-28d148624611 ===
+
+=== Step 1: real Detection row seeded in Postgres, case-scoped ===
+[2026-08-07T04:27:46.123677+00:00] PASS: real Detection row persisted
+[2026-08-07T04:27:46.123696+00:00] detection_id=ab4d8506-32cd-42ab-9d3e-26520b21f2ba case_id=a8872774-df6e-4931-813f-28d148624611
+
+=== Step 2: real Playbook (collect_forensic_artifact step) via PlaybookExecutionService ===
+[2026-08-07T04:27:46.333290+00:00] PASS: real playbook execution succeeded (no halt)
+[2026-08-07T04:27:46.333303+00:00] PASS: real step produced output with a new evidence_id
+[2026-08-07T04:27:46.333320+00:00] real output: {'evidence_id': '9cf86b22-0ca9-415c-81cd-ed58cc5f0649', 'case_id': 'a8872774-df6e-4931-813f-28d148624611', 'source_detection_id': 'ab4d8506-32cd-42ab-9d3e-26520b21f2ba', 'artifact_label': 'logs', 'sha256': '1fe110a2eba4e36b1f71867dc1b02d26be38cf6e40bfe05af219733e6410e06c', 'size_bytes': 4724, 'evidence_state': 'UPLOADING'}
+[2026-08-07T04:27:46.333327+00:00] PASS: output case_id is the REAL Detection's case_id, NOT the attacker-supplied one in params -- a8872774-df6e-4931-813f-28d148624611
+
+=== Step 3: poll the REAL Celery-driven autonomous pipeline for a terminal state ===
+[2026-08-07T04:27:46.334661+00:00] poll: evidence_id=9cf86b22-0ca9-415c-81cd-ed58cc5f0649 state=UPLOADING
+[2026-08-07T04:27:49.338558+00:00] poll: evidence_id=9cf86b22-0ca9-415c-81cd-ed58cc5f0649 state=PARSING
+[2026-08-07T04:27:52.344473+00:00] poll: evidence_id=9cf86b22-0ca9-415c-81cd-ed58cc5f0649 state=COMPLETE
+[2026-08-07T04:27:52.344528+00:00] PASS: real evidence reached a real terminal state via the autonomous pipeline (no manual parse/start call) -- final_state=COMPLETE
+
+=== Step 4: INDEPENDENT re-verification from a FRESH Postgres connection ===
+[2026-08-07T04:27:52.415527+00:00] PASS: fresh read: Evidence row exists independently of the writing connection
+[2026-08-07T04:27:52.415547+00:00] PASS: fresh read: Evidence.case_id == real Detection.case_id (custody link intact) -- a8872774-df6e-4931-813f-28d148624611
+[2026-08-07T04:27:52.415554+00:00] PASS: fresh read: Evidence.org_id == the real tenant's org_id (invariant #3, never fabricated) -- f572a6cd-f3cb-4a6a-a63f-261d337b7ba8
+[2026-08-07T04:27:52.415559+00:00] PASS: fresh read: Evidence.state is the real terminal COMPLETE -- COMPLETE
+[2026-08-07T04:27:52.415563+00:00] PASS: fresh read: Evidence.sha256 matches the real artifact's own real bytes
+[2026-08-07T04:27:52.419274+00:00] PASS: fresh read: the triggering Detection is UNCHANGED (invariant #5 -- never mutated)
+[2026-08-07T04:27:52.423232+00:00] PASS: fresh read: real PLAYBOOK_EXECUTION_STARTED/STEP_EXECUTED/COMPLETED audit rows exist
+[2026-08-07T04:27:52.423245+00:00] PASS: fresh read: real EVIDENCE_UPLOAD_REQUESTED audit row exists (Evidence-side custody)
+[2026-08-07T04:27:52.423259+00:00] PASS: fresh read: the playbook step's own audit row links detection_id -> evidence_id coherently
+[2026-08-07T04:27:52.425131+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-07T04:27:52.431047+00:00] PoC PASSED -- 16/16 checks passed against the real, live dev stack (Postgres 16 + MinIO + the real running Celery worker).
+
+=== Bonus real check (not scripted, run manually against the same run's org/case): ===
+$ curl -sk -u admin:admin "https://localhost:9200/kronos-h3poc577b50f5-case-a8872774-df6e-4931-813f-28d148624611-*/_count"
+{"count": 6, "_shards": {"total": 2, "successful": 2, "skipped": 0, "failed": 0}}
+-- 6 real documents landed in the correctly org/case-scoped OpenSearch index,
+confirming COMPLETE reflects genuine real parsing+indexing (SuricataEveParser
+produced 6 real records from the real eve.json), not just an FSM label.
