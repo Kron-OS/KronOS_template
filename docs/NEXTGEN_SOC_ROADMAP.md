@@ -2818,6 +2818,40 @@ load.
 ### I5 · Performance & scale validation — L4
 Against §B.6 baselines and measured ingest rates.
 
+**Objective (added by the orchestrator 2026-08-07 — one line, scoped before
+dispatch).** CLAUDE.md §B.6 states five performance baselines that have
+never been measured against this platform for real: EVTX ingest
+>5000 records/sec (single core), OpenSearch query <500ms p95, heavy Plaso
+Celery task <10 minutes, unit test suite <5s total, and "no blocking
+operations on the FastAPI thread." Measure each against the real dev stack
+and real fixture data already in this repo — report the real numbers, pass
+or fail, rather than assuming compliance.
+**Scope note for the dispatched agent:** (1) EVTX rate — find or note the
+largest real EVTX fixture in this repo (`tests/fixtures/samples/`,
+`poc/*/`) and measure real evtx-rs fast-path throughput directly (not
+end-to-end upload latency, which includes network/ClamAV/MinIO overhead
+unrelated to parse speed) — if no fixture is large enough to measure a
+meaningful rate, say so rather than extrapolating from a 194-event sample.
+(2) OpenSearch p95 — run a real, repeated query workload (e.g. N=50-100
+realistic queries) against the live cluster's real, already-populated
+indices from this session's own extensive PoC history and measure real
+latency distribution. (3) Plaso task duration — time a real
+`log2timeline`/`psort` invocation against a real sample already used
+elsewhere in this repo (check `poc/plaso/`, `poc/kape_ingestion_test/` for
+what's already been run and its real timing, or run a fresh timed
+invocation). (4) Unit suite wall time — this session's own recent full
+runs already showed ~10-11s (not <5s) as a real, current, measured fact;
+confirm and report honestly, investigate whether that's a real regression
+worth flagging or an outdated baseline given the suite has grown from
+under 700 tests to over 1300 since §B.6 was written. (5) "No blocking
+FastAPI thread" — this is a code-review-shaped check, not a load-test
+number; a real concurrent-request test (N simultaneous requests, confirm
+p50/p95 latency doesn't degrade linearly with a single slow request
+blocking the event loop) is the strongest real evidence, if feasible in
+the time available — otherwise a targeted `grep` audit for synchronous
+blocking calls (`requests.`, unwrapped `open()`/file I/O, sync DB calls)
+inside `async def` route handlers is an honest, real, if narrower, check.
+
 ---
 
 ## 4. Agent brief template
