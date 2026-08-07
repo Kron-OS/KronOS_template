@@ -2631,6 +2631,107 @@ file-based evidence uploads it measures upload-to-index latency instead,
 which is a real but different number; decide and document which you're
 measuring and why.
 
+**STATUS (2026-08-07): 4/7 KPIs implemented and REALLY VERIFIED against the
+live dev cluster's own real historical data; 3/7 investigated and
+explicitly scoped as follow-up, not fabricated.** Full verified output at
+`poc/metrics_kpis/README.md` + `output.txt`. Summary:
+
+1. **Extensibility design.** `MetricCalculator` (ABC, `src/application/
+   metric_calculator.py`) + `MetricRegistry` (plain dict keyed by
+   `metric_name`, mirroring `PlaybookActionRegistry`'s own reasoning, not
+   `ParserRegistry`'s content-sniffing one) + a thin `MetricsService`
+   orchestrator. A new KPI is a new `MetricCalculator` subclass registered
+   via one `register()` call — zero edits to `MetricRegistry`,
+   `MetricsService`, or any other calculator. `MetricResult`
+   (`src/domain/metrics.py`) is a frozen Pydantic value object whose
+   `value` is `None` — never a fabricated `0.0`/`100.0` — plus a plain-
+   language `unavailable_reason`, per invariant #8.
+2. **Implemented (the roadmap's own suggested strongest 4, confirmed
+   independently before building):**
+   `MeanTimeToDetectCalculator` (`metric_mttd.py`), `FalsePositiveRateCalculator`
+   (`metric_fp_rate.py`), `RuleCoverageCalculator` (`metric_rule_coverage.py`,
+   + new small `SecurityAnalyticsRuleCatalog` adapter,
+   `src/adapter/opensearch/rule_catalog.py`), `SealerLagCalculator`
+   (`metric_sealer_lag.py`, + one new `SealedBatchRepository.
+   list_source_ids_for_org` method, added to the ABC + both existing
+   implementations). Real numbers computed against `kronos-dev`'s 796 real
+   Detections / 10 real triage-transition audit rows: MTTD mean 346.5s
+   (min 80.6s, max 21,062.7s), FP rate 0.5 (1/2 terminal), rule coverage
+   0.00303 (5/1650 real prepackaged rules fired). A real sparse org
+   correctly returned `None` + an honest reason for 3 of the 4 metrics
+   (rule coverage correctly returned a real `0.0`, not "unavailable" — a
+   computed zero against a real, non-empty denominator is a different,
+   equally honest fact from "no data exists to compute this at all").
+3. **Real, load-bearing finding #1 (generalizes C5's own finding):**
+   Redis had **zero surviving stream keys** at the start of this item — the
+   D1-D5 session's own real Streams data does not persist across a
+   restart (no AOF/RDB durability on the dev-compose Redis). Demonstrated
+   the live sealer-lag path anyway via one real, fresh
+   produce→seal_pending→produce-without-consuming round-trip (real MinIO
+   WORM write, real Postgres row, TSA omitted — see PoC README) — caught
+   and fixed a real bug in `SealerLagCalculator` itself in the process: the
+   first draft summed only `pending_count`, silently reporting `0.0` for a
+   real, live `lag: 4` backlog (the "no sealer process running at all"
+   failure mode, distinct from "a sealer is stuck"). Fixed to sum
+   `pending_count + lag` before this was ever called done, per CLAUDE.md
+   §F's "run it and read the output" requirement.
+4. **Real, load-bearing finding #2 (the more important one, generalizes
+   C5's "SA monitors filter by @timestamp recency" finding into a
+   structural property of the whole Detection pipeline):** building
+   `MeanTimeToDetectCalculator` and running it against all 796 real
+   Detections proved that **every Detection this platform can ever
+   produce is logically guaranteed to be built from a document whose
+   `@timestamp` was recent enough for SA to have fired on it in the first
+   place** — confirmed directly (`_version: 2` on a document under a real
+   `*-201508` index, `@timestamp` overwritten to the PoC run date). MTTD
+   computed exactly as this roadmap specifies is therefore structurally
+   incapable of measuring genuine detection latency against historical
+   forensic evidence under the current SA-monitor-based pipeline — it can
+   only ever reflect "SA schedule interval plus sync latency", regardless
+   of how old the real underlying evidence is. Not a bug in the
+   calculator; a real, structural limitation of the pipeline it measures,
+   flagged the same way C5 flagged the original, narrower version of this
+   same gap.
+5. **Investigated, explicitly deferred (not fabricated):**
+   - **MTTR (proper):** confirmed NOT honestly computable — Detection's
+     triage FSM has no remediation-complete terminal state, and
+     `containment.action_*` audit events key on `user_id`/`session_id`,
+     never `detection_id` (verified directly against live audit rows) — no
+     real join key exists between a containment action and the Detection
+     it responded to.
+   - **A distinct, weaker, real proxy — "time to first triage engagement"
+     (MTTA, not MTTR)** — confirmed genuinely computable
+     (`DETECTION_TRIAGE_TRANSITIONED` audit rows carry both real
+     `details.detection_id` and `occurred_at`) but not built this pass;
+     must be named MTTA if built later, never mislabeled as MTTR.
+   - **Analyst workload:** confirmed genuinely computable (real
+     `actor_user_id` on every `DETECTION_TRIAGE_TRANSITIONED` row) — a
+     real, minor gap noted in passing: several playbook-driven transitions
+     show `actor_username: "unknown"` (`PlaybookExecutionService`'s own
+     identity resolution for automated transitions), flagged, not fixed.
+     Deferred to keep this pass at the roadmap's own suggested 4 KPIs.
+   - **Ingest lag:** decided and documented, not built — for the
+     evidence-upload path (the only one with real historical data today)
+     the honest measurement is upload-finalized-to-indexed latency, a
+     genuinely different number from event-timestamp-to-index-timestamp
+     lag, which only becomes meaningful once the D-milestone continuous-
+     stream path is live.
+6. **Verification:** full unit suite re-run after these changes: **1315
+   passed, 1 skipped** (baseline 1283 passed/1 skipped + 32 new tests,
+   zero regressions). `mypy src/` **29 errors, same 10 files** as baseline
+   (confirmed via `git stash -u` before/after) — the 2 new files
+   (`metric_mttd.py`, `metric_sealer_lag.py`) that briefly introduced 3 new
+   errors while being written were fixed before this was called done, not
+   left as "pre-existing-style" debt. `ruff check` clean on every new/
+   modified file.
+7. **Not wired into `src/external/dependencies.py`/`startup.py`** —
+   deliberately mirrors G1's own `RarityBaselineScorer` precedent (a
+   standalone application-layer service, constructed directly by whoever
+   needs it, rather than forced through the DI container before a real
+   consumer — a route or scheduled job — is decided). Real, legitimate
+   follow-up once a concrete consumer exists, not fabricated integration
+   for its own sake.
+
 ### I3 · Prod / Helm parity debt — L2
 **Known-open, already documented:** Helm has **no `CLAMD_HOST` wiring at all**;
 `MAX_UPLOAD_BYTES`/`CLAMD_CONF_*` reconciliation was scoped to

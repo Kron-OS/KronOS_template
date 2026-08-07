@@ -39,6 +39,17 @@ class SealedBatchRepository(ABC):
         against this batch's ``last_message_id``.
         """
 
+    @abstractmethod
+    async def list_source_ids_for_org(self, org_id: uuid.UUID) -> list[str]:
+        """Distinct ``source_id``s this org has ever sealed a batch for.
+
+        Added for roadmap M8/I2 (``SealerLagCalculator``): computing a
+        per-org sealer-lag metric needs to know *which* sources belong to
+        an org before it can ask ``StreamIngestAdapter.consumer_group_health``
+        about each one -- there was previously no way to enumerate that
+        without already knowing every source_id in advance.
+        """
+
 
 class InMemorySealedBatchRepository(SealedBatchRepository):
     """Thread-unsafe in-memory double for unit tests."""
@@ -56,10 +67,11 @@ class InMemorySealedBatchRepository(SealedBatchRepository):
 
     async def get_last_sealed(self, org_id: uuid.UUID, source_id: str) -> SealedBatch | None:
         candidates = [
-            b
-            for b in self._batches.values()
-            if b.org_id == org_id and b.source_id == source_id
+            b for b in self._batches.values() if b.org_id == org_id and b.source_id == source_id
         ]
         if not candidates:
             return None
         return max(candidates, key=lambda b: b.sealed_at)
+
+    async def list_source_ids_for_org(self, org_id: uuid.UUID) -> list[str]:
+        return sorted({b.source_id for b in self._batches.values() if b.org_id == org_id})

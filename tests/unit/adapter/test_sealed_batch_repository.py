@@ -71,3 +71,22 @@ class TestInMemorySealedBatchRepository:
         await repo.save(_batch(org_id, "zeek-conn", datetime.now(UTC), "1-0"))
 
         assert await repo.get_last_sealed(org_id, "other-source") is None
+
+    @pytest.mark.asyncio
+    async def test_list_source_ids_for_org_returns_distinct_sorted_sources(self) -> None:
+        repo = InMemorySealedBatchRepository()
+        org_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        await repo.save(_batch(org_id, "zeek-conn", now, "1-0"))
+        await repo.save(_batch(org_id, "zeek-conn", now, "2-0"))  # same source, second batch
+        await repo.save(_batch(org_id, "syslog", now, "3-0"))
+
+        assert await repo.list_source_ids_for_org(org_id) == ["syslog", "zeek-conn"]
+
+    @pytest.mark.asyncio
+    async def test_list_source_ids_for_org_scoped_to_org(self) -> None:
+        repo = InMemorySealedBatchRepository()
+        org_id = uuid.uuid4()
+        await repo.save(_batch(uuid.uuid4(), "other-org-source", datetime.now(UTC), "1-0"))
+
+        assert await repo.list_source_ids_for_org(org_id) == []

@@ -58,9 +58,7 @@ class PostgresSealedBatchRepository(SealedBatchRepository):
     async def save(self, batch: SealedBatch) -> SealedBatch:
         async with self._engine.begin() as conn:
             try:
-                await conn.execute(
-                    sealed_batches_table.insert().values(**self._to_row(batch))
-                )
+                await conn.execute(sealed_batches_table.insert().values(**self._to_row(batch)))
             except Exception as exc:
                 raise StorageError(
                     "Failed to persist sealed batch",
@@ -94,6 +92,15 @@ class PostgresSealedBatchRepository(SealedBatchRepository):
                 )
             ).one_or_none()
         return None if row is None else self._from_row(row._asdict())
+
+    async def list_source_ids_for_org(self, org_id: uuid.UUID) -> list[str]:
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                sa.select(sealed_batches_table.c.source_id)
+                .where(sealed_batches_table.c.org_id == org_id)
+                .distinct()
+            )
+            return sorted(row[0] for row in result)
 
     @staticmethod
     def _to_row(batch: SealedBatch) -> dict[str, object]:
