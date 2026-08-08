@@ -153,6 +153,20 @@ class AuditEventType(StrEnum):
     TICKET_SYNC_EXECUTED = "ticket.sync_executed"
     TICKET_SYNC_FAILED = "ticket.sync_failed"
 
+    # Integration sink pushes (KAFKA_AND_INTEGRATIONS_ROADMAP.md R1 --
+    # KronOS -> external SIEM/SOAR) -- mirrors TICKET_SYNC's own
+    # ATTEMPTED-before-the-call / distinct-FAILED discipline exactly, one
+    # triple per real batch pushed through an IntegrationSink: ATTEMPTED is
+    # logged before the real outbound call is even made, so a crash inside
+    # it can never erase the fact an attempt happened; EXECUTED records the
+    # real SinkAck (including its honest ACKNOWLEDGED/UNACKNOWLEDGED
+    # status -- never conflated); FAILED means the real backend was
+    # unreachable, rejected the call, or a real SinkAuthenticator failure,
+    # never silently absorbed. See src/application/detection_sink_push.py.
+    SINK_PUSH_ATTEMPTED = "sink.push_attempted"
+    SINK_PUSH_EXECUTED = "sink.push_executed"
+    SINK_PUSH_FAILED = "sink.push_failed"
+
     # Org administration
     ORG_USER_INVITED = "org.user_invited"
     ORG_USER_ROLE_CHANGED = "org.user_role_changed"

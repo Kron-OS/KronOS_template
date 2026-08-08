@@ -325,6 +325,90 @@ ONE real concrete sink end-to-end before any other sink connector starts.
 **Depends on:** nothing (disjoint file surface from Q1 — may run in
 parallel with Q1 once both are dispatched, per §5's own parallelization rule).
 
+**STATUS (2026-08-08): DONE — test-stage only (expected for a foundation
+item, see §3).** Built across two dispatches (an initial pass that hit a
+real session cutoff mid-flight, then a delta-aware redispatch that read
+every file the first pass had already written before touching anything,
+completed the tests/PoC, and fixed lint only — no design changes were
+needed).
+
+- **Shape chosen (§4 design constraint, one ABC not two):**
+  `IntegrationSink.push_events(events) -> SinkAck` — one method, one small
+  ABC (`src/adapter/integration_sink/integration_sink.py`), never a
+  per-transport-family method or a parallel ABC hierarchy. The
+  ACKNOWLEDGED-vs-UNACKNOWLEDGED distinction §4 calls out as "must be
+  modeled honestly, not papered over" lives in a real, type-checked return
+  value (`SinkAck`/`SinkAckStatus`, `src/domain/integration_sink.py`), not
+  in which code path a caller happened to invoke. Full reasoning + the two
+  rejected alternatives are in both modules' own docstrings.
+- **Ack-modeling verdict, the redispatch's own explicit assignment:
+  CORRECT, no fix needed.** Independently re-derived from first
+  principles, not just re-read: `HttpJsonIntegrationSink` has exactly one
+  return statement and it is reached only after a real 2xx status code AND
+  a real response-body `accepted` count matching the real number of
+  events sent — any other outcome raises. `SyslogIntegrationSink` has
+  exactly one return statement, unconditionally `UNACKNOWLEDGED`, with no
+  branch anywhere in the class that could ever produce `ACKNOWLEDGED` —
+  the honesty is structural (impossible to get wrong per-call), not a
+  convention a future edit could quietly violate. Verified for real
+  end-to-end in `poc/integration_sink_foundation/` Scenarios 1/3/4 (real
+  2xx+body → real `ACKNOWLEDGED`; real TCP/UDP socket writes → real
+  `UNACKNOWLEDGED`, never the other status).
+- **Collaborators:** `SinkAuthenticator` (5 implementations — Null,
+  StaticToken, ApiKeyTuple, mTLS via `httpx`'s own `cert=`/`verify=`, and
+  OAuth2 client-credentials with real cache/expiry) and
+  `DetectionEventMapper` (`MappedSinkEvent` — exactly one of
+  `payload`/`raw_text` set, enforced by `__post_init__`) both built and
+  tested per §4.
+- **Batching:** `chunk_events()` (`src/adapter/integration_sink/batching.py`)
+  — shared, target-agnostic count/byte-ceiling chunker; each concrete sink
+  only supplies its own real ceilings via `max_batch_events`/`max_batch_bytes`.
+- **Tests:** 71 new unit tests added this pass (batching, all 5
+  authenticators, `HttpJsonIntegrationSink`, `SyslogIntegrationSink`,
+  `MappedSinkEvent`/mapper pluggability, `DetectionSinkPushService`
+  orchestration+audit — success AND failure paths for both transport
+  families). `HttpJsonIntegrationSink`/OAuth2 tests mock `httpx` (mirrors
+  `test_ticketing_system.py`); `SyslogIntegrationSink` tests use real
+  local `asyncio` TCP/UDP listeners in-process (no external dependency to
+  mock — CLAUDE.md §B.5) plus a real `ConnectionRefusedError`/timeout
+  against a real closed port. Full suite: **1416 passed, 1 skipped** (was
+  1345/1 pre-existing baseline, independently re-confirmed via
+  `git stash -u`, zero regressions). `ruff`/`black` clean on every touched
+  file (including two prior-session files that needed reformatting only,
+  no logic changes). `mypy`: 29 pre-existing errors, unchanged (zero new).
+- **PoC (`poc/integration_sink_foundation/`), 25/25 checks passed, real
+  captured output in `output.txt`:** a real local HEC-shaped JSON
+  receiver + real local OAuth2 token endpoint (both stdlib `http.server`)
+  and a real local TCP (`asyncio.start_server`) + UDP
+  (`asyncio.DatagramProtocol`) syslog-shaped receiver, all stood up and
+  torn down by the PoC itself (independently confirmed nothing left
+  listening afterward) — never a live vendor account, per invariant #9.
+  Also proves, for real, the exact claim `sink_authenticator.py`'s own
+  docstring makes about itself (two pushes, one real OAuth2 token fetch —
+  server-side and client-side counts both confirmed), and runs the real
+  `DetectionSinkPushService` end-to-end against the real, live dev-stack
+  Postgres 16 (`docker-postgres-1`, untouched/pre-existing — no new
+  container created), independently re-reading the audit trail from a
+  fresh connection and re-verifying the real hash chain via
+  `AuditLogService.verify_chain()`.
+- **Stage reached (§3): test-stage only**, exactly as expected for a
+  foundation item — no named-vendor target exists yet to wire into
+  `docker-compose.dev.yml`/`prod.yml`, and R1 introduces no new service
+  dependency of its own (`httpx` was already pinned). Dev/prod wiring is
+  real, deliberate R2/R3/R4 scope.
+- **Not built here, by design (R2–R4's own scope):** any named-vendor
+  `DetectionEventMapper` (Splunk HEC envelope, real CEF/LEEF field
+  dictionary, Sentinel DCR-shaped columns); route/playbook-action wiring
+  (mirrors H4's own identical "foundation only" precedent); retry/backoff
+  on a failed push.
+- **Not independently re-verified this pass (flagged, not silently
+  assumed):** a dedicated "UDP `sendto()` to a closed port does not
+  raise" *positive* test — accepted as an established POSIX/asyncio
+  property per the module docstring's own claim, not re-derived with its
+  own scenario (Scenario 5's real failure demonstration is TCP-only, by
+  design, since TCP is the transport that can produce a real
+  deterministic failure).
+
 ### R2 · Splunk HEC sink connector — L2
 **Objective.** Real HEC token + JSON envelope push of a real `Detection`,
 against a real local Splunk instance if a real free/dev-license image

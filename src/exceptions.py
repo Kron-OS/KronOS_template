@@ -154,6 +154,17 @@ class TicketingError(KronOSException):
     """
 
 
+class IntegrationSinkError(KronOSException):
+    """Raised when a real outbound call to an ``IntegrationSink`` backend
+    fails: unreachable, a non-2xx response (HTTP-JSON family), a real
+    socket-level failure (syslog family), or a ``SinkAuthenticator`` unable
+    to produce/refresh real auth material (KAFKA_AND_INTEGRATIONS_ROADMAP.md
+    R1). Deliberately never silently swallowed -- CLAUDE.md SS1#8 requires a
+    sink push that can't reach its real backend to fail loudly, never no-op
+    as if the event were delivered, and never fabricate a ``SinkAck``.
+    """
+
+
 class StorageQuotaExceededError(KronOSException):
     """Raised when an org's real total stored bytes would exceed the hard
     1.5x storage_quota_bytes ceiling (docs/TENANT_USAGE_QUOTA.md §1).

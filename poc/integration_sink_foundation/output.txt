@@ -1,0 +1,47 @@
+[2026-08-08T23:03:52.214903+00:00] === real local HEC-shaped JSON receiver listening on http://127.0.0.1:36587/hec ===
+[2026-08-08T23:03:52.215180+00:00] === real local OAuth2 token endpoint listening on http://127.0.0.1:34089/token ===
+[2026-08-08T23:03:52.215354+00:00] === real local TCP syslog receiver listening on 127.0.0.1:42821 ===
+[2026-08-08T23:03:52.215465+00:00] === real local UDP syslog receiver listening on 127.0.0.1:52707 ===
+[2026-08-08T23:03:52.275446+00:00] === real tenant org_id=38f2eee7-dd59-4bf5-bd3e-3520a0a64c69 org_alias=r1poc92c74470 ===
+
+=== Scenario 1: HTTP-JSON push-with-ack (real 2xx + accepted body) ===
+[2026-08-08T23:03:52.322849+00:00] PASS: real HTTP push returns ACKNOWLEDGED (real 2xx + accepted body)
+[2026-08-08T23:03:52.322863+00:00] PASS: ack.detail carries the real status_code
+[2026-08-08T23:03:52.322867+00:00] PASS: ack.detail carries the real accepted count
+[2026-08-08T23:03:52.322870+00:00] PASS: real receiver actually saw the real StaticTokenAuthenticator header
+[2026-08-08T23:03:52.322874+00:00] PASS: real receiver's own request body carries the real mapped payload
+
+=== Scenario 2: HTTP-JSON failure paths (real 500, real accepted-count mismatch) ===
+[2026-08-08T23:03:52.331890+00:00] PASS: real 500 response raises IntegrationSinkError -- status_code=500
+[2026-08-08T23:03:52.340509+00:00] PASS: real accepted-count mismatch raises IntegrationSinkError (never a partial ack) -- sent=1 accepted=0
+
+=== Scenario 3: syslog fire-and-forget over real TCP ===
+[2026-08-08T23:03:52.341072+00:00] PASS: real TCP syslog write returns UNACKNOWLEDGED -- NEVER ACKNOWLEDGED
+[2026-08-08T23:03:52.541479+00:00] PASS: real local TCP receiver actually received the real CEF-shaped line
+
+=== Scenario 4: syslog fire-and-forget over real UDP ===
+[2026-08-08T23:03:52.541785+00:00] PASS: real UDP syslog write returns UNACKNOWLEDGED
+[2026-08-08T23:03:52.742135+00:00] PASS: real local UDP receiver actually received the real datagram
+
+=== Scenario 5: syslog fail loudly -- real ConnectionRefusedError (invariant #8) ===
+[2026-08-08T23:03:52.742466+00:00] PASS: real TCP connection-refused raises IntegrationSinkError -- error=[Errno 111] Connect call failed ('127.0.0.1', 1)
+
+=== Scenario 6: OAuth2 real caching (2 pushes, 1 fetch) ===
+[2026-08-08T23:03:52.769221+00:00] PASS: real local OAuth2 token endpoint was hit exactly ONCE across two real pushes -- server-observed fetch_count=1
+[2026-08-08T23:03:52.769236+00:00] PASS: authenticator's own real_token_fetch_count agrees with the server
+[2026-08-08T23:03:52.769242+00:00] PASS: both real pushes used the SAME real cached token (no silent per-call reauthentication)
+
+=== Scenario 7: DetectionSinkPushService orchestration + real Postgres audit trail ===
+[2026-08-08T23:03:52.821153+00:00] PASS: real push() reports the correct detection_count
+[2026-08-08T23:03:52.821168+00:00] PASS: real push() batched 5 events into 3 real HTTP calls (max_batch_events=2)
+[2026-08-08T23:03:52.821177+00:00] PASS: real push() result is all_acknowledged (every batch got a real ACKNOWLEDGED ack)
+--- real push() against a failing sink, audited then re-raised ---
+[2026-08-08T23:03:52.827338+00:00] PASS: real failing push raises IntegrationSinkError
+--- independent fresh-connection audit re-verification ---
+[2026-08-08T23:03:52.863991+00:00] PASS: fresh read: real SINK_PUSH_ATTEMPTED rows exist for every real batch (>= 3 + 1 fail)
+[2026-08-08T23:03:52.864006+00:00] PASS: fresh read: real SINK_PUSH_EXECUTED rows exist for the 3 successful batches
+[2026-08-08T23:03:52.864010+00:00] PASS: fresh read: real SINK_PUSH_FAILED row exists for the deliberately-failing push
+[2026-08-08T23:03:52.864021+00:00] PASS: fresh read: every real EXECUTED row's own ack_status is honestly ACKNOWLEDGED
+[2026-08-08T23:03:52.865827+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-08T23:03:52.868971+00:00] PASS: chunk_events() independently reproduces the same [2, 2, 1] batching
+[2026-08-08T23:03:53.751901+00:00] PoC PASSED -- 25/25 checks passed against real local HTTP/TCP/UDP receivers + the real, live dev-stack Postgres 16.
