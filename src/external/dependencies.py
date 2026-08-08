@@ -45,6 +45,10 @@ from src.adapter.repository.sealed_batch import (
     InMemorySealedBatchRepository,
     SealedBatchRepository,
 )
+from src.adapter.repository.source_cursor import (
+    InMemorySourceCursorRepository,
+    SourceCursorRepository,
+)
 from src.adapter.repository.yara_rule_pack import (
     InMemoryYaraRulePackRepository,
     YaraRulePackRepository,
@@ -68,6 +72,8 @@ from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.quota_gate import StorageQuotaGate
 from src.application.risk_scoring import DetectionRiskScorer
+from src.application.integration_source import IntegrationSourceRegistry
+from src.application.integration_source_ingest import IntegrationSourceIngestService
 from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
@@ -79,6 +85,12 @@ from src.application.validation import EvidenceValidator, default_validator_chai
 from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
+from src.external.integration_sources.generic_webhook import GenericWebhookPushSource
+from src.external.middleware.integration_source_auth import (
+    InboundSourceAuthenticator,
+    StaticApiKeyInboundAuthenticator,
+    StaticApiKeyProvisioning,
+)
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
 from src.external.middleware.step_up_store import (
     InMemoryTicketStore,
@@ -123,6 +135,22 @@ _ism_tier_resolver: IsmTierResolver = DefaultIsmTierResolver()
 _stream_ingest_adapter: StreamIngestAdapter = InMemoryStreamIngestAdapter()
 _event_dedup_checker: EventDedupChecker = InMemoryEventDedupChecker()
 _collector_ingest_service: CollectorIngestService | None = None
+# IntegrationSource foundation (roadmap Q1). Registry defaults to the one
+# real, non-vendor-specific concrete PUSH stand-in
+# (GenericWebhookPushSource) so DI never hard-fails before a real vendor
+# connector (Q2+) registers itself -- mirrors _ism_tier_resolver's own
+# "always-real, always-safe default" idiom, not an empty placeholder.
+# _inbound_source_authenticator defaults to zero provisioned keys (an
+# honestly disabled state -- every request is rejected -- same pattern as
+# _yara_runner: None until E4 configures a real one); real per-(org,source)
+# API-key provisioning is real, but dev/prod-stage wiring (roadmap SS3) is
+# a follow-up, not yet called from startup.py.
+_integration_source_registry: IntegrationSourceRegistry = IntegrationSourceRegistry()
+_integration_source_registry.register(GenericWebhookPushSource())
+_source_cursor_repository: SourceCursorRepository = InMemorySourceCursorRepository()
+_inbound_source_authenticator: InboundSourceAuthenticator = StaticApiKeyInboundAuthenticator({})
+_integration_source_max_stream_length: int = 1_000_000
+_integration_source_dedup_ttl_seconds: int = 3600
 _findings_client: FindingsClient | None = None
 _detection_repository: DetectionRepository = InMemoryDetectionRepository()
 # Correlation (roadmap M2/F3) -- same "honestly disabled" shape as
@@ -256,6 +284,56 @@ def configure_collector_ingest_service(
         max_stream_length=max_stream_length,
         dedup_ttl_seconds=dedup_ttl_seconds,
     )
+
+
+def get_integration_source_registry() -> IntegrationSourceRegistry:
+    return _integration_source_registry
+
+
+def get_source_cursor_repository() -> SourceCursorRepository:
+    return _source_cursor_repository
+
+
+def get_inbound_source_authenticator() -> InboundSourceAuthenticator:
+    return _inbound_source_authenticator
+
+
+def get_integration_source_ingest_service(
+    registry: Annotated[IntegrationSourceRegistry, Depends(get_integration_source_registry)],
+    cursor_repository: Annotated[SourceCursorRepository, Depends(get_source_cursor_repository)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> IntegrationSourceIngestService:
+    """FastAPI dependency for IntegrationSourceIngestService (roadmap Q1).
+
+    Reuses the main app's own already-configured stream transport/dedup
+    checker globals (``_stream_ingest_adapter``/``_event_dedup_checker``) --
+    unlike ``CollectorIngestService``, a static-API-key-authenticated PUSH
+    source does not need the separate mTLS dual-listener app, so this
+    service is wired into the main container instead.
+    """
+    return IntegrationSourceIngestService(
+        registry,
+        _stream_ingest_adapter,
+        _event_dedup_checker,
+        cursor_repository,
+        audit_log,
+        max_stream_length=_integration_source_max_stream_length,
+        dedup_ttl_seconds=_integration_source_dedup_ttl_seconds,
+    )
+
+
+def configure_static_api_key_provisioning(
+    provisioned_keys: dict[str, StaticApiKeyProvisioning],
+) -> None:
+    """Real startup wiring hook for API-key-authenticated PUSH sources.
+
+    Not yet called from ``startup.py`` -- real per-(org,source) key
+    provisioning (Vault/env-sourced) is dev/prod-stage wiring (roadmap SS3),
+    a follow-up once a real named vendor (Q2+) needs it. Exists now so that
+    wiring is a one-line startup.py addition later, not a new abstraction.
+    """
+    global _inbound_source_authenticator
+    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(provisioned_keys)
 
 
 def get_sealed_batch_repository() -> SealedBatchRepository:
@@ -955,6 +1033,8 @@ def reset_dependencies() -> None:
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     global _org_quota_repository
+    global _integration_source_registry, _source_cursor_repository
+    global _inbound_source_authenticator
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -977,6 +1057,10 @@ def reset_dependencies() -> None:
     _detector_provisioner = None
     _ism_manager = None
     _ism_tier_resolver = DefaultIsmTierResolver()
+    _integration_source_registry = IntegrationSourceRegistry()
+    _integration_source_registry.register(GenericWebhookPushSource())
+    _source_cursor_repository = InMemorySourceCursorRepository()
+    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator({})
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()
     _event_dedup_checker = InMemoryEventDedupChecker()
     _collector_ingest_service = None

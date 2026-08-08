@@ -183,6 +183,19 @@ class AuditEventType(StrEnum):
     QUOTA_INGESTION_HELD = "quota.ingestion_held"
     QUOTA_INGESTION_RESUMED = "quota.ingestion_resumed"
 
+    # Integration sources (roadmap Q1) -- external EDR/SIEM/IDS tools
+    # handing KronOS their own real alerts, via the IntegrationSource
+    # foundation (src/application/integration_source.py). One audit event
+    # per real ingested batch (a whole webhook call, or a whole poll
+    # cycle's page of results) -- mirrors the existing collector-ingest
+    # idiom of auditing at the durable-batch granularity
+    # (BATCH_SEALED/STREAM_EVENT_DEAD_LETTERED above), not per raw event,
+    # since raw per-event produces onto the stream are provisional/
+    # unsealed until a batch is actually sealed.
+    INTEGRATION_SOURCE_PUSH_INGESTED = "integration_source.push_ingested"
+    INTEGRATION_SOURCE_POLL_COMPLETED = "integration_source.poll_completed"
+    INTEGRATION_SOURCE_POLL_FAILED = "integration_source.poll_failed"
+
     # Generic
     SYSTEM_ERROR = "system.error"
 

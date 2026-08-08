@@ -26,6 +26,7 @@ from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
 from src.external.routes import detections as detections_routes
 from src.external.routes import evidence as evidence_routes
+from src.external.routes import integration_source_push as integration_source_push_routes
 from src.external.routes import sse as sse_routes
 from src.external.routes import step_up as step_up_routes
 
@@ -113,6 +114,7 @@ def create_app(
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
     app.include_router(step_up_routes.router)
+    app.include_router(integration_source_push_routes.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

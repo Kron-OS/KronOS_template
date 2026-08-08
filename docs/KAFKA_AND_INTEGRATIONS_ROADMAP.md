@@ -291,6 +291,118 @@ proven against ONE real concrete source end-to-end before any other
 source connector starts (a gate for Q2–Q4, not parallelizable with them).
 **Depends on:** nothing.
 
+**STATUS (2026-08-09): foundation complete, test-stage only, gate open for Q2–Q4.**
+
+Built across two sessions (a prior session's own work on the domain value
+objects + ABC/registry survived a session cutoff and is unchanged here;
+this session added everything else in the "still needed" list from that
+session's own handoff).
+
+- **ABC-vs-`ForensicParser` decision, confirmed, not revised.** The prior
+  session's own argument in `src/application/integration_source.py`'s
+  module docstring holds: `ForensicParser` requires an `Evidence` object
+  (file, hash, case) that structurally does not exist for a live external
+  alert, `ParserRegistry` dispatches by content-sniffing which is
+  meaningless for a source with no bytes yet at dispatch time, and a
+  durable poll cursor + pluggable inbound auth are genuinely new state
+  `ForensicParser` has no notion of. Re-verified by reading the real
+  existing pipeline end to end (`collector_ingest.py` →
+  `stream_ingest.py` → `batch_sealing.py` → `stream_normalization.py`)
+  before continuing, per the brief's instruction not to assume the prior
+  reasoning was correct just because it existed — it is.
+- **What was already there (prior session, verified correct against this
+  design):** `src/domain/integration_source.py` (`IntegrationDeliveryMode`,
+  `IntegrationSourceIdentity`, `SourceCursor`), `src/application/integration_source.py`
+  (`IntegrationSource` ABC + `IntegrationSourceRegistry` + `PollFetchResult`
+  + `IntegrationSourceError`), and 3 new `AuditEventType` members in
+  `src/domain/audit.py` (`integration_source.push_ingested`/
+  `poll_completed`/`poll_failed`).
+- **What this session added:**
+  - `src/adapter/repository/source_cursor.py` +
+    `src/adapter/repository/postgres_source_cursor.py` — `SourceCursorRepository`
+    ABC + `InMemorySourceCursorRepository` + `PostgresSourceCursorRepository`,
+    mirroring `OrgQuotaRepository`/`postgres_quota.py`'s own pattern exactly.
+  - `src/external/middleware/integration_source_auth.py` — pluggable auth:
+    `identity_from_collector_identity()` (mTLS reuse — adapts the existing,
+    already-verified `CollectorIdentity` from the D2 collector transport,
+    no reimplementation), `StaticApiKeyInboundAuthenticator` (new inbound
+    transport), and for POLL's outbound side: `ApiKeyOutboundAuthStrategy`,
+    `MtlsOutboundAuthStrategy`, `OAuth2ClientCredentialsOutboundAuthStrategy`
+    (RFC 6749 §4.4 client-credentials grant, parameterized by token
+    endpoint/scope, in-process token caching with a 30s expiry margin).
+  - `src/application/integration_source_ingest.py` — `IntegrationSourceIngestService`:
+    the real orchestration (backpressure → SHA-256-over-raw-bytes dedup →
+    produce onto the existing D1 `StreamIngestAdapter` → persist cursor on
+    a non-empty poll page → one audit event per real call), reusing the
+    existing stream transport rather than inventing a second one.
+  - `src/external/integration_sources/generic_webhook.py` (PUSH) and
+    `generic_poll.py` (POLL) — the two concrete stand-ins the brief
+    required, not a named vendor (Q2/Q4 do that): a batch-envelope-aware
+    generic webhook splitter, and a generic `cursor`/`next_cursor`
+    poll client.
+  - `src/external/routes/integration_source_push.py`, mounted on the main
+    app (`fastapi_app.py`) — unlike the mTLS collector path, a static-API-
+    key-authenticated PUSH source needs no special TLS listener, so it
+    lives on the main app with its own DI wiring in `dependencies.py`
+    (`get_integration_source_registry`/`get_source_cursor_repository`/
+    `get_inbound_source_authenticator`/`get_integration_source_ingest_service`,
+    plus `configure_static_api_key_provisioning()` as the real startup hook
+    — not yet called from `startup.py`, see stage note below).
+- **Real PoC (`poc/integration_source_foundation/`), both required shapes,
+  real captured output (see that dir's own `output.txt`/`README.md`):**
+  (a) a real `uvicorn` server hosting the real FastAPI route, hit by a real
+  `httpx` client over a real TCP socket — proved accept/dedup/batch-split/
+  wrong-key-401/wrong-source-type-403/stream-length/audit-count all for
+  real; (b) a real stdlib `ThreadingHTTPServer` standing in for an external
+  poll API, polled by the real `GenericPollSource` across 3 real cycles —
+  proved cursor persistence, empty-page-does-not-advance, and a real 401
+  surfacing as a real `IntegrationSourceError`; (c) an extra, not-originally-
+  required check: `PostgresSourceCursorRepository` against the real,
+  already-running shared dev Postgres (create/get/upsert/on-conflict-update,
+  own row cleaned up afterward).
+- **Tests:** 60 new unit tests added (`tests/unit/adapter/test_source_cursor_repository.py`,
+  `tests/unit/application/test_integration_source.py`,
+  `tests/unit/application/test_integration_source_ingest.py`,
+  `tests/unit/middleware/test_integration_source_auth.py`,
+  `tests/unit/integration_sources/test_generic_webhook.py`,
+  `tests/unit/integration_sources/test_generic_poll.py`,
+  `tests/unit/test_routes_integration_source_push.py`), mocking only
+  external dependencies (stream adapter, dedup checker, cursor repository,
+  audit log, httpx client) per CLAUDE.md §B.5. Full suite re-run: **1405
+  passed, 1 skipped** (1345 passed/1 skipped baseline + these 60, zero
+  regressions). `mypy src`: **29 errors**, identical count/file set to the
+  documented pre-existing baseline — zero new errors introduced.
+- **Stage reached (§3): test-stage only**, honestly incomplete on purpose.
+  Dev-stage (real per-org API-key provisioning sourced from Vault/env and
+  wired into `startup.py` via the already-built
+  `configure_static_api_key_provisioning()` hook) and prod-stage
+  (`docker-compose.prod.yml` parity check) are real follow-up work, not
+  done here — no concrete named vendor exists yet to provision real keys
+  for, so building that wiring now would be speculative rather than
+  verified.
+- **Known, pre-existing gap surfaced, not fixed (out of Q1 scope, flagged
+  for Q4):** `StreamSourceNormalizer.normalize()` can only return a
+  `NormalizedStreamEvent` (timeline-shaped) — no artifact-shaped
+  equivalent exists yet. A future poll source whose real payload is
+  artifact-shaped (Microsoft Defender's `evidence[]` entity list) cannot
+  be fully wired to durable storage via the existing normalization
+  pipeline until that gap closes. Also: `CollectorIngestService` (the
+  existing D2 collector path this session's `IntegrationSourceIngestService`
+  deliberately mirrors) does not itself write an audit event per batch —
+  an existing, independent gap, not something this pass's own service
+  needed to inherit (it audits every call, by design).
+- **Not verified, and why:** live OAuth2 client-credentials against a real
+  IdP (Entra ID/Okta/etc.) — no such tenant exists in this sandbox and
+  reaching one would risk touching a real external account; the strategy
+  is instead verified against a mocked token endpoint in
+  `tests/unit/middleware/test_integration_source_auth.py` (real RFC 6749
+  §4.4 request shape/caching/expiry logic exercised, the actual token
+  server's own behavior is not). Real mTLS-authenticated PUSH end-to-end
+  (reusing the D2 dual-listener) was not re-run here since D2's own mTLS
+  transport is already independently verified in
+  `poc/collector_ingest_mtls/` — only the one-line identity adapter
+  (`identity_from_collector_identity`) is new and is unit-tested.
+
 ### Q2 · Wazuh source connector — L2
 **Objective.** Real `wazuh-integratord` webhook → KronOS collector-ingest,
 end to end, against a real self-hosted Wazuh manager (the repo's own

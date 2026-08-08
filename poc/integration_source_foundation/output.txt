@@ -1,0 +1,78 @@
+====================================================================
+PoC (a): PUSH webhook shape -- real uvicorn server + real httpx client
+====================================================================
+{"event": "startup wiring failed: 2 validation errors for Settings\ncelery_broker_url\n  Field required [type=missing, input_value={'database_url': 'postgre...a:318/api/v1/timestamp'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncelery_result_backend\n  Field required [type=missing, input_value={'database_url': 'postgre...a:318/api/v1/timestamp'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing", "level": "warning", "logger": "src.external.fastapi_app", "timestamp": "2026-08-08T23:13:18.451077Z"}
+=== Real uvicorn server listening on 127.0.0.1:18765 ===
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T23:13:18.603297Z", "event_id": "194e8393-92f0-4570-b8ab-6e5a3766f50c", "event_type": "integration_source.push_ingested", "seq": 1}
+{"event": "HTTP Request: POST http://127.0.0.1:18765/api/integrations/push/generic-webhook \"HTTP/1.1 202 Accepted\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-08T23:13:18.604289Z"}
+
+[1] Single-event POST -> status=202
+    body: {'results': [{'accepted': True, 'duplicate': False, 'messageId': '1-0'}]}
+{"event": "integration_source_duplicate_skipped", "level": "info", "logger": "src.application.integration_source_ingest", "timestamp": "2026-08-08T23:13:18.606787Z", "org_id": "1c345f46-226c-4521-8dee-666dab8543dc", "source_id": "generic-webhook-instance-1", "content_hash": "10ceefb8217e579cfdd58288c840334b6dc9b87329afa9c23006f9b73a3d2989"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T23:13:18.607022Z", "event_id": "28b8daff-a40a-4830-ae6a-caf922278568", "event_type": "integration_source.push_ingested", "seq": 2}
+{"event": "HTTP Request: POST http://127.0.0.1:18765/api/integrations/push/generic-webhook \"HTTP/1.1 202 Accepted\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-08T23:13:18.607613Z"}
+
+[2] Duplicate POST (identical body) -> status=202
+    body: {'results': [{'accepted': False, 'duplicate': True, 'messageId': None}]}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T23:13:18.609925Z", "event_id": "984c108b-2df8-4f26-aff7-2bade39c0fcd", "event_type": "integration_source.push_ingested", "seq": 3}
+{"event": "HTTP Request: POST http://127.0.0.1:18765/api/integrations/push/generic-webhook \"HTTP/1.1 202 Accepted\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-08T23:13:18.610446Z"}
+
+[3] Batch-envelope POST (3 events) -> status=202
+    body: {'results': [{'accepted': True, 'duplicate': False, 'messageId': '2-0'}, {'accepted': True, 'duplicate': False, 'messageId': '3-0'}, {'accepted': True, 'duplicate': False, 'messageId': '4-0'}]}
+{"event": "HTTP Request: POST http://127.0.0.1:18765/api/integrations/push/generic-webhook \"HTTP/1.1 401 Unauthorized\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-08T23:13:18.612873Z"}
+
+[4] Wrong API key POST -> status=401
+    body: {'detail': 'Inbound push API key is not provisioned'}
+{"event": "HTTP Request: POST http://127.0.0.1:18765/api/integrations/push/some-other-source \"HTTP/1.1 403 Forbidden\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-08T23:13:18.615186Z"}
+
+[5] Correct key, mismatched source_type in path -> status=403
+    body: {'detail': "Provisioned credential is scoped to source_type='generic-webhook', not 'some-other-source'"}
+
+[6] Real InMemoryStreamIngestAdapter stream length for (org, source) = 4
+
+[7] Real audit events recorded for this org: 3
+    integration_source.push_ingested details={'source_id': 'generic-webhook-instance-1', 'source_type': 'generic-webhook', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0}
+    integration_source.push_ingested details={'source_id': 'generic-webhook-instance-1', 'source_type': 'generic-webhook', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 0, 'duplicate_count': 1}
+    integration_source.push_ingested details={'source_id': 'generic-webhook-instance-1', 'source_type': 'generic-webhook', 'auth_method': 'api-key', 'event_count': 3, 'accepted_count': 3, 'duplicate_count': 0}
+
+=== PUSH PoC: ALL ASSERTIONS PASSED ===
+
+====================================================================
+PoC (b): POLL shape -- real stdlib HTTP server + real cursor resumption
+====================================================================
+=== Real stdlib HTTP server (external poll API stand-in) listening on 127.0.0.1:43437 ===
+
+[cycle 1] cursor before poll: None
+[cycle 1] fetched 2 event(s), cursor_advanced=True
+    produced message_id=1-0 accepted=True
+    produced message_id=2-0 accepted=True
+
+[cycle 2] cursor before poll: 'page-2'
+[cycle 2] fetched 1 event(s), cursor_advanced=True
+    produced message_id=3-0 accepted=True
+
+[cycle 3] cursor before poll: 'page-3'
+[cycle 3] fetched 0 event(s), cursor_advanced=False
+
+[final] persisted cursor: 'page-3'
+[final] real stream length: 3
+[final] real audit events recorded: 3
+    integration_source.poll_completed details={'source_id': 'generic-poll-instance-1', 'source_type': 'generic-poll', 'auth_method': 'api-key', 'event_count': 2, 'accepted_count': 2, 'duplicate_count': 0, 'cursor_advanced': True}
+    integration_source.poll_completed details={'source_id': 'generic-poll-instance-1', 'source_type': 'generic-poll', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0, 'cursor_advanced': True}
+    integration_source.poll_completed details={'source_id': 'generic-poll-instance-1', 'source_type': 'generic-poll', 'auth_method': 'api-key', 'event_count': 0, 'accepted_count': 0, 'duplicate_count': 0, 'cursor_advanced': False}
+
+[auth-failure] real 401 from the stand-in server correctly surfaced as: IntegrationSourceError: generic-poll endpoint returned status=401, body='{"error": "unauthorized"}'
+
+=== POLL PoC: ALL ASSERTIONS PASSED ===
+
+====================================================================
+PoC (c): PostgresSourceCursorRepository -- real shared dev Postgres
+====================================================================
+=== Connecting to REAL shared dev Postgres: postgres:5432/kronos ===
+[1] create_tables() succeeded (CREATE TABLE IF NOT EXISTS integration_source_cursors)
+[2] get() on a never-seen (org, source) correctly returns None
+[3] upsert() + get() round trip: org_id=UUID('8c8de9b4-9b4b-4c1c-aca2-ac97a49ebdcb') source_id='poc-postgres-check' cursor_value='token-v1' updated_at=datetime.datetime(2026, 8, 8, 23, 13, 21, 108411, tzinfo=datetime.timezone.utc)
+[4] second upsert() (on-conflict-do-update) + get(): org_id=UUID('8c8de9b4-9b4b-4c1c-aca2-ac97a49ebdcb') source_id='poc-postgres-check' cursor_value='token-v2' updated_at=datetime.datetime(2026, 8, 8, 23, 13, 21, 112104, tzinfo=datetime.timezone.utc)
+[5] cleanup: deleted the PoC's own row (table itself left in place, matches other repos' convention)
+
+=== POSTGRES CURSOR REPOSITORY PoC: ALL ASSERTIONS PASSED ===
