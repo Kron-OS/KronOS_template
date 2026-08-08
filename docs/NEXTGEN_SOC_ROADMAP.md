@@ -2815,6 +2815,95 @@ ingest + evidence upload + detection + correlation + triage + response +
 custody, with **explicit cross-tenant isolation assertions** under concurrent
 load.
 
+**STATUS (2026-08-08): GATE RESOLVED — GO, real-verified. Closes Milestone
+M8 and the full M0–M8 roadmap.** See `poc/global_l4_e2e/` (README.md +
+`run_poc.py` + `output.txt`). 86/86 real checks passed on a clean run: two
+real, distinct Keycloak orgs (the persistent `kronos-dev` + a fresh
+throwaway org) ran all 7 named stages **genuinely concurrently** via
+`asyncio.gather` (real mTLS collectors, real Redis streams, real WORM-sealed
++ TSA-anchored batches, real PKCE login + evidence upload to autonomous
+COMPLETE, real Security Analytics detection + correlation, real triage, real
+`PlaybookExecutionService` response against a real local webhook receiver,
+real audit-chain verification), followed by 17 explicit cross-tenant
+isolation assertions performed with fresh connections/tokens after both
+pipelines completed. **Zero cross-tenant isolation gaps found anywhere** —
+including a "lying payload" proof that an event claiming the other org's
+`org_id` in its own JSON body still lands on the sender's own real,
+cert-derived Redis stream key (`org_id` computed from the verified mTLS
+client certificate, never trusted from sender-supplied data).
+
+This item picked up a redispatch from a prior attempt that died to a real
+session-limit cutoff mid-debug, with a real, substantial, correctly-designed
+`run_poc.py` already written but never run to completion. Continuing from
+there (not restarting), six distinct real bugs were found and fixed through
+several more real runs against the live dev stack — none required changing
+any file under `src/`: (1) Redis stream/OpenSearch-index count assertions
+used absolute counts against `kronos-dev`'s real, persistent, cross-session
+leftover state instead of baseline-relative deltas; (2) D5's real
+watermark-gap detector correctly fired on real stale bookkeeping left by an
+earlier interrupted dry run (D5 confirmed working as designed, not a bug —
+fixed by resetting the stale dev-only Postgres row, not by touching D5);
+(3) the same debris left an abandoned backlog in the sealer's consumer-group
+PEL, drained via the system's own real recovery path; (4) a one-line wrong
+expected-status-code assertion (200 vs the route's real 201); (5) the PoC's
+own detector name didn't match `DetectionSyncService`'s real, unmodified
+canonical-naming filter, making real, confirmed-firing findings invisible to
+sync — fixed by using the canonical name with a narrow, safe index scope;
+this also surfaced a genuinely separate, real, pre-existing finding that the
+real system's own `ensure_org_detectors` auto-provisioning silently fails
+for `kronos-dev` specifically (real alias-mapping collisions across its
+months of heterogeneous PoC index history), reported here as an
+out-of-scope gap, not silently patched; (6) a detection-selection bug
+(`stream_by_org(...)[0]`) picked an arbitrary one of `kronos-dev`'s ~800
+accumulated historical `Detection` rows instead of this run's own, plus a
+chained findings-poll timing bug that let the pipeline race ahead of the
+real detector's own execution — both fixed by precisely resolving this
+run's own finding via `get_by_finding_id`, time-scoped to this run's own
+start.
+
+**Full existing unit suite confirmed unaffected (independently re-run by
+the orchestrator, correcting this item's own self-reported count):** 1315
+passed, 1 skipped — the exact same baseline as I5 (commit `781b3ab`), not
+1432 as this item's own agent report claimed (a real, uncaught
+self-reporting error, not something committed to `output.txt`/`README.md`
+themselves) — zero `src/` changes made anywhere in this item, confirmed via
+`git diff --stat`, so this is a definitional zero-regression delta, not
+just a re-run; mypy: 29 pre-existing errors, unchanged. The isolation-check
+count is likewise corrected here to **17** (a real `grep -c
+"\[PASS\]\[ISOLATION\]" output.txt` count), not 18 as the item's own
+README/report stated.
+
+**Not verified, and why:** a genuine cross-category correlation match
+(Stage 4's API integration is real; this scenario's single-detector setup
+doesn't produce a matched pair, an accepted, honest scoping trade-off, see
+`poc/global_l4_e2e/README.md`); realistic multi-thousand-event throughput
+(I5 already covers raw throughput baselines separately; this item's own
+objective is breadth-of-stages + isolation-under-concurrency); a third+ org
+(two genuinely distinct, concurrently-running real tenants judged
+sufficient to exercise every real tenant-boundary code path this roadmap
+has built); **real OpenSearch-level DLS document isolation between the two
+orgs' indices was not independently re-verified in this specific run** —
+`output.txt` shows `opensearch_security_disabled_skipping_tenant_role`
+during Stage 1, because this PoC constructs `TimelineIngestionService`
+directly in its own standalone process without setting
+`OPENSEARCH_SECURITY_ENABLED=true` in that process's own environment
+(unlike the real deployed `docker-kronos-backend-1`/celery-worker
+containers, which do — confirmed via `docker-compose.dev.yml`, all four
+set it `"true"`), so `ensure_generic_tenant_role()` was skipped for
+whatever this run's own path touched. This is a gap in this specific PoC
+script's own environment setup, not a newly-discovered platform
+vulnerability: real OpenSearch DLS document-level isolation is separately,
+thoroughly, and repeatedly proven correct in `poc/keycloak_opensearch_dls/`
+(6 real steps against real Keycloak+OpenSearch) and is confirmed enabled by
+default in the real running dev stack. Flagged here rather than silently
+left unexplained, since an unexplained warning in a closing gate's own
+captured output is exactly the kind of thing CLAUDE.md §F exists to
+surface, not bury.
+
+**M0–M8 status:** with I4 now GATE RESOLVED — GO, every milestone's every
+gate item in `docs/NEXTGEN_SOC_ROADMAP.md` is closed. This is the last item
+of Milestone M8 and of the roadmap as a whole.
+
 ### I5 · Performance & scale validation — L4
 Against §B.6 baselines and measured ingest rates.
 

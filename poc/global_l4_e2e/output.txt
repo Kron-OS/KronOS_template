@@ -1,0 +1,135 @@
+==============================================================================
+I4 GATE: GLOBAL L4 end-to-end -- two real tenants, genuinely concurrent
+==============================================================================
+
+--- Setup: real local TSA responder + real webhook receiver ---
+[2026-08-08T04:14:25.271159+00:00][SETUP] real local TSA responder listening on http://127.0.0.1:20330
+[2026-08-08T04:14:25.272179+00:00][SETUP] real local ticket webhook receiver listening on http://127.0.0.1:39365/webhook
+
+--- Setup: provision org B (real Keycloak Admin API) ---
+[PASS][SETUP] real second org provisioned via Keycloak Admin API -- org_b_id=174cf1c7-a2b8-4636-b6a2-ba4b40f51007
+[PASS][SETUP] real second org's user created + linked + assigned case-lead role
+[2026-08-08T04:14:25.390957+00:00][SETUP] org A = kronos-dev (482072f5-8086-4815-be03-879cc2eaecb5)  org B = kronos-poc-l4b-a4412021 (174cf1c7-a2b8-4636-b6a2-ba4b40f51007)
+
+--- Setup: shared service singletons (real, unmodified src/ classes) ---
+[PASS][SETUP] shared service singletons constructed against real Postgres/Redis/MinIO/OpenSearch
+[PASS][SETUP] reset 2 stale org-A sealed_batches watermark row(s) for (org=kronos-dev, source=zeek-conn-log) -- real, reproduced D5 gap from an earlier dry run of this exact script, dev-bookkeeping only, audit chain untouched (see comment above)
+[PASS][SETUP] no stale org-A pending backlog found to drain (clean start)
+
+==============================================================================
+CONCURRENT PHASE: both orgs' full pipelines running with genuine temporal overlap
+==============================================================================
+[2026-08-08T04:14:26.713448+00:00][kronos-dev] === Stage 1: continuous ingest -- mTLS collector -> Redis stream -> seal -> normalize ===
+[2026-08-08T04:14:26.713661+00:00][kronos-poc-l4b-a4412021] === Stage 1: continuous ingest -- mTLS collector -> Redis stream -> seal -> normalize ===
+[PASS][kronos-dev] real client+server mTLS certs issued for this org's own collector identity
+[PASS][kronos-poc-l4b-a4412021] real client+server mTLS certs issued for this org's own collector identity
+[PASS][kronos-poc-l4b-a4412021] real mTLS listener process is up and accepts TLS connections
+[PASS][kronos-dev] real mTLS listener process is up and accepts TLS connections
+[2026-08-08T04:14:28.677462+00:00][kronos-poc-l4b-a4412021] real baseline XLEN on this org's own stream key before round1: 0
+[2026-08-08T04:14:28.684170+00:00][kronos-dev] real baseline XLEN on this org's own stream key before round1: 24
+[PASS][kronos-poc-l4b-a4412021] round1 real mTLS collector ingest accepted (202) -- status=202
+[PASS][kronos-poc-l4b-a4412021] round1: all 3 real events accepted, none duplicate
+[PASS][kronos-poc-l4b-a4412021] real Redis XRANGE shows exactly 3 NEW entries after round1 (delta from this org's own baseline) -- baseline=0 count=3
+[PASS][kronos-dev] round1 real mTLS collector ingest accepted (202) -- status=202
+[PASS][kronos-dev] round1: all 3 real events accepted, none duplicate
+[PASS][kronos-dev] real Redis XRANGE shows exactly 3 NEW entries after round1 (delta from this org's own baseline) -- baseline=24 count=27
+[PASS][kronos-dev] real batch #1 sealed (WORM manifest + real TSA token + Postgres row)
+[PASS][kronos-poc-l4b-a4412021] real batch #1 sealed (WORM manifest + real TSA token + Postgres row)
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+opensearch_security_disabled_skipping_tenant_role
+[PASS][kronos-dev] real normalize_batch() indexed all 3 round1 events, 0 dead-lettered -- indexed=3 dead_lettered=0
+[PASS][kronos-poc-l4b-a4412021] real normalize_batch() indexed all 3 round1 events, 0 dead-lettered -- indexed=3 dead_lettered=0
+[PASS][kronos-dev] real OpenSearch index gained exactly 3 NEW documents after round1 (delta from this org's own baseline) -- baseline=30 count=33
+[PASS][kronos-dev] real SA field-alias mapping accepted (200) -- {"acknowledged":true}
+[PASS][kronos-poc-l4b-a4412021] real OpenSearch index gained exactly 3 NEW documents after round1 (delta from this org's own baseline) -- baseline=0 count=3
+[PASS][kronos-poc-l4b-a4412021] real SA field-alias mapping accepted (200) -- {"acknowledged":true}
+[PASS][kronos-dev] real per-org detector created, AFTER round1 index already existed -- {"_id":"mc-U358BG52zb-VTX_o8","_version":1,"detector":{"name":"kronos-kronos-dev-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUTES"}},"input
+[PASS][kronos-poc-l4b-a4412021] real per-org detector created, AFTER round1 index already existed -- {"_id":"ms-U358BG52zb-VTX_pA","_version":1,"detector":{"name":"kronos-kronos-poc-l4b-a4412021-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINU
+[PASS][kronos-dev] round2 real mTLS collector ingest accepted (202)
+[PASS][kronos-dev] round2: all 3 real events accepted (incl. the trigger + the lying event)
+[PASS][kronos-dev] round2's 3 events landed on this org's OWN real cert-derived Redis stream key -- total=30
+[PASS][kronos-poc-l4b-a4412021] round2 real mTLS collector ingest accepted (202)
+[PASS][kronos-poc-l4b-a4412021] round2: all 3 real events accepted (incl. the trigger + the lying event)
+[PASS][kronos-poc-l4b-a4412021] round2's 3 events landed on this org's OWN real cert-derived Redis stream key -- total=6
+[PASS][kronos-dev] real batch #2 sealed (contains the RDP trigger + lying event)
+[PASS][kronos-poc-l4b-a4412021] real batch #2 sealed (contains the RDP trigger + lying event)
+[PASS][kronos-dev] real normalize_batch() indexed all 3 round2 events, 0 dead-lettered -- indexed=3 dead_lettered=0
+[2026-08-08T04:14:30.956469+00:00][kronos-dev] === Stage 2: evidence upload -- real PKCE login -> case -> upload/finalize -> autonomous COMPLETE ===
+[PASS][kronos-poc-l4b-a4412021] real normalize_batch() indexed all 3 round2 events, 0 dead-lettered -- indexed=3 dead_lettered=0
+[2026-08-08T04:14:30.967750+00:00][kronos-poc-l4b-a4412021] === Stage 2: evidence upload -- real PKCE login -> case -> upload/finalize -> autonomous COMPLETE ===
+[PASS][kronos-dev] real PKCE login succeeded (real Keycloak-issued JWT) -- mfa_path=none
+[PASS][kronos-poc-l4b-a4412021] real PKCE login succeeded (real Keycloak-issued JWT) -- mfa_path=none
+[PASS][kronos-dev] real case created via the real backend -- status=201 body={"id":"881dcf8b-4c50-4afc-b2d9-18c487f73c4a","orgId":"482072f5-8086-4815-be03-879cc2eaecb5","title":"I4 L4 E2E -- kronos-dev","description":"Global L4 gate","reference":null,"status":"open","createdAt
+[PASS][kronos-dev] real upload/request accepted -- status=201 body={"evidenceId":"0d8468ba-07ba-42ca-bfc3-99ef4ef159b8","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/881dcf8b-4c50-4afc-b2d9-18c487f73c4a/0d8468ba-07ba-42ca-
+[PASS][kronos-dev] real PUT to MinIO succeeded -- status=200
+[PASS][kronos-dev] real finalize accepted (autonomous pipeline now server-driven per CLAUDE.md SS E) -- status=202
+[PASS][kronos-dev] real evidence reached COMPLETE via the fully autonomous server-side pipeline -- final_state=COMPLETE
+[2026-08-08T04:14:36.083317+00:00][kronos-dev] === Stage 3: detection -- poll real SA findings -> real DetectionSyncService ===
+[PASS][kronos-poc-l4b-a4412021] real case created via the real backend -- status=201 body={"id":"906ad0c9-0f59-44d9-bbf9-23c26fb34e7c","orgId":"174cf1c7-a2b8-4636-b6a2-ba4b40f51007","title":"I4 L4 E2E -- kronos-poc-l4b-a4412021","description":"Global L4 gate","reference":null,"status":"ope
+[PASS][kronos-poc-l4b-a4412021] real upload/request accepted -- status=201 body={"evidenceId":"9ae2095f-4516-440b-b96d-deb36560a154","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-poc-l4b-a4412021-quarantine/kronos-poc-l4b-a4412021/906ad0c9-0f59-44d9-bbf9-23c26f
+[PASS][kronos-poc-l4b-a4412021] real PUT to MinIO succeeded -- status=200
+[PASS][kronos-poc-l4b-a4412021] real finalize accepted (autonomous pipeline now server-driven per CLAUDE.md SS E) -- status=202
+[PASS][kronos-poc-l4b-a4412021] real evidence reached COMPLETE via the fully autonomous server-side pipeline -- final_state=COMPLETE
+[2026-08-08T04:14:40.970902+00:00][kronos-poc-l4b-a4412021] === Stage 3: detection -- poll real SA findings -> real DetectionSyncService ===
+[PASS][kronos-dev] at least one real SA finding produced for this org's own fresh detector, since this run's own start -- count=3
+[PASS][kronos-dev] real DetectionSyncService.sync_org_findings() created >=1 new Detection row -- created=3
+[PASS][kronos-dev] real Detection row resolved for THIS run's own finding_id (not an arbitrary org-history row) -- finding_id=67f8162d-dad2-499b-bdf4-2c0beba4bda0
+[PASS][kronos-dev] this run's own real Detection row's org_id == this org's own real org_id (computed, never supplied)
+[PASS][kronos-dev] re-running sync creates zero new rows (idempotency) -- created_again=0
+[2026-08-08T04:15:38.539396+00:00][kronos-dev] === Stage 4: correlation -- real SA correlation-rule API + CorrelationSyncService ===
+[PASS][kronos-dev] real SA correlation rule created -- {"_id":"0s-V358BG52zb-VTaPos","_version":1,"rule":{"name":"l4-corr-kronos-dev-a4412021","correlate":[{"index":"kronos-kronos-dev-stream-zeek-conn-log-202608","query":"service:rdp","category":"network"
+[PASS][kronos-poc-l4b-a4412021] at least one real SA finding produced for this org's own fresh detector, since this run's own start -- count=3
+[PASS][kronos-poc-l4b-a4412021] real DetectionSyncService.sync_org_findings() created >=1 new Detection row -- created=3
+[PASS][kronos-poc-l4b-a4412021] real Detection row resolved for THIS run's own finding_id (not an arbitrary org-history row) -- finding_id=2914b560-4d63-4568-9bb5-97bc8bcbd360
+[PASS][kronos-poc-l4b-a4412021] this run's own real Detection row's org_id == this org's own real org_id (computed, never supplied)
+[PASS][kronos-poc-l4b-a4412021] re-running sync creates zero new rows (idempotency) -- created_again=0
+[2026-08-08T04:15:41.082194+00:00][kronos-poc-l4b-a4412021] === Stage 4: correlation -- real SA correlation-rule API + CorrelationSyncService ===
+[PASS][kronos-poc-l4b-a4412021] real SA correlation rule created -- {"_id":"08-V358BG52zb-VTcvob","_version":1,"rule":{"name":"l4-corr-kronos-poc-l4b-a4412021-a4412021","correlate":[{"index":"kronos-kronos-poc-l4b-a4412021-stream-zeek-conn-log-202608","query":"service
+[2026-08-08T04:16:13.566104+00:00][kronos-dev] real correlation API: 10000 cluster-wide pairs observed; 0 synced for this org (0 is an honest, expected result for a single-detector setup -- see README's scoping note)
+[PASS][kronos-dev] real correlation rule-creation + fetch_correlations + CorrelationSyncService call completed without error
+[2026-08-08T04:16:13.566135+00:00][kronos-dev] === Stage 5: triage -- real DetectionTriageService.transition() ===
+[PASS][kronos-dev] real triage transition NEW -> INVESTIGATING
+[2026-08-08T04:16:13.577146+00:00][kronos-dev] === Stage 6: response -- real PlaybookExecutionService (unmodified) ===
+[PASS][kronos-dev] real playbook executed successfully end to end, no halt -- [('transition', <PlaybookStepOutcome.SUCCESS: 'success'>, None), ('notify', <PlaybookStepOutcome.SUCCESS: 'success'>, None), ('ticket', <PlaybookStepOutcome.SUCCESS: 'success'>, None)]
+[PASS][kronos-dev] real local webhook ticket created (no live third-party SaaS) -- ticket_id=L4-19786ac1
+[2026-08-08T04:16:13.626988+00:00][kronos-dev] === Stage 7: custody -- real AuditLogService.verify_chain() ===
+[PASS][kronos-dev] real audit hash chain intact after this org's full concurrent pipeline
+[2026-08-08T04:16:16.064789+00:00][kronos-poc-l4b-a4412021] real correlation API: 10000 cluster-wide pairs observed; 0 synced for this org (0 is an honest, expected result for a single-detector setup -- see README's scoping note)
+[PASS][kronos-poc-l4b-a4412021] real correlation rule-creation + fetch_correlations + CorrelationSyncService call completed without error
+[2026-08-08T04:16:16.064821+00:00][kronos-poc-l4b-a4412021] === Stage 5: triage -- real DetectionTriageService.transition() ===
+[PASS][kronos-poc-l4b-a4412021] real triage transition NEW -> INVESTIGATING
+[2026-08-08T04:16:16.075058+00:00][kronos-poc-l4b-a4412021] === Stage 6: response -- real PlaybookExecutionService (unmodified) ===
+[PASS][kronos-poc-l4b-a4412021] real playbook executed successfully end to end, no halt -- [('transition', <PlaybookStepOutcome.SUCCESS: 'success'>, None), ('notify', <PlaybookStepOutcome.SUCCESS: 'success'>, None), ('ticket', <PlaybookStepOutcome.SUCCESS: 'success'>, None)]
+[PASS][kronos-poc-l4b-a4412021] real local webhook ticket created (no live third-party SaaS) -- ticket_id=L4-d9ff716f
+[2026-08-08T04:16:16.124904+00:00][kronos-poc-l4b-a4412021] === Stage 7: custody -- real AuditLogService.verify_chain() ===
+[PASS][kronos-poc-l4b-a4412021] real audit hash chain intact after this org's full concurrent pipeline
+[2026-08-08T04:16:16.130148+00:00][MAIN] concurrent phase completed in 109.4s (both orgs' full 7-stage pipelines)
+
+==============================================================================
+CROSS-TENANT ISOLATION ASSERTIONS (fresh connections/tokens, AFTER the concurrent phase)
+==============================================================================
+[PASS][ISOLATION] org A's real stream key gained exactly its own 6 NEW events (3+3) since baseline, no more -- baseline=24 count=30
+[PASS][ISOLATION] org B's real stream key gained exactly its own 6 NEW events (3+3) since baseline, no more -- baseline=0 count=6
+[PASS][ISOLATION] org A's real 'lying' event (payload claims org B's org_id) landed on ORG A's OWN cert-derived stream key -- computed, never supplied
+[PASS][ISOLATION] org B's real 'lying' event (payload claims org A's org_id) landed on ORG B's OWN cert-derived stream key -- computed, never supplied
+[PASS][ISOLATION] org A's real JWT reading org B's real Detection by id -> 404 (NOT 403) -- got 404
+[PASS][ISOLATION] org A's real JWT cannot triage org B's real Detection -> 404 -- got 404
+[PASS][ISOLATION] org B's real JWT reading org A's real Detection by id -> 404 (NOT 403) -- got 404
+[PASS][ISOLATION] org B's real JWT cannot triage org A's real Detection -> 404 -- got 404
+[PASS][ISOLATION] org A's real Detection list contains ZERO of org B's rows -- count=200
+[PASS][ISOLATION] org A's real JWT reading org B's real Case by id -> 404 -- got 404
+[PASS][ISOLATION] org B's real JWT reading org A's real Case by id -> 404 -- got 404
+[PASS][ISOLATION] org A's real tenant CANNOT sync a ticket against org B's real Detection (real PlaybookError halts the playbook) -- sync_detection_ticket: no Detection with this id in the caller's own org
+[PASS][ISOLATION] org B's real tenant CANNOT sync a ticket against org A's real Detection (real PlaybookError halts the playbook) -- sync_detection_ticket: no Detection with this id in the caller's own org
+[PASS][ISOLATION] org B's real Detection's external_ticket_id genuinely unaffected by org A's cross-org attempt
+[PASS][ISOLATION] org A's real Detection's external_ticket_id genuinely unaffected by org B's cross-org attempt
+[PASS][ISOLATION] org A's real audit hash chain STILL intact after cross-org attempts appended new rows
+[PASS][ISOLATION] org B's real audit hash chain STILL intact after cross-org attempts appended new rows
+
+--- Cleanup: throwaway SA detectors + throwaway Keycloak org B ---
+[2026-08-08T04:16:17.085849+00:00][MAIN] NOTE: real Redis/Postgres/OpenSearch/MinIO rows from both orgs' full pipelines are deliberately left in place as inspectable proof (matches C4/C5/D6's own precedent). Only the throwaway SA detectors and the throwaway Keycloak org B (+user) were deleted.
+
+==============================================================================
+86 passed, 0 failed (of 86 total real checks)
+==============================================================================
