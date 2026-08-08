@@ -24,6 +24,17 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Persistence (docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md SS0/P1): this
+    # service previously had ZERO persistence configured (no --appendonly,
+    # no --save override, no volume) -- real data loss on any
+    # `docker compose down`/container recreation, not just a hard crash.
+    # Mirrors docker-compose.prod.yml's own already-correct
+    # `--appendonly yes` + named volume; deliberately NOT adding
+    # --requirepass here to match this file's own existing no-auth-in-dev
+    # convention for every other service (out of scope for this fix).
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_dev_data:/data
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -786,6 +797,7 @@ services:
 
 volumes:
   postgres_dev_data:
+  redis_dev_data:
   minio_dev_data:
   opensearch_dev_data:
   clamav_dev_data:
