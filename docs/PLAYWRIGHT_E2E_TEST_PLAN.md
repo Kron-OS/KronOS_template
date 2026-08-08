@@ -1,0 +1,254 @@
+# KronOS — Advanced Playwright E2E Test Plan
+
+**Status:** plan only, nothing implemented yet. Written per CLAUDE.md's
+standing guidelines (§F verification-first, OOP where code is involved) —
+implementation, when it happens, follows the same PoC-first discipline as
+every `poc/*/` item in this repo: pin the real version, build the smallest
+real thing first, capture real output, only then grow the suite.
+
+## 0. Where this starts from (verified facts, not assumed)
+
+- `playwright` (Python) **1.61.0** is already installed in this host's venv
+  and already has one real, working precedent:
+  `poc/evidence_sse_realtime/browser_verify.py` — real Chromium, real
+  Keycloak login form, real UI-driven case creation and upload, used to
+  prove a real SSE bug fix. This is the *only* browser-driven test in the
+  repo today; it is a one-off verification script, not a maintained suite,
+  and there is no `poc/frontend_browser/` despite earlier docs
+  (`docs/verification-pass-findings.md`) flagging one as still pending.
+- **`@playwright/test`, the TypeScript test-runner framework, is not a
+  dependency anywhere** (`frontend/package.json` has no `playwright`
+  entry). The frontend already has a real Vitest unit-test setup
+  (`@testing-library/react`, 43 passing tests per the last verified run) —
+  E2E is a genuinely new capability, not an extension of something that
+  exists.
+- Real pages that exist today (`frontend/src/pages/`): `LoginPage`,
+  `CasesPage`, `CaseDetailPage`, `DetectionsPage`, `DetectionDetailPage`,
+  `AdminPage`. Real components: `UploadDrawer` (Uppy, S3-multipart + TUS),
+  `EvidenceDetailDrawer`, `RbacGuard`, `AuthGuard`, `StatusPill`/
+  `TriageStatePill`, `ErrorCatalogue`.
+- Auth is real Keycloak 26.2 (`keycloak-js`), PKCE, with real step-up
+  (aal2/TOTP) for privileged actions — any E2E suite touching admin/triage/
+  destructive actions must drive the real step-up flow, not bypass it.
+- `docker-compose.test.yml` (the CI-shaped compose file) currently
+  **disables the OpenSearch security plugin and has no `step-ca`/
+  `kronos.local`/`keycloak-init` scaffolding** (confirmed by I1's own
+  investigation, `docs/NEXTGEN_SOC_ROADMAP.md` §I1) — meaning **no real E2E
+  suite can run in CI today** without that infrastructure gap being closed
+  first. This plan treats that as its own prerequisite item (§4), not
+  something to route around with a mocked backend (mocking the backend
+  would defeat the point of an E2E suite in a platform this session's own
+  history shows breaks in exactly the seams between real services).
+
+## 1. Framework choice: `@playwright/test`, not more Python scripts
+
+**Decision: adopt `@playwright/test` (TypeScript) in `frontend/`, in a new
+`frontend/e2e/` directory, as the maintained E2E suite. Keep
+`poc/evidence_sse_realtime/browser_verify.py`-style Python scripts for what
+they're good at (a one-off, throwaway verification during a bug-hunt) —
+they are not a substitute for a suite that runs on every change.**
+
+Why not keep extending the Python pattern:
+- `@playwright/test` gets test isolation (fresh browser context per test),
+  parallelization, trace/video-on-failure, and HTML reporting for free —
+  all real, maintained-suite necessities the hand-rolled `check()`/`PASS`/
+  `FAIL` pattern in `browser_verify.py` doesn't provide.
+- It lives next to the frontend it tests, in the same TypeScript project,
+  so it can import real frontend types (e.g. the `OrgSettings`/
+  `EvidenceOut` interfaces) instead of re-deriving field-name contracts by
+  hand — the exact class of bug (`evidenceId` vs `evidence_id`) that
+  `browser_verify.py` was built to catch in the first place.
+- CI-friendliness: `npx playwright test` is the standard, well-documented
+  GitHub Actions integration; a Python-script suite would need its own
+  bespoke runner/reporter.
+
+Concretely: `npm install -D @playwright/test` (pin whatever the real
+current 1.6x release is at implementation time — don't assume, check
+`npm view @playwright/test versions` against the already-installed Python
+1.61.0 so browser binary versions don't drift between the two), then
+`npx playwright install --with-deps chromium` (start with one real browser,
+add firefox/webkit only if a real cross-browser bug is ever found —
+speculative multi-browser coverage is not worth the CI time cost up front).
+
+## 2. Layered proof discipline (mirrors roadmap §2, applied to E2E)
+
+Not every test is worth writing at the same depth. Three tiers:
+
+- **Smoke (L1-shaped):** does the app boot, can a real user log in, does
+  the shell render. Fast, run on every PR.
+- **Flow (L2/L3-shaped):** a real, complete user journey against the real
+  backend + real Keycloak + real OpenSearch/Postgres/MinIO (`docker-compose
+  .dev.yml`, not a mocked API layer) — evidence upload to COMPLETE,
+  detection triage, admin user management. These are the heart of the
+  suite and should be the majority of test count.
+- **Adversarial/isolation (L4-shaped):** two real tenants, one browser
+  context each, proving the UI itself never leaks cross-tenant data —
+  the browser-level analogue of `poc/global_l4_e2e/`'s own backend-level
+  isolation assertions. Fewer of these, but non-negotiable given how
+  central tenant isolation is to this platform (roadmap invariant #3).
+
+## 3. Concrete test scenarios (the actual "advanced" list)
+
+Grouped by area; each bullet is one real spec file's worth of scope, not
+one test — a `describe` block, several `test()`s inside.
+
+### 3.1 Auth & session
+- Real PKCE login (happy path) → lands on `CasesPage`, real JWT claims
+  reflected in the UI (org name, role-gated nav items via `RbacGuard`).
+- Real step-up challenge: an aal1-only session attempting a privileged
+  action (e.g. triage, admin user removal) gets the real step-up prompt;
+  completing real TOTP unlocks it; a second attempt without re-entering
+  TOTP is correctly one-shot (mirrors the backend's own ticket
+  one-shot-consumption invariant, proven at the UI layer this time).
+- Session expiry / token refresh mid-session (real short-lived token,
+  wait for real expiry, confirm the UI's `axios` refresh-interceptor path
+  works rather than silently logging the user out or looping).
+- Logout clears real client-side state (no case/evidence data visible
+  after logout+back-button).
+
+### 3.2 Evidence lifecycle (the platform's core loop)
+- Real case creation → real file upload via the actual `UploadDrawer`
+  (Uppy S3-multipart) → **no manual reload** → `StatusPill` transitions
+  live via real SSE, UPLOADING → ... → COMPLETE (this is exactly what
+  `browser_verify.py` proved once by hand; promote it into the suite so a
+  future regression is caught automatically, not by another bug report).
+  Fixture: a small real EVTX/CloudTrail sample already in
+  `tests/fixtures/samples/`, not a synthetic blob.
+  - Not part of this test's own assertions, but note the fixture choice
+    should also exercise a client-side magic-byte pre-check path (a real,
+    previously-found bug class — `docs/NEXTGEN_SOC_ROADMAP.md` mentions
+    the frontend's magic-byte check missing E01 support at one point).
+- A genuinely oversized/corrupt/unsupported file → real, correct error
+  surfaced via `ErrorCatalogue`, not a silent hang.
+- Retry-intake / retry-parse buttons: `docs/NEXTGEN_SOC_ROADMAP.md`'s own
+  Part 1 table flags "a real browser click-through of the parse-stage
+  Retry button *succeeding* ... is still unverified" — this is a named,
+  already-known gap this plan should close, using a deliberately-broken
+  dependency (e.g. temporarily point at a bad ClamAV host, or intercept the
+  request) to force a retryable error, then click Retry, then confirm real
+  recovery to COMPLETE.
+- Legal hold toggle in the UI reflects the real backend state and blocks
+  deletion (a real 409/403, not just a disabled button — click the
+  disabled button's underlying action via the API directly in-test to
+  confirm the *server*, not just the UI, enforces it).
+- Evidence detail drawer: real hash values, real chain-of-custody audit
+  entries rendered, matching a fresh `GET /api/audit` call made
+  independently in the test (not trusted from the same page load).
+
+### 3.3 Detections & triage
+- `DetectionsPage` real list + filter by triage state, real ATT&CK tags
+  rendered from real `Detection` rows (reuse data already seeded by this
+  session's own `poc/detection_api_triage_ui/`-style real backend calls
+  as fixtures, or seed fresh via the real API in a `beforeAll`).
+- `DetectionDetailPage` → real triage transition (`NEW` → `INVESTIGATING`)
+  via the UI, confirm `TriageStatePill` updates without reload, confirm
+  independently via a real API call that the transition and its audit row
+  actually persisted.
+- Illegal transition attempt (a terminal-state Detection) → UI correctly
+  disables/hides the action, not just relying on a 409 the user never sees.
+- Role-gated triage: a read-only role's session sees no triage buttons at
+  all (RBAC UI gating, not just a 403 experienced as a dead click).
+
+### 3.4 Admin & org management
+- Real user invite → real role assignment → real removal, each step
+  confirmed via a fresh page load (not just optimistic UI state).
+- Org settings page — **note for whoever implements this section**:
+  `src/external/routes/admin.py`'s `OrgSettingsOut`/`update_org_settings`
+  is currently a complete stub with no real persistence (confirmed
+  2026-08-08, see the tenant-quota work landing alongside this plan) — an
+  E2E test against it today would only be testing that stub, not real
+  behavior. Sequence this test to land *after* real settings persistence
+  ships (the storage-quota work is the first real consumer of that), not
+  before, or it will be testing something intentionally fake.
+
+### 3.5 Cross-tenant isolation at the UI layer (L4-shaped, small in count, high value)
+- Two real orgs, two real browser contexts (Playwright's per-context
+  isolation is exactly suited to this — no shared cookies/localStorage
+  between them by construction). Org A's authenticated session, given
+  org B's real case/evidence/detection ID typed directly into the URL bar,
+  gets the real 404 (not a client-side redirect that merely *looks* like
+  isolation) — the browser-level version of `poc/global_l4_e2e/`'s own
+  backend isolation assertions.
+- Confirm no org-B-identifying string (case title, evidence filename,
+  detector name) ever appears in org A's rendered DOM at any point,
+  including transient loading states.
+
+### 3.6 Dashboards embed
+- The real OpenSearch Dashboards iframe embed (`cases.py`'s
+  `get_dashboard_url`) actually loads inside the app shell for a real case,
+  with the real case's own timeline data visible — this closes the one
+  open question `poc/dashboards_embed/` flagged as needing "a live browser
+  to observe" and never got (per its own README).
+
+### 3.7 Resilience / error states
+- Backend temporarily unreachable (block the `/api/*` route at the
+  Playwright network-interception layer) → the UI shows a real, legible
+  error state, not a blank screen or an unhandled promise rejection in the
+  console (assert on `page.on("pageerror")` staying empty across the
+  scenario).
+- SSE connection drop mid-upload → UI recovers (reconnects or falls back
+  to a poll) rather than silently freezing the status pill forever.
+
+### 3.8 Accessibility & visual (lighter-touch, still real)
+- `@axe-core/playwright` real automated a11y scan on each of the 6 pages
+  (not a subjective pass — a real, automated WCAG rule-set check, catching
+  e.g. missing form labels, contrast issues in `StatusPill`/
+  `TriageStatePill` color coding).
+- Visual regression on the pill/badge components specifically (they encode
+  meaning through color — `toHaveScreenshot()` snapshots catch an
+  accidental Tailwind class change that silently breaks the color coding
+  without breaking any functional assertion).
+
+## 4. Prerequisite: a CI-capable, security-enabled compose profile
+
+Every "Flow" and "Isolation" tier test above needs a real Keycloak +
+OpenSearch (security enabled) + Postgres + MinIO stack, with the same
+`kronos.local` HTTPS/step-ca scaffolding `docker-compose.dev.yml` has and
+`docker-compose.test.yml` does not (I1's own finding, restated here because
+it directly blocks this plan, not just I1's harness). Before any of §3.2
+onward can run anywhere but a developer's own already-running dev stack,
+someone needs to do the CI-wiring follow-up work I1 already scoped and
+deferred: enable+verify the security plugin in a CI-shaped compose file,
+add the TLS/Keycloak scaffolding, confirm the combined footprint fits a
+GitHub Actions runner (or accept a self-hosted runner / nightly-only
+schedule instead of per-PR, given OpenSearch+Keycloak startup time — I1's
+own recommendation). **This is real, separate, verification-first work,
+not a one-line CI config change — pin versions, PoC it, capture real
+output, exactly like every other integration in this repo, before assuming
+it works.**
+
+Until that lands: Smoke-tier tests (§3.1's login/logout, page-boots-with-a-
+mocked-401 style checks that don't need a full real backend) can
+reasonably run against a lighter, backend-optional setup. Flow/Isolation
+tiers should be documented as "run locally against `docker-compose.dev.yml`
+before every release" as an interim, honest state — not silently skipped
+with no record, and not claimed as CI-covered when they aren't.
+
+## 5. Suggested delivery order (verification-first, smallest real thing first)
+
+1. Stand up `@playwright/test` + one real spec: login → see `CasesPage`
+   (§3.1, smoke tier) — proves the whole toolchain (browser install, base
+   URL config against real `kronos.local`, auth helper reuse from
+   `poc/*/auth_flow` patterns) before writing anything else.
+2. §3.2's core upload-to-COMPLETE flow — the single highest-value spec in
+   the whole plan, since it's the platform's own core loop and the exact
+   shape of bug (`browser_verify.py`'s SSE fix) this suite exists to catch
+   automatically next time.
+3. §3.2's Retry-button specs — closes a already-named, real, currently-open
+   verification gap.
+4. §3.3 detections/triage, §3.5 isolation — in that order, since triage
+   fixtures are needed before isolation tests can assert on real
+   cross-tenant Detection data.
+5. §3.4 admin/org-settings — sequenced after real settings persistence
+   ships (see the note in §3.4).
+6. §3.6 dashboards embed, §3.7 resilience, §3.8 a11y/visual — lower
+   urgency, pick up opportunistically.
+7. §4's CI-wiring prerequisite can be tackled in parallel with 1-3 (it's a
+   disjoint infra surface) so the suite isn't blocked waiting on it to
+   start being written, only on it to start running unattended.
+
+Each numbered item above should land as its own PoC-first pass (a
+throwaway proof that the exact Playwright API/selector strategy works
+against the real running app, captured output, per CLAUDE.md §F) before
+being folded into the permanent `frontend/e2e/` suite — no different from
+how every backend integration in this repo has been built this session.
