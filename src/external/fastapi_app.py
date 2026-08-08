@@ -16,6 +16,7 @@ from src.exceptions import (
     AuthorizationError,
     KronOSException,
     StorageError,
+    StorageQuotaExceededError,
     ValidationError,
 )
 from src.external.logging_config import configure_logging
@@ -153,6 +154,19 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StorageError)
     async def storage_error_handler(request: Request, exc: StorageError) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    # Registered before/independent of evidence.py's own route-level catch
+    # (defense in depth for any future call site that raises this without
+    # its own try/except) -- see that route's comment for the 413-not-409
+    # reasoning.
+    @app.exception_handler(StorageQuotaExceededError)
+    async def quota_exceeded_handler(
+        request: Request, exc: StorageQuotaExceededError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": {"message": str(exc), **exc.context}},
+        )
 
     @app.exception_handler(AuditLogError)
     async def audit_error_handler(request: Request, exc: AuditLogError) -> JSONResponse:

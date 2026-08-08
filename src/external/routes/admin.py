@@ -13,11 +13,22 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.adapter.queue.task_queue import TaskQueue
+from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.repository.quota import OrgQuotaRepository
 from src.application.audit_log import AuditLogService
+from src.application.quota_gate import StorageQuotaGate
 from src.domain.audit import AuditEventType
+from src.domain.quota import OrgQuota
 from src.domain.user import Role, TenantContext
 from src.exceptions import StorageError
-from src.external.dependencies import get_audit_log_service
+from src.external.dependencies import (
+    get_audit_log_service,
+    get_evidence_repository,
+    get_org_quota_repository,
+    get_storage_quota_gate,
+    get_task_queue,
+)
 from src.external.middleware.rbac import requires_role
 
 logger = logging.getLogger(__name__)
@@ -97,6 +108,25 @@ class OrgSettingsOut(BaseModel):
 
 class UpdateSettingsIn(BaseModel):
     retentionDays: int = Field(ge=1, le=3650)
+
+
+class OrgQuotaOut(BaseModel):
+    """API response DTO for the org's storage quota + real current usage
+    (docs/TENANT_USAGE_QUOTA.md). A dedicated shape from OrgSettingsOut --
+    see the module-level note on the /quota routes below for why."""
+
+    storageQuotaBytes: int | None
+    currentUsageBytes: int
+    updatedAt: str | None
+
+
+class UpdateQuotaIn(BaseModel):
+    # None explicitly means "unlimited" -- a real, valid value (see
+    # OrgQuota's own docstring), not "field omitted"; Pydantic's Optional
+    # field with no default-omission special case is exactly what's wanted
+    # here (the frontend must send null, not just leave the key out, to
+    # clear a quota).
+    storageQuotaBytes: int | None = Field(default=None, ge=0)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +286,96 @@ async def update_org_settings(
         details={"retention_days": body.retentionDays},
     )
     return OrgSettingsOut(retentionDays=body.retentionDays, legalHoldDefault=False)
+
+
+# ---------------------------------------------------------------------------
+# Storage quota (docs/TENANT_USAGE_QUOTA.md) -- a DEDICATED route, not an
+# extension of /settings above. /settings's own DTOs
+# (OrgSettingsOut/UpdateSettingsIn) are shaped 1:1 around a specific,
+# already-shipped frontend TypeScript interface (retentionDays/
+# legalHoldDefault) that this feature has no reason to touch, and that
+# stub's pre-existing "doesn't persist anywhere real" gap is explicitly
+# out of scope to fix in this pass (docs/TENANT_USAGE_QUOTA.md §0) --
+# bolting a third, unrelated field onto that payload/audit-event would
+# conflate two independent admin concerns (retention defaults vs. a
+# storage ceiling) in one contract and one audit event type. A dedicated
+# route keeps its own real persistence (OrgQuotaRepository), its own audit
+# event (QUOTA_UPDATED), and can evolve (e.g. surfacing usage history)
+# without touching the settings stub -- mirroring how /users and /settings
+# are already separate route groups under this same router despite both
+# being "admin" concerns.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/quota", response_model=OrgQuotaOut)
+async def get_org_quota(
+    tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
+    quota_repo: Annotated[OrgQuotaRepository, Depends(get_org_quota_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+) -> OrgQuotaOut:
+    """Return the org's configured storage quota and real current usage."""
+    quota = await quota_repo.get(tenant.org_id)
+    usage = await evidence_repo.get_total_size_bytes(tenant.org_id)
+    return OrgQuotaOut(
+        storageQuotaBytes=quota.storage_quota_bytes if quota is not None else None,
+        currentUsageBytes=usage,
+        updatedAt=quota.updated_at.isoformat() if quota is not None else None,
+    )
+
+
+@router.patch("/quota", response_model=OrgQuotaOut)
+async def update_org_quota(
+    body: UpdateQuotaIn,
+    tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
+    quota_repo: Annotated[OrgQuotaRepository, Depends(get_org_quota_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    quota_gate: Annotated[StorageQuotaGate, Depends(get_storage_quota_gate)],
+    task_queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> OrgQuotaOut:
+    """Set (or clear, via null) the org's storage quota.
+
+    Direct-trigger resume: docs/TENANT_USAGE_QUOTA.md §2 asks for "a beat-
+    task sweep, plus a direct trigger on the PATCH that raises a quota" --
+    implemented here as belt-and-braces alongside auto_resume_quota_held
+    (src/external/celery_app.py). If the new quota drops usage back under
+    the soft ceiling, any evidence this org already has held is
+    re-enqueued immediately rather than making analysts wait for the next
+    beat sweep; the beat sweep remains the safety net for org quota
+    increases that happen to race a broker hiccup, and for the
+    non-PATCH path (usage dropping because evidence was deleted).
+    """
+    _assert_aal2(tenant)
+    existing = await quota_repo.get(tenant.org_id)
+    new_quota = (existing or OrgQuota(org_id=tenant.org_id)).with_quota_bytes(
+        body.storageQuotaBytes
+    )
+    await quota_repo.upsert(new_quota)
+
+    await audit_svc.log(
+        AuditEventType.QUOTA_UPDATED,
+        org_id=tenant.org_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={"storage_quota_bytes": body.storageQuotaBytes},
+    )
+
+    if not await quota_gate.is_ingestion_held(tenant.org_id):
+        async for ev in evidence_repo.stream_quota_held(tenant.org_id):
+            try:
+                await task_queue.enqueue_dispatch(ev.evidence_id, tenant)
+            except Exception as exc:  # noqa: BLE001 -- best-effort; beat sweep is the safety net
+                logger.warning(
+                    "quota_patch_resume_enqueue_failed",
+                    extra={"evidence_id": str(ev.evidence_id), "error": str(exc)},
+                )
+
+    usage = await evidence_repo.get_total_size_bytes(tenant.org_id)
+    return OrgQuotaOut(
+        storageQuotaBytes=new_quota.storage_quota_bytes,
+        currentUsageBytes=usage,
+        updatedAt=new_quota.updated_at.isoformat(),
+    )
 
 
 # ---------------------------------------------------------------------------

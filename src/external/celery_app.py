@@ -83,6 +83,7 @@ celery_app.conf.update(
         "kronos.auto_dispatch_received": {"queue": "q.index"},
         "kronos.abort_orphan_parses": {"queue": "q.index"},
         "kronos.anchor_audit_log": {"queue": "q.index"},
+        "kronos.auto_resume_quota_held": {"queue": "q.index"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -109,6 +110,22 @@ celery_app.conf.update(
         "anchor-audit-log": {
             "task": "kronos.anchor_audit_log",
             "schedule": crontab(hour=2, minute=0),  # 02:00 UTC daily
+        },
+        "auto-resume-quota-held": {
+            "task": "kronos.auto_resume_quota_held",
+            # Every 15 min, not hourly like the orphan-cleanup tasks above:
+            # unlike those (rare failure conditions), a quota hold is an
+            # expected, routine condition that can clear via a path with no
+            # direct trigger of its own (evidence purged/deleted elsewhere,
+            # dropping usage back under the soft ceiling) -- and every
+            # minute it stays held is a minute an analyst's timeline data
+            # is missing. The admin quota PATCH route already triggers an
+            # immediate resume for the "quota raised" case (see
+            # src/external/routes/admin.py); this sweep is the same
+            # belt-and-braces safety net auto_dispatch_received provides
+            # for its own concern, just on a tighter interval given quota
+            # holds are the more common, more analyst-visible case.
+            "schedule": crontab(minute="*/15"),
         },
     },
     timezone="UTC",
@@ -558,6 +575,63 @@ def auto_dispatch_received(self: object) -> int:
         count = 0
         logger.warning("auto_dispatch_received: repository not configured; skipping")
     logger.info("auto_dispatch_received_done", extra={"dispatched": count})
+    return count
+
+
+# ---------------------------------------------------------------------------
+# auto_resume_quota_held: periodic re-check + resume of quota-held evidence
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.auto_resume_quota_held", bind=True, max_retries=1)
+def auto_resume_quota_held(self: object) -> int:
+    """Re-check every quota-held evidence and re-enqueue dispatch for any
+    org that's back under the 1.0x soft ceiling (docs/TENANT_USAGE_QUOTA.md §1
+    item 3 -- "auto-resume"). Mirrors auto_dispatch_received's own idiom
+    exactly: query the cross-org stream_all_quota_held() (CLAUDE.md §E.5 --
+    beat-task-only), then simply re-enqueue dispatch_parse the same way a
+    fresh upload's own auto-dispatch does. start_parsing() (the one
+    authoritative quota-check point, see ParsingOrchestrationService's own
+    comment) does the real is_ingestion_held() re-check and either clears
+    quota_held and proceeds, or leaves it held with no new audit spam --
+    this task never needs to know which outcome it got.
+
+    Returns count of re-dispatched items.
+    """
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+
+    try:
+        queue = CeleryTaskQueue()
+
+        async def _work(resources: TaskResources) -> int:
+            count = 0
+            async for ev in resources.evidence_repository.stream_all_quota_held():
+                tenant = _tenant(str(ev.metadata.org_id), str(ev.metadata.uploader_user_id))
+                try:
+                    await queue.enqueue_dispatch(ev.evidence_id, tenant)
+                    count += 1
+                    logger.info(
+                        "auto_resume_quota_held_reenqueued",
+                        extra={
+                            "evidence_id": str(ev.evidence_id),
+                            "org_id": str(ev.metadata.org_id),
+                        },
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "auto_resume_quota_held_enqueue_failed",
+                        extra={"evidence_id": str(ev.evidence_id), "error": str(exc)},
+                    )
+            return count
+
+        count = run_evidence_coro(_work)
+    except (RuntimeError, ValidationError):
+        count = 0
+        logger.warning("auto_resume_quota_held: repository not configured; skipping")
+    logger.info("auto_resume_quota_held_done", extra={"resumed_candidates": count})
     return count
 
 

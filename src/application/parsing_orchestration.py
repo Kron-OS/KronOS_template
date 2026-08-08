@@ -15,6 +15,7 @@ from src.application.audit_log import AuditLogService
 from src.application.enrichment import EnrichmentPipeline
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing import ForensicParser, ParserType
+from src.application.quota_gate import StorageQuotaGate
 from src.application.yara_rules import yara_scan_org_var
 from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
@@ -57,6 +58,7 @@ class ParsingOrchestrationService:
         timeline_ingest: TimelineIngestionService | None = None,
         artifact_ingest: ArtifactIngestService | None = None,
         enrichment_pipeline: EnrichmentPipeline | None = None,
+        quota_gate: StorageQuotaGate | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -69,6 +71,11 @@ class ParsingOrchestrationService:
         # is a valid, real state (matches every other optional collaborator
         # in this codebase), never a fake pass-through pipeline.
         self._enrichment_pipeline = enrichment_pipeline
+        # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md). None (no-op) is
+        # a valid, honest "quota enforcement disabled" state, same pattern
+        # as enrichment_pipeline above -- existing callers/tests that don't
+        # pass this keep working unchanged.
+        self._quota_gate = quota_gate
 
     async def start_parsing(
         self,
@@ -97,6 +104,53 @@ class ParsingOrchestrationService:
             raise EvidenceStateConflictError(
                 f"Evidence is in state {evidence.state.value}, expected RECEIVED",
                 context={"evidence_id": str(evidence_id), "state": evidence.state.value},
+            )
+
+        # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md §2, enforcement
+        # hook 2): the one authoritative gate every dispatch-to-parse path
+        # goes through -- the initial auto-dispatch from
+        # EvidenceIntakeService._promote(), the auto_dispatch_received
+        # beat-task retry, and the auto_resume_quota_held beat task /
+        # admin-PATCH direct-resume trigger all funnel here via the same
+        # kronos.dispatch_parse Celery task. Checking only at the
+        # _promote() enqueue call would be bypassable by any of those other
+        # re-dispatch paths; checking here covers all of them at the one
+        # point that actually performs the RECEIVED -> PARSING transition.
+        if self._quota_gate is not None and await self._quota_gate.is_ingestion_held(tenant.org_id):
+            if not evidence.quota_held:
+                evidence = evidence.with_quota_held(True)
+                await self._repo.update(evidence, expected_state=EvidenceState.RECEIVED)
+                await self._audit.log(
+                    AuditEventType.QUOTA_INGESTION_HELD,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    actor_username=tenant.username,
+                    evidence_id=evidence.evidence_id,
+                    details={"reason": "storage_soft_ceiling_reached"},
+                )
+            # else: already held and re-checked (e.g. a stale re-dispatch
+            # racing the beat sweep) -- no new audit event, idempotent.
+            logger.info(
+                "parse_dispatch_held_for_quota",
+                extra={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+            return evidence
+
+        if evidence.quota_held:
+            # Resuming: usage dropped back under the soft ceiling (quota
+            # raised, or evidence deleted elsewhere) since this evidence was
+            # held. Clear the flag and audit the resume before proceeding
+            # with the normal dispatch below -- this is the single code
+            # path both the beat-task sweep and the admin-PATCH direct
+            # trigger converge on (both just re-enqueue dispatch_parse).
+            evidence = evidence.with_quota_held(False)
+            await self._repo.update(evidence, expected_state=EvidenceState.RECEIVED)
+            await self._audit.log(
+                AuditEventType.QUOTA_INGESTION_RESUMED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                evidence_id=evidence.evidence_id,
             )
 
         evidence_key = evidence.minio_evidence_key

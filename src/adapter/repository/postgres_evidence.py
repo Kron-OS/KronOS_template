@@ -46,6 +46,11 @@ evidence_table = sa.Table(
     sa.Column("legal_hold", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("object_lock_until", sa.TIMESTAMP(timezone=True)),
     sa.Column("rfc3161_token", sa.LargeBinary),
+    # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md) -- additive column,
+    # same "existing deployments need a manual ALTER TABLE" caveat as
+    # legal_hold/object_lock_until/rfc3161_token above (create_all only adds
+    # missing tables, not columns).
+    sa.Column("quota_held", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False),
 )
@@ -170,6 +175,40 @@ class PostgresEvidenceRepository(EvidenceRepository):
             )
         return result.rowcount > 0
 
+    async def get_total_size_bytes(self, org_id: uuid.UUID) -> int:
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                sa.select(sa.func.coalesce(sa.func.sum(evidence_table.c.size_bytes), 0)).where(
+                    evidence_table.c.org_id == org_id,
+                    evidence_table.c.state != EvidenceState.PURGED.value,
+                )
+            )
+            return int(result.scalar_one())
+
+    async def stream_quota_held(self, org_id: uuid.UUID) -> AsyncIterator[Evidence]:
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                evidence_table.select().where(
+                    evidence_table.c.org_id == org_id,
+                    evidence_table.c.quota_held.is_(True),
+                    evidence_table.c.state == EvidenceState.RECEIVED.value,
+                )
+            )
+            for row in result:
+                yield self._from_row(row._asdict())
+
+    async def stream_all_quota_held(self) -> AsyncIterator[Evidence]:
+        """Cross-org -- for the auto_resume_quota_held beat task only (CLAUDE.md §E.5)."""
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                evidence_table.select().where(
+                    evidence_table.c.quota_held.is_(True),
+                    evidence_table.c.state == EvidenceState.RECEIVED.value,
+                )
+            )
+            for row in result:
+                yield self._from_row(row._asdict())
+
     # ------------------------------------------------------------------
     # Row ↔ domain mapping
     # ------------------------------------------------------------------
@@ -195,6 +234,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             "legal_hold": ev.legal_hold,
             "object_lock_until": ev.object_lock_until,
             "rfc3161_token": ev.rfc3161_token,
+            "quota_held": ev.quota_held,
             "created_at": ev.created_at,
             "updated_at": ev.updated_at,
         }
@@ -223,6 +263,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             legal_hold=row.get("legal_hold", False) or False,
             object_lock_until=_ensure_utc_optional(row.get("object_lock_until")),
             rfc3161_token=row.get("rfc3161_token"),
+            quota_held=row.get("quota_held", False) or False,
             created_at=_ensure_utc(row["created_at"]),
             updated_at=_ensure_utc(row["updated_at"]),
         )

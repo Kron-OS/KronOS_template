@@ -63,6 +63,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_ioc_feed import (  # noqa: PLC0415
         PostgresIOCFeedRepository,
     )
+    from src.adapter.repository.postgres_quota import (  # noqa: PLC0415
+        PostgresOrgQuotaRepository,
+    )
     from src.adapter.repository.postgres_rule_pack import (  # noqa: PLC0415
         PostgresRulePackRepository,
     )
@@ -103,6 +106,7 @@ async def wire_dependencies_async() -> None:
     yara_rule_pack_repo = PostgresYaraRulePackRepository(engine)
     asset_repo = PostgresAssetRepository(engine)
     ioc_feed_repo = PostgresIOCFeedRepository(engine)
+    org_quota_repo = PostgresOrgQuotaRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
@@ -115,6 +119,13 @@ async def wire_dependencies_async() -> None:
     await PostgresAssetRepository.create_tables(engine)
     await PostgresIOCFeedRepository.create_tables(engine)
     await PostgresSealedBatchRepository.create_tables(engine)
+    # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md) -- create_tables()
+    # called here at real startup, not just at DI-container-configure time,
+    # deliberately repeating the pattern the DeadLetterSink comment above
+    # already documents to avoid D3's real, since-fixed gap (a new
+    # repository's table never created because create_tables() was missing
+    # from this exact list).
+    await PostgresOrgQuotaRepository.create_tables(engine)
     # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
     # nothing configures a Postgres-backed sink into the DI container below
     # yet (StreamNormalizationService itself isn't wired into
@@ -349,6 +360,7 @@ async def wire_dependencies_async() -> None:
         enrichment_pipeline=EnrichmentPipeline(
             [AssetContextEnricher(asset_repo), IOCMatchEnricher(ioc_feed_repo)]
         ),
+        org_quota_repository=org_quota_repo,
     )
     configure_clamav_from_settings()
 
@@ -385,6 +397,9 @@ def wire_dependencies_sync() -> None:
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
+    from src.adapter.repository.postgres_quota import (  # noqa: PLC0415
+        PostgresOrgQuotaRepository,
+    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
@@ -406,6 +421,7 @@ def wire_dependencies_sync() -> None:
             await PostgresAuditLogRepository.create_tables(engine)
             await PostgresEvidenceRepository.create_tables(engine)
             await PostgresArtifactRepository.create_tables(engine)
+            await PostgresOrgQuotaRepository.create_tables(engine)
         finally:
             await engine.dispose()
 

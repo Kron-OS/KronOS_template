@@ -51,11 +51,12 @@ def make_tenant_context(
 def make_evidence_metadata(
     org_id: uuid.UUID | None = None,
     case_id: uuid.UUID | None = None,
+    size_bytes: int = 1024,
 ) -> EvidenceMetadata:
     return EvidenceMetadata(
         original_filename="test.evtx",
         content_type="application/octet-stream",
-        size_bytes=1024,
+        size_bytes=size_bytes,
         uploader_user_id=uuid.uuid4(),
         case_id=case_id or uuid.uuid4(),
         org_id=org_id or uuid.uuid4(),
@@ -66,9 +67,10 @@ def make_evidence_metadata(
 def make_evidence(
     state: EvidenceState = EvidenceState.UPLOADING,
     org_id: uuid.UUID | None = None,
+    size_bytes: int = 1024,
 ) -> Evidence:
     return Evidence(
-        metadata=make_evidence_metadata(org_id=org_id),
+        metadata=make_evidence_metadata(org_id=org_id, size_bytes=size_bytes),
         state=state,
     )
 

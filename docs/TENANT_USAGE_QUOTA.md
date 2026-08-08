@@ -181,3 +181,108 @@ Two distinct ceilings, both per-org, both derived from one configured
   read as shorthand for "storage limit," not a literal billing feature.
 - Per-case or per-user quotas (org-level only, matching every other
   tenant-scoped concept in this platform).
+
+## STATUS (implementation pass, 2026-08-08)
+
+**Built:** everything in §2's design, implemented essentially as scoped,
+plus the decisions this doc deliberately left open (below). New files:
+`src/domain/quota.py` (`OrgQuota`), `src/adapter/repository/quota.py` +
+`postgres_quota.py` (`OrgQuotaRepository` ABC + Postgres/in-memory),
+`src/application/tenant_usage.py` (`TenantUsageService`),
+`src/application/quota_gate.py` (`StorageQuotaGate` + `QuotaDecision`).
+Modified: `Evidence` (new `quota_held: bool` field +
+`with_quota_held()`), `EvidenceRepository` ABC (+`get_total_size_bytes`,
+`stream_quota_held`, `stream_all_quota_held`, implemented in both Postgres
+and the test in-memory double), `EvidenceIntakeService.request_upload()`
+(hook 1), `ParsingOrchestrationService.start_parsing()` (hook 2, the one
+authoritative gate every dispatch path funnels through), a new
+`kronos.auto_resume_quota_held` beat task (every 15 min) in
+`celery_app.py`, a dedicated `GET/PATCH /api/admin/org/quota` route, 4 new
+`AuditEventType`s, and `StorageQuotaExceededError`. `org_quotas` table
+creation wired into both `startup.py` variants (the exact D3-class gap the
+brief warned about) and `celery_runtime.py`'s `TaskResources`.
+
+**The open decisions, made and why:**
+- **413, not 409, for a quota-denied upload.** The real cause is a size
+  ceiling (aggregate/per-org, but still a size ceiling), not a
+  concurrent-modification conflict a client would retry unchanged and
+  expect to succeed — 409 in this codebase already means the latter
+  (`admin.py`'s `_to_http_error`). Registered both as a route-level catch
+  in `evidence.py` and a global handler in `fastapi_app.py`.
+- **A boolean flag (`quota_held`), not a new `EvidenceState`.** Mirrors
+  `legal_hold`'s own established shape exactly: a real property orthogonal
+  to FSM state, not a failure and not a new transition to wire
+  bidirectionally into `_VALID_TRANSITIONS`. Evidence sits in `RECEIVED`
+  the whole time it's held — nothing about its lifecycle branched.
+- **Fail-open**, on both quota checks, when `OrgQuotaRepository`/
+  `TenantUsageService` can't reach Postgres. Deliberately the *opposite* of
+  ClamAV's prod-fail-closed gate: ClamAV protects against a security risk
+  (malware reaching storage) where failing open is a real hole; a storage
+  quota is a cost/capacity control, and failing closed here would let one
+  new, narrow subsystem's own bad moment block the platform's central
+  mission (capturing forensic evidence) for orgs nowhere near their quota.
+  Every fail-open event is logged (a legitimate alerting signal), so
+  there's no silent failure mode, only the fail-vs-block tradeoff.
+- **A dedicated `/admin/quota` route**, not an extension of `/settings`.
+  `/settings`'s DTOs are shaped 1:1 around a specific, already-shipped
+  frontend interface unrelated to quota, and that stub's own persistence
+  gap is explicitly out of scope to touch here — bolting a third field
+  onto it would conflate two independent admin concerns in one
+  contract/audit-event.
+- **Beat sweep every 15 min, plus a direct trigger on the quota-raising
+  PATCH** — both, as suggested. The sweep is the required belt-and-braces
+  safety net (it also catches usage dropping via evidence deletion, which
+  has no PATCH of its own); 15 min, not hourly like the orphan-cleanup
+  tasks, because a quota hold is a routine, analyst-visible condition, not
+  a rare failure — every minute held is timeline data an analyst can't see
+  yet.
+
+**Real captured PoC result:** `poc/tenant_storage_quota/` — 22/22 checks
+passed against real Postgres 16 + real MinIO + the real shared dev-stack
+OpenSearch, plus the real `auto_resume_quota_held`/`dispatch_parse`/
+`parse_artefact_fast` Celery task functions (called directly; see that
+PoC's README for exactly what "called directly" does and doesn't verify).
+A genuinely quota-held evidence row was confirmed to never reach
+`COMPLETE`, then reached real `COMPLETE` after a real quota increase with
+no manual FSM mutation anywhere in the script — only two `OrgQuota`
+Postgres upserts, exactly what a real admin PATCH does. Full audit trail
+independently re-read from a fresh Postgres connection in a separate
+script afterward.
+
+**Verified:** unit suite 1345 passed, 1 skipped (was 1315/1, so +30 new
+tests, zero regressions — confirmed via `git stash -u` against the
+pre-change tree). mypy: 29 pre-existing errors, unchanged (confirmed same
+way) — one new file (`postgres_quota.py`) initially reproduced the same
+known `dict[str,object]`-vs-`tzinfo` false positive `postgres_sealed_batch.py`
+already has; fixed by mirroring `postgres_evidence.py`'s cleaner
+`dict[str, Any]` + shared `_ensure_utc` shape instead, net zero new errors.
+
+**What was NOT verified, and why:**
+- No live Celery worker process consuming the real broker queue — the PoC
+  calls the real task functions directly (mirroring `poc/celery_beat`'s own
+  established precedent), and independently confirms the re-enqueued
+  message really lands on the real Redis broker first. The one hop not
+  re-verified is specifically "a live worker dequeues and dispatches that
+  message" — already-covered ground (`poc/celery_redis/`), not new logic
+  this feature adds.
+- The admin route's HTTP layer is covered by unit tests (`TestClient` +
+  dependency overrides), not the PoC — the PoC exercises the same
+  `OrgQuotaRepository.upsert()` call the route makes, directly, since the
+  PoC's focus is the service/repository/Celery layer per CLAUDE.md §F, not
+  re-verifying FastAPI routing (already covered elsewhere for this exact
+  router).
+- Real ClamAV was not exercised in the PoC (`NoOpScanner` used instead,
+  same choice `poc/full_pipeline` documents making for the same reason) —
+  AV scanning is orthogonal to quota logic and independently verified in
+  `poc/clamav/`.
+- The pre-existing `/admin/settings` `retentionDays`/`legalHoldDefault`
+  stub gap (§0) was confirmed to still exist but was **not** touched, as
+  instructed.
+
+**What remains (real, named follow-ups, not silently dropped):**
+- A frontend settings page for org admins to view/set their own quota (§4,
+  explicitly out of scope this pass).
+- Continuous-stream/collector-ingest quota enforcement (§4, different
+  metering unit).
+- The `/admin/settings` stub's own pre-existing non-persistence gap (§0) —
+  real, pre-existing, unrelated to quota, not fixed here.

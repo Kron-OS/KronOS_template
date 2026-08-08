@@ -145,6 +145,13 @@ class Evidence(BaseModel):
     # Legal hold + WORM retention (Project_Specifications.md §2 "evidence" schema).
     legal_hold: bool = False
     object_lock_until: datetime | None = None
+    # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md): a flag orthogonal to
+    # FSM state, mirroring legal_hold's own shape exactly, rather than a new
+    # EvidenceState value. Only ever True while state == RECEIVED (dispatch
+    # to PARSING is what gets skipped); never ERROR, since a quota hold is
+    # an expected, recoverable condition, not a failure. See
+    # with_quota_held()'s docstring for the full reasoning.
+    quota_held: bool = False
     # RFC 3161 TSA-signed timestamp of `sha256`, stored as raw DER TimeStampToken bytes.
     rfc3161_token: bytes | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -207,6 +214,25 @@ class Evidence(BaseModel):
         (SEC 17a-4(f) / ISO A.5.33); it does not itself change FSM state.
         """
         return self.model_copy(update={"legal_hold": hold, "updated_at": datetime.now(UTC)})
+
+    def with_quota_held(self, held: bool) -> Evidence:
+        """Return a copy with the quota-hold flag set/cleared.
+
+        Deliberately NOT a new EvidenceState (e.g. "QUOTA_HELD"): the
+        evidence's real FSM state stays RECEIVED the entire time it is
+        held -- nothing about its lifecycle has failed or branched, dispatch
+        to PARSING is simply deferred. Introducing a new state would also
+        require it to be bidirectionally reachable from/to RECEIVED in
+        _VALID_TRANSITIONS for every hold/resume cycle, and every existing
+        piece of code that already treats RECEIVED as "successfully
+        promoted, awaiting parse" (e.g. auto_dispatch_received's own stuck-
+        in-RECEIVED sweep) would need to additionally know about the new
+        state to keep working. A boolean flag orthogonal to state mirrors
+        legal_hold's own established precedent for exactly this shape
+        ("real property of this evidence that doesn't consume an FSM
+        transition") and needed zero changes elsewhere in the FSM.
+        """
+        return self.model_copy(update={"quota_held": held, "updated_at": datetime.now(UTC)})
 
     def with_object_lock_until(self, retain_until: datetime) -> Evidence:
         """Return a copy recording the MinIO Object Lock retain-until date."""

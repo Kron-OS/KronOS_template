@@ -1,0 +1,119 @@
+0b1fbc8812ce9dbc48ea4b4a07bb583b487a40714542c3e95af432194e0fe5ee
+ff39d1d958be5688784d9b1f4e42cfc12115bf534c89802f7606a66ac0c42829
+a46a064c06e8e1a55179fbef6cdb229038be2db6d7b1b681f389d5a0ed7c2411
+Postgres + Redis + MinIO ready
+Environment configured. Running run_poc.py...
+PoC org_id=a08405eb-bcb5-4b65-ab6f-c5e150cd5a70 org_alias=pocquota928348cf
+
+========== Step 1: real upload #1 (1000 bytes) via the REAL full intake pipeline ==========
+real evidence #1: id=48b37466-151e-43ea-bfa9-e8189b658efe state=RECEIVED size_bytes=1000
+[PASS] evidence #1 reached RECEIVED via the real intake pipeline
+real usage after upload #1 (Postgres SUM via get_total_size_bytes): 1000 bytes
+[PASS] usage after upload #1 == 1000 (real Postgres SUM query) -- 1000
+
+========== Step 2: set real quota = 1000 bytes (hard ceiling=1500, soft ceiling=1000) ==========
+real quota row read back from Postgres: storage_quota_bytes=1000
+[PASS] quota persisted for real in Postgres
+
+========== Step 3: real upload of 600 more bytes (1000+600=1600 > 1500 hard ceiling) -> must be DENIED ==========
+real StorageQuotaExceededError raised: Upload would exceed the organization's storage quota  context={'org_id': 'a08405eb-bcb5-4b65-ab6f-c5e150cd5a70', 'incoming_size_bytes': 600, 'current_usage_bytes': 1000, 'quota_bytes': 1000}
+[PASS] oversized upload was denied for real (StorageQuotaExceededError raised)
+[PASS] denial reports the real current_usage_bytes (1000) -- {'org_id': 'a08405eb-bcb5-4b65-ab6f-c5e150cd5a70', 'incoming_size_bytes': 600, 'current_usage_bytes': 1000, 'quota_bytes': 1000}
+[PASS] denial reports the real configured quota_bytes (1000) -- {'org_id': 'a08405eb-bcb5-4b65-ab6f-c5e150cd5a70', 'incoming_size_bytes': 600, 'current_usage_bytes': 1000, 'quota_bytes': 1000}
+
+========== Step 4: real upload of 400 more bytes (1000+400=1400 <= 1500 hard ceiling) -> ALLOWED ==========
+real evidence #2: id=c1087610-ab34-4295-af64-c26a7104a127 state=RECEIVED size_bytes=400
+[PASS] evidence #2 (under the hard ceiling) was accepted and reached RECEIVED
+real usage after upload #2: 1400 bytes (>= quota 1000 -> soft ceiling now crossed)
+[PASS] usage after upload #2 == 1400 (real Postgres SUM query) -- 1400
+[PASS] StorageQuotaGate.is_ingestion_held() is True now that usage (1400) >= quota (1000)
+{"event": "startup: dependencies wired (sync/celery)", "level": "info", "logger": "src.external.startup", "timestamp": "2026-08-08T09:17:25.866790Z"}
+
+wire_dependencies_sync() completed (real DI container wired exactly as a real Celery worker does)
+
+========== Step 5: real dispatch_parse() Celery task on evidence #2 -> must be HELD, not parsed ==========
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:26.183880Z", "event_id": "b5508c0d-4166-465c-b305-0b0fe50e9d06", "event_type": "quota.ingestion_held", "seq": 12}
+{"event": "parse_dispatch_held_for_quota", "level": "info", "logger": "src.application.parsing_orchestration", "timestamp": "2026-08-08T09:17:26.184023Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "org_id": "a08405eb-bcb5-4b65-ab6f-c5e150cd5a70"}
+{"event": "dispatch_parse_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-08-08T09:17:26.184754Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "parser_type": "fast"}
+real evidence #2 after dispatch_parse(): state=RECEIVED quota_held=True
+[PASS] evidence #2 did NOT reach COMPLETE while held
+[PASS] evidence #2 stayed in RECEIVED (no FSM transition -- see with_quota_held's docstring)
+[PASS] evidence #2's real quota_held flag is True in Postgres
+real QUOTA_INGESTION_HELD audit events for this org (fresh Postgres read): 1
+[PASS] exactly one real QUOTA_INGESTION_HELD audit event persisted -- 1
+[PASS] the held audit event references evidence #2
+
+========== Step 6: real quota increase (1000 -> 1,000,000 bytes) ==========
+real quota row after PATCH-equivalent update: storage_quota_bytes=1000000
+[PASS] raised quota persisted for real in Postgres
+
+========== Step 7: real auto_resume_quota_held() beat task -- NO manual trigger of our own ==========
+{"event": "auto_resume_quota_held_reenqueued", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-08-08T09:17:26.339027Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "org_id": "a08405eb-bcb5-4b65-ab6f-c5e150cd5a70"}
+{"event": "auto_resume_quota_held_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-08-08T09:17:26.342824Z", "resumed_candidates": 1}
+auto_resume_quota_held() returned: 1 candidate(s) re-enqueued
+[PASS] auto_resume_quota_held() found and re-enqueued exactly evidence #2 -- 1
+
+========== Step 7b: confirm the re-enqueue produced a REAL message on the real Redis broker ==========
+real Redis LLEN q.index = 1
+[PASS] a real dispatch_parse message is sitting on the real broker (q.index) -- 1
+
+========== Step 8: real dispatch_parse() re-check -- usage now under the raised quota -> must RESUME ==========
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:26.532332Z", "event_id": "92954a72-1794-4e1d-b18a-63b1456496db", "event_type": "quota.ingestion_resumed", "seq": 13}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:26.613490Z", "event_id": "98d1df74-63bc-41fa-9e7f-da1930290792", "event_type": "parse.started", "seq": 14}
+{"event": "parse_queued", "level": "info", "logger": "src.application.parsing_orchestration", "timestamp": "2026-08-08T09:17:26.615876Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "parser": "cloudtrail", "queue": "fast"}
+{"event": "dispatch_parse_done", "level": "info", "logger": "src.external.celery_app", "timestamp": "2026-08-08T09:17:26.616571Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "parser_type": "fast"}
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+
+========== Step 9: real parse_artefact_fast() -- the real CloudTrailParser, real execute_parse() ==========
+{"event": "PUT https://localhost:9200/_index_template/kronos-template [status:200 request:0.020s]", "level": "info", "logger": "opensearch", "timestamp": "2026-08-08T09:17:26.686197Z"}
+{"event": "PUT https://localhost:9200/_plugins/_ism/policies/kronos-rollover [status:409 request:0.003s]", "level": "warning", "logger": "opensearch", "timestamp": "2026-08-08T09:17:26.689820Z"}
+{"event": "PUT https://localhost:9200/_plugins/_security/api/roles/kronos-generic-tenant [status:200 request:0.017s]", "level": "info", "logger": "opensearch", "timestamp": "2026-08-08T09:17:26.706819Z"}
+{"event": "PUT https://localhost:9200/_plugins/_security/api/rolesmapping/kronos-generic-tenant [status:200 request:0.263s]", "level": "info", "logger": "opensearch", "timestamp": "2026-08-08T09:17:26.969551Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:27.008457Z", "event_id": "4e10cb4e-401e-4cac-8270-d279f145f2c2", "event_type": "ingest.started", "seq": 15}
+{"event": "POST https://localhost:9200/_bulk [status:200 request:0.311s]", "level": "info", "logger": "opensearch", "timestamp": "2026-08-08T09:17:27.323340Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:27.367506Z", "event_id": "9a1a098b-7076-4510-9d43-13bb1ab044e2", "event_type": "ingest.completed", "seq": 16}
+{"event": "ingest_completed", "level": "info", "logger": "src.application.timeline_ingest", "timestamp": "2026-08-08T09:17:27.367643Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "record_count": 1}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-08T09:17:27.441097Z", "event_id": "0ce74a88-8c01-4a5b-a1cd-1361d71d703f", "event_type": "parse.completed", "seq": 17}
+{"event": "parse_completed", "level": "info", "logger": "src.application.parsing_orchestration", "timestamp": "2026-08-08T09:17:27.441205Z", "evidence_id": "c1087610-ab34-4295-af64-c26a7104a127", "record_count": 1, "artifact_count": 0}
+parse_artefact_fast() returned: {'evidence_id': 'c1087610-ab34-4295-af64-c26a7104a127', 'record_count': 1}
+
+real evidence #2 FINAL state (fresh Postgres read): state=COMPLETE quota_held=False
+[PASS] evidence #2 reached real COMPLETE with NO manual state mutation by this script
+[PASS] evidence #2's quota_held flag was cleared on resume
+real QUOTA_INGESTION_RESUMED audit events (fresh Postgres read): 1
+[PASS] exactly one real QUOTA_INGESTION_RESUMED audit event persisted -- 1
+[PASS] a real PARSE_COMPLETED audit event was persisted -- 1
+[PASS] the earlier QUOTA_UPLOAD_DENIED event is still present in the org's real audit trail
+(informational) QUOTA_UPDATED events found: 0 (this PoC updates quota_repo directly, not via the admin route, so 0 is expected here)
+
+============================================================
+22 passed, 0 failed
+============================================================
+
+============================================================
+Independent re-read: a SEPARATE script, a SEPARATE fresh Postgres
+connection (not the PoC's own verify_held/verify_resumed helpers),
+re-reading the org's full audit trail + final quota/usage after the run
+above (containers were still up when this was captured).
+============================================================
+Independent re-read: total audit events for PoC org: 17
+ - 1 evidence.upload_requested 48b37466-151e-43ea-bfa9-e8189b658efe
+ - 2 evidence.scan_started 48b37466-151e-43ea-bfa9-e8189b658efe
+ - 3 evidence.scan_completed 48b37466-151e-43ea-bfa9-e8189b658efe
+ - 4 evidence.hash_computed 48b37466-151e-43ea-bfa9-e8189b658efe
+ - 5 evidence.promoted 48b37466-151e-43ea-bfa9-e8189b658efe
+ - 6 quota.upload_denied None
+ - 7 evidence.upload_requested c1087610-ab34-4295-af64-c26a7104a127
+ - 8 evidence.scan_started c1087610-ab34-4295-af64-c26a7104a127
+ - 9 evidence.scan_completed c1087610-ab34-4295-af64-c26a7104a127
+ - 10 evidence.hash_computed c1087610-ab34-4295-af64-c26a7104a127
+ - 11 evidence.promoted c1087610-ab34-4295-af64-c26a7104a127
+ - 12 quota.ingestion_held c1087610-ab34-4295-af64-c26a7104a127
+ - 13 quota.ingestion_resumed c1087610-ab34-4295-af64-c26a7104a127
+ - 14 parse.started c1087610-ab34-4295-af64-c26a7104a127
+ - 15 ingest.started c1087610-ab34-4295-af64-c26a7104a127
+ - 16 ingest.completed c1087610-ab34-4295-af64-c26a7104a127
+ - 17 parse.completed c1087610-ab34-4295-af64-c26a7104a127
+Independent re-read: final quota: 1000000
+Independent re-read: final usage: 1400

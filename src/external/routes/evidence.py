@@ -24,6 +24,7 @@ from src.exceptions import (
     EvidenceStateError,
     KronOSException,
     ParsingError,
+    StorageQuotaExceededError,
     ValidationError,
 )
 from src.external.dependencies import (
@@ -144,6 +145,19 @@ async def request_upload(
             case_id=body.caseId,
             tenant=tenant,
         )
+    except StorageQuotaExceededError as exc:
+        # 413 Payload Too Large, not 409 Conflict: the real cause is a size
+        # ceiling (an aggregate, per-org one, but a size ceiling all the
+        # same), not a concurrent-modification/state conflict a client
+        # would retry unchanged and expect to succeed -- 409 in this
+        # codebase is already reserved for exactly that different meaning
+        # (see admin.py's _to_http_error). The real current/quota numbers
+        # are included so the frontend can render a specific, actionable
+        # message instead of a generic error.
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={"message": str(exc), **exc.context},
+        ) from exc
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

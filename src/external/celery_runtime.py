@@ -23,11 +23,14 @@ from src.adapter.opensearch.client import OpenSearchClient
 from src.adapter.repository.postgres_artifact import PostgresArtifactRepository
 from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
 from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
+from src.adapter.repository.postgres_quota import PostgresOrgQuotaRepository
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
 from src.application.parsing_orchestration import ParsingOrchestrationService
+from src.application.quota_gate import StorageQuotaGate
+from src.application.tenant_usage import TenantUsageService
 from src.application.timeline_ingest import TimelineIngestionService
 from src.config import Settings
 from src.external.dependencies import (
@@ -56,6 +59,8 @@ class TaskResources:
     artifact_repository: PostgresArtifactRepository
     orchestration_service: ParsingOrchestrationService
     intake_service: EvidenceIntakeService
+    org_quota_repository: PostgresOrgQuotaRepository
+    quota_gate: StorageQuotaGate
 
 
 async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClient]:
@@ -70,6 +75,8 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
     audit_service = AuditLogService(audit_repo)
     artifact_repo = PostgresArtifactRepository(engine)
     artifact_service = ArtifactIngestService(repository=artifact_repo, audit_log=audit_service)
+    org_quota_repo = PostgresOrgQuotaRepository(engine)
+    quota_gate = StorageQuotaGate(org_quota_repo, TenantUsageService(evidence_repo))
 
     parsed = urlparse(settings.opensearch_url)
     use_ssl = parsed.scheme == "https"
@@ -96,6 +103,7 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         task_queue=get_task_queue(),
         timeline_ingest=timeline_ingest,
         artifact_ingest=artifact_service,
+        quota_gate=quota_gate,
     )
 
     intake_service = EvidenceIntakeService(
@@ -109,6 +117,7 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         task_queue=get_task_queue(),
         timestamp_service=get_timestamp_service(),
         default_retention_days=get_default_retention_days(),
+        quota_gate=quota_gate,
     )
 
     resources = TaskResources(
@@ -118,6 +127,8 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         artifact_repository=artifact_repo,
         intake_service=intake_service,
         orchestration_service=orchestration,
+        org_quota_repository=org_quota_repo,
+        quota_gate=quota_gate,
     )
     return resources, engine, opensearch
 

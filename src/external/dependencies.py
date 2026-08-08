@@ -39,6 +39,7 @@ from src.adapter.repository.detection_correlation import (
 )
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.ioc_feed import InMemoryIOCFeedRepository, IOCFeedRepository
+from src.adapter.repository.quota import InMemoryOrgQuotaRepository, OrgQuotaRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
 from src.adapter.repository.sealed_batch import (
     InMemorySealedBatchRepository,
@@ -65,11 +66,13 @@ from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
+from src.application.quota_gate import StorageQuotaGate
 from src.application.risk_scoring import DetectionRiskScorer
 from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.sealing_trigger_policy import SealingTriggerPolicy
+from src.application.tenant_usage import TenantUsageService
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator, default_validator_chain
@@ -154,6 +157,14 @@ _enrichment_pipeline: EnrichmentPipeline | None = None
 # _enrichment_pipeline above: an empty in-memory repository by default is
 # real (queries succeed, just find nothing), not a fake pass-through.
 _ioc_feed_repository: IOCFeedRepository = InMemoryIOCFeedRepository()
+# Tenant storage quota (docs/TENANT_USAGE_QUOTA.md) -- same "honestly
+# real, in-memory until Postgres is wired" shape as _detection_repository/
+# _rule_pack_repository above, NOT the "None means disabled" shape of
+# _timestamp_service/_ism_manager: OrgQuotaRepository is a core per-org
+# concept (like DetectionRepository), not an optional external-system
+# integration, so it always has a real (if in-memory-backed in tests)
+# implementation and StorageQuotaGate is always constructed from it.
+_org_quota_repository: OrgQuotaRepository = InMemoryOrgQuotaRepository()
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +362,22 @@ def get_ioc_feed_repository() -> IOCFeedRepository:
     return _ioc_feed_repository
 
 
+def get_org_quota_repository() -> OrgQuotaRepository:
+    return _org_quota_repository
+
+
+def get_storage_quota_gate(
+    evidence_repository: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+) -> StorageQuotaGate:
+    """FastAPI dependency for StorageQuotaGate (docs/TENANT_USAGE_QUOTA.md).
+
+    Always returns a real, working gate -- org_quota_repository defaults to
+    an in-memory store (see its own module-level comment), so there is no
+    "not configured" case to special-case here, unlike get_timestamp_service.
+    """
+    return StorageQuotaGate(_org_quota_repository, TenantUsageService(evidence_repository))
+
+
 def get_enrichment_pipeline() -> EnrichmentPipeline | None:
     """Return the configured EnrichmentPipeline, or None if enrichment is
     disabled (roadmap F1) -- an honest state, never a fake pass-through
@@ -545,6 +572,7 @@ def get_intake_service(
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
     validator: Annotated[EvidenceValidator, Depends(get_validator)],
     scanner: Annotated[AntivirusScanner, Depends(get_scanner)],
+    quota_gate: Annotated[StorageQuotaGate, Depends(get_storage_quota_gate)],
 ) -> EvidenceIntakeService:
     return EvidenceIntakeService(
         evidence_repository=evidence_repository,
@@ -559,6 +587,7 @@ def get_intake_service(
         timestamp_service=_timestamp_service,
         default_retention_days=_default_retention_days,
         ism_manager=_ism_manager,
+        quota_gate=quota_gate,
     )
 
 
@@ -590,6 +619,7 @@ def get_parsing_orchestration_service(
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
     timeline_ingest: Annotated[TimelineIngestionService, Depends(get_timeline_ingest_service)],
     artifact_ingest: Annotated[ArtifactIngestService, Depends(get_artifact_ingest_service)],
+    quota_gate: Annotated[StorageQuotaGate, Depends(get_storage_quota_gate)],
 ) -> ParsingOrchestrationService:
     """FastAPI dependency for ParsingOrchestrationService."""
     return ParsingOrchestrationService(
@@ -601,6 +631,7 @@ def get_parsing_orchestration_service(
         timeline_ingest=timeline_ingest,
         artifact_ingest=artifact_ingest,
         enrichment_pipeline=get_enrichment_pipeline(),
+        quota_gate=quota_gate,
     )
 
 
@@ -835,6 +866,7 @@ def configure_dependencies(
     asset_repository: AssetRepository | None = None,
     enrichment_pipeline: EnrichmentPipeline | None = None,
     ioc_feed_repository: IOCFeedRepository | None = None,
+    org_quota_repository: OrgQuotaRepository | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -850,6 +882,7 @@ def configure_dependencies(
     global _custom_rule_client, _custom_rule_detector_binder
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
+    global _org_quota_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -901,6 +934,8 @@ def configure_dependencies(
     _enrichment_pipeline = enrichment_pipeline
     if ioc_feed_repository is not None:
         _ioc_feed_repository = ioc_feed_repository
+    if org_quota_repository is not None:
+        _org_quota_repository = org_quota_repository
 
 
 def reset_dependencies() -> None:
@@ -919,6 +954,7 @@ def reset_dependencies() -> None:
     global _sealed_batch_repository, _batch_sealing_service
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
+    global _org_quota_repository
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -959,3 +995,4 @@ def reset_dependencies() -> None:
     _asset_repository = InMemoryAssetRepository()
     _enrichment_pipeline = None
     _ioc_feed_repository = InMemoryIOCFeedRepository()
+    _org_quota_repository = InMemoryOrgQuotaRepository()

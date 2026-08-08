@@ -154,6 +154,15 @@ class TicketingError(KronOSException):
     """
 
 
+class StorageQuotaExceededError(KronOSException):
+    """Raised when an org's real total stored bytes would exceed the hard
+    1.5x storage_quota_bytes ceiling (docs/TENANT_USAGE_QUOTA.md §1).
+    Distinct from a generic ValidationError so the FastAPI handler can map
+    it to a specific status with the real current-usage/quota numbers in
+    the response body, instead of a generic 422.
+    """
+
+
 class SealerFallBehindDetectedError(KronOSException):
     """Signals that a stream's oldest pending (unsealed) event has aged past
     ``BatchSealingService``'s own ``stall_alert_after_seconds`` threshold

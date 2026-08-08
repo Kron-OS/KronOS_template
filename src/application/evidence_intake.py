@@ -14,13 +14,20 @@ from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
 from src.application.audit_log import AuditLogService
 from src.application.hashing import HashService
+from src.application.quota_gate import StorageQuotaGate
 from src.application.scanning import AntivirusScanner
 from src.application.timestamping import RFC3161TimestampService
 from src.application.validation import EvidenceValidator
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
 from src.domain.user import Role, TenantContext
-from src.exceptions import AuthorizationError, EvidenceStateError, StorageError, ValidationError
+from src.exceptions import (
+    AuthorizationError,
+    EvidenceStateError,
+    StorageError,
+    StorageQuotaExceededError,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +91,7 @@ class EvidenceIntakeService:
         timestamp_service: RFC3161TimestampService | None = None,
         default_retention_days: int = _DEFAULT_RETENTION_DAYS,
         ism_manager: IsmLifecycleManager | None = None,
+        quota_gate: StorageQuotaGate | None = None,
     ) -> None:
         self._repo = evidence_repository
         self._storage = storage
@@ -101,6 +109,12 @@ class EvidenceIntakeService:
         # the MinIO WORM object below. None (no-op) is a valid, explicit
         # "not configured" state, matching dashboards_provisioner's pattern.
         self._ism_manager = ism_manager
+        # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md). None (no-op,
+        # quota enforcement disabled) is a valid, honest state -- same
+        # pattern as ism_manager/timestamp_service above -- so every
+        # existing caller/test that constructs this service without a gate
+        # keeps working unchanged.
+        self._quota_gate = quota_gate
 
     async def request_upload(
         self,
@@ -114,7 +128,42 @@ class EvidenceIntakeService:
 
         The returned URL allows the client to PUT the file directly to the
         quarantine bucket without routing through the application server.
+
+        Raises:
+            StorageQuotaExceededError: if this upload would push the org's
+                real total stored bytes past the 1.5x hard ceiling
+                (docs/TENANT_USAGE_QUOTA.md §1). org_id for the check comes
+                from ``tenant`` (the authenticated TenantContext), never
+                from the request body -- a caller cannot claim a different
+                org's quota headroom.
         """
+        if self._quota_gate is not None:
+            decision = await self._quota_gate.check_upload_allowed(tenant.org_id, size_bytes)
+            if not decision.allowed:
+                await self._audit.log(
+                    AuditEventType.QUOTA_UPLOAD_DENIED,
+                    org_id=tenant.org_id,
+                    actor_user_id=tenant.user_id,
+                    actor_username=tenant.username,
+                    case_id=case_id,
+                    details={
+                        "filename": filename,
+                        "incoming_size_bytes": size_bytes,
+                        "current_usage_bytes": decision.current_usage_bytes,
+                        "quota_bytes": decision.quota_bytes,
+                        "reason": decision.reason,
+                    },
+                )
+                raise StorageQuotaExceededError(
+                    "Upload would exceed the organization's storage quota",
+                    context={
+                        "org_id": str(tenant.org_id),
+                        "incoming_size_bytes": size_bytes,
+                        "current_usage_bytes": decision.current_usage_bytes,
+                        "quota_bytes": decision.quota_bytes,
+                    },
+                )
+
         metadata = EvidenceMetadata(
             original_filename=filename,
             content_type=content_type,
@@ -661,7 +710,9 @@ class EvidenceIntakeService:
         )
         return updated
 
-    async def _sync_ism_legal_hold(self, evidence: Evidence, tenant: TenantContext, hold: bool) -> None:
+    async def _sync_ism_legal_hold(
+        self, evidence: Evidence, tenant: TenantContext, hold: bool
+    ) -> None:
         """Mirror ``Evidence.legal_hold`` onto this evidence's case's real
         OpenSearch indices (roadmap M1/B3). Case-grade, not per-evidence-item:
         a case's parsed timeline indices are shared across every evidence

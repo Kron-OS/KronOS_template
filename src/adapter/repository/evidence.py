@@ -53,3 +53,31 @@ class EvidenceRepository(ABC):
     @abstractmethod
     async def delete_by_id(self, evidence_id: uuid.UUID, org_id: uuid.UUID) -> bool:
         """Delete evidence metadata. Returns True if the record existed, False otherwise."""
+
+    @abstractmethod
+    async def get_total_size_bytes(self, org_id: uuid.UUID) -> int:
+        """Sum of ``size_bytes`` across all non-purged evidence for org_id.
+
+        Backs TenantUsageService's real-time storage-usage computation
+        (docs/TENANT_USAGE_QUOTA.md) -- a real SUM query scoped to this
+        repository's own query surface rather than a raw-SQL bypass from
+        the application layer.
+        """
+
+    @abstractmethod
+    def stream_quota_held(self, org_id: uuid.UUID) -> AsyncIterator[Evidence]:
+        """Yield RECEIVED evidence in org_id currently held for quota (quota_held=True).
+
+        Org-scoped -- safe to call from a request handler (e.g. the admin
+        quota PATCH route's direct resume trigger), unlike
+        stream_all_quota_held below.
+        """
+
+    @abstractmethod
+    def stream_all_quota_held(self) -> AsyncIterator[Evidence]:
+        """Yield RECEIVED evidence across ALL orgs currently held for quota.
+
+        Used exclusively by the auto_resume_quota_held beat task, mirroring
+        stream_all_by_state's own cross-org restriction (CLAUDE.md §E.5) --
+        never call from a request handler or any code reachable from one.
+        """

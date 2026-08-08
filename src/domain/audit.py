@@ -159,6 +159,16 @@ class AuditEventType(StrEnum):
     ORG_USER_REMOVED = "org.user_removed"
     ORG_SETTINGS_UPDATED = "org.settings_updated"
 
+    # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md) -- a real, distinct
+    # event per mutation/decision point: QUOTA_UPDATED is the admin-facing
+    # config change; the other three are the gate's own enforcement
+    # decisions, each independently auditable without needing to cross-
+    # reference the upload/parse events they accompany.
+    QUOTA_UPDATED = "quota.updated"
+    QUOTA_UPLOAD_DENIED = "quota.upload_denied"
+    QUOTA_INGESTION_HELD = "quota.ingestion_held"
+    QUOTA_INGESTION_RESUMED = "quota.ingestion_resumed"
+
     # Generic
     SYSTEM_ERROR = "system.error"
 

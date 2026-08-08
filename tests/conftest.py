@@ -160,6 +160,31 @@ class InMemoryEvidenceRepository(EvidenceRepository):
             return True
         return False
 
+    async def get_total_size_bytes(self, org_id: uuid.UUID) -> int:
+        return sum(
+            ev.metadata.size_bytes
+            for ev in self._store.values()
+            if ev.metadata.org_id == org_id and ev.state != EvidenceState.PURGED
+        )
+
+    async def stream_quota_held(  # type: ignore[override]
+        self, org_id: uuid.UUID
+    ) -> AsyncIterator[Evidence]:
+        for ev in self._store.values():
+            if (
+                ev.metadata.org_id == org_id
+                and ev.quota_held
+                and ev.state == EvidenceState.RECEIVED
+            ):
+                yield ev
+
+    async def stream_all_quota_held(  # type: ignore[override]
+        self,
+    ) -> AsyncIterator[Evidence]:
+        for ev in self._store.values():
+            if ev.quota_held and ev.state == EvidenceState.RECEIVED:
+                yield ev
+
 
 @pytest.fixture
 def audit_repo() -> InMemoryAuditLogRepository:
