@@ -1,12 +1,26 @@
 version: "3.9"
 
 # Wazuh SIEM stack — manager + dashboard.
-# IMPORTANT: Must use Wazuh ≥5.1. Wazuh 5.0 has a silent data-destruction CVE.
+# IMPORTANT (corrected 2026-08-09, Milestone S -- see
+# docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md Q2/S STATUS blocks): there is no
+# Wazuh 5.1 release line. The previous "Must use Wazuh >=5.1" pin here
+# (5.1.0) does not exist on Docker Hub -- verified against the real tag
+# list (newest is 5.0.0-beta4) and the real Wazuh GitHub Releases API
+# (newest stable is v4.14.7). The real CVE this comment was trying to avoid
+# (GHSA-ff9g-85jq-r3g3, CVSS-10, in 5.0's inventory_sync module) is fixed in
+# 5.0.0-beta3 -- it never shipped in any 4.x release, so 4.14.7 (the
+# current stable line, predating the CVE'd subsystem entirely) is the
+# correct real pin, not merely a fallback. Separately: Wazuh 5.x has
+# already removed wazuh-integratord/ossec.conf entirely (verified by direct
+# inspection of wazuh/wazuh-manager:5.0.0-beta4), which is the mechanism
+# src/external/integration_sources/wazuh.py's WazuhPushSource depends on
+# (see poc/integration_source_wazuh/) -- so 4.14.7 is required for that
+# connector to work at all, not just for CVE avoidance.
 # Include: docker compose -f docker-compose.dev.yml -f docker/wazuh/docker-compose.wazuh.yml up
 
 services:
   wazuh-manager:
-    image: wazuh/wazuh-manager:5.1.0
+    image: wazuh/wazuh-manager:4.14.7
     restart: unless-stopped
     hostname: wazuh-manager
     environment:
@@ -34,11 +48,22 @@ services:
       - "1515:1515"        # Wazuh agent enrollment
       - "514:514/udp"      # Syslog
       - "55000:55000"      # Wazuh API
-    networks:
-      - kronos-internal
+    # No explicit `networks:` block (2026-08-09 fix, Milestone S): this
+    # file previously required an external network literally named
+    # `kronos-internal`, which was never created by docker-compose.dev.yml
+    # or any other compose file in this repo (dev.yml relies on the
+    # implicit project-default network) -- confirmed via
+    # `docker compose -f docker-compose.dev.yml -f docker/wazuh/docker-compose.wazuh.yml config`,
+    # which resolved `kronos-internal` as `external: true` with nothing to
+    # attach to; `docker compose up` would have failed at runtime with
+    # "network kronos-internal not found". Omitting `networks:` here joins
+    # the implicit default network of whatever compose invocation this file
+    # is merged into (`docker_default` when run with docker-compose.dev.yml
+    # from this repo's real dev stack), matching every other real service in
+    # docker-compose.dev.yml.
 
   wazuh-dashboard:
-    image: wazuh/wazuh-dashboard:5.1.0
+    image: wazuh/wazuh-dashboard:4.14.7
     restart: unless-stopped
     environment:
       OPENSEARCH_URL: https://opensearch:9200
@@ -55,8 +80,6 @@ services:
       - "5602:5601"   # Separate port from main OpenSearch Dashboards
     depends_on:
       - wazuh-manager
-    networks:
-      - kronos-internal
 
 volumes:
   wazuh_api_configuration:
@@ -70,7 +93,3 @@ volumes:
   wazuh_wodles:
   wazuh_filebeat_etc:
   wazuh_filebeat_var:
-
-networks:
-  kronos-internal:
-    external: true

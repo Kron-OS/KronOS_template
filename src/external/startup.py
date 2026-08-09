@@ -413,8 +413,11 @@ def wire_dependencies_sync() -> None:
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
+        configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
         configure_dependencies,
+        configure_sentinel_sink_from_settings,
+        configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
     )
 
@@ -468,5 +471,41 @@ def wire_dependencies_sync() -> None:
         opensearch_security_enabled=settings.opensearch_security_enabled,
     )
     configure_clamav_from_settings()
+    # Real, previously-undiscovered gap found and fixed 2026-08-09
+    # (Milestone S): wire_dependencies_async() (the FastAPI path) has always
+    # called all four of configure_splunk_hec_sink_from_settings()/
+    # configure_cef_syslog_sink_from_settings()/
+    # configure_sentinel_sink_from_settings()/
+    # configure_defender_poll_source_from_settings(), but this sync/Celery
+    # path never called any of them -- meaning get_splunk_hec_sink()/
+    # get_cef_syslog_sink()/get_sentinel_sink() would all resolve to None
+    # inside a Celery task (e.g. a future SOAR playbook action pushing a
+    # Detection to an external SIEM) even with real splunk_hec_url/
+    # cef_syslog_host/sentinel_* env vars set on the worker. Not an active
+    # bug today (no route/playbook-action currently calls
+    # DetectionSinkPushService from anywhere, confirmed via a direct
+    # grep -- R2/R3/R4's own "Not built here" scope notes), but a real,
+    # latent one given the SOAR playbook engine (Milestone M7/H1) that just
+    # landed is exactly the kind of caller that would run inside a Celery
+    # task. Splunk/CEF/Sentinel are safe to add here: SplunkHecSink,
+    # CefDetectionMapper/SyslogIntegrationSink, and SentinelHttpSink all
+    # construct their own httpx.AsyncClient fresh, per-call, inside
+    # push_events() (`async with httpx.AsyncClient(...)`) rather than
+    # holding one open at configure time -- so they don't reintroduce the
+    # cross-event-loop sharing bug this function's own docstring documents
+    # Postgres/OpenSearch having to avoid. configure_defender_poll_source_
+    # from_settings() is deliberately NOT added here: its own docstring
+    # states it constructs and keeps alive a single process-lifetime
+    # httpx.AsyncClient specifically so DefenderPollSource's OAuth2 token
+    # cache persists across poll cycles -- reusing that one client from
+    # inside Celery's own per-task fresh-event-loop model (see this
+    # function's own docstring above) would risk exactly the "Future
+    # attached to a different loop" failure class this sync path was built
+    # to avoid. Wiring Defender polling into Celery correctly needs a
+    # celery_runtime.py-style per-task client, not a copy-paste of the
+    # async path's call -- a real, scoped follow-up, not done here.
+    configure_splunk_hec_sink_from_settings()
+    configure_cef_syslog_sink_from_settings()
+    configure_sentinel_sink_from_settings()
 
     logger.info("startup: dependencies wired (sync/celery)")

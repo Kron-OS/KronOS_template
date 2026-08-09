@@ -510,6 +510,52 @@ independent re-run this pass to remove doubt after a session cutoff).**
   shared long-running dev stack, `portainer_agent`, or a concurrent
   session's own `kronos-poc-splunk-hec`) was touched.
 
+**Milestone S update (2026-08-09):** `docker/wazuh/docker-compose.wazuh.yml`'s
+own wrong `5.1.0` pin (flagged above as out-of-scope for Q2) is now fixed —
+`wazuh-manager`/`wazuh-dashboard` pinned to the real `4.14.7` (verified
+against real Docker Hub tags for both images). A second, separate, real bug
+was also found and fixed while validating this file for real: both services
+declared `networks: [kronos-internal]` against a top-level
+`kronos-internal: external: true` network that no compose file in this repo
+ever creates (`docker-compose.dev.yml` relies on its own implicit
+project-default network, `docker_default` in this repo's real running dev
+stack) — confirmed via `docker compose -f docker-compose.dev.yml -f docker/wazuh/docker-compose.wazuh.yml config`,
+which resolved `kronos-internal` to nothing; `docker compose up` would have
+failed at runtime with "network kronos-internal not found". Fixed by
+dropping the explicit `networks:` blocks so both services join the merged
+project's implicit default network instead (verified: the merged config now
+shows `networks: {default: {name: docker_default}}` with no dangling
+external reference). **Decision: keep Wazuh as a separate optional overlay
+compose file, not merged into the core `docker-compose.dev.yml`** — a real
+SIEM manager is a heavy, optional dependency most `docker compose -f
+docker-compose.dev.yml up` invocations (day-to-day evidence-intake/parsing
+work) have no need for; forcing it into the core file would be scope creep
+on every dev-stack-up, and the existing overlay pattern (matching
+falco/fluent-bit) already lets an operator opt in with one extra `-f` flag.
+**Decision: did NOT bring up a live `wazuh-manager` against the real,
+already-running dev stack this pass, despite fixing the compose wiring that
+would let it start** — checked real host memory first (`free -h`): 923Mi
+free / 2.8Gi "available" (reclaimable cache counted) with swap already at
+~73% utilization (2.9Gi/4.0Gi) on a host running a 12-day-old shared dev
+stack other work depends on. A real Wazuh manager typically wants several
+GB; starting one on a host this close to its ceiling risked destabilizing
+services this initiative doesn't own the right to disrupt (the explicit
+hard invariant: confirm it doesn't break anything already running there).
+This is the same class of "prod-stage n/a in this sandbox" honesty §3
+explicitly calls "not a failure" — applied here to a genuinely resource-
+gated dev-stage step rather than a documentation gap. **Stage reached:
+test-stage (unchanged, already proven end-to-end in the original Q2 pass)
+plus a real, validated compose-config fix; live dev-stage run deferred**
+for the documented, evidence-backed resource reason above, not attempted
+and silently declared done. `StaticApiKeyProvisioning` is still not wired
+into `startup.py` (unchanged from Q2's own note) — investigated this pass
+and found it is not a simple env-var addition like the R2/R3/R4/Q4
+connectors: it is inherently per-(org, source) and needs a real
+`org_id`/tenant to provision against, which this sandbox has no seeded
+dev org for; a real fix needs a small design decision (how an operator
+provisions a per-tenant key), not a copy-paste, so it was left as a
+correctly-scoped follow-up rather than rushed.
+
 ### Q3 · Suricata/Zeek live-tail source connector — L2
 **Objective.** Real log-shipper (fluent-bit, reusing the repo's own
 existing config pattern) tailing a real `eve.json`/Zeek JSON log, forwarding
@@ -616,6 +662,101 @@ numbers).
   `docker network ls`) at the end of this verification pass; no other host
   container (shared dev stack, `portainer_agent`, unrelated concurrent
   sessions) was touched.
+
+**Milestone S update (2026-08-09):** `docker/fluent-bit/fluent-bit.conf`'s
+own `Parsers_File` gap (flagged above as out-of-scope for Q3) is now fixed
+for real, in the actual dev-stack file, using the exact fix this connector's
+own PoC already verified (`Parsers_File /fluent-bit/etc/parsers.conf` in
+`[SERVICE]`). This pass went further and actually brought up a real
+`fluent/fluent-bit:3.1` container against the real, already-running dev
+stack (network `docker_default`, real `docker_kronos_app_logs` volume, real
+OpenSearch) to reach genuine dev-stage for this file, and found **four more
+real, previously-undiscovered bugs** doing so (all now fixed, all confirmed
+by an actual re-run after each fix, not assumed):
+1. Every `${VAR:-default}` reference in this file (all seven of them) used
+   bash-style default-value syntax, which Fluent Bit only added in v5.0.6
+   (confirmed via `github.com/fluent/fluent-bit/releases/tag/v5.0.6`) —
+   against the pinned 3.1.10 this broke `record_modifier`'s own config
+   parsing outright at boot (`property 'record' expects 2 values`), pausing
+   every INPUT. Fixed by dropping `:-default` everywhere (safe because
+   `docker-compose.fluent-bit.yml`'s own `environment:` block already
+   guarantees every variable is set).
+2. Both `opensearch` OUTPUTs had `tls Off`, but this repo's real OpenSearch
+   (`docker-compose.dev.yml`) only serves HTTPS with the security plugin
+   enabled — confirmed live: `[error] [http_client] broken connection to
+   opensearch:9200`. Fixed to `tls On` / `tls.verify Off` (self-signed dev
+   cert).
+3. `Logstash_Prefix kronos-audit` landed every record in an index matching
+   this repo's own real `kronos-template` index template
+   (`index_patterns: ["kronos-*"]`), whose ECS-shaped `dynamic: false`
+   mapping defines `event` as a nested object — but this codebase's own
+   structured logger emits `event` as a plain string, so every single
+   document failed with a real, captured
+   `mapper_parsing_exception: object mapping for [event] tried to parse
+   field [event] as object, but found a concrete value` (HTTP 200 at the
+   bulk level masked this — the per-item error is only in the response
+   body). Reproduced independently via a hand-built `_bulk` call against
+   the real dev-stack OpenSearch before fixing. Fixed by renaming the
+   prefix to `fluentbit-kronos-audit` (no longer matches `kronos-*`).
+4. `docker/fluent-bit/docker-compose.fluent-bit.yml` declared
+   `kronos_app_logs`/`falco_logs`/`nginx_logs` as `external: true` with
+   literal unprefixed names, but Compose auto-prefixes volumes with the
+   project name (`docker_kronos_app_logs` in the real dev stack) — `up`
+   would have failed with "external volume ... not found". Fixed by
+   removing those declarations (they're already canonically declared,
+   non-external, by `docker-compose.dev.yml`/`docker/falco/docker-compose.falco.yml`
+   in the same real multi-file invocation this file's own header always
+   documents); `nginx_logs` (which has no real producer anywhere in this
+   repo — nginx doesn't write access logs to any shared volume) is now a
+   plain non-external volume so `up` doesn't fail, with the still-missing
+   producer flagged, not fixed (out of scope).
+
+   A fifth, separate compose bug was found in the same validation pass and
+   fixed even though it isn't fluent-bit's own file:
+   `docker/falco/docker-compose.falco.yml` had two colliding `volumes:` keys
+   under one service (a real YAML duplicate-key error) that made
+   `docker compose ... config` fail outright — merged into one list.
+
+   **Real, end-to-end proof, captured live:** with all five fixes applied,
+   a real `fluent/fluent-bit:3.1` container tailing the real dev stack's own
+   `docker_kronos_app_logs` volume picked up a real appended JSON log line,
+   applied `Parser json` + `record_modifier` (`cluster`/`env` fields) +
+   `Remove_key` correctly, and a direct `_search` against the real
+   dev-stack OpenSearch confirmed the document landed in
+   `fluentbit-kronos-audit-2026.08` with the exact expected `_source`. Test
+   index and container torn down afterward (`docker rm -f`, real `DELETE`
+   against the test index) — confirmed via `docker ps -a`/a follow-up 404 on
+   the deleted index; the shared dev stack's own pre-existing containers
+   (uptimes) were unaffected.
+
+   **One more real gap found, documented, deliberately NOT fixed (non-fatal,
+   out of scope):** `Syslog_Severity_Key level` expects a numeric 0-7
+   severity, but this repo's logger emits a keyword string
+   (`"level": "info"`) — confirmed live (`[warn] ... invalid severity:
+   'info'`), falls back to the plugin's own default severity rather than
+   blocking delivery. A real fix needs a `modify`/`lua` filter translating
+   the string, which is design work beyond this pass's charter.
+
+   **Decision: did not stand up fluent-bit as a permanently-running part of
+   the shared dev stack** — the compose-managed container's own real,
+   unmodified defaults point `WAZUH_HOST` at `wazuh-manager`, which (per
+   Q2's own Milestone S update above) is deliberately not running in this
+   dev stack right now for real memory-constraint reasons; leaving
+   fluent-bit up against an unresolvable host would just crash-loop it.
+   All verification above used a separate, explicitly-scoped ad hoc
+   container pointed at a resolvable stand-in host for the syslog output
+   specifically to prove the OpenSearch delivery path; both it and the
+   compose-managed container were torn down at the end of this pass.
+
+   **Stage reached (§3) for the fluent-bit config specifically: dev-stage**
+   (a real fluent-bit build ran against the real, already-running dev
+   stack's own real OpenSearch and real log volume, and a real record was
+   independently confirmed indexed) — the broader "Suricata/Zeek source
+   connector" item's own stage is unchanged at test-stage (per the reality
+   check in this milestone's own brief: no real Suricata/Zeek instance
+   exists in this sandbox to produce live traffic, and standing up fake
+   traffic would only re-prove what this connector's own PoC already
+   proved).
 
 ### Q4 · Microsoft Defender source connector — L2
 **Objective.** Real Graph Security API `alerts_v2` poll-with-cursor
@@ -780,6 +921,43 @@ cursor persistence, real `$filter` enforcement).**
   its own ephemeral `ThreadingHTTPServer` thread and single Postgres row
   are torn down at the end of every run, confirmed via a direct `SELECT`
   against `integration_source_cursors` after the final run.
+
+**Milestone S update (2026-08-09):** confirmed, per the reality check in
+this milestone's own brief, that no real Entra ID tenant/Defender license is
+available in this sandbox (unchanged from Q4's own original finding) — dev
+stage genuinely means real, correctly-named `.env.example` documentation
+plus confirming the already-built honest-disabled-by-default contract, not
+faking a stand-in Defender in the dev stack (that would only re-prove what
+Q4's own PoC already proved). Added real `DEFENDER_TENANT_ID`/
+`DEFENDER_CLIENT_ID`/`DEFENDER_CLIENT_SECRET` entries to
+`docker/.env.example` and real `${VAR:-}` passthrough entries to
+`docker-compose.prod.yml`'s `kronos-backend` service (only — see below).
+**Live-verified the full chain for real**, not assumed: set all three as
+real container env vars on the actual running `docker-kronos-backend-1`
+container and confirmed via `python -c "from src.config import Settings;
+Settings()..."` inside that container that `Settings.defender_tenant_id`
+etc. populate correctly from the env var names documented above — proves
+the `.env.example` entries are the real, correct names, not guessed
+(mirrors I3's own precedent of catching name drift by testing, not
+inspection alone). **A real, previously-undiscovered gap found and
+documented, deliberately not fixed this pass:** even with real credentials
+set, `configure_defender_poll_source_from_settings()` registers a real
+`DefenderPollSource` into the `IntegrationSourceRegistry`, but
+`celery_app.py`'s own `beat_schedule` has no task anywhere that calls
+`IntegrationSourceIngestService.run_poll_cycle()` on a timer for it — so
+today, setting real credentials makes the source *available* but nothing
+*calls* it periodically. This is squarely "not built here" territory
+Q4's own scope notes already named (`route/playbook-action wiring... not
+built`), now made concrete: a real periodic-poll beat task is the specific
+remaining piece. **`defender_*` was deliberately NOT added to
+`celery-worker`'s environment** in `docker-compose.prod.yml` — see the
+real, separate `wire_dependencies_sync()` finding under Milestone S's own
+STATUS block below for why (its OAuth2 flow holds a process-lifetime
+`httpx.AsyncClient` that doesn't safely fit Celery's per-task fresh-event-
+loop model without further work). **Stage reached: test-stage (unchanged)
+plus real, live-verified `.env.example`/prod-compose documentation** — no
+live Entra ID tenant to poll against exists in this sandbox, so this is the
+honest ceiling, not a gap.
 
 ---
 
@@ -976,6 +1154,39 @@ of the existing stand-in, and fixed lint).
   automatically; HEC indexer acknowledgement (`ackId` polling); retry/backoff
   on a failed push (mirrors R1's own identical deferral).
 
+**Milestone S update (2026-08-09):** per this milestone's own reality check,
+no real Splunk license/tenant is available for a genuine dev-stage run
+beyond what R2's own PoC already did against a real `splunk/splunk:9.3.3`
+container (test-stage already real, not a stand-in) — dev stage here means
+real `.env.example` documentation plus confirming the wiring actually
+reaches a real running process. Added `SPLUNK_HEC_URL`/`SPLUNK_HEC_TOKEN`
+to `docker/.env.example` and real `${VAR:-}` passthrough to both
+`kronos-backend` and `celery-worker` in `docker-compose.prod.yml`. **Live-
+verified for real** against the actual running `docker-kronos-backend-1`
+container (`python -c "from src.config import Settings; ..."` with real env
+vars set) that `Settings.splunk_hec_url`/`splunk_hec_token` populate
+correctly from these exact names. **A real, previously-undiscovered gap
+found and fixed this pass:** `wire_dependencies_sync()`
+(`src/external/startup.py`, the Celery `worker_init` path) never called
+`configure_splunk_hec_sink_from_settings()` — only the FastAPI
+(`wire_dependencies_async()`) path did — meaning `get_splunk_hec_sink()`
+would resolve to `None` inside any Celery task (e.g. a future SOAR
+playbook action) even with real credentials set on the worker. Not an
+active bug today (nothing calls `DetectionSinkPushService` from anywhere
+yet, per R2's own "Not built here" note above), but a real, latent one
+given the SOAR playbook engine (Milestone M7/H1) that just landed is
+exactly the kind of caller that would run inside a Celery task. Fixed by
+adding the call to `wire_dependencies_sync()` — verified safe to add
+(unlike Defender's poll source, see Q4's own Milestone S update above):
+`SplunkHecSink.push_events()` constructs its own `httpx.AsyncClient`
+fresh, per-call (`async with httpx.AsyncClient(...)`), so it doesn't hold
+a loop-bound resource across Celery's own per-task fresh-event-loop
+boundaries the way a process-lifetime client would. **Stage reached:
+test-stage (unchanged, already real) plus real, live-verified
+`.env.example`/prod-compose wiring and a real Celery-path bug fix** — no
+fake Splunk stand-in was added to `docker-compose.dev.yml` (would only
+re-prove R2's own already-real PoC).
+
 ### R3 · Generic CEF-over-syslog sink connector — L2
 **Objective.** Real CEF-formatted message over real syslog transport,
 against a real local syslog receiver — proves the ABC's second,
@@ -1069,6 +1280,29 @@ first real run surfaced, then completed lint/mypy/regression verification).
   R1/R2's own identical deferral); LEEF (QRadar's other native format) —
   flagged as a real, plausible-but-out-of-scope follow-up sharing most of
   `SyslogIntegrationSink`'s transport, not silently assumed covered by CEF.
+
+**Milestone S update (2026-08-09):** CEF-over-syslog is generic/vendor-
+neutral (per this milestone's own reality check) — real dev stage here
+means confirming `cef_syslog_host`/`cef_syslog_port` are real, documented,
+env-configurable names actually reaching a real running process, which R3's
+own PoC already smoke-tested against real local TCP/UDP receivers at
+test-stage. Added `CEF_SYSLOG_HOST`/`CEF_SYSLOG_PORT` to
+`docker/.env.example` and real `${VAR:-}` passthrough to both
+`kronos-backend` and `celery-worker` in `docker-compose.prod.yml`. **Live-
+verified for real** against the actual running `docker-kronos-backend-1`
+container that `Settings.cef_syslog_host`/`cef_syslog_port` populate
+correctly from these exact env var names. Also benefits from the same real
+`wire_dependencies_sync()` fix documented under R2's own Milestone S update
+above (`configure_cef_syslog_sink_from_settings()` is now called from the
+Celery path too, verified safe for the same per-call-`httpx.AsyncClient`
+reason — this connector's own `SyslogIntegrationSink` doesn't even use
+httpx, it's a raw socket write, so it was never at risk regardless).
+**Stage reached: test-stage (unchanged, already real) plus real,
+live-verified `.env.example`/prod-compose wiring** — no local syslog
+receiver was added to `docker-compose.dev.yml` itself (would only re-prove
+what R3's own PoC's real TCP/UDP receivers already proved; a smoke-test
+receiver permanently running in the shared dev stack for a fire-and-forget,
+no-ack transport adds ongoing maintenance for no new proof).
 
 ### R4 · Microsoft Sentinel sink connector — L2
 **Objective.** Real Logs Ingestion API push against a real pre-provisioned
@@ -1197,6 +1431,26 @@ now-retired HTTP Data Collector API) rather than skipping verification.
   never rejects, so there is nothing to defend against client-side);
   retry/backoff on a failed push (mirrors R1–R3's own identical deferral).
 
+**Milestone S update (2026-08-09):** no real Azure subscription is
+available in this sandbox (unchanged from R4's own original finding, per
+this milestone's own reality check) — dev stage means real, correctly-named
+`.env.example` documentation, not a fake Sentinel stand-in in the dev stack
+(would only re-prove R4's own already-real PoC). Added
+`SENTINEL_DCE_ENDPOINT`/`SENTINEL_DCR_IMMUTABLE_ID`/`SENTINEL_TENANT_ID`/
+`SENTINEL_CLIENT_ID`/`SENTINEL_CLIENT_SECRET` to `docker/.env.example` and
+real `${VAR:-}` passthrough to both `kronos-backend` and `celery-worker` in
+`docker-compose.prod.yml`. **Live-verified for real** against the actual
+running `docker-kronos-backend-1` container that all five
+`Settings.sentinel_*` fields (including `sentinel_client_secret` correctly
+becoming a set `SecretStr`) populate correctly from these exact env var
+names. Also benefits from the same real `wire_dependencies_sync()` fix
+documented under R2's own Milestone S update above
+(`configure_sentinel_sink_from_settings()` is now called from the Celery
+path too — verified safe: `SentinelHttpSink.push_events()` also constructs
+its own `httpx.AsyncClient` fresh, per-call, same as `SplunkHecSink`).
+**Stage reached: test-stage (unchanged, already real) plus real,
+live-verified `.env.example`/prod-compose wiring.**
+
 ---
 
 ## Milestone S — Rollout hardening (cross-cutting, after Q/R connectors exist)
@@ -1207,6 +1461,139 @@ milestone exists so a connector isn't required to finish all three stages
 in one dispatch if that's too large, without silently leaving prod-parity
 undone forever the way the closed roadmap's own I3 had to retroactively
 discover and fix for ClamAV/OpenSearch-security.
+
+**STATUS (2026-08-09): DONE — real per-connector dev/prod hardening for all
+six connectors, each connector's own Milestone S update recorded under its
+own Q2/Q3/Q4/R2/R3/R4 STATUS block above; summary below.**
+
+**Per-connector stage-reached decisions (honest, none forced):**
+
+| Connector | Stage reached this pass | Why |
+|---|---|---|
+| Q2 Wazuh | test-stage + real compose-config fix; live dev-stage run deferred | Compose wiring fixed and validated for real; NOT brought up live against the shared dev stack — real, checked host memory constraint (923Mi free / 2.8Gi available, swap ~73% used) made starting a multi-GB SIEM manager on this host an unacceptable risk to the pre-existing 12-day-old dev stack. |
+| Q3 Suricata/Zeek (fluent-bit) | dev-stage for the fluent-bit config itself | A real `fluent/fluent-bit:3.1` container was actually run against the real, already-running dev stack (real OpenSearch, real log volume) and a real forwarded record was independently confirmed indexed. The broader "live Suricata/Zeek traffic" question stays test-stage — no real instance exists in this sandbox, and faking traffic would prove nothing new. |
+| Q4 Defender | test-stage + real, live-verified `.env.example`/prod-compose wiring | No real Entra ID tenant available (re-confirmed); .env.example + prod-compose passthrough live-verified against the real running backend container. |
+| R2 Splunk | test-stage (already real, R2's own PoC used a real `splunk/splunk:9.3.3`) + real, live-verified `.env.example`/prod-compose wiring + a real Celery-path bug fix | No further dev-stage proof available beyond R2's own already-real PoC without standing up a permanent Splunk instance in the shared dev stack, which would only re-prove the same thing. |
+| R3 CEF-over-syslog | test-stage (already real) + real, live-verified `.env.example`/prod-compose wiring | Generic/vendor-neutral; R3's own PoC already used real local TCP/UDP receivers — the wire format IS the whole contract, already proven. |
+| R4 Sentinel | test-stage (already real) + real, live-verified `.env.example`/prod-compose wiring | No real Azure subscription available (re-confirmed). |
+
+**What was fixed (all captured with real command output, not assumed):**
+
+1. **`docker/wazuh/docker-compose.wazuh.yml`**: wrong `5.1.0` version pin
+   (does not exist) corrected to the real `4.14.7` for both
+   `wazuh-manager`/`wazuh-dashboard`. A second, separate, real bug found
+   while validating this file: both services referenced a
+   `kronos-internal: external: true` network that no compose file in this
+   repo ever creates — `docker compose up` would have failed at runtime.
+   Fixed by dropping the explicit `networks:` blocks (services now join the
+   merged project's real implicit default network, `docker_default`).
+2. **`docker/fluent-bit/fluent-bit.conf`**: the originally-flagged
+   `Parser json`/missing `Parsers_File` gap fixed, plus four more real bugs
+   found and fixed while proving it end-to-end against the real dev stack:
+   a Fluent Bit-version-incompatible `${VAR:-default}` syntax (added in
+   v5.0.6, this repo pins 3.1.10) that broke `record_modifier`'s own config
+   parsing at boot; `tls Off` against a real TLS-only, security-enabled
+   OpenSearch; an index-prefix (`kronos-audit-*`) that collided with this
+   repo's own real `kronos-*` ECS index template's `event`-as-object
+   mapping, causing every single document to fail indexing with a real
+   `mapper_parsing_exception` (HTTP 200 at the bulk level masked this); and
+   `docker-compose.fluent-bit.yml`'s own `external: true` volume
+   declarations using unprefixed names Compose never actually creates.
+   `Syslog_Severity_Key level` expecting a numeric severity where this
+   repo's logger emits a keyword string is a real, separate, non-fatal gap
+   found and documented, not fixed (needs a translation filter, real design
+   work beyond this pass).
+3. **`docker/falco/docker-compose.falco.yml`**: found (not part of the
+   original ask, discovered while validating the SIEM overlay stack as a
+   whole) and fixed a real YAML duplicate-`volumes:`-key error that made
+   `docker compose ... config` fail outright for this file — this overlay
+   could never have actually been brought up together with
+   `docker-compose.dev.yml` before this fix.
+4. **`docker/.env.example`**: real, documented entries for all of
+   `SPLUNK_HEC_URL`/`SPLUNK_HEC_TOKEN`, `CEF_SYSLOG_HOST`/`CEF_SYSLOG_PORT`,
+   `SENTINEL_DCE_ENDPOINT`/`SENTINEL_DCR_IMMUTABLE_ID`/`SENTINEL_TENANT_ID`/
+   `SENTINEL_CLIENT_ID`/`SENTINEL_CLIENT_SECRET`, and
+   `DEFENDER_TENANT_ID`/`DEFENDER_CLIENT_ID`/`DEFENDER_CLIENT_SECRET` —
+   names verified 1:1 against `src/config.py`'s real `Settings` fields, and
+   independently **live-verified** by setting each one as a real container
+   env var on the actual running `docker-kronos-backend-1` container and
+   confirming `Settings()` populates the matching field correctly (the same
+   class of check that would have caught I3's ClamAV drift earlier).
+5. **`docker/docker-compose.prod.yml`**: real `${VAR:-}` passthrough
+   entries added for all twelve of the above to `kronos-backend`
+   (all twelve) and `celery-worker` (the nine Splunk/CEF/Sentinel ones,
+   deliberately excluding Defender's three — see next item).
+6. **`src/external/startup.py`**: a real, previously-undiscovered gap —
+   `wire_dependencies_sync()` (the Celery `worker_init` path) never called
+   `configure_splunk_hec_sink_from_settings()`/
+   `configure_cef_syslog_sink_from_settings()`/
+   `configure_sentinel_sink_from_settings()`, only the FastAPI path did, so
+   these three sinks would resolve to `None` inside any Celery task even
+   with real credentials set. Not an active bug today (nothing calls
+   `DetectionSinkPushService` from any route/task yet), but a real, latent
+   one given the SOAR playbook engine (M7/H1) that just landed is exactly
+   the kind of caller that would run inside Celery. Fixed for these three
+   (verified safe: each one's sink constructs its own `httpx.AsyncClient`
+   fresh per-call, not held across the process lifetime).
+   **Deliberately NOT fixed the same way for Defender's poll source**:
+   `configure_defender_poll_source_from_settings()` holds one
+   process-lifetime `httpx.AsyncClient` for its OAuth2 token cache — naively
+   copying the same call into the Celery sync path risked reintroducing
+   the exact "Future attached to a different loop" bug class
+   `wire_dependencies_sync()`'s own docstring already documents fixing for
+   Postgres/OpenSearch. Flagged as a real, scoped follow-up (needs a
+   `celery_runtime.py`-style per-task client), not rushed.
+
+**`docker compose config` — both dev and prod validated clean, real
+output:**
+
+```
+$ cd docker && WAZUH_API_PASSWORD=*** docker compose \
+    -f docker-compose.dev.yml \
+    -f wazuh/docker-compose.wazuh.yml \
+    -f falco/docker-compose.falco.yml \
+    -f fluent-bit/docker-compose.fluent-bit.yml config
+# exit 0; networks: {default: {name: docker_default}} (no dangling
+# external references); every volume resolves to a real docker_*-prefixed
+# name.
+
+$ cd docker && POSTGRES_PASSWORD=*** REDIS_PASSWORD=*** OPENSEARCH_PASSWORD=*** \
+    OPENSEARCH_ADMIN_PASSWORD=*** KEYCLOAK_CLIENT_SECRET=*** VAULT_TOKEN=*** \
+    KEYCLOAK_HOSTNAME=kronos.example MINIO_ROOT_USER=*** MINIO_ROOT_PASSWORD=*** \
+    KEYCLOAK_ADMIN_PASSWORD=*** docker compose -f docker-compose.prod.yml config
+# exit 0; SPLUNK_HEC_URL/SPLUNK_HEC_TOKEN/CEF_SYSLOG_HOST/CEF_SYSLOG_PORT/
+# SENTINEL_*/DEFENDER_* all resolve (empty-string default when unset,
+# matching the honest "not configured" contract) on kronos-backend, and the
+# same minus DEFENDER_* on celery-worker.
+```
+
+No dev/prod drift of the I3 class was found across the twelve
+newly-documented settings (env var names match `Settings` field names
+exactly on both files, confirmed by the live in-container check above, not
+just by reading the code).
+
+**Verification (real, personally re-derived this pass, not trusted from any
+prior number):** fresh `git stash -u` before/after full unit suite —
+baseline (this pass's own changes stashed) **1678 passed, 1 skipped**; with
+this pass's changes **1678 passed, 1 skipped** — zero regressions, zero new
+tests (this pass's changes are Docker/Compose/config files plus a 3-line
+mirrored addition to an already-untested startup-wiring module, not new
+`src/` logic requiring new unit coverage). `mypy src`: **29 errors**,
+identical count/file set to the documented baseline, zero new (including
+zero in `src/external/startup.py`, the only touched Python file). `ruff
+check`/`black --check` on every touched file: clean.
+
+**Docker cleanup:** all ad hoc verification containers/networks created
+this pass (`kronos-poc-fluentbit-verify`, the compose-managed
+`docker-fluent-bit-1`, freshly-created `docker_falco_logs`/
+`docker_nginx_logs`/`docker_fluent_storage` volumes, and the
+`fluentbit-kronos-audit-2026.08` test index in the real dev-stack
+OpenSearch) were torn down/deleted, confirmed via `docker ps -a`/
+`docker volume ls`/a follow-up 404 on the deleted index. No Wazuh manager
+was ever started (see the resource-constraint decision above), so nothing
+was left running from this pass — the shared dev stack's pre-existing
+containers were confirmed unaffected (uptimes unchanged) both before and
+after this pass's work.
 
 ---
 

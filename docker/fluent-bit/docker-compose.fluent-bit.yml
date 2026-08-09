@@ -32,18 +32,41 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-    networks:
-      - kronos-internal
+    # No explicit `networks:` block (2026-08-09 fix, Milestone S -- same
+    # drift class as docker/wazuh/docker-compose.wazuh.yml's identical bug,
+    # see that file's own comment): this previously required an external
+    # network literally named `kronos-internal` that docker-compose.dev.yml
+    # never creates (it relies on the implicit project-default network,
+    # `docker_default` in this repo's real running dev stack) -- confirmed
+    # via `docker compose -f docker-compose.dev.yml -f docker/fluent-bit/docker-compose.fluent-bit.yml config`.
+    # Omitting `networks:` joins the implicit default network of whatever
+    # compose invocation this file is merged into, so `fluent-bit` can
+    # actually reach `opensearch`/`wazuh-manager` by service name.
 
+# `kronos_app_logs`/`falco_logs`/`nginx_logs` are deliberately NOT declared
+# here (2026-08-09 fix, Milestone S -- a real, separate drift bug found
+# while verifying this file, same class as the network fix above). They
+# were previously declared `external: true`, which makes Compose look for a
+# pre-existing volume with the exact literal name `kronos_app_logs` etc. --
+# but Compose auto-prefixes volume names with the project name
+# (`docker_kronos_app_logs` in this repo's real running dev stack, project
+# `docker`), so no volume literally named `kronos_app_logs` has ever
+# existed; `docker compose up` with this file would have failed at runtime
+# with "external volume kronos_app_logs not found". This file's own header
+# comment documents the correct usage as always including
+# docker-compose.dev.yml (which declares `kronos_app_logs` canonically,
+# non-external) and docker/falco/docker-compose.falco.yml (which declares
+# `falco_logs` the same way) in the *same* `docker compose ... up`
+# invocation -- when that's true, Compose's own multi-file merge already
+# resolves both volumes correctly without any redeclaration here.
+# `nginx_logs` has no real producer anywhere in this repo today (the
+# `nginx` service in docker-compose.dev.yml does not mount or write to any
+# such volume) -- declared here as a plain, non-external volume so `up`
+# does not fail, but the `kronos.nginx` INPUT in fluent-bit.conf has no
+# real data source until nginx itself is wired to write access.log to a
+# shared volume. Flagged, not fixed here -- out of Milestone S's scope
+# (nginx access logging was never part of the Q3/fluent-bit gap this pass
+# was chartered to fix).
 volumes:
-  kronos_app_logs:
-    external: true
-  falco_logs:
-    external: true
   nginx_logs:
-    external: true
   fluent_storage:
-
-networks:
-  kronos-internal:
-    external: true

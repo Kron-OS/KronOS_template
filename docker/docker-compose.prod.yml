@@ -304,6 +304,32 @@ services:
       # replicas (audit M-4). The app bootstrap passes
       # build_step_up_ticket_store(settings) into create_app().
       STEP_UP_TICKET_STORE: redis
+      # SIEM/SOAR outbound sink connectors + Defender inbound poll source
+      # (roadmap Milestones R2-R4/Q4, wired 2026-08-09 Milestone S). All
+      # optional -- ${VAR:-} defaults to empty/unset, which
+      # configure_*_from_settings() (src/external/dependencies.py) treats
+      # as an honest "not configured" state, never an error. See
+      # docker/.env.example for what each one means. Names verified 1:1
+      # against src/config.py's Settings field names.
+      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-}
+      CEF_SYSLOG_HOST: ${CEF_SYSLOG_HOST:-}
+      CEF_SYSLOG_PORT: ${CEF_SYSLOG_PORT:-514}
+      SENTINEL_DCE_ENDPOINT: ${SENTINEL_DCE_ENDPOINT:-}
+      SENTINEL_DCR_IMMUTABLE_ID: ${SENTINEL_DCR_IMMUTABLE_ID:-}
+      SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
+      SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
+      SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
+      # Defender's poll source is only wired from the async startup path
+      # (wire_dependencies_async(), which kronos-backend runs) --
+      # deliberately not added to celery-worker below, see
+      # wire_dependencies_sync()'s own 2026-08-09 comment in
+      # src/external/startup.py for why (its OAuth2 client keeps a
+      # process-lifetime httpx.AsyncClient that would not survive Celery's
+      # per-task fresh-event-loop model safely).
+      DEFENDER_TENANT_ID: ${DEFENDER_TENANT_ID:-}
+      DEFENDER_CLIENT_ID: ${DEFENDER_CLIENT_ID:-}
+      DEFENDER_CLIENT_SECRET: ${DEFENDER_CLIENT_SECRET:-}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -366,6 +392,21 @@ services:
       VAULT_TOKEN: ${VAULT_TOKEN}
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      # SIEM/SOAR outbound sink connectors (roadmap Milestones R2-R4, wired
+      # 2026-08-09 Milestone S -- see kronos-backend's identical block
+      # above for the full comment). NOT including DEFENDER_* here on
+      # purpose -- wire_dependencies_sync() (src/external/startup.py)
+      # deliberately does not call configure_defender_poll_source_from_settings()
+      # for this worker, see that function's own 2026-08-09 comment.
+      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-}
+      CEF_SYSLOG_HOST: ${CEF_SYSLOG_HOST:-}
+      CEF_SYSLOG_PORT: ${CEF_SYSLOG_PORT:-514}
+      SENTINEL_DCE_ENDPOINT: ${SENTINEL_DCE_ENDPOINT:-}
+      SENTINEL_DCR_IMMUTABLE_ID: ${SENTINEL_DCR_IMMUTABLE_ID:-}
+      SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
+      SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
+      SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
     depends_on:
       - redis
       - postgres
