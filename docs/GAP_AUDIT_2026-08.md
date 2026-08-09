@@ -295,3 +295,30 @@ future audit doesn't re-flag them as newly missed:
   product value, not gaps in already-committed work; left for a future,
   separate product-prioritization pass rather than folded into this
   gap-closing milestone.
+
+---
+
+## V1 STATUS (2026-08-10): DONE
+
+Orchestrator independently re-confirmed P0-1 before fixing (not just
+trusted the audit's own claim): direct read of
+`docker/opensearch/opensearch.yml` confirmed no
+`plugins.security.ssl.http.enabled` override exists, so the security
+plugin's default (HTTPS-only) applies; direct read of
+`docker-compose.dev.yml` confirmed its own OpenSearch-facing vars
+correctly use `https://` throughout, for the identical image; and,
+beyond what the audit itself flagged, a third occurrence was found in
+the same pass — `opensearch-security-init`'s own `OS_BASE` also used
+`http://`, meaning the security bootstrap step itself could never have
+reached a real HTTPS-only OpenSearch either, not just kronos-backend/
+celery-worker's own runtime traffic.
+
+Fixed all three (`docker/docker-compose.prod.yml` lines ~167, ~272,
+~387 pre-fix) to `https://opensearch:9200`. No other setting needed to
+change alongside this: app-side cert verification is already correctly
+relaxed for OpenSearch's self-signed demo cert
+(`verify_certs=False`, `src/external/startup.py`), and
+`provision_opensearch_security.py` already builds its own
+`ssl.CERT_NONE` context. `docker compose -f docker-compose.prod.yml
+config` re-validated clean (exit 0, real required vars supplied) after
+the fix.

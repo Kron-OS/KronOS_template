@@ -164,7 +164,13 @@ services:
     volumes:
       - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
     environment:
-      OS_BASE: http://opensearch:9200
+      # Fixed 2026-08-10 (Gap Audit P0-1) -- same real scheme mismatch as
+      # kronos-backend's own OPENSEARCH_URL above: OpenSearch here is
+      # HTTPS-only (security plugin enabled, no ssl.http.enabled override).
+      # provision_opensearch_security.py already builds its own
+      # ssl.CERT_NONE context for the self-signed demo cert, so no other
+      # change is needed alongside this scheme fix.
+      OS_BASE: https://opensearch:9200
       OS_ADMIN_USER: ${OPENSEARCH_ADMIN_USER:-admin}
       OS_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?OPENSEARCH_ADMIN_PASSWORD is required to bootstrap OpenSearch security}
       KC_BASE: http://keycloak:8080
@@ -269,7 +275,17 @@ services:
       # Keycloak hostname as a best-guess prod domain — override with the
       # real frontend origin(s) if they differ (comma-separated).
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${KEYCLOAK_HOSTNAME}}
-      OPENSEARCH_URL: http://opensearch:9200
+      # Fixed 2026-08-10 (Gap Audit P0-1): was http://, but the `opensearch`
+      # service above has the security plugin enabled with no
+      # plugins.security.ssl.http.enabled override in docker/opensearch/
+      # opensearch.yml, so it serves HTTPS-only on 9200 (identical to
+      # docker-compose.dev.yml's own opensearch, which already correctly
+      # uses https:// throughout) -- an http:// URL here could never
+      # actually reach it. App-side cert verification is already correctly
+      # relaxed for OpenSearch's self-signed demo cert
+      # (verify_certs=False, src/external/startup.py), so no further
+      # settings change is needed alongside this scheme fix.
+      OPENSEARCH_URL: https://opensearch:9200
       # Non-superuser service account (a superuser bypasses OpenSearch DLS).
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
@@ -368,7 +384,9 @@ services:
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
-      OPENSEARCH_URL: http://opensearch:9200
+      # Fixed 2026-08-10 (Gap Audit P0-1) -- same real scheme mismatch as
+      # kronos-backend's own OPENSEARCH_URL above.
+      OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
       # This worker consumes q.index (dispatch_parse/finalize_evidence), which
