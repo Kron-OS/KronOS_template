@@ -1,0 +1,297 @@
+# KronOS Gap Audit — 2026-08 (Milestone T)
+
+**Status:** research/planning document only. No `src/` code was changed to
+produce this audit. Produced per `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md`'s
+own Milestone T charter, after Milestones P (streaming resilience), Q/R (six
+EDR/SIEM connectors), and S (rollout hardening) substantially landed.
+
+---
+
+## §0 Method
+
+Five independent passes, each cross-checked against the real repo state
+(not assumed from a doc's own claims):
+
+1. **`docs/IMPROVEMENT_IDEAS.md` reconciliation.** Read in full (178 lines,
+   5 sections). Every item checked against `src/`/`frontend/src`/`poc/`/
+   `docker/` via targeted `grep`/`find` and, where ambiguous, a direct file
+   read (e.g. `kronos_attest/report.py`'s real `case_report()` signature,
+   `src/adapter/opensearch/client.py`'s real `bulk_index()` body).
+2. **`docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md` full read** (1627 lines, all
+   of §0 and every STATUS block P1/P2/Q1–Q4/R1–R4/S). Every "not built
+   here" / "honesty note" / "known gap" sentence extracted verbatim into
+   §1 below, then independently re-verified against current `src/` (e.g.
+   `celery_app.py`'s `beat_schedule` re-read directly to confirm no
+   Defender/poll task exists; `grep`ed for any caller of
+   `DetectionSinkPushService` to confirm zero route/playbook wiring exists
+   for any of the three sinks).
+3. **`docs/NEXTGEN_SOC_ROADMAP.md` closing gates (I1–I5, lines
+   2498–2990)** read in full. Every explicitly-deferred, not-a-"won't-fix"
+   item extracted and spot-checked against current code (e.g. confirmed
+   `docker-compose.test.yml` still sets `DISABLE_SECURITY_PLUGIN=true`;
+   confirmed `TenantUsageService.get_current_usage_bytes()` is still an
+   uncached `SUM()` query, now confirmed *live* per-upload via
+   `StorageQuotaGate`).
+4. **Fresh codebase pass:**
+   - `grep -rn "TODO\|FIXME\|XXX\|not implemented\|NotImplementedError" src/`
+     — only 2 real hits, both an intentional, documented
+     `NotImplementedError` in `src/application/integration_source.py`
+     (an ABC default, not a gap). The codebase is otherwise free of
+     inline TODO markers — a genuinely clean result, not a false negative
+     (spot-checked the grep pattern against files known to have prose
+     containing "XXX"-shaped strings, e.g. `firecracker.py`'s own
+     `tmpXXXX` example, to confirm the pattern wasn't over-matching and
+     hiding real hits elsewhere).
+   - `rm -rf .mypy_cache && mypy src` (venv activated per repo convention)
+     — **29 errors in 10 files**, matching every STATUS block's own
+     "unchanged baseline" claim exactly. Read every error; triaged below
+     (§1, MYPY-1/MYPY-2).
+   - `pytest tests/unit -q --cov=src --cov-report=term-missing` — **1678
+     passed, 1 skipped**, 90% total coverage. Read the full per-file
+     report; identified `src/external/routes/admin.py` (61%),
+     `src/external/routes/evidence.py` (71%), and
+     `src/external/dependencies.py`/`fastapi_app.py` (78%/81%) as the
+     real outliers versus neighboring files (most application/domain
+     files are 94–100%), then read the actual uncovered line ranges in
+     each to judge risk (error-handling branches vs. real untested
+     security logic vs. expected-uninstrumented startup/wiring code).
+5. **Security-specific pass.** Read `src/external/routes/integration_source_push.py`
+   end-to-end and `src/external/middleware/integration_source_auth.py`
+   (both `StaticApiKeyInboundAuthenticator` and
+   `identity_from_collector_identity`) to confirm `org_id`/`source_id`
+   come exclusively from the verified credential, never the request body
+   — confirmed, no gap. Grepped every sink/source module and
+   `detection_sink_push.py`/`integration_source_ingest.py` for
+   `logger.*`/`context=`/audit `details=` calls near secret-handling code
+   to confirm no raw token/secret ever reaches a log line, exception
+   `context` dict, or audit-log `details` blob — confirmed clean (HEC
+   token, Sentinel/Defender client secrets, CEF host/port never appear in
+   any of the three; `src/config.py` consistently types all of them as
+   `SecretStr`). Also read `src/external/routes/admin.py`'s
+   `update_user_role`/`remove_user` handlers directly to confirm org
+   membership/role mutations are scoped to `tenant.org_id` and
+   `_assert_user_in_org()`-checked before any Keycloak write — confirmed
+   correct on inspection, but flagged in §1 as a **verification gap**
+   (no real-Keycloak integration/PoC run exists for these specific flows,
+   only unit tests with mocked `httpx`).
+
+---
+
+## §1 Prioritized gap list
+
+Legend: **P0** security-critical · **P1** real functional gap · **P2**
+nice-to-have/polish. Size: **S** (<1 day agent effort) · **M** (1–3 days) ·
+**L** (multi-day/needs design).
+
+### P0 — security-critical
+
+| # | Gap | Where | Size |
+|---|---|---|---|
+| P0-1 | `docker-compose.prod.yml` sets `OPENSEARCH_URL=http://...` on `kronos-backend`/`celery-worker`, but the security-plugin-enabled OpenSearch it points at (unlike dev's correctly-`https://` config) only serves HTTPS. Flagged by I3 (2026-08-07), never fixed. If prod genuinely can't reach OpenSearch over the URL it's configured with, this is either a hard outage or (worse) a silent fallback/plaintext-internal-traffic risk on a platform whose whole model assumes TLS 1.3 + mTLS internally (CLAUDE.md tech stack). Needs a real decision (fix the scheme, or confirm a reverse-proxy/sidecar TLS-terminates in between) before prod is trusted for real traffic. | `docker/docker-compose.prod.yml`, flagged in `docs/NEXTGEN_SOC_ROADMAP.md` I3 | S–M |
+
+No new P0 (tenant-isolation-breaking, secret-leaking, or auth-bypass) issues
+were found in the six new Q/R connectors or the routes examined — see §0.5.
+That is a real, positive finding worth stating plainly, not just an absence
+of a section.
+
+### P1 — real functional gaps
+
+| # | Gap | Where | Size |
+|---|---|---|---|
+| P1-1 | **No caller anywhere pushes a `Detection` to any of the three built sinks.** `DetectionSinkPushService`/`SplunkHecSink`/`CefSyslogSink`/`SentinelHttpSink` are all real, tested, and dev/prod-wired for config — but zero routes and zero `PlaybookAction`s call `DetectionSinkPushService.push()`. The entire R-series (Milestones R1–R4, six connectors' worth of sink work) is currently unreachable from any real KronOS workflow. | `src/application/detection_sink_push.py` (confirmed via grep: no callers in `src/external/routes/` or `src/application/playbook_actions.py`); roadmap R1–R4 "Not built here, by design" notes | M (a `SyncDetectionToSiemAction` `PlaybookAction`, mirroring `SyncDetectionTicketAction`/H4's own precedent) |
+| P1-2 | **Defender poll source is registered but never invoked.** `configure_defender_poll_source_from_settings()` runs at startup and registers a real `DefenderPollSource`, but `celery_app.py`'s `beat_schedule` has no task calling `IntegrationSourceIngestService.run_poll_cycle()` on a timer. Confirmed still true by direct re-read of `beat_schedule` (6 tasks, none integration-source-related). Setting real Defender credentials today makes the source *available*, not *active*. Same class of gap will recur for any future poll-mode source (CrowdStrike-class excepted, deferred). | `src/external/celery_app.py`; `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md` Q4 Milestone S update | S–M (new beat task + a `run_dependencies_sync`-safe per-task client, since Defender's OAuth2 strategy holds a process-lifetime `httpx.AsyncClient` — flagged as unsafe to naively copy R2/R3/R4's fix) |
+| P1-3 | **Splunk HEC `ackId` indexer-acknowledgement polling not built.** A 2xx+body from HEC only confirms the event was *accepted*, not that Splunk's indexer actually wrote it — the more rigorous ack mode exists in HEC's own protocol and is explicitly deferred. | `src/adapter/integration_sink/splunk_hec_sink.py` docstring; roadmap R2 | M |
+| P1-4 | **Sentinel push: 204 only confirms Logs Ingestion API acceptance, not DCR-transform/table-ingestion success** (structurally the same class of gap as P1-3 — ingestion is asynchronous past the synchronous API layer). No mechanism exists to confirm data actually landed in `KronOSDetection_CL`. | `src/adapter/integration_sink/sentinel_sink.py`; roadmap R4 | M–L (would need a real Azure subscription + Log Analytics query to close for real, not just design) |
+| P1-5 | **fluent-bit `Syslog_Severity_Key level` bug: numeric 0–7 severity expected, KronOS's own structured logger emits a keyword string (`"info"`).** Confirmed live during Milestone S (`[warn] ... invalid severity: 'info'`) — falls back to a default severity rather than failing, so it's silently wrong rather than broken, which is worse for anyone relying on real severity-based syslog routing downstream. | `docker/fluent-bit/fluent-bit.conf`; roadmap Q3/Milestone S | S (a `modify`/`lua` filter translating level string → syslog severity int) |
+| P1-6 | **`nginx_logs` Docker volume exists with no real producer.** nginx doesn't write access logs to any shared volume in this repo, so the volume declaration is a no-op — anyone assuming nginx access logs flow into the SIEM stack (a reasonable assumption given fluent-bit/Wazuh/Falco all exist) would be wrong. | `docker/fluent-bit/docker-compose.fluent-bit.yml`; roadmap Q3/Milestone S | S–M (real nginx access-log config + volume mount) |
+| P1-7 | **`StaticApiKeyProvisioning` has no real per-(org, source) provisioning flow.** `configure_static_api_key_provisioning()` exists as a hook but is never called from `startup.py`; there's no way today for an operator to actually issue a customer a static API key for the generic-webhook/Wazuh PUSH path in a running deployment. Investigated (not just noted) during Q2's Milestone S pass and correctly judged to need a real design decision (how does an operator provision a per-tenant key — admin route? CLI? Vault-seeded?), not a copy-paste fix. | `src/external/middleware/integration_source_auth.py`; `src/external/startup.py`; roadmap Q1/Q2 | L (needs a design decision before implementation — candidate for its own scoped item, see §3) |
+| P1-8 | **`SourceCursorRepository`'s live DI default is still `InMemorySourceCursorRepository`, not `PostgresSourceCursorRepository`.** Every poll-mode source's cursor (Defender's included) is lost on any backend/worker restart, silently re-polling from scratch or (if the external API doesn't tolerate an unset `$filter` gracefully) re-ingesting everything. `PostgresSourceCursorRepository` exists, is tested, and is proven against real Postgres in three separate PoCs — it's just never wired as the real app default. | `src/external/dependencies.py`; roadmap Q1/Q4 "known, pre-existing gap inherited, not fixed" | S (one-line DI default change + a migration-adjacent Postgres table check, since there's no migration tool — see P1-14) |
+| P1-9 | **`StreamSourceNormalizer.normalize()` has no artifact-shaped return path.** Every `IntegrationSource` today can only produce `NormalizedStreamEvent` (timeline-shaped). Microsoft Defender's real `evidence[]` (device/file/process/registry-key entities) is preserved verbatim under `extra["ms_defender.evidence"]` instead of being properly modeled, and any future artifact-shaped poll/push source (a Volatility-class SIEM export, a graph-shaped alert) hits the same wall. Named as a known gap by Q1's own module docstring, confirmed still open by Q4. | `src/application/stream_normalization.py`; `src/application/integration_source.py` module docstring | L (needs a `StructuredArtifact`-producing sibling to `NormalizedStreamEvent`, plumbed through the whole D1→D3 pipeline) |
+| P1-10 | **Only 4 of 23 OpenSearch Security Analytics log types have any first-party KronOS parser** (`windows`, `cloudtrail`, `network`, `apache_access` — and `apache_access`'s own 2 prepackaged rules don't even match `NginxParser`'s access-log shape, per I1's own finding). The other 19 SA log-type rule categories (`ad_ldap`, `azure`, `github`, `gworkspace`, `m365`, `okta`, `s3`, `vpcflow`, `waf`, `dns`, `others_*`) can never fire against real KronOS-ingested data today, regardless of how much rule-pack work happens. This bounds the platform's real detection coverage far more than rule count does. | I1 finding, `docs/NEXTGEN_SOC_ROADMAP.md` §M8 | L (per-log-type parser/normalizer work, prioritize by real customer log sources) |
+| P1-11 | **MTTD is structurally incapable of measuring real detection latency against historical forensic evidence.** I2 proved every `Detection` this platform can produce is built from a document whose `@timestamp` was rewritten to "now" before a Security-Analytics monitor could ever fire on it — so the metric can only ever reflect "SA schedule interval + sync latency," never genuine time-to-detect for ingested-but-backdated evidence. This is a structural property of the whole SA-monitor-based detection pipeline, not a calculator bug — worth flagging prominently since I2's own `MetricCalculator` framework could otherwise ship a customer-facing "MTTD" number that quietly means something different from what the label implies. | `src/application/metric_mttd.py`; `docs/NEXTGEN_SOC_ROADMAP.md` I2 finding #4 | L (would need a genuinely different detection-latency measurement approach, or an explicit UI label change — "SA cycle time," not "MTTD" — until/unless a non-SA-monitor detection path exists) |
+| P1-12 | **No real migration tool (Alembic or equivalent).** Confirmed: zero references to `alembic` anywhere in the repo. Every new Postgres column this multi-month initiative has added (risk_score, risk_factors, external_ticket_id, storage quota fields, `integration_source_cursors` table, etc.) has landed via `create_all`-only, which — per the codebase's own repeated comments — "only adds missing TABLES, not columns," meaning a real deployed DB needs a manual, undocumented, error-prone `ALTER TABLE` pass to actually pick up months of schema changes. This is now a materially larger risk than when `IMPROVEMENT_IDEAS.md` first flagged it, given how much schema has landed since (P1-8's Postgres cursor table is the latest addition to the pile). | repo-wide; `docs/IMPROVEMENT_IDEAS.md` §3 | L (Alembic adoption + a real baseline migration capturing current schema state) |
+| P1-13 | **`TenantUsageService.get_current_usage_bytes()` is an uncached `SUM(size_bytes)` query, now confirmed live on every evidence upload** (`StorageQuotaGate` calls it on every quota check, not hypothetically — quota enforcement landed and is active). No caching/rate-limiting layer exists yet; real-world query cost under load has not been measured. | `src/application/tenant_usage.py`; `src/application/quota_gate.py` | S–M (measure first per CLAUDE.md §F discipline, then decide whether a cache is even needed) |
+| P1-14 | **`docker-compose.test.yml` still has `DISABLE_SECURITY_PLUGIN=true` and no TLS/Keycloak scaffolding**, blocking any CI-realistic run of anything that depends on the A3 isolation model (OpenSearch DLS, Keycloak-issued tenant context) — this is why the detection-validation harness (I1), and by extension any future connector's "dev stage" work, still runs manually against the shared dev stack rather than in CI. Confirmed unchanged by direct file read. This single fix would unblock CI wiring for I1's harness, all six Q/R connectors' own dev-stage verification, and any future security-plugin-dependent test. | `docker/docker-compose.test.yml`; flagged independently by I1 and `IMPROVEMENT_IDEAS.md` §3 | L (enable + verify security plugin in test compose, add TLS/`step-ca`/Keycloak-init scaffolding, confirm footprint fits a GitHub Actions runner — named by I1 as its own scoped follow-up) |
+| P1-15 | **Admin org-membership routes (`invite_user`/`update_user_role`/`remove_user`) have no real-Keycloak integration/PoC coverage.** Direct code read confirms these are correctly org-scoped and `_assert_user_in_org()`-checked before mutation (no tenant-isolation bug found), but `src/external/routes/admin.py` is only 61% unit-covered and every Keycloak-calling helper (`_keycloak_admin_request`, `_assign_realm_role`, `_add_org_member`, etc.) is exercised only against a mocked `httpx`, never a real Keycloak instance. Given these are the exact routes that grant/revoke org membership and roles, CLAUDE.md §F's "verification-first" bar arguably applies here as much as it does to the six new connectors. | `src/external/routes/admin.py`; `tests/unit/test_admin_routes.py` | M (a real-Keycloak PoC/integration test exercising invite → role-change → remove against a live container, mirroring the rigor already applied to Q1–Q4/R1–R4) |
+| P1-16 | **Postgres and MinIO — the components the platform's actual custody guarantee depends on — remain single-instance with no HA/replication configured anywhere**, while this initiative spent real research effort on Kafka/Redpanda HA for the *stream ingest* layer (correctly concluded not worth adopting) without addressing the more load-bearing gap underneath it. Confirmed unchanged (§0 of the Kafka roadmap itself calls this "a real prioritization inconsistency" but no follow-up item was opened). | `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md` §0; `docker/docker-compose.prod.yml` | L (Postgres HA/replication and MinIO multi-node/erasure-coding are both real infra projects, not quick fixes — likely needs its own scoped research pass first, mirroring how the Kafka question itself was handled) |
+
+### P2 — nice-to-have / polish / lower-risk debt
+
+| # | Gap | Where | Size |
+|---|---|---|---|
+| P2-1 | `mypy` baseline: 13 of the 29 errors cluster in `src/adapter/repository/postgres_sealed_batch.py`'s `_from_row()` — a `dict[str, object]` row shape forces every field access to `object`, producing cascading `arg-type`/`attr-defined`/`unused-ignore` noise. Read directly: not a live bug (the runtime values are correct; `_asdict()` from a real SQLAlchemy row always has the right types) — but a real, fixable type-precision gap (e.g. a `TypedDict` or per-field `cast()`) that's currently hiding real errors in noise, should a genuine `None`/wrong-type row ever occur. | `src/adapter/repository/postgres_sealed_batch.py:124-142` | S |
+| P2-2 | Remaining ~7 mypy errors are `Missing type arguments for generic type "dict"` (`ism_tiering.py`, `ecs_field_registry.py`, `ism_manager.py`, `custom_rule_detector_provisioner.py`) and a few `no-any-return`/`no-untyped-def` — all mechanical, low-risk typing-hygiene debt, no evidence of a live bug in any of them. Three genuinely worth a closer look: `evidence_intake.py:732/737/746` (`Item "None" of "IsmLifecycleManager | None" has no attribute ...`) — confirmed these are guarded by an `if self._ism_manager is not None` check mypy can't narrow through a stored `self` attribute reassigned indirectly; a quick local-variable-narrowing fix would both satisfy mypy and remove a real (if currently prevented by call-site discipline) null-deref risk surface. | various, see mypy output | S |
+| P2-3 | `src/external/routes/evidence.py` at 71% unit coverage — mostly exception/error-handling branches (quota-exceeded 413, validation 422, generic 500, retry-eligibility 409/422 branches) rather than the core autonomous-pipeline logic itself. Lower risk than P1-15 since these are defensive branches, not membership/role mutation, but still worth closing given CLAUDE.md §E's emphasis on this exact pipeline's correctness. | `src/external/routes/evidence.py` | S–M |
+| P2-4 | Volatility3 module coverage stops at `pstree`/`psscan`. The sandboxed-runtime/worker-image/queue-routing infrastructure is proven for two plugins; extending to `malfind`/`netscan`/`dlllist`/`cmdline` is now mostly per-plugin wiring, not new architecture (confirmed: `_plugin_to_kind()`/`_build_artifact()` in `src/external/parsers/volatility.py` are already plugin-name-generic). | `src/external/parsers/volatility.py`; `docs/IMPROVEMENT_IDEAS.md` §1 | M per plugin |
+| P2-5 | `kronos-attest case_report` still takes `events: list[dict]` from an offline audit-log export (`kronos_attest/report.py:71`) — confirmed by direct read, not fixed since `IMPROVEMENT_IDEAS.md` flagged it. For a platform whose flagship claim is court-admissible chain of custody, the report CLI not live-re-reading MinIO/Postgres/TSA at report time remains a real credibility gap. | `kronos_attest/report.py` | L |
+| P2-6 | No real Kubernetes install has ever been attempted for `charts/kronos/` — `helm lint`/`helm template` pass (confirmed, including the new opensearch-security-init hook per I3), but `helm install` against a live cluster has never run. | `charts/kronos/`; `docs/IMPROVEMENT_IDEAS.md` §1 | L (needs a real or kind/minikube-class cluster) |
+| P2-7 | Zero Playwright spec files exist despite a full `docs/PLAYWRIGHT_E2E_TEST_PLAN.md` (254 lines) being written. Confirmed via `find` — no `playwright.config*`, no `*.spec.ts` under any `playwright` path in `frontend/`. The plan is real and detailed; none of it has been executed. | `docs/PLAYWRIGHT_E2E_TEST_PLAN.md`; `frontend/` | L |
+| P2-8 | Frontend has zero `dark:` Tailwind classes anywhere — dark mode is not implemented, not just unaudited (confirmed via repo-wide grep, count 0). `IMPROVEMENT_IDEAS.md` framed this as "audit whether it's already covered"; it is not. | `frontend/src/` | M |
+| P2-9 | CLAUDE.md §B.6's own "<5s unit suite" baseline is a confirmed, explained FAIL (9.36–10.85s, ~2x over even with `--no-cov`), attributed to legitimate suite growth (700→1316+ tests) rather than a regression. The baseline document itself (`CLAUDE.md`) has not been updated to reflect a realistic target, so this will keep showing up as a "FAIL" in every future audit unless the number in the doc is revised. | `CLAUDE.md` §B.6; `docs/NEXTGEN_SOC_ROADMAP.md` I5 | S (just update the documented baseline, e.g. to "<15s", with the real measured number as justification) |
+| P2-10 | I2's Analyst-Workload metric was confirmed computable but not built; a related minor bug was found in passing and not fixed — playbook-driven (automated) triage transitions record `actor_username: "unknown"` instead of a real system-actor label, which would under/mis-count in any future workload metric built on this data. | `src/application/playbook_execution.py` identity resolution; I2 finding | S |
+| P2-11 | MTTA (a real, weaker, honestly-computable proxy for MTTR — "time to first triage engagement") was confirmed feasible via real `DETECTION_TRIAGE_TRANSITIONED` audit rows but never built. True MTTR remains confirmed **not** honestly computable (no join key between a containment action and the Detection it responded to — `containment.action_*` audit events key on `user_id`/`session_id`, never `detection_id`). | `docs/NEXTGEN_SOC_ROADMAP.md` I2 | M (MTTA) / L (true MTTR needs a new join key, i.e. a schema change) |
+| P2-12 | No command palette, no cross-evidence unified timeline UI, no detection-health customer-facing dashboard, no rule-pack marketplace/catalogue UI, no usage-dashboard UI, no `DetectionSummaryService`/AI-assisted triage narrative — all confirmed absent via targeted grep of `frontend/src`/`src/`. All are real, named `IMPROVEMENT_IDEAS.md` §2/§4 product-value ideas, none started. Bundled here as one line since they're independent, additive product features rather than gaps in already-committed work. | `docs/IMPROVEMENT_IDEAS.md` §2/§4 | L each |
+
+---
+
+## §2 IMPROVEMENT_IDEAS.md reconciliation table
+
+| Idea (§ in IMPROVEMENT_IDEAS.md) | Status | Reason |
+|---|---|---|
+| Wire the SIEM stack (Wazuh/Falco/fluent-bit) that never fired (§1) | **Partially done** | Q2/Q3/Milestone S fixed real, previously-undiscovered bugs in all three compose files and got fluent-bit to real dev-stage (a live record confirmed indexed in real dev-stack OpenSearch); Wazuh manager itself was never brought up live in the shared dev stack (host memory constraint, honestly deferred); the SA-detection-rule-pack side of "SIEM signal flowing in" is unaffected by this — Wazuh/Falco alerts still don't flow into KronOS's own Detection pipeline, only KronOS's own logs flow out to fluent-bit/OpenSearch. |
+| `kronos-attest case-report` doesn't live-re-read MinIO/Postgres/TSA (§1) | **Still open** | Direct read of `kronos_attest/report.py:71` confirms `case_report()` still takes `events: list[dict]` from an offline export. |
+| Volatility3 module beyond pstree/psscan (§1) | **Still open** | `src/external/parsers/volatility.py` module docstring itself still lists only `pstree`/`psscan` as run today. |
+| Real Kubernetes deployment of `charts/kronos/` (§1) | **Still open** | I3 (2026-08-07) added real Helm wiring (ClamAV host, opensearch-security-init hook) and verified via `helm lint`/`helm template` only — no live cluster `helm install` has ever run, confirmed by I3's own "NOT verified against a real Kubernetes cluster" note. |
+| Real browser E2E coverage (§1, Playwright plan) | **Still open** | Plan document exists (254 lines); zero spec files, zero Playwright config found. |
+| AI-assisted triage narrative generation (§2) | **Still open** | No `DetectionSummaryService` or equivalent found anywhere in `src/`. |
+| Real cross-evidence unified timeline view (§2) | **Still open** | No matching component found in `frontend/src`. |
+| Detection-health customer-facing dashboard (§2) | **Still open** | I2's `MetricCalculator` framework (the stated prerequisite) now exists and is real-verified server-side, but no frontend consumer of it exists yet — the prerequisite landed, the feature didn't. |
+| Rule-pack marketplace/sharing (§2) | **Still open** | No marketplace/catalogue surface found; `RulePack`/Cosign-signing (the stated prerequisite, C3) remains the only piece in place. |
+| Cost/scale transparency dashboard (§2) | **Still open** | The stated prerequisite (tenant-quota work) is now live (§1 confirms `StorageQuotaGate` actively enforces it), but no usage-dashboard UI consumes it yet. |
+| A real migration tool (Alembic) (§3) | **Still open, and higher-risk than when written** | Zero `alembic` references repo-wide; more undocumented `create_all`-only columns/tables have landed since (integration-source cursors, quota fields) — see P1-12. |
+| Cached/rate-limited layer for `TenantUsageService` (§3) | **Still open, now genuinely live (not hypothetical)** | Confirmed `StorageQuotaGate` calls the uncached query on every real upload today — see P1-13. |
+| `OpenSearchClient.bulk_index`'s silent partial-failure mode (§3) | **Done** | Direct read of `src/adapter/opensearch/client.py:115-157` shows `bulk_index()` now inspects every `_bulk` response item and raises a `StorageError` (with the full list of failed documents in `context`) on any partial failure — no longer silent. This closes a real, previously-flagged forensic-data-loss risk. |
+| Real Firecracker microVM isolation for Plaso (§3) | **Still open** | `FirecrackerLauncher`'s own class docstring: "Spawns the Plaso worker subprocess" — still a subprocess-in-container, not a hardened microVM. |
+| Structured-artifact presentation layer (§3) | **Still open** | No typed-by-`kind` renderer registry found in `frontend/src`; `StructuredArtifact.content` is still opaque JSON with no dedicated UI. |
+| Real CI-capable security-enabled compose profile (§3) | **Still open, now blocking more things than when written** | `docker-compose.test.yml` unchanged (`DISABLE_SECURITY_PLUGIN=true`); I1 independently re-confirmed this blocks CI wiring for the detection-validation harness too — see P1-14. |
+| Status-color-language design pass (§4) | **Still open** | Cosmetic/UX, out of scope for this audit's depth of check; no evidence of a deliberate pass having happened. |
+| Empty states / first-run experience (§4) | **Still open** | Not checked in depth (low severity, UX-only). |
+| Command palette (§4) | **Still open** | No `cmdk`/command-palette component found in `frontend/src`. |
+| Real-time collaborative presence (§4) | **Still open** | Not checked in depth; no evidence found, matches doc's own framing as a longer-horizon idea. |
+| Dark mode (§4) | **Still open, confirmed absent (not just unaudited)** | Zero `dark:` Tailwind classes anywhere in `frontend/src` — see P2-8. |
+| Dashboards embed visual-seam polish (§4) | **Not checked** | Requires visual/manual inspection this audit didn't perform; no code-level signal either way. |
+| Multi-org user support (§5) | **Still open** | `KeycloakTokenValidator` (`src/external/middleware/keycloak_auth.py`) still reads a single `org_id` from the JWT's organization claim (`org_info["id"]`, singular) — the "backend just reads the first org today" framing is confirmed unchanged. |
+| Detection-to-evidence-to-report one-click workflow (§5) | **Still open** | The individual pieces exist (H3's `evidence_collection_action.py`, `kronos_attest`'s report generation, I2's metrics) but no single guided flow chains them — confirmed via grep, no orchestrating service/route found. |
+| Track D (sandboxed third-party parser execution) (§5) | **Still open, deliberately** | No `SandboxedExternalParser` or manifest/Cosign-gate mechanism found in `src/`; explicitly gated behind first-party modules being solid, per CLAUDE.md §G.3 — see §4 below. |
+
+---
+
+## §3 Proposed execution plan — Milestone V (continuing the roadmap's letter series)
+
+Grouped in priority order. Objectives only — no full agent briefs (per this
+task's own scope boundary); the orchestrator writes those after reviewing
+this document.
+
+**V1 · Prod OpenSearch TLS-scheme fix (P0-1).** Resolve whether
+`docker-compose.prod.yml`'s `OPENSEARCH_URL=http://...` is a real bug (prod
+literally cannot reach a TLS-only OpenSearch as configured) or is masked by
+an untracked reverse-proxy/sidecar TLS termination — either fix the scheme
+or document why it's safe, with a real `docker compose config` +
+connectivity check as proof. Highest priority: it's the one finding in this
+audit with a plausible path to an actual outage or plaintext-internal-traffic
+exposure in a deployment that believes itself production-configured.
+
+**V2 · Close the "built but never called" loop for Q/R connectors (P1-1,
+P1-2, P1-8).** Three related items that all share one root cause — real,
+tested connector logic sitting behind a DI/wiring gap with no real trigger:
+(a) a `SyncDetectionToSiemAction` `PlaybookAction` (or equivalent route) so
+at least one of Splunk/CEF/Sentinel actually fires from a real workflow;
+(b) a Celery beat task calling `IntegrationSourceIngestService.run_poll_cycle()`
+for Defender, with the per-task-client safety work the Milestone S notes
+already flagged as necessary; (c) flip `SourceCursorRepository`'s live DI
+default to `PostgresSourceCursorRepository` so poll cursors actually survive
+a restart. Do (c) first — it's the smallest, de-risks (b), and has zero
+design ambiguity.
+
+**V3 · CI-realistic security-enabled compose profile (P1-14).** Named
+independently by both roadmaps (I1 and `IMPROVEMENT_IDEAS.md`) as the single
+highest-leverage infra fix — unblocks CI wiring for the detection-validation
+harness, all six Q/R connectors' real dev-stage verification, and any future
+security-plugin-dependent test, instead of everything continuing to run
+manually against the shared dev stack forever.
+
+**V4 · Real migration tooling — Alembic adoption (P1-12).** The
+create-all-only-adds-tables risk has been accumulating for months across
+multiple initiatives and is now large enough (quota fields, cursor tables,
+risk-score columns, etc.) that a real deployed environment attempting to
+pick up this branch's schema changes without hand-written `ALTER TABLE`s is
+a genuine, not theoretical, risk. Do this before the schema grows further.
+
+**V5 · Real-Keycloak verification for org-admin membership routes (P1-15).**
+Apply the same verification-first bar already applied to the six Q/R
+connectors to `admin.py`'s invite/role-change/remove-member flows — no bug
+is suspected (code review found none), but these routes are exactly the
+kind of security-relevant surface CLAUDE.md §F's discipline exists for, and
+they are currently the biggest verification gap of that class left in the
+codebase.
+
+**V6 · Sink acknowledgement depth — Splunk `ackId` polling, Sentinel
+ingestion confirmation (P1-3, P1-4).** Lower priority than V1/V2/V3 because
+the current honest `ACKNOWLEDGED`/`UNACKNOWLEDGED` modeling is not
+*wrong*, just less granular than it could be — worth doing once the sinks
+are actually wired into a real workflow (V2), not before.
+
+**V7 · Detection-latency metric relabeling + MTTA build (P1-11, P2-11).**
+Cheap, high-integrity-value: rename/re-scope the MTTD metric's UI-facing
+label to avoid a customer-facing metric quietly meaning something narrower
+than its name implies, and build the already-proven-feasible MTTA proxy
+metric using the same `MetricCalculator` framework.
+
+**V8 · fluent-bit severity fix + nginx access-log producer (P1-5, P1-6).**
+Both small, both real, both flagged-not-fixed twice now (originally and at
+Milestone S) — low effort, closes two genuinely dangling loose ends in the
+SIEM overlay stack before it's revisited again.
+
+**V9 · SA log-type parser coverage expansion (P1-10).** Larger, should be
+sequenced by real customer log-source priority (a scoping question for the
+project owner, not purely a technical one) rather than started blind —
+flagged here as next in priority order but likely needs its own
+requirements pass before an agent brief can be written.
+
+**V10 · Postgres/MinIO HA research pass (P1-16).** Mirrors how the
+Kafka/Redpanda question itself was handled — a dedicated research pass
+first (what's the real failure mode being protected against, what's the
+minimum real-HA topology for each), before any implementation commitment.
+Sequenced last among P1s because it's the largest and most infrastructure-
+disruptive item on this list; do not rush it the way Kafka was correctly
+not rushed.
+
+**Mypy/coverage hygiene (P2-1, P2-2, P2-3)** are small enough to fold into
+whichever of V1–V10 happens to touch the same files, rather than dispatching
+standalone agents for typing cleanup alone.
+
+---
+
+## §4 Explicitly NOT in scope / deliberately deferred
+
+These are real, named gaps this audit re-confirmed — stated here so a
+future audit doesn't re-flag them as newly missed:
+
+- **CrowdStrike/SentinelOne-class long-lived streaming-worker EDR
+  sources.** Explicitly deferred past the entire P/Q/R/S milestone set per
+  the Kafka roadmap's own §0 research (a structurally heavier integration
+  shape — a supervised, kept-alive HTTP connection, not poll-on-schedule or
+  webhook-push). Correct to defer until the current poll+cursor and
+  webhook-push patterns are both further exercised in production; revisit
+  once V2/V9 land.
+- **Track D — sandboxed third-party/customer-supplied parser execution.**
+  Confirmed still not started (`SandboxedExternalParser` doesn't exist).
+  CLAUDE.md §G.3 gates this behind first-party modules being solid, and
+  that condition genuinely isn't met yet (only 4/23 SA log types have
+  first-party coverage — P1-10). Do not build a shortcut sandboxed-execution
+  path "just this once" per CLAUDE.md's own explicit instruction.
+- **Redis's ~1s AOF-fsync loss window on the unsealed backlog.** A real,
+  bounded, already-accepted risk per the Kafka roadmap's own §0 (bounded by
+  `SealingTriggerPolicy`'s short intervals) — not re-opened here; only
+  re-flag if a `SealingTriggerPolicy` interval materially lengthens.
+  P1-16 (Postgres/MinIO HA) is a different, larger, *not*-yet-accepted risk
+  and should not be conflated with this one.
+- **Kafka/Redpanda adoption.** Re-confirmed correctly not adopted; no new
+  evidence surfaced during this audit that changes that verdict (§0 of the
+  Kafka roadmap already documents the trigger conditions that would
+  re-open it — none are true today).
+- **QRadar/XSOAR/TheHive sink connectors, STIX/TAXII-as-producer.** Real,
+  valid fourth-tier candidates per the Kafka roadmap's own prioritized
+  build order — not started, correctly not yet in scope given the
+  higher-priority "built but never called" gap (P1-1) in the three sinks
+  that *do* exist.
+- **UX/visual polish items** (status-color design pass, empty states,
+  dashboards-embed visual seam, real-time presence) — real per
+  `IMPROVEMENT_IDEAS.md` §4 but explicitly lower priority than any
+  P0/P1 item above per this audit's own severity ordering; not scheduled
+  into Milestone V.
+- **Cost/dashboard/marketplace/AI-narrative product features**
+  (§2/§4 of `IMPROVEMENT_IDEAS.md`, bundled as P2-12) — real, additive
+  product value, not gaps in already-committed work; left for a future,
+  separate product-prioritization pass rather than folded into this
+  gap-closing milestone.
