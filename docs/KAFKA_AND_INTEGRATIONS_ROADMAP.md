@@ -517,6 +517,106 @@ via the same collector-ingest path, mapped via the same ECS logic
 `SuricataEveParser` already proved for the batch-file case.
 **Depends on:** Q1.
 
+**STATUS (2026-08-09): DONE — test-stage only (expected, see §3).** Built
+across two dispatches (an initial pass that hit a real session cutoff
+mid-flight with the connector code/tests/PoC scripts/captured output already
+on disk, then a delta-aware verification pass that read every file the first
+pass had already written before touching anything, then independently
+re-derived every proof point rather than trusting the first pass's own
+numbers).
+
+- **Shape chosen:** two concrete `IntegrationSource` PUSH classes,
+  `SuricataEvePushSource` (`source_type="suricata-eve"`) and
+  `ZeekJsonPushSource` (`source_type="zeek-conn-log"`), sharing real,
+  verified NDJSON-splitting behavior via a private common base
+  (`_TailedNdjsonPushSource`) and differing only in per-line structural
+  validation — mirrors `ZipArchiveParser`/`PlasoParser`'s own precedent of
+  one shared algorithm with format-specific validation on top, not a
+  parallel ABC hierarchy. `SuricataEveStreamNormalizer` reuses
+  `SuricataEveParser`'s already-proven `_ECS_BY_EVENT_TYPE`/`_build_message`/
+  `_build_extra` mapping by import rather than re-deriving it; `ZeekJsonPushSource`
+  deliberately provisions `source_id="zeek-conn-log"` so it resolves to the
+  already-existing, already-proven `ZeekConnLogNormalizer` with zero new
+  normalizer code. Both registered in `src/external/dependencies.py`
+  (`get_integration_source_registry()`/`reset_dependencies()`), unconditionally,
+  the same way `WazuhPushSource` already is.
+- **Real gap found and flagged (CLAUDE.md SS F), not fixed out-of-scope:**
+  this repo's own `docker/fluent-bit/fluent-bit.conf` (dev-stack config for
+  KronOS's own logs) sets `Parser json` on every `tail` input but never sets
+  `Parsers_File` in `[SERVICE]` — a real `fluent/fluent-bit:3.1` container
+  with that config logs `parser 'json' is not registered` at boot and
+  silently never JSON-parses that input, meaning that file has almost
+  certainly never actually JSON-parsed anything at runtime. Fixed in this
+  PoC's own throwaway `fluent-bit.conf` (adding the missing directive);
+  **not** fixed in the dormant `docker/fluent-bit/fluent-bit.conf` itself —
+  flagged for the orchestrator to route to that file's owner, mirroring Q2's
+  own identical precedent for `docker/wazuh/docker-compose.wazuh.yml`'s
+  wrong version pin.
+- **Real wire format captured, not assumed (fluent-bit's own `http`-output
+  docs don't clearly specify it):** `fluent/fluent-bit:3.1`'s `http` output
+  with `Format json_lines` sends `Content-Type: application/x-ndjson`, one
+  JSON object per originally-tailed line, fluent-bit's own ingestion-time
+  `date` field prepended to each object, and multiple records from one
+  flush window concatenated as multiple NDJSON lines in a single POST body
+  (not a JSON array, not separate requests) — directly informed
+  `_TailedNdjsonPushSource.parse_push_event`'s split-on-`\n` implementation.
+- **Real end-to-end run:** real `fluent/fluent-bit:3.1` (digest
+  `sha256:e72c08...f293e1`, reports `v3.1.10`) tailing a real Suricata alert
+  line (byte-for-byte from `tests/fixtures/samples/real/suricata/eve.json`,
+  `flow_id=1676750115612680`) and a real-schema Zeek `conn.log` line
+  (fields independently verified against Zeek's own `Conn::Info` source),
+  both appended live to initially-empty files while fluent-bit was already
+  watching via inotify (genuine live-tail, not backfill) — forwarded via two
+  real `tail`+`http` routes to a real KronOS FastAPI app
+  (`kronos-poc-suricatazeek-receiver` running real
+  `SuricataEvePushSource`/`ZeekJsonPushSource` + real
+  `IntegrationSourceIngestService`, PoC-tier in-memory stream/dedup/audit
+  doubles — same bar Q1/Q2 established). Both real pushes captured with
+  real `HTTP status=202`, `accepted=True, duplicate=False`, real produced
+  stream entries, and real `integration_source.push_ingested` audit events —
+  full transcript in `poc/integration_source_suricata_zeek/output.txt`.
+  Cleanup confirmed via `docker ps -a`/`docker network ls` both immediately
+  after the original run and again independently at the start of this
+  verification pass — no `kronos-poc-suricata*`/`kronos-poc-fluentbit*`
+  resource remains, no other container touched.
+- **Tests:** `tests/unit/integration_sources/test_suricata_zeek.py`, 24
+  tests covering both push sources' NDJSON-splitting/validation (real 6-line
+  Suricata fixture reuse, fluent-bit's own observed `date`-field tolerance,
+  flow_id-less `stats` events, partial-batch fail-loudly), the reused-mapping
+  normalizer (all six real fixture event_types), and registry wiring. Full
+  suite, **independently re-derived this verification pass** via a fresh
+  `git stash -u`/pop (not trusted from the first pass's own captured
+  numbers, which reflected an earlier commit): baseline **1647 passed, 1
+  skipped**; with this connector **1671 passed, 1 skipped** — exactly the
+  +24 new tests, zero regressions. `mypy src`: **29 errors**, identical
+  count to Q2's own documented baseline, zero in either touched file.
+  `ruff check`/`black --check` on every touched file (src + tests + poc):
+  this verification pass found and fixed two real gaps introduced by the
+  first pass — an `E501` long line in `suricata_zeek.py`'s module docstring
+  and an unsorted import block in the test file — clean after.
+- **Stage reached (§3): test-stage only**, honestly incomplete on purpose,
+  matching Q1/Q2's own precedent: no `docker-compose.dev.yml` service entry
+  for a real dev-stack fluent-bit-tailing-Suricata/Zeek deployment, no real
+  `StaticApiKeyProvisioning` wired into `startup.py`.
+- **Honesty notes:** only PUSH exercised (no poll shape for either source);
+  in-memory stream/dedup/audit doubles in the PoC receiver, not real
+  Redis/Postgres; no real Suricata/Zeek binary run (fluent-bit tailed a
+  plain file containing one real and one realistic-but-hand-built line, not
+  a live process's own writes); only one line per source forwarded live
+  end-to-end (all six real Suricata event_types verified via direct
+  normalizer calls and unit tests, not the live pipeline); only `conn.log`
+  built for Zeek (`notice.log`/others are a new `source_type` on the same
+  shared base, not new work); `docker/fluent-bit/fluent-bit.conf`'s own
+  `Parsers_File` gap not fixed here (flagged above, out of this connector
+  module's scope).
+- **Docker cleanup:** all `kronos-poc-fluentbit-discovery`,
+  `kronos-poc-stub-receiver`, `kronos-poc-suricatazeek-receiver`,
+  `kronos-poc-suricatazeek-fluentbit`, and `kronos-poc-suricata-net`
+  resources torn down and reconfirmed absent (`docker ps -a`/
+  `docker network ls`) at the end of this verification pass; no other host
+  container (shared dev stack, `portainer_agent`, unrelated concurrent
+  sessions) was touched.
+
 ### Q4 · Microsoft Defender source connector — L2
 **Objective.** Real Graph Security API `alerts_v2` poll-with-cursor
 (`$filter=lastUpdateTime gt ...`), OAuth2 client-credentials via a real

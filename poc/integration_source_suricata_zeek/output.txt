@@ -1,0 +1,243 @@
+=============================================================================
+PHASE 1 -- Wire-format discovery: real fluent-bit 3.1 `http` output,
+`Format json_lines`, against a real stub HTTP receiver (throwaway,
+poc/integration_source_suricata_zeek scratch, not committed as its own
+file -- captured here verbatim). Purpose: CLAUDE.md SS F forbids assuming
+the wire shape from docs alone; the real fluent-bit 3.1 docs page fetched
+for this (https://docs.fluentbit.io/manual/data-pipeline/outputs/http) did
+not clearly specify whether `json`/`json_lines`/`json_stream` serialize
+multiple flushed records as an array, NDJSON, or something else -- so it
+was verified by actually running it.
+=============================================================================
+
+$ docker pull fluent/fluent-bit:3.1
+Digest: sha256:e72c08d2ec8d93999dfb74b17bd0ec8bcb07fedde0d53308f59e7aa0b5f293e1
+Status: Downloaded newer image for fluent/fluent-bit:3.1
+
+--- Real gap found: `Parser json` on a `tail` input does nothing unless
+--- `Parsers_File` is set in [SERVICE] -- this repo's OWN
+--- docker/fluent-bit/fluent-bit.conf has this exact bug (uses `Parser json`
+--- on every tail input, sets no Parsers_File anywhere), so it was almost
+--- certainly never actually JSON-parsing anything at runtime either.
+
+$ docker run -d --name kronos-poc-fluentbit-discovery ... (fluent-bit.conf WITHOUT Parsers_File)
+[2026/08/09 09:15:12] [error] [input:tail:tail.0] parser 'json' is not registered
+
+--- Fixed by adding `Parsers_File /fluent-bit/etc/parsers.conf` to [SERVICE]
+--- (the image's own bundled default parsers.conf, which already defines a
+--- `json` parser) -- error cleared on the next run:
+
+$ docker run -d --name kronos-poc-fluentbit-discovery ... (fluent-bit.conf WITH Parsers_File)
+[2026/08/09 09:18:12] [ info] [fluent bit] version=3.1.10, commit=e28f447995, pid=1
+[2026/08/09 09:18:12] [ info] [input:tail:tail.0] initializing
+[2026/08/09 09:18:12] [ info] [output:http:http.0] worker #0 started
+[2026/08/09 09:18:12] [ info] [input:tail:tail.0] inotify_fs_add(): inode=998280 watch_fd=1 name=/var/log/suricata/eve.json
+
+--- Appended one hand-built Suricata-shaped alert line to eve.json.
+--- fluent-bit's own stdout output (Format json_lines) shows the exact
+--- record it will forward -- note the real, added `date` field
+--- (json_date_key's default name, fluent-bit's own ingestion timestamp,
+--- a float epoch by default) PREPENDED to the original line's own fields,
+--- which are otherwise untouched:
+
+{"date":1786267123.761089,"timestamp":"2026-08-09T09:20:00.123456+0000","flow_id":1234567890123456,"in_iface":"eth0","event_type":"alert","src_ip":"203.0.113.5","src_port":51234,"dest_ip":"198.51.100.10","dest_port":443,"proto":"TCP","alert":{"action":"allowed","gid":1,"signature_id":2100498,"rev":7,"signature":"GPL ATTACK_RESPONSE id check returned root","category":"Potentially Bad Traffic","severity":2},"app_proto":"tls"}
+
+--- Real stub receiver's own captured request (raw socket read, not
+--- reconstructed) -- proves Content-Type and body shape for ONE record:
+
+=== POST /discover/json_lines ===
+headers: {'Host': 'kronos-poc-stub-receiver:8000', 'Content-Length': '428', 'Content-Type': 'application/x-ndjson', 'User-Agent': 'Fluent-Bit', 'X-KronOS-Source-Key': 'test-key', 'Connection': 'keep-alive'}
+body (428 bytes): b'{"date":1786267123.761089,"timestamp":"2026-08-09T09:20:00.123456+0000","flow_id":1234567890123456,"in_iface":"eth0","event_type":"alert","src_ip":"203.0.113.5","src_port":51234,"dest_ip":"198.51.100.10","dest_port":443,"proto":"TCP","alert":{"action":"allowed","gid":1,"signature_id":2100498,"rev":7,"signature":"GPL ATTACK_RESPONSE id check returned root","category":"Potentially Bad Traffic","severity":2},"app_proto":"tls"}\n'
+
+--- Appended TWO more lines back-to-back (both land within one Flush=1s
+--- window) -- proves multi-record batching is real NDJSON in ONE POST
+--- body, NOT a JSON array and NOT two separate requests:
+
+=== POST /discover/json_lines ===
+headers: {'Host': 'kronos-poc-stub-receiver:8000', 'Content-Length': '540', 'Content-Type': 'application/x-ndjson', 'User-Agent': 'Fluent-Bit', 'X-KronOS-Source-Key': 'test-key', 'Connection': 'keep-alive'}
+body (540 bytes): b'{"date":1786267137.611021,"timestamp":"2026-08-09T09:20:00.000000+0000","flow_id":999000,"event_type":"dns","src_ip":"10.0.0.5","src_port":53000,"dest_ip":"10.0.0.1","dest_port":53,"proto":"UDP","dns":{"type":"query","queries":[{"rrname":"example0.com","rrtype":"A"}]}}\n{"date":1786267137.611029,"timestamp":"2026-08-09T09:21:00.000000+0000","flow_id":999001,"event_type":"dns","src_ip":"10.0.0.5","src_port":53001,"dest_ip":"10.0.0.1","dest_port":53,"proto":"UDP","dns":{"type":"query","queries":[{"rrname":"example1.com","rrtype":"A"}]}}\n'
+
+CONCLUSION from Phase 1 (informed src/ design of parse_push_event's
+split-on-newline behavior in SuricataEvePushSource/ZeekJsonPushSource):
+real fluent-bit 3.1 `http` output with `Format json_lines` sends
+`Content-Type: application/x-ndjson`, body = one JSON object per
+originally-tailed line, newline-terminated, MULTIPLE records from one
+flush window concatenated as multiple NDJSON lines in a SINGLE POST body,
+each object augmented with fluent-bit's own `date` field.
+
+Discovery containers torn down after this phase (kronos-poc-fluentbit-discovery,
+kronos-poc-stub-receiver) -- not part of the final run below.
+
+=============================================================================
+PHASE 2 -- Real end-to-end run: real fluent-bit 3.1 tailing a real
+Suricata-shaped eve.json line (one real line copied verbatim from this
+repo's own real, provenance-tracked fixture,
+tests/fixtures/samples/real/suricata/eve.json line 2 -- see that
+directory's NOTICE.md: real Suricata output captured from Suricata's own
+official userguide's documented real-pcap example, flow_id=1676750115612680,
+ET ATTACK_RESPONSE Win32/LeftHook Stealer alert) and a real-schema Zeek
+conn.log line (hand-built, field names/types/units independently verified
+against Zeek's own Conn::Info record source -- same rigor level this
+repo's own poc/stream_normalization/run_poc.py already established for
+Zeek, see this dir's README.md for why a full Zeek engine was not stood up)
+-- forwarded via real fluent-bit `tail`+`http` outputs to a real KronOS
+FastAPI app running the real SuricataEvePushSource/ZeekJsonPushSource.
+=============================================================================
+
+Versions/digests actually used (real, not assumed):
+  fluent/fluent-bit:3.1           -> sha256:e72c08d2ec8d93999dfb74b17bd0ec8bcb07fedde0d53308f59e7aa0b5f293e1 (v3.1.10, commit e28f447995)
+  kronos-backend:dev              -> sha256:65cdefeca0d17786ae4863e082b68d7882caa0e07fc3804d25527aa23715f8de (this repo's own already-built dev image, Python/FastAPI/uvicorn/httpx runtime)
+
+Real containers created (network kronos-poc-suricata-net, all torn down after this run):
+  kronos-poc-suricatazeek-receiver  -- real KronOS FastAPI app + real SuricataEvePushSource/ZeekJsonPushSource
+  kronos-poc-suricatazeek-fluentbit -- real fluent-bit 3.1, this dir's own fluent-bit.conf
+
+--- Receiver started first (real uvicorn boot):
+
+$ docker run -d --name kronos-poc-suricatazeek-receiver --network kronos-poc-suricata-net \
+    -v <worktree>:/app:ro --entrypoint python3 kronos-backend:dev \
+    /app/poc/integration_source_suricata_zeek/run_poc_receiver.py 90
+
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+=== Real uvicorn server listening on 0.0.0.0:8000 (container: kronos-poc-suricatazeek-receiver) ===
+=== Waiting up to 90.0s for real pushes from kronos-poc-suricatazeek-fluentbit ===
+
+--- fluent-bit started second (real boot, both tail inputs + both http
+--- outputs initialize cleanly with Parsers_File set):
+
+$ docker run -d --name kronos-poc-suricatazeek-fluentbit --network kronos-poc-suricata-net \
+    -v <this-dir>/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro \
+    -v /tmp/kronos-poc-suricata-zeek/logs2:/var/log/suricata:ro \
+    -v /tmp/kronos-poc-suricata-zeek/logs2:/var/log/zeek:ro \
+    fluent/fluent-bit:3.1
+
+Fluent Bit v3.1.10
+[2026/08/09 09:27:30] [ info] [fluent bit] version=3.1.10, commit=e28f447995, pid=1
+[2026/08/09 09:27:30] [ info] [storage] ver=1.5.2, type=memory, sync=normal, checksum=off, max_chunks_up=128
+[2026/08/09 09:27:30] [ info] [cmetrics] version=0.9.7
+[2026/08/09 09:27:30] [ info] [ctraces ] version=0.5.6
+[2026/08/09 09:27:30] [ info] [input:tail:tail.0] initializing
+[2026/08/09 09:27:30] [ info] [input:tail:tail.0] storage_strategy='memory' (memory only)
+[2026/08/09 09:27:30] [ info] [input:tail:tail.1] initializing
+[2026/08/09 09:27:30] [ info] [input:tail:tail.1] storage_strategy='memory' (memory only)
+[2026/08/09 09:27:30] [ info] [output:http:http.0] worker #0 started
+[2026/08/09 09:27:30] [ info] [output:http:http.0] worker #1 started
+[2026/08/09 09:27:30] [ info] [output:http:http.1] worker #0 started
+[2026/08/09 09:27:30] [ info] [output:http:http.1] worker #1 started
+[2026/08/09 09:27:30] [ info] [sp] stream processor started
+[2026/08/09 09:27:30] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1000131 watch_fd=1 name=/var/log/suricata/eve.json
+[2026/08/09 09:27:30] [ info] [input:tail:tail.1] inotify_fs_add(): inode=1000132 watch_fd=1 name=/var/log/zeek/conn.log
+[2026/08/09 09:27:30] [ info] [output:stdout:stdout.2] worker #0 started
+
+--- Real trigger: appended the real Suricata alert line to eve.json and the
+--- real-schema Zeek conn.log line to conn.log (both files started empty --
+--- fluent-bit was already running and watching via inotify, so this is a
+--- genuine live-tail event, not a pre-seeded backfill):
+
+$ cat real_suricata_alert_line.json >> /tmp/kronos-poc-suricata-zeek/logs2/eve.json
+$ cat real_zeek_conn_line.json      >> /tmp/kronos-poc-suricata-zeek/logs2/conn.log
+
+--- fluent-bit's own stdout (Format json_lines) shows both real records it
+--- picked up (again, each with fluent-bit's own `date` field prepended,
+--- original fields untouched) and both real successful forwards:
+
+{"date":1786267658.198804,"timestamp":"2023-09-18T06:13:41.532140+0000","flow_id":1676750115612680,"pcap_cnt":130,"event_type":"alert","src_ip":"142.11.240.191","src_port":35361,"dest_ip":"192.168.100.237","dest_port":49175,"proto":"TCP","pkt_src":"wire/pcap","ether":{"src_mac":"52:54:00:36:3e:ff","dest_mac":"12:a9:86:6c:77:de"},"tx_id":1,"alert":{"action":"allowed","gid":1,"signature_id":2045001,"rev":1,"signature":"ET ATTACK_RESPONSE Win32/LeftHook Stealer Browser Extension Config Inbound","category":"A Network Trojan was detected","severity":1,"metadata":{"affected_product":["Windows_XP_Vista_7_8_10_Server_32_64_Bit"],"attack_target":["Client_Endpoint"],"created_at":["2023_04_17"],"deployment":["Perimeter"],"former_category":["ATTACK_RESPONSE"],"signature_severity":["Major"],"updated_at":["2023_04_18"]}},"http":{"hostname":"142.11.240.191","http_port":35361,"url":"/","http_content_type":"text/xml","http_method":"POST","protocol":"HTTP/1.1","status":200,"length":5362},"files":[{"filename":"/","gaps":false,"state":"CLOSED","stored":false,"size":5362,"tx_id":1}],"app_proto":"http","direction":"to_client","flow":{"pkts_toserver":13,"pkts_toclient":12,"bytes_toserver":1616,"bytes_toclient":8044,"start":"2023-09-18T06:13:33.324862+0000","src_ip":"192.168.100.237","dest_ip":"142.11.240.191","src_port":49175,"dest_port":35361}}
+{"date":1786267658.201528,"ts":1786280000.123456,"uid":"CxWIhL3rGCezA5MKq","id.orig_h":"10.0.2.15","id.orig_p":52344,"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","service":"ssl","duration":1.503201,"orig_bytes":517,"resp_bytes":4096,"conn_state":"SF","local_orig":true,"local_resp":false,"missed_bytes":0,"history":"ShADadFf","orig_pkts":6,"orig_ip_bytes":673,"resp_pkts":5,"resp_ip_bytes":4356}
+[2026/08/09 09:27:39] [ info] [output:http:http.0] kronos-poc-suricatazeek-receiver:8000, HTTP status=202
+{"results":[{"accepted":true,"duplicate":false,"messageId":"1-0"}]}
+[2026/08/09 09:27:39] [ info] [output:http:http.1] kronos-poc-suricatazeek-receiver:8000, HTTP status=202
+{"results":[{"accepted":true,"duplicate":false,"messageId":"2-0"}]}
+
+--- Real receiver-side stdout: both real inbound HTTP calls, real
+--- SuricataEvePushSource/ZeekJsonPushSource validation passing, real
+--- IntegrationSourceIngestService outcomes, real produced stream entries,
+--- real AuditEvents, real final summary:
+
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+=== Real uvicorn server listening on 0.0.0.0:8000 (container: kronos-poc-suricatazeek-receiver) ===
+=== Waiting up to 90.0s for real pushes from kronos-poc-suricatazeek-fluentbit ===
+
+[REAL PUSH #1] from org=6c1c6b7e-0a5f-4b7c-9c1a-000000000043 source=suricata-eve source_type=suricata-eve auth_method=api-key
+    raw_body (1345 bytes): {"date":1786267658.198804,"timestamp":"2023-09-18T06:13:41.532140+0000","flow_id":1676750115612680,"pcap_cnt":130,"event_type":"alert","src_ip":"142.11.240.191","src_port":35361,"dest_ip":"192.168.100.237","dest_port":49175,"proto":"TCP","pkt_src":"wire/pcap","ether":{"src_mac":"52:54:00:36:3e:ff","dest_mac":"12:a9:86:6c:77:de"},"tx_id":1,"alert":{"action":"allowed","gid":1,"signature_id":2045001,"rev":1,"signature":"ET ATTACK_RESPONSE Win32/LeftHook Stealer Browser Extension Config Inbound","category":"A Network Trojan was detected","severity":1,"metadata":{"affected_product":["Windows_XP_Vista_7_8_10_Server_32_64_Bit"],"attack_target":["Client_Endpoint"],"created_at":["2023_04_17"],"deployment":["Perimeter"],"former_category":["ATTACK_RESPONSE"],"signature_severity":["Major"],"updated_at":["2023_04_18"]}},"http":{"hostname":"142.11.240.191","http_port":35361,"url":"/","http_content_type":"text/xml","http_method":"POST","protocol":"HTTP/1.1","status":200,"length":5362},"files":[{"filename":"/","gaps":false,"state":"CLOSED","stored":false,"size":5362,"tx_id":1}],"app_proto":"http","direction":"to_client","flow":{"pkts_toserver":13,"pkts_toclient":12,"bytes_toserver":1616,"bytes_toclient":8044,"start":"2023-09-18T06:13:33.324862+0000","src_ip":"192.168.100.237","dest_ip":"142.11.240.191","src_port":49175,"dest_port":35361}}
+
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-09T09:27:39.095462Z", "event_id": "bf18ac5c-315c-46d3-a7aa-d02ecf904891", "event_type": "integration_source.push_ingested", "seq": 1}
+    -> accepted=True duplicate=False message_id=1-0
+INFO:     172.25.2.3:38798 - "POST /api/integrations/push/suricata-eve HTTP/1.1" 202 Accepted
+
+[REAL PUSH #2] from org=6c1c6b7e-0a5f-4b7c-9c1a-000000000043 source=zeek-conn-log source_type=zeek-conn-log auth_method=api-key
+    raw_body (409 bytes): {"date":1786267658.201528,"ts":1786280000.123456,"uid":"CxWIhL3rGCezA5MKq","id.orig_h":"10.0.2.15","id.orig_p":52344,"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","service":"ssl","duration":1.503201,"orig_bytes":517,"resp_bytes":4096,"conn_state":"SF","local_orig":true,"local_resp":false,"missed_bytes":0,"history":"ShADadFf","orig_pkts":6,"orig_ip_bytes":673,"resp_pkts":5,"resp_ip_bytes":4356}
+
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-09T09:27:39.097192Z", "event_id": "11683ed8-4109-47be-91a5-26cb53a9d02e", "event_type": "integration_source.push_ingested", "seq": 2}
+    -> accepted=True duplicate=False message_id=2-0
+INFO:     172.25.2.3:38804 - "POST /api/integrations/push/zeek-conn-log HTTP/1.1" 202 Accepted
+
+[SUMMARY] Real inbound HTTP calls received: 2
+[SUMMARY] Real stream length for (org=6c1c6b7e-0a5f-4b7c-9c1a-000000000043, source=suricata-eve [suricata-eve]): 1
+    Real stream entries (1):
+      message_id=1-0 raw={"date":1786267658.198804,"timestamp":"2023-09-18T06:13:41.532140+0000","flow_id":1676750115612680,...}
+[SUMMARY] Real stream length for (org=6c1c6b7e-0a5f-4b7c-9c1a-000000000043, source=zeek-conn-log [zeek-conn-log]): 1
+    Real stream entries (1):
+      message_id=2-0 raw={"date":1786267658.201528,"ts":1786280000.123456,"uid":"CxWIhL3rGCezA5MKq",...}
+
+[SUMMARY] Real audit events recorded for org=6c1c6b7e-0a5f-4b7c-9c1a-000000000043: 2
+    integration_source.push_ingested details={'source_id': 'suricata-eve', 'source_type': 'suricata-eve', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0}
+    integration_source.push_ingested details={'source_id': 'zeek-conn-log', 'source_type': 'zeek-conn-log', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0}
+
+=== SURICATA + ZEEK -> KRONOS PUSH PoC: REAL END-TO-END FLOW CONFIRMED FOR BOTH SOURCES ===
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1]
+
+=============================================================================
+Cleanup (confirmed via `docker ps -a`/`docker network ls` after teardown):
+=============================================================================
+$ docker rm -f kronos-poc-suricatazeek-fluentbit kronos-poc-suricatazeek-receiver
+$ docker network rm kronos-poc-suricata-net
+-- no container outside this PoC's own two, and this PoC's own one network,
+-- was touched. The shared long-running dev stack (docker-*), portainer_agent,
+-- and an unrelated concurrent session's own containers (testcontainers-ryuk-*,
+-- determined_einstein) were left untouched throughout.
+
+=============================================================================
+PHASE 3 -- Unit-level proof (src/ code, real fixture reuse, not live
+containers) that both connectors' ECS-mapping normalizers work end to end
+against the SAME real Suricata fixture used in test_suricata.py, run via
+this repo's own ~/venv:
+=============================================================================
+
+$ python3 -c "... SuricataEvePushSource().parse_push_event(open('tests/fixtures/samples/real/suricata/eve.json','rb').read()) ..."
+num events split: 6
+event ['file', 'network'] ['info'] | file eicar.com (68 bytes)
+alert ['intrusion_detection', 'network'] ['info'] | ET ATTACK_RESPONSE Win32/LeftHook Stealer Browser Extension
+event ['file', 'network'] ['info'] | file / (137 bytes)
+event ['network', 'web'] ['protocol'] | POST 142.11.240.191/ 200
+event ['network'] ['error'] | anomaly applayer: UNABLE_TO_MATCH_RESPONSE_TO_REQUEST
+event ['network'] ['connection', 'end'] | TCP flow 192.168.100.237:49175 -> 142.11.240.191:35361
+resolved suricata-eve: <src.external.integration_sources.suricata_zeek.SuricataEveStreamNormalizer object at 0x...>
+resolved zeek-conn-log: <src.application.stream_source_registry.ZeekConnLogNormalizer object at 0x...>
+
+$ python3 -c "... ZeekJsonPushSource() real-shaped conn.log line + registry lookup ..."
+zeek events: 1
+event ['network'] ['connection'] | 10.0.0.5:51234 -> 93.184.216.34:443 (tcp) {'source.ip': '10.0.0.5', 'source.port': 51234, 'destination.ip': '93.184.216.34', 'destination.port': 443, 'network.transport': 'tcp', 'network.protocol': 'ssl', 'event.duration': 1750000000, 'source.bytes': 512, 'destination.bytes': 4096, 'zeek.conn.uid': 'CxWIhL3rGCezA5MKq', 'zeek.conn.conn_state': 'SF', 'zeek.conn.history': 'ShADadFf', 'zeek.conn.orig_pkts': 6, 'zeek.conn.resp_pkts': 5}
+OK invalid json rejected: Zeek JSON push line is not valid JSON
+OK missing ts rejected: Zeek JSON push line is missing required 'ts' field -- not a real Zeek default-JSON log line
+
+=============================================================================
+PHASE 4 -- Automated tests (real pytest run, this worktree's own ~/venv)
+=============================================================================
+
+$ python3 -m pytest tests/unit/integration_sources/test_suricata_zeek.py -v --no-cov
+... 24 passed in 1.31s
+
+Full suite, baseline via `git stash -u` (this session's own re-derivation,
+not trusted from any prior doc):
+  BEFORE (git stash -u):  1530 passed, 1 skipped
+  AFTER  (git stash pop): 1554 passed, 1 skipped
+  Delta: +24 (exactly this connector's own new tests), zero regressions.

@@ -88,6 +88,7 @@ from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
 from src.external.integration_sources.generic_webhook import GenericWebhookPushSource
+from src.external.integration_sources.suricata_zeek import SuricataEvePushSource, ZeekJsonPushSource
 from src.external.integration_sources.wazuh import WazuhPushSource
 from src.external.middleware.integration_source_auth import (
     InboundSourceAuthenticator,
@@ -157,6 +158,11 @@ _integration_source_registry.register(GenericWebhookPushSource())
 # source_type="wazuh" (see _inbound_source_authenticator's own "zero
 # provisioned keys by default" comment above).
 _integration_source_registry.register(WazuhPushSource())
+# SuricataEvePushSource/ZeekJsonPushSource (roadmap Q3) -- live-tail
+# connectors fed by fluent-bit's real `tail`+`http` output (see that
+# module's own docstring), registered the same unconditional way.
+_integration_source_registry.register(SuricataEvePushSource())
+_integration_source_registry.register(ZeekJsonPushSource())
 _source_cursor_repository: SourceCursorRepository = InMemorySourceCursorRepository()
 _inbound_source_authenticator: InboundSourceAuthenticator = StaticApiKeyInboundAuthenticator({})
 _integration_source_max_stream_length: int = 1_000_000
@@ -1140,6 +1146,8 @@ def reset_dependencies() -> None:
     _integration_source_registry = IntegrationSourceRegistry()
     _integration_source_registry.register(GenericWebhookPushSource())
     _integration_source_registry.register(WazuhPushSource())
+    _integration_source_registry.register(SuricataEvePushSource())
+    _integration_source_registry.register(ZeekJsonPushSource())
     _source_cursor_repository = InMemorySourceCursorRepository()
     _inbound_source_authenticator = StaticApiKeyInboundAuthenticator({})
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()
