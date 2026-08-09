@@ -280,6 +280,60 @@ class Settings(BaseSettings):
         description="CEF header 'Device Version' field applied to every pushed Detection event.",
     )
 
+    # Microsoft Sentinel Logs Ingestion API sink (roadmap M-integrations/R4)
+    # -- the OAuth2 + rigid-pre-provisioned-schema case. Same "one
+    # global endpoint, not per-org config" shape as splunk_hec_url/
+    # cef_syslog_host above. ALL FOUR of sentinel_dce_endpoint/
+    # sentinel_dcr_immutable_id/sentinel_client_id/sentinel_client_secret
+    # must be set for get_sentinel_sink() to construct a real
+    # SentinelHttpSink; any being None means "not configured," an honest,
+    # legitimate dev/test state (mirrors splunk_hec_url's own
+    # None-is-valid contract), never an error.
+    sentinel_dce_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Real Data Collection Endpoint (or DCR-embedded logs-ingestion "
+            "endpoint) base URL, e.g. "
+            "https://my-dce-5kyl.eastus-1.ingest.monitor.azure.com"
+        ),
+    )
+    sentinel_dcr_immutable_id: str | None = Field(
+        default=None,
+        description="The real DCR's own immutableId, e.g. dcr-000a00a000a00000a000000aa000a0aa.",
+    )
+    sentinel_stream_name: str = Field(
+        default="Custom-KronOSDetection",
+        description="The DCR streamDeclaration name matching SentinelDetectionMapper's schema.",
+    )
+    sentinel_api_version: str = Field(
+        default="2023-01-01",
+        description="Logs Ingestion API api-version query parameter (pinned, real, current value).",
+    )
+    sentinel_tenant_id: str | None = Field(
+        default=None, description="Entra ID (Azure AD) tenant id for the OAuth2 token endpoint."
+    )
+    sentinel_client_id: str | None = Field(
+        default=None,
+        description="Entra ID app registration's Application (client) ID, granted the DCR's "
+        "Monitoring Metrics Publisher role.",
+    )
+    sentinel_client_secret: SecretStr | None = Field(
+        default=None, description="Entra ID app registration's client secret -- never logged."
+    )
+    sentinel_oauth_scope: str = Field(
+        default="https://monitor.azure.com/.default",
+        description=(
+            "OAuth2 client-credentials scope -- the real, documented Azure "
+            "public cloud Logs Ingestion API audience "
+            "(https://monitor.azure.com) plus the v2.0 token endpoint's "
+            "own '/.default' suffix convention."
+        ),
+    )
+    sentinel_verify_tls: bool = Field(
+        default=True,
+        description="Whether to verify the Sentinel DCE endpoint's TLS cert (httpx 'verify=').",
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

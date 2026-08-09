@@ -1,0 +1,84 @@
+[2026-08-09T14:21:52.096102+00:00] === real local Entra ID v2.0 token stand-in listening on http://127.0.0.1:45053/aaaabbbb-0000-cccc-1111-dddd2222eeee/oauth2/v2.0/token ===
+[2026-08-09T14:21:52.096349+00:00] === real local Sentinel DCE ingestion stand-in listening on http://127.0.0.1:33047 ===
+[2026-08-09T14:21:52.096428+00:00] === real tenant org_id=08e9925b-7374-47e2-9065-f793aab4b001 org_alias=r4poc99b39993 ===
+
+=== Scenario 1: real OAuth2 client-credentials token exchange ===
+real captured Authorization header: Bearer real-sentinel-poc-token-1
+[2026-08-09T14:21:52.145295+00:00] PASS: real token exchange returned a real bearer token tracked server-side
+[2026-08-09T14:21:52.145307+00:00] PASS: real local token endpoint was hit exactly once so far
+
+=== Scenario 2: real OAuth2 client-credentials failure (wrong secret) ===
+real captured failure context: {'token_url': 'http://127.0.0.1:45053/aaaabbbb-0000-cccc-1111-dddd2222eeee/oauth2/v2.0/token', 'status_code': 401, 'body': '{"error": "invalid_client", "error_description": "Real stand-in: client authentication failed"}'}
+[2026-08-09T14:21:52.154574+00:00] PASS: real wrong-secret token request raises IntegrationSinkError -- status_code=401
+[2026-08-09T14:21:52.154584+00:00] PASS: real 401 body is the documented RFC 6749 SS5.2 invalid_client shape
+
+=== Scenario 3: real successful push through SentinelHttpSink (real 204) ===
+real mapped record sent: {
+  "TimeGenerated": "2026-08-09T14:21:52.154629+00:00",
+  "DetectionId": "465bc217-2e58-483e-b3e7-b695638771ac",
+  "FindingId": "poc-r4-finding-push-ok-ebbd0222",
+  "DetectorName": "kronos-r4poc-network-detector",
+  "OrgId": "08e9925b-7374-47e2-9065-f793aab4b001",
+  "OrgAlias": "r4poc99b39993",
+  "CaseId": "92e2c5fe-b131-47f3-bed0-8eb3d97aa3e4",
+  "SourceIndex": "kronos-r4poc99b39993-case-92e2c5fe-b131-47f3-bed0-8eb3d97aa3e4-202608",
+  "TriageState": "NEW",
+  "RuleSeverity": "high",
+  "RiskScore": 61.0,
+  "AttackTags": [],
+  "RuleMatches": [
+    {
+      "rule_id": "r1",
+      "rule_name": "Suspicious Outbound Connection",
+      "tags": [
+        "high"
+      ]
+    }
+  ],
+  "MatchedDocumentIds": [
+    "doc-a",
+    "doc-b"
+  ],
+  "ExtendedProperties": {
+    "external_ticket_id": null,
+    "synced_at": "2026-08-09T14:21:52.154642+00:00",
+    "updated_at": "2026-08-09T14:21:52.154643+00:00"
+  }
+}
+[2026-08-09T14:21:52.163591+00:00] PASS: real push returns ACKNOWLEDGED (real 204)
+[2026-08-09T14:21:52.163603+00:00] PASS: ack.detail carries the real status_code
+[2026-08-09T14:21:52.163610+00:00] PASS: real stand-in actually received the exact real mapped record
+[2026-08-09T14:21:52.163617+00:00] PASS: real received record's DetectionId matches the real source Detection
+[2026-08-09T14:21:52.163621+00:00] PASS: real received record's RiskScore matches the real source Detection
+[2026-08-09T14:21:52.163624+00:00] PASS: real received record's RuleMatches (dynamic column) round-trips a real list of dicts
+
+=== Scenario 4: real OAuth2 caching (2 real pushes total, still 1 real fetch) ===
+[2026-08-09T14:21:52.172282+00:00] PASS: second real push also ACKNOWLEDGED
+[2026-08-09T14:21:52.172296+00:00] PASS: real local token endpoint was STILL hit only once across 2 real pushes -- server-observed fetch_count=1
+[2026-08-09T14:21:52.172301+00:00] PASS: authenticator's own real_token_fetch_count agrees with the server
+
+=== Scenario 5: real deliberate schema-mismatch rejection (required case) ===
+real captured schema-mismatch failure context: {'url': 'http://127.0.0.1:33047/dataCollectionRules/dcr-000a00a000a00000a000000aa000a0aa/streams/Custom-KronOSDetection?api-version=2023-01-01', 'status_code': 400, 'body': '{"error": {"code": "InvalidCustomLogFormat", "message": "Real stand-in: record contains column(s) not declared in the streamDeclaration for Custom-KronOSDetection: [\'UnexpectedColumn\']"}}', 'error_code': 'InvalidCustomLogFormat', 'error_message': "Real stand-in: record contains column(s) not declared in the streamDeclaration for Custom-KronOSDetection: ['UnexpectedColumn']"}
+[2026-08-09T14:21:52.181352+00:00] PASS: real schema-mismatch batch raises IntegrationSinkError, never a fabricated ack -- status_code=400
+[2026-08-09T14:21:52.181360+00:00] PASS: real 400 status code surfaced from the real stand-in
+[2026-08-09T14:21:52.181363+00:00] PASS: real Azure error envelope error_code surfaced (InvalidCustomLogFormat)
+[2026-08-09T14:21:52.181367+00:00] PASS: real error_message names the actual undeclared column
+[2026-08-09T14:21:52.181378+00:00] PASS: the real stand-in did NOT record the schema-violating batch as received
+[2026-08-09T14:21:52.190356+00:00] PASS: real missing-column batch also raises IntegrationSinkError (real 400) -- error_message=Real stand-in: record is missing declared streamDeclaration column(s): ['RiskScore']
+
+=== Scenario 6: real documented 403 (DCR access not granted) ===
+[2026-08-09T14:21:52.199473+00:00] PASS: real 403 (wrong DCR) raises IntegrationSinkError -- error_code=Forbidden
+
+=== Scenario 7: real documented 413 + real client-side 1MB pre-check ===
+[2026-08-09T14:21:52.199778+00:00] PASS: real client-side oversized-batch rejection raises IntegrationSinkError (never sent over the wire)
+[2026-08-09T14:21:52.219629+00:00] PASS: real stand-in itself returns a real 413 for a genuinely oversized body -- status_code=413
+
+=== Scenario 8: DetectionSinkPushService + real Postgres audit trail ===
+[2026-08-09T14:21:52.300905+00:00] PASS: real push() reports the correct detection_count
+[2026-08-09T14:21:52.300922+00:00] PASS: every real batch honestly reports ACKNOWLEDGED (real 204 each time)
+[2026-08-09T14:21:52.300929+00:00] PASS: SinkPushResult.all_acknowledged is honestly True
+[2026-08-09T14:21:52.336113+00:00] PASS: fresh read: real SINK_PUSH_ATTEMPTED rows exist
+[2026-08-09T14:21:52.336128+00:00] PASS: fresh read: real SINK_PUSH_EXECUTED rows exist for the successful batch
+[2026-08-09T14:21:52.336138+00:00] PASS: fresh read: every real EXECUTED row honestly records ack_status=acknowledged
+[2026-08-09T14:21:52.337617+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-09T14:21:52.797512+00:00] PoC PASSED -- 29/29 checks passed against a real local Entra ID + Sentinel DCE stand-in + the real, live dev-stack Postgres 16.

@@ -923,6 +923,125 @@ response fixture, per §1 invariant 9), proving the OAuth2 +
 rigid-pre-provisioned-schema mapping case.
 **Depends on:** R1.
 
+**STATUS (2026-08-09): DONE — test-stage only (expected for a connector
+item, see §3).** Built in a single pass; no real Azure subscription was
+available in this sandbox (checked directly — no `az` CLI installed, no
+`AZURE_*` env vars set — see `poc/integration_sink_sentinel/README.md`'s
+own "Real Azure subscription: checked, genuinely unavailable" section), so
+per §1 invariant 9 this verifies against a real, local, protocol-accurate
+stand-in built from Microsoft's own current, official docs (fetched and
+read directly this pass, not assumed from memory or modeled on the
+now-retired HTTP Data Collector API) rather than skipping verification.
+
+- **Real docs fetched this pass (exact URLs, full citations in the PoC
+  README):** `logs-ingestion-api-overview` (URI template, headers, bare-JSON-
+  array body shape, `_CL` custom-table suffix), `data-collection-rule-structure`
+  (the real, closed `streamDeclaration` column-type set —
+  `string`/`int`/`long`/`real`/`boolean`/`dynamic`/`datetime`, and the real
+  "every top-level property must be declared" rigidity rule),
+  `tutorial-logs-ingestion-code` (the real OAuth2 client-credentials flow
+  against `login.microsoftonline.com/{tenant}/oauth2/v2.0/token`, and the
+  load-bearing, explicitly-quoted fact that real success is **HTTP 204, no
+  body** — not 200), `service-limits` (real 1 MB/call, 64 KB/field, 2 GB/min
+  + 12,000 req/min per-DCR ceilings), the Python `LogsIngestionClient` SDK
+  reference (independently corroborates the 204-no-body contract), and
+  `github.com/microsoft/api-guidelines` (the real, general Azure REST API
+  error envelope `{"error": {"code", "message"}}` used for the stand-in's
+  own structured failure bodies — honestly flagged as a real, cited
+  **shape** with a representative, not independently-tenant-verified,
+  `code` string, since no real 400-body worked example exists in any doc
+  fetched this pass).
+- **Rigid-schema design (the roadmap's own "hard part"):** a 14-column
+  custom table (`KronOSDetection_CL`, stream `Custom-KronOSDetection`) —
+  full column table + per-field justification in
+  `src/application/sentinel_detection_mapper.py`'s own module docstring.
+  Core SOC-analyst triage fields get first-class typed columns; genuinely
+  structured/variable-shape `Detection` fields (`rule_matches`,
+  `attack_tags`, `matched_document_ids`) use the real, verified `dynamic`
+  column type; secondary/traceability fields (`external_ticket_id`,
+  `synced_at`, `updated_at`) are bucketed into one `dynamic` catch-all,
+  `ExtendedProperties` — never silently dropped. Every record carries
+  exactly these 14 keys every time (nullable columns still appear as JSON
+  `null`), matching the real DCR contract's own "full list of top-level
+  properties" requirement.
+- **Sibling-vs-reuse (sink): `SentinelHttpSink` is a sibling
+  `IntegrationSink`, not a reuse of `HttpJsonIntegrationSink`** — a third,
+  independently-arrived-at confirmation of `SplunkHecSink`'s (R2) own
+  precedent, for a different structural reason: Sentinel's real body is a
+  bare JSON array (not `{"events": [...]}`) and its real success is 204
+  **with no body** (no `accepted` count to ever read), so reusing the
+  generic sink would make every real push fail its own accepted-count
+  check, always, even on success. Full reasoning in `sentinel_sink.py`'s
+  own module docstring.
+- **Auth reuse decision (the roadmap's own explicit "decide and justify"
+  instruction): reuses R1's `OAuth2ClientCredentialsAuthenticator`
+  unchanged** (that class's own docstring already named Sentinel's Entra ID
+  flow as its reason to exist) — deliberately does **not** reuse or
+  duplicate Q1's `OAuth2ClientCredentialsOutboundAuthStrategy`
+  (`src/external/middleware/integration_source_auth.py`): a different ABC
+  (`headers() -> dict[str, str]`, no `SinkAuthParams`/cert/verify shape)
+  built for the opposite direction (KronOS polling, with an
+  externally-injected shared `httpx.AsyncClient`) that does not fit
+  `IntegrationSink.push_events()`'s own per-call `SinkAuthenticator.prepare()`
+  contract without an adapter that would net negative versus just reusing
+  the collaborator R1 already built for exactly this. No new authenticator
+  class was written.
+- **Verified for real in `poc/integration_sink_sentinel/`** — a real local
+  Entra ID v2.0 token endpoint + a real local Sentinel DCE ingestion
+  endpoint (both real stdlib `http.server` stand-ins matching the exact
+  documented contract above), plus the real, live dev-stack Postgres 16 for
+  the audit-trail scenario. Eight scenarios: real OAuth2 token exchange
+  (success); real OAuth2 failure (wrong secret, real RFC 6749 §5.2
+  `invalid_client` 401); real successful push (real 204 → `ACKNOWLEDGED`,
+  exact 14-column record independently verified field-by-field against the
+  source `Detection`); real OAuth2 token caching (2 pushes, 1 fetch);
+  **the roadmap's own required deliberate schema-mismatch case** — an
+  undeclared extra column AND, independently, a missing declared column,
+  both real 400s with the real Azure error envelope, surfaced as real
+  `IntegrationSinkError`s, never a fabricated ack; real documented 403 (DCR
+  access not granted); real documented 413 (both `SentinelHttpSink`'s own
+  client-side pre-check AND a genuinely oversized raw request against the
+  real stand-in); and full `DetectionSinkPushService` orchestration with a
+  real Postgres audit hash chain independently re-verified from a fresh
+  connection. **29/29 checks passed** — see
+  `poc/integration_sink_sentinel/output.txt` for the full unedited run.
+- **No bug found on the first real run** (unlike R2/R3, whose first real
+  runs each surfaced a genuine bug) — flagged honestly, not overclaimed:
+  the mapper's rigid, by-construction 14-key record shape left little room
+  for a shape mismatch, and the stand-in's own schema check was written
+  independently of the mapper (no shared code), so this is a real, if less
+  dramatic, confirmation rather than an untested claim.
+- **Tests:** 44 new unit tests this pass (`SentinelDetectionMapper` rigid
+  14-column shape/nullable-columns/dynamic-columns/`ExtendedProperties`
+  catch-all; `SentinelHttpSink` success/failure paths including the real
+  204-only-success contract, real 403/429/401 failure surfacing, real
+  oversized-batch client-side rejection, and a non-dict JSON error body
+  defended against from the start (mirrors `SplunkHecSink`'s own
+  first-real-run bug, pre-empted here rather than discovered);
+  DI wiring `configure_sentinel_sink_from_settings`/`get_sentinel_sink`/
+  `get_sentinel_detection_mapper`, mirroring `test_cef_syslog_sink_wiring.py`'s
+  own shape). Full suite: **1647 passed, 1 skipped** (was **1603/1**
+  pre-existing baseline, independently re-confirmed via a fresh
+  `git stash -u`/pop this pass — exactly +44, zero regressions). `mypy`:
+  **29 pre-existing errors, unchanged** (zero new, none in any touched
+  file — independently re-confirmed via the same `git stash`-free run of
+  `mypy src/` this pass). `ruff`/`black` clean on every touched file
+  (`src/`, `tests/`, and the `poc/` script).
+- **Stage reached (§3): test-stage only**, as expected — no
+  `docker-compose.dev.yml`/`prod.yml` wiring, no route/playbook-action
+  triggers a real Sentinel push automatically yet, mirrors R1/R2/R3's own
+  "foundation/connector only" precedent. Dev/prod wiring is Milestone S
+  scope.
+- **Not built here, by design (R4's own scope boundary):** any
+  route/playbook-action wiring that would push a `Detection` to Sentinel
+  automatically; a true end-to-end "landed in the destination table"
+  confirmation (204 only confirms the API layer's own synchronous
+  acceptance — DCR transform/ingestion is itself asynchronous, structurally
+  the same class of gap as `SplunkHecSink`'s own deferred `ackId` polling);
+  64 KB per-field-value client-side enforcement (server truncates silently,
+  never rejects, so there is nothing to defend against client-side);
+  retry/backoff on a failed push (mirrors R1–R3's own identical deferral).
+
 ---
 
 ## Milestone S — Rollout hardening (cross-cutting, after Q/R connectors exist)

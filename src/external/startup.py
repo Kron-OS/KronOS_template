@@ -85,6 +85,7 @@ async def wire_dependencies_async() -> None:
         configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
         configure_dependencies,
+        configure_sentinel_sink_from_settings,
         configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
     )
@@ -367,6 +368,7 @@ async def wire_dependencies_async() -> None:
     configure_clamav_from_settings()
     configure_splunk_hec_sink_from_settings()
     configure_cef_syslog_sink_from_settings()
+    configure_sentinel_sink_from_settings()
 
     logger.info("startup: dependencies wired (async)")
 

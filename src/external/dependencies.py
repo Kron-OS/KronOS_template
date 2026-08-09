@@ -12,6 +12,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 
+from src.adapter.integration_sink.sentinel_sink import SentinelHttpSink
 from src.adapter.integration_sink.splunk_hec_sink import SplunkHecSink
 from src.adapter.integration_sink.syslog_sink import SyslogIntegrationSink, SyslogTransportProtocol
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
@@ -81,6 +82,7 @@ from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.sealing_trigger_policy import SealingTriggerPolicy
+from src.application.sentinel_detection_mapper import SentinelDetectionMapper
 from src.application.splunk_detection_mapper import SplunkDetectionMapper
 from src.application.tenant_usage import TenantUsageService
 from src.application.timeline_ingest import TimelineIngestionService
@@ -228,6 +230,14 @@ _splunk_detection_mapper: SplunkDetectionMapper | None = None
 # docstring for why no sibling sink class was built).
 _cef_syslog_sink: SyslogIntegrationSink | None = None
 _cef_detection_mapper: CefDetectionMapper | None = None
+# Microsoft Sentinel Logs Ingestion API sink (roadmap R4) -- identical
+# "None means disabled" shape as _splunk_hec_sink/_cef_syslog_sink above.
+# Both the sink (SentinelHttpSink) and mapper (SentinelDetectionMapper) are
+# new this pass -- see sentinel_sink.py's own module docstring for why a
+# sibling sink class (not reuse of HttpJsonIntegrationSink) was the right
+# call here too.
+_sentinel_sink: SentinelHttpSink | None = None
+_sentinel_detection_mapper: SentinelDetectionMapper | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +706,88 @@ def get_cef_detection_mapper() -> CefDetectionMapper | None:
     """Return the configured ``CefDetectionMapper``, or None if the sink
     itself is unconfigured (see ``get_cef_syslog_sink``)."""
     return _cef_detection_mapper
+
+
+def configure_sentinel_sink_from_settings() -> None:
+    """Wire a real ``SentinelHttpSink``/``SentinelDetectionMapper`` pair from
+    ``sentinel_dce_endpoint``/``sentinel_dcr_immutable_id``/
+    ``sentinel_tenant_id``/``sentinel_client_id``/``sentinel_client_secret``
+    in Settings (roadmap R4).
+
+    Call at application startup after ``configure_dependencies()``. Mirrors
+    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
+    if Settings can't be instantiated" shape for unit tests -- an
+    unconfigured Sentinel sink is an honest, legitimate "this deployment
+    doesn't push to Sentinel" state, never a security control silently
+    downgrading. ALL of the four settings named above must be set (unlike
+    Splunk's two/CEF's one) since Sentinel's real OAuth2 client-credentials
+    flow has no partial/anonymous mode -- a deployment missing any one of
+    them cannot authenticate at all.
+    """
+    global _sentinel_sink, _sentinel_detection_mapper
+    from src.adapter.integration_sink.sink_authenticator import (  # noqa: PLC0415
+        OAuth2ClientCredentialsAuthenticator,
+    )
+    from src.config import Settings  # noqa: PLC0415
+
+    try:
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+    except Exception:
+        return  # keep both None in test/dev environments without full Settings
+
+    if not (
+        s.sentinel_dce_endpoint
+        and s.sentinel_dcr_immutable_id
+        and s.sentinel_tenant_id
+        and s.sentinel_client_id
+        and s.sentinel_client_secret is not None
+    ):
+        logger.info(
+            "sentinel_sink_not_configured",
+            extra={
+                "sentinel_dce_endpoint_set": bool(s.sentinel_dce_endpoint),
+                "sentinel_dcr_immutable_id_set": bool(s.sentinel_dcr_immutable_id),
+                "sentinel_tenant_id_set": bool(s.sentinel_tenant_id),
+                "sentinel_client_id_set": bool(s.sentinel_client_id),
+            },
+        )
+        return
+
+    # Real Entra ID v2.0 client-credentials token endpoint (verified against
+    # the tutorial-logs-ingestion-code PowerShell sample fetched this pass):
+    # https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
+    token_url = f"https://login.microsoftonline.com/{s.sentinel_tenant_id}/oauth2/v2.0/token"
+    authenticator = OAuth2ClientCredentialsAuthenticator(
+        token_url,
+        s.sentinel_client_id,
+        s.sentinel_client_secret.get_secret_value(),
+        scope=s.sentinel_oauth_scope,
+        verify=s.sentinel_verify_tls,
+    )
+    _sentinel_sink = SentinelHttpSink(
+        s.sentinel_dce_endpoint,
+        s.sentinel_dcr_immutable_id,
+        s.sentinel_stream_name,
+        authenticator,
+        api_version=s.sentinel_api_version,
+    )
+    _sentinel_detection_mapper = SentinelDetectionMapper()
+
+
+def get_sentinel_sink() -> SentinelHttpSink | None:
+    """Return the configured ``SentinelHttpSink``, or None if unconfigured.
+
+    None is a valid, honest configuration (Sentinel settings unset);
+    callers must treat it as "Sentinel push disabled", never substitute a
+    fabricated sink.
+    """
+    return _sentinel_sink
+
+
+def get_sentinel_detection_mapper() -> SentinelDetectionMapper | None:
+    """Return the configured ``SentinelDetectionMapper``, or None if the
+    sink itself is unconfigured (see ``get_sentinel_sink``)."""
+    return _sentinel_detection_mapper
 
 
 def get_task_queue() -> TaskQueue:
@@ -1187,6 +1279,7 @@ def reset_dependencies() -> None:
     global _inbound_source_authenticator
     global _splunk_hec_sink, _splunk_detection_mapper
     global _cef_syslog_sink, _cef_detection_mapper
+    global _sentinel_sink, _sentinel_detection_mapper
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -1224,6 +1317,8 @@ def reset_dependencies() -> None:
     _splunk_detection_mapper = None
     _cef_syslog_sink = None
     _cef_detection_mapper = None
+    _sentinel_sink = None
+    _sentinel_detection_mapper = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()
