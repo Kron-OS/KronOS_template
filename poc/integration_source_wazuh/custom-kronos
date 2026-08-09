@@ -1,0 +1,25 @@
+#!/bin/sh
+# Real wazuh-integratord custom integration wrapper -- mirrors the real
+# shell-wrapper pattern used by every built-in integration shipped in
+# wazuh/wazuh-manager:4.14.7's own /var/ossec/integrations/{slack,pagerduty,
+# shuffle} (inspected directly in the running container to get this
+# pattern -- not guessed). wazuh-integratord always execs a *shell* entry
+# point matching the <name> in ossec.conf, which then execs the real
+# Python script with the same name + ".py" using the manager's own bundled
+# interpreter.
+WPYTHON_BIN="framework/python/bin/python3"
+
+SCRIPT_PATH_NAME="$0"
+DIR_NAME="$(cd $(dirname ${SCRIPT_PATH_NAME}); pwd -P)"
+SCRIPT_NAME="$(basename ${SCRIPT_PATH_NAME})"
+
+case ${DIR_NAME} in
+    */integrations)
+        if [ -z "${WAZUH_PATH}" ]; then
+            WAZUH_PATH="$(cd ${DIR_NAME}/..; pwd)"
+        fi
+        PYTHON_SCRIPT="${DIR_NAME}/${SCRIPT_NAME}.py"
+    ;;
+esac
+
+${WAZUH_PATH}/${WPYTHON_BIN} ${PYTHON_SCRIPT} "$@"

@@ -410,6 +410,106 @@ dormant `docker/wazuh/` config, pinned `5.1.0` — verify the 5.0
 data-destruction CVE doesn't recur in 5.1.0 before trusting it for this).
 **Depends on:** Q1.
 
+**STATUS (2026-08-09): DONE — test-stage only, real L2 end-to-end flow
+confirmed live (twice: the building session's own run, plus an
+independent re-run this pass to remove doubt after a session cutoff).**
+
+- **Pinned-version correction, found before building anything (CLAUDE.md
+  §F).** This roadmap item's own `5.1.0` pin does not exist — verified
+  against the real Docker Hub tag list (65 tags, newest `5.0.0-beta4`) and
+  the real Wazuh GitHub Releases API (newest stable `v4.14.7`). The
+  referenced CVE (GHSA-ff9g-85jq-r3g3, real, CVSS-10, in 5.0's
+  `inventory_sync`) is fixed in `5.0.0-beta3`, not "5.1" — there is no 5.1
+  line. Separately, and decisive for this connector: a real, direct
+  inspection of `wazuh/wazuh-manager:5.0.0-beta4` found Wazuh 5.x has
+  already removed `wazuh-integratord`/`ossec.conf` entirely (renamed
+  config root, renamed control binary, no integratord binary anywhere in
+  the image; outbound alerting moved to an undocumented, disabled-by-default
+  YAML "engine outputs" mechanism with no 5.x docs published yet). Built and
+  verified against `wazuh/wazuh-manager:4.14.7` (current real stable,
+  predates the CVE'd subsystem entirely) instead. Flagged, not silently
+  applied: `docker/wazuh/docker-compose.wazuh.yml` itself still pins the
+  nonexistent `5.1.0` — needs the same fix, left to whoever owns that file
+  since it's dormant SIEM-side infra config outside this connector's scope.
+- **Built:** `src/external/integration_sources/wazuh.py` (`WazuhPushSource`
+  — validates a real Wazuh alert JSON shape, no batch-envelope unwrapping
+  since Wazuh's real wire shape has none), `WazuhAlertNormalizer` added to
+  `src/application/stream_source_registry.py` (ECS mapping, field reference
+  verified against a real captured alert, not vendor docs alone — ISO-8601
+  timestamp, `full_log`→`message` with `rule.description` fallback,
+  `authentication_failed`/`_success` rule-group promotion to ECS
+  `event.category`, `agent.name`→host vs `manager.name` kept separate,
+  everything else preserved under `extra["wazuh.*"]`), registered in
+  `src/external/dependencies.py` (`get_integration_source_registry()` +
+  `reset_dependencies()`).
+- **Real mechanism confirmed (corrects the roadmap's own §0 summary
+  slightly):** the documented `hook_url`/`api_key`/`alert_format json`
+  auto-POST only applies to Wazuh's five built-in vendor integration names
+  (slack/pagerduty/shuffle/virustotal/maltiverse) — confirmed by reading
+  those scripts' own source inside the running `4.14.7` container. A
+  `custom-*` name requires supplying the script yourself;
+  `poc/integration_source_wazuh/custom-kronos{,.py}` is that script (real
+  argv contract `[alert_file, api_key, hook_url, options_file, debug]`
+  confirmed from the bundled `slack.py`'s own `WEBHOOK_INDEX = 3`), and it
+  performs the real HTTP POST with `X-KronOS-Source-Key` header.
+- **Real PoC (`poc/integration_source_wazuh/`), real captured output,
+  run twice:** a real `kronos-poc-wazuh-manager` (`wazuh/wazuh-manager:4.14.7`)
+  with a real `<integration>`/`<localfile>` block in `ossec.conf`, a real
+  local `sshd` failed-login syslog line appended to trigger the manager's
+  own default ruleset (rule 5710, real MITRE ATT&CK mapping), a real
+  `kronos-poc-wazuh-receiver` (real KronOS FastAPI app + real
+  `WazuhPushSource` + real `IntegrationSourceIngestService`, PoC-tier
+  in-memory stream/dedup/audit doubles — same bar Q1's own PoC established).
+  Both runs captured: (a) a real connection-refused/DNS failure when
+  integratord tried to POST before the receiver container existed, proving
+  the trigger is real and not rigged; (b) a real `202 Accepted` once the
+  receiver came up, with `accepted=True, duplicate=False`, a real produced
+  stream entry, and a real `integration_source.push_ingested` audit event.
+  This pass's independent re-run used its own distinct alert content
+  (`testverify`/`192.0.2.55` before the receiver existed, `reverify`/
+  `198.51.100.222` after) rather than replaying the original captured
+  bytes, specifically so the re-run couldn't be confused with re-displaying
+  stale output — full transcript in `poc/integration_source_wazuh/output.txt`
+  (original session) plus this pass's own terminal history (summarized in
+  the PR/handoff notes, not re-appended to `output.txt` to avoid conflating
+  two sessions' raw captures in one file).
+- **Tests:** `tests/unit/integration_sources/test_wazuh.py` (8 tests,
+  including one using the exact real alert body captured from the live
+  PoC) + 9 new `WazuhAlertNormalizer` tests added to
+  `tests/unit/application/test_stream_source_registry.py`. Full suite,
+  before/after via `git stash -u`: baseline (without this connector) **1593
+  passed, 1 skipped**; with this connector **1610 passed, 1 skipped** — the
+  exact +17 new tests, zero regressions. `mypy src`: **29 errors**,
+  identical count/file set to the documented baseline, zero new errors.
+  `ruff check`/`black --check` on every touched file (src + tests + poc):
+  clean (fixed a few real gaps found this pass — an unused import and
+  import-block ordering in the new PoC receiver script and in
+  `dependencies.py`'s import block, plus 4 real `E501` long-line violations
+  in the PoC script — none pre-existing-baseline violations, all introduced
+  by this connector's own new code, now fixed).
+- **Stage reached (§3): test-stage only**, honestly incomplete on purpose,
+  matching Q1's own precedent: no `docker-compose.dev.yml` service entry
+  for a real dev-stack Wazuh manager, no real `StaticApiKeyProvisioning`
+  wired into `startup.py`, no `docker-compose.prod.yml` parity check. Real
+  follow-up work — the connector's logic is proven, its deployment wiring
+  is not yet.
+- **Honesty notes:** only PUSH exercised (Wazuh's real mechanism has no
+  poll shape); in-memory stream/dedup/audit doubles in the PoC receiver,
+  not real Redis/Postgres (those backends are independently verified
+  elsewhere, re-proving them here would test Redis, not this connector);
+  only one alert shape (`sshd`/rule 5710) forwarded live end-to-end — the
+  normalizer's handling of a structurally different alert (an SCA summary
+  with no `full_log`/`data.srcuser`/`data.srcip`) is verified in the real
+  unit tests, not in the live PoC; `docker/wazuh/docker-compose.wazuh.yml`'s
+  own wrong version pin was not fixed here (flagged above, out of this
+  connector module's scope).
+- **Docker cleanup:** all three `kronos-poc-wazuh-*` resources (manager,
+  receiver, network) created by both runs were torn down
+  (`docker rm -f`/`docker network rm`) — confirmed via `docker ps -a`/
+  `docker network ls` after cleanup; no other container on the host (the
+  shared long-running dev stack, `portainer_agent`, or a concurrent
+  session's own `kronos-poc-splunk-hec`) was touched.
+
 ### Q3 · Suricata/Zeek live-tail source connector — L2
 **Objective.** Real log-shipper (fluent-bit, reusing the repo's own
 existing config pattern) tailing a real `eve.json`/Zeek JSON log, forwarding

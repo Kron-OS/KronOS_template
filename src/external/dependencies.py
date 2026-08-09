@@ -66,14 +66,14 @@ from src.application.detection_triage import DetectionTriageService
 from src.application.enrichment import EnrichmentPipeline
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
+from src.application.integration_source import IntegrationSourceRegistry
+from src.application.integration_source_ingest import IntegrationSourceIngestService
 from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
 from src.application.quota_gate import StorageQuotaGate
 from src.application.risk_scoring import DetectionRiskScorer
-from src.application.integration_source import IntegrationSourceRegistry
-from src.application.integration_source_ingest import IntegrationSourceIngestService
 from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
@@ -86,6 +86,7 @@ from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
 from src.external.integration_sources.generic_webhook import GenericWebhookPushSource
+from src.external.integration_sources.wazuh import WazuhPushSource
 from src.external.middleware.integration_source_auth import (
     InboundSourceAuthenticator,
     StaticApiKeyInboundAuthenticator,
@@ -147,6 +148,13 @@ _collector_ingest_service: CollectorIngestService | None = None
 # a follow-up, not yet called from startup.py.
 _integration_source_registry: IntegrationSourceRegistry = IntegrationSourceRegistry()
 _integration_source_registry.register(GenericWebhookPushSource())
+# WazuhPushSource (roadmap Q2) -- the first real, named-vendor connector
+# built on this foundation, registered unconditionally like
+# GenericWebhookPushSource above: registering a PUSH source costs nothing
+# until a real StaticApiKeyProvisioning entry actually routes traffic to
+# source_type="wazuh" (see _inbound_source_authenticator's own "zero
+# provisioned keys by default" comment above).
+_integration_source_registry.register(WazuhPushSource())
 _source_cursor_repository: SourceCursorRepository = InMemorySourceCursorRepository()
 _inbound_source_authenticator: InboundSourceAuthenticator = StaticApiKeyInboundAuthenticator({})
 _integration_source_max_stream_length: int = 1_000_000
@@ -1059,6 +1067,7 @@ def reset_dependencies() -> None:
     _ism_tier_resolver = DefaultIsmTierResolver()
     _integration_source_registry = IntegrationSourceRegistry()
     _integration_source_registry.register(GenericWebhookPushSource())
+    _integration_source_registry.register(WazuhPushSource())
     _source_cursor_repository = InMemorySourceCursorRepository()
     _inbound_source_authenticator = StaticApiKeyInboundAuthenticator({})
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()

@@ -1,0 +1,259 @@
+=== poc/integration_source_wazuh -- real captured output (2026-08-09) ===
+
+--- 1. Docker Hub tag list for wazuh/wazuh-manager (real API call) ---
+count: 65
+newest 8: ['4.8.2', '4.9.0', '4.9.1', '4.9.2', '5.0.0-beta1-latest', '5.0.0-beta2', '5.0.0-beta3', '5.0.0-beta4']
+5.1.0 present: False
+
+--- 2. Wazuh GitHub Releases API (real API call) ---
+v4.14.7 2026-07-30T16:32:45Z stable
+v5.0.0-beta4 2026-07-21T12:27:04Z prerelease
+v5.0.0-beta3 2026-07-02T15:48:47Z prerelease
+v4.14.6 2026-07-03T08:50:24Z stable
+v5.0.0-beta2 2026-05-21T14:10:11Z prerelease
+v4.10.4 2026-07-30T16:32:16Z stable
+
+--- 3. First attempt: docker pull wazuh/wazuh-manager:5.1.0 (real, fails) ---
+$ docker run -d --name kronos-poc-wazuh-manager --network kronos-poc-wazuh-net \
+    -e WAZUH_API_USER=wazuh-wui -e WAZUH_API_PASSWORD='KronosPoc!2026Wazuh' \
+    wazuh/wazuh-manager:5.1.0
+Unable to find image 'wazuh/wazuh-manager:5.1.0' locally
+docker: Error response from daemon: failed to resolve reference
+"docker.io/wazuh/wazuh-manager:5.1.0": docker.io/wazuh/wazuh-manager:5.1.0: not found
+
+--- 4. Real inspection of wazuh/wazuh-manager:5.0.0-beta4 (the newest real
+       5.x image) -- run to check whether the pinned architecture even
+       still applies before committing to the wrong major line ---
+$ docker pull wazuh/wazuh-manager:5.0.0-beta4
+Digest: sha256:78c2d5c16dde9e9710fda39c5f7044a99b0c5e402299b9c952a6ba582b98aa43
+Status: Downloaded newer image for wazuh/wazuh-manager:5.0.0-beta4
+
+$ docker run -d --name kronos-poc-wazuh-manager --network kronos-poc-wazuh-net \
+    -e WAZUH_API_USER=wazuh-wui -e WAZUH_API_PASSWORD='KronosPoc!2026Wazuh' \
+    wazuh/wazuh-manager:5.0.0-beta4
+(container starts, then:)
+2026/08/09 03:56:56 wazuh-manager-modulesd: ERROR: File 'etc/certs/root-ca.pem' not found
+  for 'indexer.ssl.certificate_authorities' in module 'indexer'. Check configuration
+2026/08/09 03:56:56 wazuh-manager-modulesd: ERROR: (1202): Configuration error at
+  'etc/wazuh-manager.conf'.
+wazuh-manager-modulesd: Configuration error. Exiting
+
+$ docker exec kronos-poc-wazuh-manager /var/wazuh-manager/bin/wazuh-control status
+OCI runtime exec failed: exec failed: unable to start container process:
+exec: "/var/wazuh-manager/bin/wazuh-control": stat /var/wazuh-manager/bin/wazuh-control: no such file or directory
+  (confirms the control binary itself was renamed in 5.x)
+
+$ docker exec kronos-poc-wazuh-manager find /var/wazuh-manager/etc -maxdepth 1 -iname '*.conf'
+/var/wazuh-manager/etc/wazuh-manager.conf
+/var/wazuh-manager/etc/wazuh-manager-internal-options.conf
+  (confirms ossec.conf -> wazuh-manager.conf rename; no /var/ossec/ path exists at all)
+
+$ docker exec kronos-poc-wazuh-manager cat /var/wazuh-manager/etc/wazuh-manager.conf
+<!--
+  Wazuh - Manager - Default configuration for amzn 2023
+-->
+<wazuh_config>
+  <global>...</global>
+  <logging><log_format>plain</log_format></logging>
+  <remote><port>1514</port>...</remote>
+  <vulnerability-detection>...</vulnerability-detection>
+  <indexer>
+    <hosts><host>https://127.0.0.1:9200</host></hosts>
+    <ssl>...</ssl>
+  </indexer>
+  <auth>...</auth>
+  <cluster>...</cluster>
+</wazuh_config>
+  (root element renamed <ossec_config> -> <wazuh_config>; no <integration> block exists
+   in the default config, and none of the documented directives from the 4.x line
+   were preserved verbatim)
+
+$ docker exec kronos-poc-wazuh-manager sh -c "find / -iname '*integrat*' 2>/dev/null" | grep -v '^/proc'
+/var/wazuh-manager/framework/python/lib/python3.12/site-packages/setuptools/tests/integration
+/var/wazuh-manager/framework/python/lib/python3.12/site-packages/pkg_resources/tests/test_integration_zope_interface.py
+/var/wazuh-manager/etc/outputs/default/file-output-integrations.yml
+  (NO wazuh-integratord binary anywhere in the image)
+
+$ docker exec kronos-poc-wazuh-manager ls -la /var/wazuh-manager/bin/
+agent_groups  agent_upgrade  cluster_control  rbac_control  verify-agent-conf
+wazuh-manager-analysisd  wazuh-manager-apid  wazuh-manager-authd
+wazuh-manager-clusterd  wazuh-manager-control  wazuh-manager-db
+wazuh-manager-keystore  wazuh-manager-modulesd  wazuh-manager-monitord
+wazuh-manager-remoted
+  (confirms: no *-integratord binary of any name)
+
+$ docker exec kronos-poc-wazuh-manager cat /var/wazuh-manager/etc/outputs/default/file-output-integrations.yml
+name: output/file-output-integrations/0
+enabled: false
+metadata:
+  module: wazuh
+  title: file output event
+  description: Output integrations events to a file
+  compatibility: This decoder has been tested on Wazuh version 5.x
+  versions: [5.x]
+outputs:
+  - file: "wazuh-events-v5"
+  (a new, disabled-by-default, undocumented YAML "engine outputs" mechanism --
+   not the documented <integration>/hook_url/api_key XML block this roadmap item
+   is about)
+
+$ curl -sI https://documentation.wazuh.com/5.0/user-manual/manager/integration-with-external-apis.html
+HTTP/2 404
+  (no published 5.x-specific docs for this subsystem exist yet)
+
+CONCLUSION: wazuh-integratord and ossec.conf's <integration> block --
+the exact mechanism this whole roadmap item targets -- have already been
+removed/replaced in the only real 5.x images that exist. Proceeding against
+wazuh/wazuh-manager:4.14.7 (real, current stable, predates the CVE'd
+inventory_sync subsystem entirely) instead. 5.0.0-beta4 container removed
+after this inspection (docker rm -f).
+
+--- 5. Real 4.14.7 pull + clean boot ---
+$ docker pull wazuh/wazuh-manager:4.14.7
+Digest: sha256:c364ef100ba40d501537b1668a5a72bba4c4fbcf39bbef6a02123ff221fc40d0
+
+$ docker run -d --name kronos-poc-wazuh-manager --network kronos-poc-wazuh-net \
+    -e INDEXER_URL=https://indexer:9200 -e FILEBEAT_SSL_VERIFICATION_MODE=none \
+    wazuh/wazuh-manager:4.14.7
+Starting Wazuh v4.14.7...
+Started wazuh-apid...
+Started wazuh-csyslogd...
+2026/08/09 03:59:21 wazuh-integratord: INFO: Remote integrations not configured. Clean exit.
+Started wazuh-integratord...
+Started wazuh-agentlessd...
+Started wazuh-authd...
+Started wazuh-db...
+Started wazuh-execd...
+Started wazuh-analysisd...
+Started wazuh-syscheckd...
+Started wazuh-remoted...
+Started wazuh-logcollector...
+Started wazuh-monitord...
+Started wazuh-modulesd...
+Completed.
+[cont-init.d] 2-manager: exited 0.
+starting Filebeat
+  (clean boot -- no config errors; wazuh-integratord really exists and started,
+   real ossec.conf path confirmed at /var/ossec/etc/ossec.conf)
+
+$ docker exec kronos-poc-wazuh-manager /var/ossec/bin/wazuh-control info
+WAZUH_VERSION="v4.14.7"
+WAZUH_REVISION="rc1"
+WAZUH_TYPE="server"
+
+--- 6. Real slack.py inspected to get the true argv contract (not guessed) ---
+$ docker exec kronos-poc-wazuh-manager sh -c "grep -n 'HOOK\|WEBHOOK_INDEX' /var/ossec/integrations/slack.py"
+27:#      <hook_url>https://hooks.slack.com/services/XXXXXXXXXXXXXX</hook_url>
+43:WEBHOOK_INDEX = 3
+53:                args[1], args[2], args[3], args[4] if len(args) > 4 else '', ...
+89:    webhook: str = args[WEBHOOK_INDEX]
+  (confirms real argv shape: [alert_file, api_key, hook_url, options_file, debug])
+
+--- 7. Real ossec.conf edit + custom-kronos script deployment ---
+$ docker cp poc/integration_source_wazuh/custom-kronos    kronos-poc-wazuh-manager:/var/ossec/integrations/custom-kronos
+$ docker cp poc/integration_source_wazuh/custom-kronos.py kronos-poc-wazuh-manager:/var/ossec/integrations/custom-kronos.py
+$ docker exec -u root kronos-poc-wazuh-manager sh -c \
+    "chown root:wazuh /var/ossec/integrations/custom-kronos* && chmod 750 /var/ossec/integrations/custom-kronos*"
+$ docker exec -u root kronos-poc-wazuh-manager ls -la /var/ossec/integrations/
+-rwxr-x--- 1 root wazuh   959 custom-kronos
+-rwxr-x--- 1 root wazuh  2962 custom-kronos.py
+-rwxr-x--- 1 root wazuh  1045 maltiverse
+... (existing built-in scripts unchanged)
+
+Real <integration>/<localfile> block appended to /var/ossec/etc/ossec.conf
+(read back from the running container after the edit):
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/auth.log</location>
+  </localfile>
+
+  <integration>
+    <name>custom-kronos</name>
+    <hook_url>http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh</hook_url>
+    <api_key>kronos-poc-wazuh-demo-key</api_key>
+    <alert_format>json</alert_format>
+  </integration>
+
+$ docker exec -u root kronos-poc-wazuh-manager /var/ossec/bin/wazuh-control restart
+Started wazuh-integratord...
+(ossec.log:)
+2026/08/09 04:01:57 wazuh-integratord: INFO: Started (pid: 2739).
+2026/08/09 04:01:57 wazuh-integratord: INFO: Enabling integration for: 'custom-kronos'.
+  (confirms integratord loaded our real custom integration for real)
+
+--- 8. Real alert #0 (before the receiver existed) -- proves integratord really
+       tries the real script on its own schedule, not on a rigged trigger ---
+$ docker exec -u root kronos-poc-wazuh-manager sh -c \
+    "echo 'Aug  9 04:02:29 4b29f98ecc3d sshd[54321]: Failed password for invalid user admin from 203.0.113.5 port 51234 ssh2' >> /var/log/auth.log"
+
+Real captured alert (from /var/ossec/logs/alerts/alerts.json):
+{"timestamp":"2026-08-09T04:02:30.663+0000","rule":{"level":5,"description":"sshd: Attempt to login using a non-existent user","id":"5710","mitre":{"id":["T1110.001","T1021.004"],"tactic":["Credential Access","Lateral Movement"],"technique":["Password Guessing","SSH"]},"firedtimes":1,"mail":false,"groups":["syslog","sshd","authentication_failed","invalid_login"],"gdpr":["IV_35.7.d","IV_32.2"],"gpg13":["7.1"],"hipaa":["164.312.b"],"nist_800_53":["AU.14","AC.7","AU.6"],"pci_dss":["10.2.4","10.2.5","10.6.1"],"tsc":["CC6.1","CC6.8","CC7.2","CC7.3"]},"agent":{"id":"000","name":"4b29f98ecc3d"},"manager":{"name":"4b29f98ecc3d"},"id":"1786248150.703876","full_log":"Aug  9 06:02:29 4b29f98ecc3d sshd[54321]: Failed password for invalid user admin from 203.0.113.5 port 51234 ssh2","predecoder":{"program_name":"sshd","timestamp":"Aug  9 06:02:29","hostname":"4b29f98ecc3d"},"decoder":{"parent":"sshd","name":"sshd"},"data":{"srcip":"203.0.113.5","srcuser":"admin"},"location":"/var/log/auth.log"}
+
+$ docker exec kronos-poc-wazuh-manager cat /var/ossec/logs/integrations.log
+# ERROR: POST to http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh failed: HTTPConnectionPool(host='kronos-poc-wazuh-receiver', port=8000): Max retries exceeded with url: /api/integrations/push/wazuh (Caused by NameResolutionError("HTTPConnection(host='kronos-poc-wazuh-receiver', port=8000): Failed to resolve 'kronos-poc-wazuh-receiver' ([Errno -2] Name or service not known)"))
+  (real: DNS failure because the receiver container did not exist yet -- proves the
+   real script really executed and really attempted a real HTTP POST)
+
+--- 9. Real receiver brought up, real second alert triggered, real success ---
+$ docker run -d --name kronos-poc-wazuh-receiver --network kronos-poc-wazuh-net \
+    -v <repo>:/app:ro --entrypoint python3 \
+    kronos-backend:dev /app/poc/integration_source_wazuh/run_poc_receiver.py 120
+
+$ docker logs kronos-poc-wazuh-receiver (startup):
+INFO:     Started server process [1]
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+=== Real uvicorn server listening on 0.0.0.0:8000 (container: kronos-poc-wazuh-receiver) ===
+=== Waiting up to 120.0s for a REAL push from kronos-poc-wazuh-manager ===
+
+$ docker exec -u root kronos-poc-wazuh-manager sh -c \
+    "echo 'Aug  9 06:07:46 4b29f98ecc3d sshd[9911]: Failed password for invalid user postgres from 198.51.100.7 port 44321 ssh2' >> /var/log/auth.log"
+
+Real receiver stdout (real push #1, captured live):
+[REAL PUSH #1] from org=6c1c6b7e-0a5f-4b7c-9c1a-000000000042 source=wazuh-poc-manager-1 source_type=wazuh auth_method=api-key
+    raw_body (1004 bytes): {"timestamp":"2026-08-09T04:07:46.692+0000","rule":{"level":5,"description":"sshd: Attempt to login using a non-existent user","id":"5710","mitre":{"id":["T1110.001","T1021.004"],"tactic":["Credential Access","Lateral Movement"],"technique":["Password Guessing","SSH"]},"firedtimes":2,"mail":false,"groups":["syslog","sshd","authentication_failed","invalid_login"],"gdpr":["IV_35.7.d","IV_32.2"],"gpg13":["7.1"],"hipaa":["164.312.b"],"nist_800_53":["AU.14","AC.7","AU.6"],"pci_dss":["10.2.4","10.2.5","10.6.1"],"tsc":["CC6.1","CC6.8","CC7.2","CC7.3"]},"agent":{"id":"000","name":"4b29f98ecc3d"},"manager":{"name":"4b29f98ecc3d"},"id":"1786248466.704409","full_log":"Aug  9 06:07:46 4b29f98ecc3d sshd[9911]: Failed password for invalid user postgres from 198.51.100.7 port 44321 ssh2","predecoder":{"program_name":"sshd","timestamp":"Aug  9 06:07:46","hostname":"4b29f98ecc3d"},"decoder":{"parent":"sshd","name":"sshd"},"data":{"srcip":"198.51.100.7","srcuser":"postgres"},"location":"/var/log/auth.log"}
+
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-09T04:07:48.271789Z", "event_id": "a8e999ad-1318-46e0-b513-3adb92597077", "event_type": "integration_source.push_ingested", "seq": 1}
+    -> accepted=True duplicate=False message_id=1-0
+INFO:     172.25.2.2:39086 - "POST /api/integrations/push/wazuh HTTP/1.1" 202 Accepted
+
+Real integrations.log confirms the manager's own view of the same call:
+# custom-kronos POST http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh -> status=202 body='{"results":[{"accepted":true,"duplicate":false,"messageId":"1-0"}]}'
+
+--- 10. Second real, distinct alert triggered while receiver still listening ---
+$ docker exec -u root kronos-poc-wazuh-manager sh -c \
+    "echo 'Aug  9 06:09:26 4b29f98ecc3d sshd[7777]: Failed password for invalid user root from 203.0.113.99 port 22222 ssh2' >> /var/log/auth.log"
+
+Real receiver stdout (real push #2):
+[REAL PUSH #2] ... source_type=wazuh auth_method=api-key
+    raw_body (... bytes): {"timestamp":"2026-08-09T04:09:28.701+0000","rule":{...,"id":"5710",...,"firedtimes":3,...},"agent":{"id":"000","name":"4b29f98ecc3d"},...,"full_log":"Aug  9 06:09:26 4b29f98ecc3d sshd[7777]: Failed password for invalid user root from 203.0.113.99 port 22222 ssh2",...,"data":{"srcip":"203.0.113.99","srcuser":"root"},"location":"/var/log/auth.log"}
+    -> accepted=True duplicate=False message_id=2-0
+INFO:     172.25.2.2:45940 - "POST /api/integrations/push/wazuh HTTP/1.1" 202 Accepted
+
+--- 11. Final real receiver-side summary (printed after the 120s window closed) ---
+[SUMMARY] Real inbound HTTP calls received: 2
+[SUMMARY] Real InMemoryStreamIngestAdapter stream length for (org=6c1c6b7e-0a5f-4b7c-9c1a-000000000042, source=wazuh-poc-manager-1): 2
+[SUMMARY] Real stream entries (2):
+    message_id=1-0 raw={"timestamp":"2026-08-09T04:07:46.692+0000",...,"data":{"srcip":"198.51.100.7","srcuser":"postgres"},"location":"/var/log/auth.log"}
+    message_id=2-0 raw={"timestamp":"2026-08-09T04:09:28.701+0000",...,"data":{"srcip":"203.0.113.99","srcuser":"root"},"location":"/var/log/auth.log"}
+
+[SUMMARY] Real audit events recorded for org=6c1c6b7e-0a5f-4b7c-9c1a-000000000042: 2
+    integration_source.push_ingested details={'source_id': 'wazuh-poc-manager-1', 'source_type': 'wazuh', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0}
+    integration_source.push_ingested details={'source_id': 'wazuh-poc-manager-1', 'source_type': 'wazuh', 'auth_method': 'api-key', 'event_count': 1, 'accepted_count': 1, 'duplicate_count': 0}
+
+=== WAZUH -> KRONOS PUSH PoC: REAL END-TO-END FLOW CONFIRMED ===
+INFO:     Shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1]
+
+--- 12. Final manager-side integrations.log (both real successes recorded) ---
+# ERROR: POST to http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh failed: ... NameResolutionError ...  (real attempt #1, before receiver existed)
+# ERROR: POST to http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh failed: ... NameResolutionError ...  (real attempt #2, before receiver existed -- an earlier boot's SCA/startup alert)
+# custom-kronos POST http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh -> status=202 body='{"results":[{"accepted":true,"duplicate":false,"messageId":"1-0"}]}'
+# custom-kronos POST http://kronos-poc-wazuh-receiver:8000/api/integrations/push/wazuh -> status=202 body='{"results":[{"accepted":true,"duplicate":false,"messageId":"2-0"}]}'
+
+--- 13. Cleanup ---
+$ docker rm -f kronos-poc-wazuh-receiver kronos-poc-wazuh-manager
+$ docker network rm kronos-poc-wazuh-net
+(all three kronos-poc-* resources removed; no other container/network touched)

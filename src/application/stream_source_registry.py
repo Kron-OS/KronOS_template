@@ -245,7 +245,145 @@ class ZeekConnLogNormalizer(StreamSourceNormalizer):
         )
 
 
+class WazuhAlertNormalizer(StreamSourceNormalizer):
+    """Normalizes a real Wazuh alert JSON object (roadmap Q2) into ECS-shaped
+    fields.
+
+    Field reference verified against a real alert captured from a real,
+    running ``wazuh/wazuh-manager:4.14.7`` container (a genuine local
+    ``sshd`` failed-login rule match) -- see
+    ``poc/integration_source_wazuh/output.txt`` for the exact captured JSON
+    this mapping was built from, per CLAUDE.md SS F (never mapped from memory
+    or vendor docs alone):
+
+    - ``timestamp`` (ISO-8601 with a numeric UTC offset, e.g.
+      ``"2026-08-09T04:02:30.663+0000"``) -> ``@timestamp``.
+    - ``full_log`` (the original, pre-decode raw log line Wazuh matched --
+      present for syslog-decoded alerts; absent for structural sources like
+      SCA summaries) -> ``message``, falling back to ``rule.description``
+      when absent so every alert still gets a real, non-empty message.
+    - Every real Wazuh alert is, by definition, an already-fired detection
+      (there is no "informational, non-alert" telemetry in ``alerts.json`` --
+      unmatched log lines never reach it at all) -> ``event_kind = "alert"``,
+      mirroring ``SuricataEveParser``'s own identical ``"alert"`` mapping for
+      its own analogous ``event_type == "alert"`` case.
+    - ``rule.groups`` containing ``"authentication_failed"``/
+      ``"authentication_success"`` (Wazuh's own real, documented rule-group
+      taxonomy) additionally promotes ``event.category`` to include ECS's
+      own ``"authentication"`` value and sets a real ``event.outcome``/
+      ``event.type`` accordingly; every other alert gets the safe baseline
+      ECS category ``"intrusion_detection"`` (Wazuh is fundamentally a
+      HIDS/log-correlation detection engine, the same reasoning
+      ``SuricataEveParser`` already applied to its own IDS ``"alert"`` case)
+      and ``event.type = ["info"]``.
+    - ``agent.name`` -> ``host_name`` (the Wazuh *agent* is the monitored
+      host; ``manager.name`` -- the Wazuh server itself -- is preserved
+      separately under ``extra["wazuh.manager.name"]``, never conflated with
+      the monitored host).
+    - ``data.srcuser``/``data.srcip`` (present on decoder-parsed alerts with
+      a recognizable actor/source, e.g. the real captured ``sshd`` alert) ->
+      ``user_name``/``extra["source.ip"]``. Both are genuinely optional --
+      structural alerts (SCA summaries, ``ossec`` lifecycle events) have no
+      ``data.srcuser``/``data.srcip`` at all, confirmed by the real captured
+      output, so both are only set when present.
+    - ``rule.id``/``rule.level``/``rule.groups``/``rule.firedtimes``,
+      ``agent.id``, ``decoder.name``, ``location`` preserved verbatim under
+      ``extra["wazuh.*"]`` -- not dropped, mirroring every other parser's own
+      "no ECS field exists for this, namespace it" convention.
+    """
+
+    _AUTH_FAILURE_GROUP = "authentication_failed"
+    _AUTH_SUCCESS_GROUP = "authentication_success"
+
+    @property
+    def source_id(self) -> str:
+        return "wazuh"
+
+    @property
+    def normalizer_version(self) -> str:
+        return "1.0.0"
+
+    def normalize(self, payload: bytes) -> NormalizedStreamEvent:
+        try:
+            doc = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ParsingError(
+                "Wazuh alert payload is not valid JSON",
+                context={"source_id": self.source_id, "error": str(exc)},
+            ) from exc
+
+        if not isinstance(doc, dict):
+            raise ParsingError(
+                "Wazuh alert payload did not decode to a JSON object",
+                context={"source_id": self.source_id, "decoded_type": type(doc).__name__},
+            )
+
+        rule = doc.get("rule")
+        rule = rule if isinstance(rule, dict) else {}
+
+        try:
+            timestamp = datetime.fromisoformat(str(doc["timestamp"]))
+        except (KeyError, ValueError) as exc:
+            raise ParsingError(
+                "Wazuh alert missing/invalid required 'timestamp' field",
+                context={"source_id": self.source_id, "error": str(exc)},
+            ) from exc
+
+        groups: list[str] = [g for g in rule.get("groups", []) if isinstance(g, str)]
+
+        event_category = ["intrusion_detection"]
+        event_type = ["info"]
+        event_outcome: str | None = None
+        if self._AUTH_FAILURE_GROUP in groups:
+            event_category.append("authentication")
+            event_type = ["denied"]
+            event_outcome = "failure"
+        elif self._AUTH_SUCCESS_GROUP in groups:
+            event_category.append("authentication")
+            event_type = ["allowed"]
+            event_outcome = "success"
+
+        message = doc.get("full_log") or rule.get("description")
+
+        agent = doc.get("agent")
+        agent = agent if isinstance(agent, dict) else {}
+        manager = doc.get("manager")
+        manager = manager if isinstance(manager, dict) else {}
+        data = doc.get("data")
+        data = data if isinstance(data, dict) else {}
+        decoder = doc.get("decoder")
+        decoder = decoder if isinstance(decoder, dict) else {}
+
+        extra: dict[str, Any] = {
+            "wazuh.rule.id": rule.get("id"),
+            "wazuh.rule.level": rule.get("level"),
+            "wazuh.rule.groups": groups,
+            "wazuh.rule.firedtimes": rule.get("firedtimes"),
+            "wazuh.agent.id": agent.get("id"),
+            "wazuh.manager.name": manager.get("name"),
+            "wazuh.decoder.name": decoder.get("name"),
+            "wazuh.location": doc.get("location"),
+        }
+        src_ip = data.get("srcip")
+        if src_ip is not None:
+            extra["source.ip"] = src_ip
+
+        return NormalizedStreamEvent(
+            timestamp=timestamp,
+            message=str(message) if message is not None else None,
+            event_kind="alert",
+            event_category=event_category,
+            event_type=event_type,
+            event_outcome=event_outcome,
+            event_original=json.dumps(doc, sort_keys=True)[:32768],
+            host_name=agent.get("name"),
+            user_name=data.get("srcuser"),
+            extra=extra,
+        )
+
+
 def get_default_stream_normalizer_registry() -> StreamSourceNormalizerRegistry:
     registry = StreamSourceNormalizerRegistry()
     registry.register(ZeekConnLogNormalizer())
+    registry.register(WazuhAlertNormalizer())
     return registry
