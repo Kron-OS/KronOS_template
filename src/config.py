@@ -205,6 +205,40 @@ class Settings(BaseSettings):
         description="Outbound webhook URL for the external ITSM/ticketing system, e.g. https://itsm.example.com/webhooks/kronos",
     )
 
+    # Splunk HTTP Event Collector sink (roadmap M-integrations/R2) -- same
+    # "one global endpoint, not per-org config" shape as ticketing_webhook_url
+    # above. Both splunk_hec_url and splunk_hec_token must be set for
+    # get_splunk_hec_sink() to construct a real SplunkHecSink; either being
+    # None means "not configured," an honest, legitimate dev/test state, not
+    # an error (mirrors get_timestamp_service()'s own None-is-valid contract).
+    splunk_hec_url: str | None = Field(
+        default=None,
+        description=(
+            "Full Splunk HEC event-collector endpoint URL, e.g. "
+            "https://splunk.example.com:8088/services/collector/event"
+        ),
+    )
+    splunk_hec_token: SecretStr | None = Field(
+        default=None,
+        description="Splunk HEC token -- sent as 'Authorization: Splunk <token>', never logged.",
+    )
+    splunk_hec_source: str = Field(
+        default="kronos:detection_sink",
+        description="Splunk HEC 'source' field applied to every pushed Detection event.",
+    )
+    splunk_hec_sourcetype: str = Field(
+        default="kronos:detection",
+        description="Splunk HEC 'sourcetype' field applied to every pushed Detection event.",
+    )
+    splunk_hec_index: str | None = Field(
+        default=None,
+        description="Splunk HEC 'index' field -- omitted (token's default index applies) if unset.",
+    )
+    splunk_hec_verify_tls: bool = Field(
+        default=True,
+        description="Whether to verify the Splunk HEC endpoint's TLS cert (httpx 'verify=').",
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

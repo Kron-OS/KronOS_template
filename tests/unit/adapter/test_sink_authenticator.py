@@ -81,6 +81,16 @@ class TestStaticTokenAuthenticator:
         assert params.headers == {"X-Api-Key": "Bearer tok123"}
 
     @pytest.mark.asyncio
+    async def test_verify_defaults_to_true(self) -> None:
+        params = await StaticTokenAuthenticator("tok123").prepare()
+        assert params.verify is True
+
+    @pytest.mark.asyncio
+    async def test_verify_override_surfaced_on_params(self) -> None:
+        params = await StaticTokenAuthenticator("tok123", verify=False).prepare()
+        assert params.verify is False
+
+    @pytest.mark.asyncio
     async def test_same_value_returned_every_call_no_per_call_state(self) -> None:
         auth = StaticTokenAuthenticator("tok123")
         first = await auth.prepare()

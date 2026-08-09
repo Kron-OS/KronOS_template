@@ -98,15 +98,21 @@ class StaticTokenAuthenticator(SinkAuthenticator):
     """
 
     def __init__(
-        self, token: str, *, header_name: str = "Authorization", scheme: str = "Bearer"
+        self,
+        token: str,
+        *,
+        header_name: str = "Authorization",
+        scheme: str = "Bearer",
+        verify: bool | str = True,
     ) -> None:
         if not token:
             raise ValueError("StaticTokenAuthenticator requires a non-empty token")
         self._header_name = header_name
         self._value = f"{scheme} {token}" if scheme else token
+        self._verify = verify
 
     async def prepare(self) -> SinkAuthParams:
-        return SinkAuthParams(headers={self._header_name: self._value})
+        return SinkAuthParams(headers={self._header_name: self._value}, verify=self._verify)
 
 
 class ApiKeyTupleAuthenticator(SinkAuthenticator):

@@ -84,6 +84,7 @@ async def wire_dependencies_async() -> None:
         build_step_up_ticket_store,
         configure_clamav_from_settings,
         configure_dependencies,
+        configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
     )
 
@@ -363,6 +364,7 @@ async def wire_dependencies_async() -> None:
         org_quota_repository=org_quota_repo,
     )
     configure_clamav_from_settings()
+    configure_splunk_hec_sink_from_settings()
 
     logger.info("startup: dependencies wired (async)")
 

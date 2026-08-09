@@ -630,6 +630,97 @@ otherwise, with the real envelope/batching/size-limit behavior honestly
 verified either way.
 **Depends on:** R1.
 
+**STATUS (2026-08-09): DONE — test-stage only (expected for a connector
+item, see §3).** Built across two dispatches (an initial pass that hit a
+real session cutoff mid-flight after writing `src/` + most tests but before
+running the PoC even once, then a delta-aware resume that read every file
+the first pass had already written before touching anything, fixed a real
+bug the first-ever real run surfaced, added a real Splunk container on top
+of the existing stand-in, and fixed lint).
+
+- **Research question resolved: yes, a real free/self-hostable Splunk
+  image exists and was used.** `splunk/splunk` (the vendor's own
+  `docker-splunk`/`splunk-ansible`-provisioned image) ships a 60-day
+  Enterprise trial that runs as a genuine single self-hosted instance with
+  no live account/license-server call at startup — satisfies roadmap §1
+  invariant 9 directly. Pinned to `splunk/splunk:9.3.3` (matching the
+  Splunk docs version `splunk_hec_sink.py`'s own module docstring was
+  verified against). The exact real, current HEC-enablement env vars
+  (`SPLUNK_HEC_TOKEN`/`SPLUNK_HEC_PORT`/`SPLUNK_HEC_SSL`) were confirmed by
+  fetching `splunk-ansible`'s own current `inventory/environ.py` source
+  this pass, not guessed — see `poc/integration_sink_splunk_hec/README.md`.
+- **Shape chosen (a sibling `IntegrationSink`, not a subclass/config of
+  `HttpJsonIntegrationSink`):** real HEC's wire contract differs from
+  `HttpJsonIntegrationSink`'s own generic envelope in two structural ways
+  (concatenated-JSON batch body, not a JSON array; a whole-batch
+  `{"text","code"}` ack, not a per-event `accepted` count) — reusing the
+  generic sink would either force it to special-case Splunk or silently
+  misapply a check that could never pass. Full reasoning in
+  `splunk_hec_sink.py`'s own module docstring. `SinkAuthenticator` (a plain
+  `StaticTokenAuthenticator(scheme="Splunk")`), `chunk_events()`, and the
+  `IntegrationSink`/`SinkAck` contract are all reused from R1 unchanged —
+  no auth/batching abstraction needed to change for this connector.
+  `StaticTokenAuthenticator` gained a `verify: bool | str = True`
+  constructor param (plumbed through to `SinkAuthParams.verify`, which R1
+  already defined) so a deployment can point at a self-signed-cert HEC
+  endpoint without a separate authenticator class.
+- **Real ceilings applied, not invented:** `max_content_length` (~800MB,
+  `limits.conf`'s `[http_input]` stanza) as the per-request byte ceiling;
+  `maxEventSize` (5MB, `inputs.conf`) as the per-event ceiling, rejected
+  client-side before any real HTTP call. Not built: HEC's optional indexer
+  acknowledgement (`ackId` polling) — flagged as a real, more-granular
+  follow-up, not silently skipped (see `splunk_hec_sink.py`'s own
+  docstring).
+- **Verified for real, twice over, in `poc/integration_sink_splunk_hec/`:**
+  (a) **Scenario 0, against the real `splunk/splunk:9.3.3` container** —
+  a real push independently re-confirmed *indexed* (not just accepted) via
+  Splunk's own real `/services/search/jobs` REST search API, plus real
+  wrong-token (403/`code:4`) and real missing-Authorization (401/`code:2`)
+  failures against genuine vendor software; (b) **Scenarios 1-5, against
+  the existing local HEC-protocol-accurate stand-in** — deep wire-format
+  assertions (real concatenated-JSON bytes, full envelope shape, 3-distinct
+  auth-failure codes, real batching under a measured byte ceiling,
+  `DetectionSinkPushService` orchestration with a real, independently
+  re-verified Postgres audit hash chain). **33/33 checks passed** — see
+  `poc/integration_sink_splunk_hec/output.txt` for the full unedited run.
+- **Bugs the first real run of this PoC actually found (the point of
+  §F/this doc's §1 invariant 7):** (1) `splunk_hec_sink.py`'s non-2xx
+  error-context builder crashed (`AttributeError`) on a non-2xx response
+  whose body is valid JSON `null`/non-dict — fixed with an
+  `isinstance(error_body, dict)` guard; (2) the PoC's own byte-ceiling
+  scenario asserted an unmeasured "~450-550 bytes/event" estimate that was
+  off by ~2x (real, measured size is 902 bytes) and a ceiling that could
+  never force a real multi-event batch split — fixed to a measured
+  902-byte baseline and a 2000-byte ceiling that forces a real 2+2+1
+  split; (3) the PoC's audit-row-count assertion had a real off-by-one
+  (assumed a scenario that never touches `DetectionSinkPushService`
+  contributed an audit row) — fixed to match the real observed count.
+  None of these were catchable by reading the code; only running it
+  surfaced them.
+- **Tests:** 37 new unit tests this pass (`SplunkHecSink` success/failure
+  paths including the two error-path hardening cases in flight at the prior
+  session's cutoff — real HEC 403/`code:4` auth failure surfaced in
+  `IntegrationSinkError.context`, and a non-2xx non-JSON body falling back
+  gracefully; `SplunkDetectionMapper` envelope-shape/field-mapping;
+  DI wiring `configure_splunk_hec_sink_from_settings`/
+  `get_splunk_hec_sink`/`get_splunk_detection_mapper`; 2 new
+  `StaticTokenAuthenticator.verify` tests). Full suite: **1513 passed, 1
+  skipped** (was 1476/1 pre-existing baseline, independently re-confirmed
+  via `git stash -u`, zero regressions). `mypy`: 29 pre-existing errors,
+  unchanged (zero new, none in touched files) — re-confirmed current this
+  pass. `ruff`/`black` clean on every touched file (`src/` and `tests/`
+  and the new `poc/` script).
+- **Stage reached (§3): test-stage only**, as expected — `docker
+  run` for `kronos-poc-splunk-hec` is documented in the PoC README but the
+  connector is not yet wired into `docker-compose.dev.yml`/`prod.yml` (no
+  route/playbook-action triggers a real push automatically yet, mirrors
+  R1's own "foundation/connector only" precedent). Dev/prod wiring is
+  Milestone S scope.
+- **Not built here, by design (R2's own scope boundary):** any
+  route/playbook-action wiring that would push a `Detection` to Splunk
+  automatically; HEC indexer acknowledgement (`ackId` polling); retry/backoff
+  on a failed push (mirrors R1's own identical deferral).
+
 ### R3 · Generic CEF-over-syslog sink connector — L2
 **Objective.** Real CEF-formatted message over real syslog transport,
 against a real local syslog receiver — proves the ABC's second,

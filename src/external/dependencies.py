@@ -12,6 +12,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 
+from src.adapter.integration_sink.splunk_hec_sink import SplunkHecSink
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.opensearch.correlation_client import CorrelationClient
 from src.adapter.opensearch.correlation_rule_provisioner import CorrelationRuleProvisioner
@@ -78,6 +79,7 @@ from src.application.rule_pack_publisher import RulePackPublisher
 from src.application.rule_pack_service import RulePackService
 from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.sealing_trigger_policy import SealingTriggerPolicy
+from src.application.splunk_detection_mapper import SplunkDetectionMapper
 from src.application.tenant_usage import TenantUsageService
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
@@ -201,6 +203,16 @@ _ioc_feed_repository: IOCFeedRepository = InMemoryIOCFeedRepository()
 # integration, so it always has a real (if in-memory-backed in tests)
 # implementation and StorageQuotaGate is always constructed from it.
 _org_quota_repository: OrgQuotaRepository = InMemoryOrgQuotaRepository()
+# Splunk HEC sink (roadmap R2) -- same "None means not configured, an
+# honest disabled state" shape as _timestamp_service above. Both default to
+# None until configure_splunk_hec_sink_from_settings() finds a real
+# splunk_hec_url + splunk_hec_token pair; no route/playbook-action wiring
+# exists yet that would push a Detection automatically (mirrors R1's own
+# "foundation/connector only, no auto-trigger" precedent for
+# DetectionSinkPushService) -- callers construct their own push service
+# from these two getters when/if they need one.
+_splunk_hec_sink: SplunkHecSink | None = None
+_splunk_detection_mapper: SplunkDetectionMapper | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +566,65 @@ def configure_clamav_from_settings() -> None:
         return  # keep NoOpScanner in dev/test
 
     _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
+
+
+def configure_splunk_hec_sink_from_settings() -> None:
+    """Wire a real ``SplunkHecSink``/``SplunkDetectionMapper`` pair from
+    ``splunk_hec_url``/``splunk_hec_token`` in Settings (roadmap R2).
+
+    Call at application startup after ``configure_dependencies()``. Mirrors
+    ``configure_clamav_from_settings()``'s own "falls back silently if
+    Settings can't be instantiated" shape for unit tests -- but unlike
+    ClamAV there is no production hard-fail case here: an unconfigured
+    Splunk sink is an honest, legitimate "this deployment doesn't push to
+    Splunk" state (mirrors ``get_timestamp_service()``'s own
+    None-is-valid contract), never a security control silently downgrading.
+    """
+    global _splunk_hec_sink, _splunk_detection_mapper
+    from src.adapter.integration_sink.sink_authenticator import (  # noqa: PLC0415
+        StaticTokenAuthenticator,
+    )
+    from src.config import Settings  # noqa: PLC0415
+
+    try:
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+    except Exception:
+        return  # keep both None in test/dev environments without full Settings
+
+    if not s.splunk_hec_url or s.splunk_hec_token is None:
+        logger.info(
+            "splunk_hec_sink_not_configured",
+            extra={"splunk_hec_url_set": bool(s.splunk_hec_url)},
+        )
+        return
+
+    authenticator = StaticTokenAuthenticator(
+        s.splunk_hec_token.get_secret_value(),
+        scheme="Splunk",
+        verify=s.splunk_hec_verify_tls,
+    )
+    _splunk_hec_sink = SplunkHecSink(s.splunk_hec_url, authenticator)
+    _splunk_detection_mapper = SplunkDetectionMapper(
+        source=s.splunk_hec_source,
+        sourcetype=s.splunk_hec_sourcetype,
+        index=s.splunk_hec_index,
+    )
+
+
+def get_splunk_hec_sink() -> SplunkHecSink | None:
+    """Return the configured ``SplunkHecSink``, or None if unconfigured.
+
+    None is a valid, honest configuration (no splunk_hec_url/token set);
+    callers must treat it as "Splunk push disabled", never substitute a
+    fabricated sink.
+    """
+    return _splunk_hec_sink
+
+
+def get_splunk_detection_mapper() -> SplunkDetectionMapper | None:
+    """Return the configured ``SplunkDetectionMapper``, or None if the sink
+    itself is unconfigured (see ``get_splunk_hec_sink``)."""
+    return _splunk_detection_mapper
 
 
 def get_task_queue() -> TaskQueue:
@@ -1043,6 +1114,7 @@ def reset_dependencies() -> None:
     global _org_quota_repository
     global _integration_source_registry, _source_cursor_repository
     global _inbound_source_authenticator
+    global _splunk_hec_sink, _splunk_detection_mapper
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -1074,6 +1146,8 @@ def reset_dependencies() -> None:
     _event_dedup_checker = InMemoryEventDedupChecker()
     _collector_ingest_service = None
     _timestamp_service = None
+    _splunk_hec_sink = None
+    _splunk_detection_mapper = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()

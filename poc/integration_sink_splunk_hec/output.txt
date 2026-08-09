@@ -1,0 +1,51 @@
+[2026-08-09T09:04:57.147470+00:00] === real local Splunk HEC-protocol-accurate stand-in listening on http://127.0.0.1:40841/services/collector/event ===
+[2026-08-09T09:04:57.208456+00:00] === real tenant org_id=4ee55fec-f061-4e84-8056-8a19ab329879 org_alias=r2poc291276a0 ===
+
+=== Scenario 0: REAL Splunk Enterprise 9.3.3 container (kronos-poc-splunk-hec) ===
+[2026-08-09T09:04:57.260008+00:00] PASS: real Splunk container: real push returns ACKNOWLEDGED
+[2026-08-09T09:04:57.260028+00:00] PASS: real Splunk container: ack carries real code=0/text='Success' -- detail={'status_code': 200, 'code': 0, 'text': 'Success', 'event_count': 1}
+[2026-08-09T09:04:57.260032+00:00] querying real Splunk /services/search/jobs for sourcetype=kronos:r2poc:95428b32 ...
+[2026-08-09T09:05:00.445809+00:00] PASS: real Splunk container: pushed event actually indexed and found via real search API -- results=[{'_bkt': 'main~0~26EFAE33-63C6-4612-8C96-ACFB079C7040', '_cd': '0:117', '_indextime': '1786266297', '_raw': '{"detection_id": "e096ad12-391c-414e-be0d-bd1b8e16fcd0", "finding_id": "poc-r2-finding-real-splunk-7affcc37", "detector_name": "kronos-r2poc-network-detector", "source_index": "kronos-r2poc291276a0-case-27b5e325-b404-4a82-8d7d-2e6750854e76-202608", "org_id": "4ee55fec-f061-4e84-8056-8a19ab329879", "org_alias": "r2poc291276a0", "case_id": "27b5e325-b404-4a82-8d7d-2e6750854e76", "rule_matches": [{"rule_id": "r1", "rule_name": "Lateral Movement", "tags": ["high", "attack.t1021.001"]}], "attack_tags": ["attack.t1021.001"], "rule_severity": "high", "risk_score": 63.0, "triage_state": "NEW", "matched_document_ids": ["doc-a", "doc-b"], "external_ticket_id": null, "synced_at": "2026-08-09T09:04:57.249768+00:00", "updated_at": "2026-08-09T09:04:57.249769+00:00"}', '_serial': '0', '_si': ['7ba4f5f0baa0', 'main'], '_sourcetype': 'kronos:r2poc:95428b32', '_subsecond': '.249752', '_time': '2026-08-09T09:04:57.249+00:00', 'host': 'r2poc291276a0', 'index': 'main', 'linecount': '1', 'source': 'kronos:detection_sink', 'sourcetype': 'kronos:r2poc:95428b32', 'splunk_server': '7ba4f5f0baa0'}]
+[2026-08-09T09:05:00.445843+00:00] PASS: real Splunk container: indexed event's own finding_id matches what was pushed
+[2026-08-09T09:05:00.456069+00:00] PASS: real Splunk container: wrong token -> real 403/code=4 'Invalid token' -- context={'endpoint_url': 'http://127.0.0.1:18088/services/collector/event', 'status_code': 403, 'body': '{"text":"Invalid token","code":4}', 'code': 4, 'text': 'Invalid token'}
+[2026-08-09T09:05:00.465366+00:00] PASS: real Splunk container: missing Authorization -> real 401/code=2 'Token is required' -- context={'endpoint_url': 'http://127.0.0.1:18088/services/collector/event', 'status_code': 401, 'body': '{"text":"Token is required","code":2}', 'code': 2, 'text': 'Token is required'}
+
+=== Scenario 1: real end-to-end Detection -> SplunkHecSink push ===
+[2026-08-09T09:05:00.474576+00:00] PASS: real push returns ACKNOWLEDGED
+[2026-08-09T09:05:00.474588+00:00] PASS: ack.detail carries the real HEC code=0
+[2026-08-09T09:05:00.474592+00:00] PASS: ack.detail carries the real HEC text='Success'
+[2026-08-09T09:05:00.474596+00:00] PASS: real receiver actually saw the real 'Authorization: Splunk <token>' header
+[2026-08-09T09:05:00.474599+00:00] PASS: real receiver's own independent parse recovered exactly 1 event (concatenated-JSON parsing, not a JSON array)
+[2026-08-09T09:05:00.474602+00:00] PASS: real envelope: top-level 'source' field is correct
+[2026-08-09T09:05:00.474604+00:00] PASS: real envelope: top-level 'sourcetype' field is correct
+[2026-08-09T09:05:00.474606+00:00] PASS: real envelope: top-level 'index' field is correct
+[2026-08-09T09:05:00.474610+00:00] PASS: real envelope: top-level 'host' field defaults to org_alias
+[2026-08-09T09:05:00.474612+00:00] PASS: real envelope: 'event' is a nested object, not a string
+[2026-08-09T09:05:00.474616+00:00] PASS: real envelope: nested event carries the real finding_id
+[2026-08-09T09:05:00.474618+00:00] PASS: real envelope: nested event carries the real risk_score
+
+=== Scenario 2: real deliberate auth failure -- wrong token ===
+[2026-08-09T09:05:00.483793+00:00] PASS: wrong token raises IntegrationSinkError with the real HEC 403/code=4 body -- context={'endpoint_url': 'http://127.0.0.1:40841/services/collector/event', 'status_code': 403, 'body': '{"text": "Invalid token", "code": 4}', 'code': 4, 'text': 'Invalid token'}
+
+=== Scenario 3: real missing-Authorization-header / wrong-scheme cases ===
+[2026-08-09T09:05:00.492623+00:00] PASS: missing Authorization header -> real 401/code=2 'Token is required' -- context={'endpoint_url': 'http://127.0.0.1:40841/services/collector/event', 'status_code': 401, 'body': '{"text": "Token is required", "code": 2}', 'code': 2, 'text': 'Token is required'}
+[2026-08-09T09:05:00.501620+00:00] PASS: wrong scheme ('Bearer' not 'Splunk') -> real 401/code=3 'Invalid authorization' -- context={'endpoint_url': 'http://127.0.0.1:40841/services/collector/event', 'status_code': 401, 'body': '{"text": "Invalid authorization", "code": 3}', 'code': 3, 'text': 'Invalid authorization'}
+
+=== Scenario 4: real batching via a deliberately small max_batch_bytes ===
+[2026-08-09T09:05:00.562523+00:00] PASS: chunk_events() split 5 events into >1 real HTTP calls under the small byte ceiling -- batch_count=3
+[2026-08-09T09:05:00.562534+00:00] PASS: chunk_events() actually grouped multiple events per call (not 1-per-call) -- batch_count=3
+[2026-08-09T09:05:00.562543+00:00] PASS: every one of those real HTTP calls was independently ACKNOWLEDGED
+[2026-08-09T09:05:00.562548+00:00] PASS: the real receiver actually received that many separate real HTTP POSTs
+[2026-08-09T09:05:00.562557+00:00] PASS: every real receiver-side request body size stayed under the configured ceiling -- sizes=[1828, 1827, 914]
+
+=== Scenario 5: DetectionSinkPushService orchestration + real Postgres audit trail ===
+[2026-08-09T09:05:00.578340+00:00] PASS: real push() reports the correct detection_count
+[2026-08-09T09:05:00.578355+00:00] PASS: real push() result is all_acknowledged
+--- real push() against a deliberately-failing sink, audited then re-raised ---
+[2026-08-09T09:05:00.584465+00:00] PASS: real failing push raises IntegrationSinkError
+--- independent fresh-connection audit re-verification ---
+[2026-08-09T09:05:00.620354+00:00] PASS: fresh read: real SINK_PUSH_ATTEMPTED rows exist for every real batch attempted -- actual=5 expected>=5
+[2026-08-09T09:05:00.620368+00:00] PASS: fresh read: real SINK_PUSH_FAILED row exists for the deliberately-failing push
+[2026-08-09T09:05:00.620381+00:00] PASS: fresh read: every real EXECUTED row's own ack_status is honestly ACKNOWLEDGED
+[2026-08-09T09:05:00.622334+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-09T09:05:01.074919+00:00] PoC PASSED -- 33/33 checks passed against a REAL splunk/splunk:9.3.3 container (Scenario 0), a real local HEC-protocol-accurate stand-in receiver (Scenarios 1-4), and the real, live dev-stack Postgres 16 (Scenario 5).
