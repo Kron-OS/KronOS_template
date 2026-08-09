@@ -84,6 +84,7 @@ async def wire_dependencies_async() -> None:
         build_step_up_ticket_store,
         configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
+        configure_defender_poll_source_from_settings,
         configure_dependencies,
         configure_sentinel_sink_from_settings,
         configure_splunk_hec_sink_from_settings,
@@ -369,6 +370,7 @@ async def wire_dependencies_async() -> None:
     configure_splunk_hec_sink_from_settings()
     configure_cef_syslog_sink_from_settings()
     configure_sentinel_sink_from_settings()
+    configure_defender_poll_source_from_settings()
 
     logger.info("startup: dependencies wired (async)")
 

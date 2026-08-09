@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
+import httpx
 from fastapi import Depends
 
 from src.adapter.integration_sink.sentinel_sink import SentinelHttpSink
@@ -91,11 +92,13 @@ from src.application.validation import EvidenceValidator, default_validator_chai
 from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
+from src.external.integration_sources.defender import DefenderPollSource
 from src.external.integration_sources.generic_webhook import GenericWebhookPushSource
 from src.external.integration_sources.suricata_zeek import SuricataEvePushSource, ZeekJsonPushSource
 from src.external.integration_sources.wazuh import WazuhPushSource
 from src.external.middleware.integration_source_auth import (
     InboundSourceAuthenticator,
+    OAuth2ClientCredentialsOutboundAuthStrategy,
     StaticApiKeyInboundAuthenticator,
     StaticApiKeyProvisioning,
 )
@@ -238,6 +241,22 @@ _cef_detection_mapper: CefDetectionMapper | None = None
 # call here too.
 _sentinel_sink: SentinelHttpSink | None = None
 _sentinel_detection_mapper: SentinelDetectionMapper | None = None
+# Microsoft Defender Graph Security API alerts_v2 poll source (roadmap Q4)
+# -- same "None means disabled, an honest state" shape as _splunk_hec_sink/
+# _cef_syslog_sink above, but on the POLL *source* side rather than the PUSH
+# *sink* side. Unlike GenericWebhookPushSource/WazuhPushSource (Q1/Q2, zero-
+# arg constructors, always safe to register unconditionally),
+# DefenderPollSource genuinely needs real OAuth2 credentials to construct
+# (an httpx.AsyncClient + OAuth2ClientCredentialsOutboundAuthStrategy) --
+# there is no honest zero-arg default, so it is registered into
+# _integration_source_registry only by configure_defender_poll_source_from_settings()
+# finding real defender_tenant_id/client_id/client_secret, mirroring
+# _splunk_hec_sink's own "constructed and registered together" idiom rather
+# than Q1's own still-open "PUSH sources always registered, auth is the only
+# gate" precedent (which doesn't apply here since there is no auth-free
+# registration step possible for a POLL source at all).
+_defender_poll_source: DefenderPollSource | None = None
+_defender_http_client: httpx.AsyncClient | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +809,67 @@ def get_sentinel_detection_mapper() -> SentinelDetectionMapper | None:
     return _sentinel_detection_mapper
 
 
+def configure_defender_poll_source_from_settings() -> None:
+    """Wire a real ``DefenderPollSource`` from ``defender_tenant_id``/
+    ``defender_client_id``/``defender_client_secret`` in Settings
+    (roadmap Q4).
+
+    Call at application startup after ``configure_dependencies()``. Mirrors
+    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
+    if Settings can't be instantiated" shape -- an unconfigured Defender
+    source is an honest, legitimate "this deployment has no real Entra ID
+    app registration yet" state (verified: no such tenant exists anywhere in
+    this repo's own env/secrets setup), never a security control silently
+    downgrading. Unlike the Splunk/CEF *sinks*, all three of
+    ``defender_tenant_id``/``defender_client_id``/``defender_client_secret``
+    must be set together (there is no honest partial-credential state for an
+    OAuth2 client-credentials grant), and this also, unlike a sink, requires
+    a real ``httpx.AsyncClient`` (owned here, kept alive for the process
+    lifetime so ``OAuth2ClientCredentialsOutboundAuthStrategy``'s own token
+    cache is actually reused across poll cycles rather than re-authenticating
+    every call -- see that class's own docstring for why that matters).
+    """
+    global _defender_poll_source, _defender_http_client
+    from src.config import Settings  # noqa: PLC0415
+
+    try:
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+    except Exception:
+        return  # keep both None in test/dev environments without full Settings
+
+    if not s.defender_tenant_id or not s.defender_client_id or s.defender_client_secret is None:
+        logger.info(
+            "defender_poll_source_not_configured",
+            extra={"defender_tenant_id_set": bool(s.defender_tenant_id)},
+        )
+        return
+
+    _defender_http_client = httpx.AsyncClient()
+    auth_strategy = OAuth2ClientCredentialsOutboundAuthStrategy(
+        _defender_http_client,
+        token_endpoint=f"https://login.microsoftonline.com/{s.defender_tenant_id}/oauth2/v2.0/token",
+        client_id=s.defender_client_id,
+        client_secret=s.defender_client_secret.get_secret_value(),
+        scope="https://graph.microsoft.com/.default",
+    )
+    _defender_poll_source = DefenderPollSource(
+        _defender_http_client,
+        base_url=s.defender_graph_base_url,
+        auth_strategy=auth_strategy,
+    )
+    _integration_source_registry.register(_defender_poll_source)
+
+
+def get_defender_poll_source() -> DefenderPollSource | None:
+    """Return the configured ``DefenderPollSource``, or None if unconfigured.
+
+    None is a valid, honest configuration (no real Entra ID app registration
+    provisioned); callers must treat it as "Defender poll disabled", never
+    substitute a fabricated source.
+    """
+    return _defender_poll_source
+
+
 def get_task_queue() -> TaskQueue:
     return _task_queue
 
@@ -1280,6 +1360,7 @@ def reset_dependencies() -> None:
     global _splunk_hec_sink, _splunk_detection_mapper
     global _cef_syslog_sink, _cef_detection_mapper
     global _sentinel_sink, _sentinel_detection_mapper
+    global _defender_poll_source, _defender_http_client
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -1319,6 +1400,8 @@ def reset_dependencies() -> None:
     _cef_detection_mapper = None
     _sentinel_sink = None
     _sentinel_detection_mapper = None
+    _defender_poll_source = None
+    _defender_http_client = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()

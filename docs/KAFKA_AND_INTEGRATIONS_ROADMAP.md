@@ -626,6 +626,161 @@ proves the poll+durable-cursor pattern before CrowdStrike's harder
 long-lived-stream model is attempted.
 **Depends on:** Q1.
 
+**STATUS (2026-08-09): DONE — test-stage only, real fixture-based L2
+end-to-end poll+cursor flow confirmed live (real OAuth2 token exchange,
+real `@odata.nextLink` pagination on both poll cycles, real Postgres
+cursor persistence, real `$filter` enforcement).**
+
+- **Real tenant check performed, negative.** Searched this repo for
+  `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/Entra-related config in every
+  `*.py`/`*.env*`/`*.yml`/`*.yaml`/`*.toml` file and this process's own
+  environment (`env | grep -i azure`) — no real Entra ID tenant or app
+  registration exists anywhere in this sandbox. Per §1 invariant 9, built
+  and verified against a real local HTTP stand-in server matching
+  Microsoft's own current, real, documented schema instead — never a live
+  call to `graph.microsoft.com`/`login.microsoftonline.com`.
+- **Real docs fetched and verified against (2026-08-09), not assumed:**
+  `learn.microsoft.com/en-us/graph/api/resources/security-alert` (full
+  `alert` resource property table + worked JSON example),
+  `learn.microsoft.com/en-us/graph/api/security-list-alerts_v2` (the
+  `$filter`-eligible property list + `@odata.nextLink` pagination
+  statement), `learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow`
+  (the real `POST /{tenant}/oauth2/v2.0/token` request/response contract),
+  `learn.microsoft.com/en-us/graph/paging` (the real "use the whole
+  `@odata.nextLink` URL verbatim" contract).
+- **Real, reportable correction found via this research (CLAUDE.md §F —
+  mirrors Q2's Wazuh version correction and Q3's fluent-bit gap, reported
+  not silently applied).** This item's own objective text above and §0's
+  research table both say `$filter=lastUpdateTime gt ...`. **There is no
+  `lastUpdateTime` property on the real `alert` resource.** The real,
+  documented property — confirmed directly from the "List alerts_v2"
+  page's own enumerated `$filter`-eligible property list (`assignedTo`,
+  `classification`, `determination`, `createdDateTime`,
+  **`lastUpdateDateTime`**, `severity`, `serviceSource`, `status`) — is
+  `lastUpdateDateTime`. The connector, its normalizer, and its PoC all use
+  the real name throughout; this doc's own historical §0 table text is
+  left uncorrected above (a historical research artifact) with this note
+  as the authoritative correction.
+- **Built:** `src/external/integration_sources/defender.py`
+  (`DefenderPollSource` — builds `$filter=lastUpdateDateTime gt <cursor>`
+  from the persisted `SourceCursor` (omitted on the first-ever poll),
+  follows `@odata.nextLink` to exhaustion *within* one `poll()` call
+  before returning — a deliberate, documented difference from
+  `GenericPollSource`'s "one page per call" contract, since Microsoft's
+  own paging docs require draining every page to avoid silently dropping
+  alerts — and advances the cursor to the max `lastUpdateDateTime` seen
+  across every page, compared as real parsed `datetime` objects rather
+  than raw strings so differing fractional-second precision can't corrupt
+  the watermark), `DefenderAlertNormalizer` added to
+  `src/application/stream_source_registry.py` (ECS mapping:
+  `lastUpdateDateTime` → `@timestamp`, `title`/`description` → `message`,
+  safe `intrusion_detection`/`info` baseline mirroring
+  `WazuhAlertNormalizer`'s own precedent, `evidence[]` preserved verbatim
+  under `extra["ms_defender.evidence"]` rather than flattened — deliberate,
+  documented, pending the artifact-shaped-normalizer gap Q1's own
+  docstring already flagged for this exact connector). Reuses
+  `OAuth2ClientCredentialsOutboundAuthStrategy` (Q1) unmodified for the
+  real RFC 6749 §4.4 flow.
+- **DI wiring (`src/external/dependencies.py`/`src/config.py`):**
+  `defender_tenant_id`/`defender_client_id`/`defender_client_secret`/
+  `defender_graph_base_url` added to `Settings` (all optional, honestly
+  `None`/unset by default — mirrors `splunk_hec_url`/`cef_syslog_host`'s
+  own "all must be set together, no partial-credential honest state for
+  an OAuth2 client-credentials grant" shape). Unlike Q1/Q2/Q3's zero-arg
+  PUSH sources, `DefenderPollSource` cannot be registered unconditionally
+  (it genuinely needs real credentials to construct), so
+  `configure_defender_poll_source_from_settings()` — wired into
+  `startup.py` right after the CEF sink, real startup-sequence
+  integration, not a "not yet called" gap like Q1's own static-key
+  provisioning — constructs a real `httpx.AsyncClient` + auth strategy +
+  `DefenderPollSource` and registers it into the shared
+  `IntegrationSourceRegistry` only when all three credentials are present;
+  otherwise resolves to the same honestly-disabled `None` state every
+  other optional integration in this codebase uses.
+- **Real PoC (`poc/integration_source_defender/`), real captured output,
+  run three times during this pass (identical assertions passing each
+  time; Postgres row absence independently reconfirmed via a direct
+  `SELECT` after the final run):** a real stdlib `ThreadingHTTPServer`
+  implementing both the real Entra ID token endpoint contract and the real
+  `alerts_v2` list/filter/pagination contract, driven by a real
+  `httpx.AsyncClient` + real `DefenderPollSource` + real
+  `IntegrationSourceIngestService.run_poll_cycle()` against a real
+  `PostgresSourceCursorRepository` (the existing shared dev Postgres,
+  `docker-postgres-1`, untouched, port 5432 on the host). Proved, all for
+  real: (a) cycle 1 — no cursor, no `$filter`, fetches all 4 seed alerts
+  across 2 real pages, persists cursor = alert 4's own `lastUpdateDateTime`
+  to real Postgres; (b) 3 new alerts appended live to the stand-in
+  server's own alert store between cycles; (c) cycle 2 — a *fresh*
+  `PostgresSourceCursorRepository` instance (not cycle 1's own in-process
+  object) correctly resumes from the real persisted cursor, sends the real
+  `$filter=lastUpdateDateTime gt ...` query param, and the stand-in
+  server's own log line shows it genuinely evaluating "3 eligible" out of
+  7 alerts by real `datetime` comparison (not a canned response) across 2
+  more real pages; (d) cycle 3 — no new alerts, real empty page, cursor
+  provably unchanged in real Postgres; (e) a deliberately wrong
+  `client_secret` produces a real 401 from the stand-in token endpoint,
+  surfaced as a real `IntegrationSourceAuthError`; (f) all 7 real fetched
+  alerts normalize cleanly via `DefenderAlertNormalizer`; (g) exactly 3
+  real `integration_source.poll_completed` audit events, including the
+  honest `event_count=0` for the empty cycle. Full transcript in
+  `poc/integration_source_defender/output.txt`.
+- **Tests:** `tests/unit/integration_sources/test_defender.py` (16 tests —
+  filter construction, pagination following/aggregation, max-lastUpdateDateTime
+  cursor selection independent of page/list order, empty-page contract,
+  malformed-response handling, max-pages safety cap, auth/connection
+  failures), 8 new `DefenderAlertNormalizer` tests added to
+  `tests/unit/application/test_stream_source_registry.py` (including one
+  against Microsoft's own real documented worked JSON example, not a
+  hand-crafted guess), `tests/unit/application/test_defender_poll_source_wiring.py`
+  (7 tests — unconfigured-by-default, partial-credential honest-disabled
+  states, real registration into the shared registry, reset semantics).
+  Full suite, before/after via a fresh `git stash -u`/pop (re-derived
+  personally this pass, not trusted from any other number): baseline
+  **1720 passed, 1 skipped**; with this connector **1751 passed, 1
+  skipped** — exactly the +31 new tests, zero regressions. `mypy src`:
+  **29 errors**, identical count/file set to the documented Q1/Q2/Q3
+  baseline, zero new errors in any touched file. `ruff check`/
+  `black --check` on every touched file (src + tests + poc): clean.
+- **Stage reached (§3): test-stage only**, honestly incomplete on purpose,
+  matching every prior Q-series item's own precedent:
+  `configure_defender_poll_source_from_settings()` *is* wired into
+  `startup.py`'s real startup sequence (unlike Q1's still-dangling static
+  API-key provisioning hook), but since no environment in this repo
+  (`docker-compose.dev.yml` included, not touched by this pass) sets the
+  three `defender_*` credentials, it resolves to the honestly-disabled
+  state on every real run today. No `docker-compose.dev.yml`/
+  `docker-compose.prod.yml` wiring was added — there is no real
+  self-hostable Defender/Entra ID to containerize, unlike Wazuh/fluent-bit.
+- **Known, pre-existing gap inherited, not fixed (flagged, out of this
+  connector's own scope):** `SourceCursorRepository`'s own DI default in
+  the live app remains `InMemorySourceCursorRepository` — real Postgres
+  persistence is proven only at this PoC's own layer (mirrors Q1's own
+  identical `PostgresSourceCursorRepository` PoC precedent). Wiring the
+  live app's default to Postgres is a real, independent follow-up
+  (touches `configure_dependencies()`'s own already-created `engine`, a
+  one-line change) that was not made here to keep this connector's own
+  diff scoped to Q4's actual objective.
+- **Honesty notes:** `evidence[]` (device/file/process/registry-key
+  entities) is deliberately preserved verbatim, not flattened into ECS
+  host/user/process fields — a real, still-open gap
+  (`src/application/integration_source.py`'s own module docstring already
+  named this connector as the one that would first hit it: no
+  artifact-shaped `StreamSourceNormalizer` return type exists yet); only
+  one alert shape (Microsoft's own documented `deviceEvidence` example)
+  exercised in the real live PoC pagination flow, though the normalizer's
+  handling of alerts with no `evidence`/`title` is covered by the real
+  unit tests; the stand-in server's alert *data* is a real-schema-accurate
+  fixture, not real tenant telemetry (no real tenant exists to source it
+  from); CrowdStrike-class long-lived streaming (a structurally different,
+  harder integration shape) remains explicitly out of scope per §0's own
+  research.
+- **Docker cleanup:** none required — this PoC creates no Docker
+  containers (no real self-hostable Defender/Entra ID exists to
+  containerize, unlike Q2/Q3's real Wazuh manager/fluent-bit containers);
+  its own ephemeral `ThreadingHTTPServer` thread and single Postgres row
+  are torn down at the end of every run, confirmed via a direct `SELECT`
+  against `integration_source_cursors` after the final run.
+
 ---
 
 ## Milestone R — Integration sinks (KronOS → SIEM/SOAR)

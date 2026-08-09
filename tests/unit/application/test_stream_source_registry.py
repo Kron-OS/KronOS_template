@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.application.stream_source_registry import (
+    DefenderAlertNormalizer,
     StreamSourceNormalizerRegistry,
     WazuhAlertNormalizer,
     ZeekConnLogNormalizer,
@@ -320,6 +321,122 @@ class TestWazuhAlertNormalizer:
             normalizer.normalize(b"[1, 2, 3]")
 
 
+# Real worked example from Microsoft's own current `alert` resource docs
+# (learn.microsoft.com/en-us/graph/api/resources/security-alert, fetched
+# 2026-08-09 -- see poc/integration_source_defender/README.md for the full
+# citation trail), not a hand-crafted guess -- includes the real
+# `lastUpdateDateTime` property name (this roadmap item's own brief
+# incorrectly assumed `lastUpdateTime`; corrected here and in
+# DefenderPollSource's own module docstring).
+_REAL_DOCUMENTED_ALERT_EXAMPLE = json.dumps(
+    {
+        "@odata.type": "#microsoft.graph.security.alert",
+        "id": "da637551227677560813_-961444813",
+        "providerAlertId": "da637551227677560813_-961444813",
+        "incidentId": "28282",
+        "status": "new",
+        "severity": "low",
+        "classification": "unknown",
+        "determination": "unknown",
+        "serviceSource": "microsoftDefenderForEndpoint",
+        "detectionSource": "antivirus",
+        "detectorId": "e0da400f-affd-43ef-b1d5-afc2eb6f2756",
+        "tenantId": "b3c1b5fc-828c-45fa-a1e1-10d74f6d6e9c",
+        "title": "Suspicious execution of hidden file",
+        "description": "A hidden file has been launched.",
+        "category": "DefenseEvasion",
+        "categories": ["DefenseEvasion"],
+        "assignedTo": None,
+        "alertWebUrl": "https://security.microsoft.com/alerts/da637551227677560813_-961444813",
+        "mitreTechniques": ["T1564.001"],
+        "createdDateTime": "2021-04-27T12:19:27.7211305Z",
+        "lastUpdateDateTime": "2021-05-02T14:19:01.3266667Z",
+        "resolvedDateTime": None,
+        "comments": [],
+        "evidence": [
+            {
+                "@odata.type": "#microsoft.graph.security.deviceEvidence",
+                "hostName": "yonif-lap3",
+            }
+        ],
+        "systemTags": ["Defender Experts"],
+    }
+).encode()
+
+
+class TestDefenderAlertNormalizer:
+    def test_source_id_and_version(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+        assert normalizer.source_id == "ms-defender-alerts"
+        assert normalizer.normalizer_version == "1.0.0"
+
+    def test_normalizes_a_real_documented_alert(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+
+        event = normalizer.normalize(_REAL_DOCUMENTED_ALERT_EXAMPLE)
+
+        # Real alert timestamps carry 100ns-tick precision (7 fractional
+        # digits); Python's datetime only holds microseconds (6 digits), so
+        # datetime.fromisoformat's own float-based truncation of
+        # ".3266667" lands on ".326666" -- a real, observed precision loss
+        # at parse time, not a typo in this test's own expected value.
+        assert event.timestamp.isoformat() == "2021-05-02T14:19:01.326666+00:00"
+        assert event.message == "Suspicious execution of hidden file"
+        assert event.event_kind == "alert"
+        assert event.event_category == ["intrusion_detection"]
+        assert event.event_type == ["info"]
+        assert event.extra["ms_defender.id"] == "da637551227677560813_-961444813"
+        assert event.extra["ms_defender.severity"] == "low"
+        assert event.extra["ms_defender.service_source"] == "microsoftDefenderForEndpoint"
+        assert event.extra["ms_defender.mitre_techniques"] == ["T1564.001"]
+        assert event.extra["ms_defender.evidence"] == [
+            {"@odata.type": "#microsoft.graph.security.deviceEvidence", "hostName": "yonif-lap3"}
+        ]
+
+    def test_falls_back_to_description_when_title_absent(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+        payload = json.dumps(
+            {
+                "id": "a1",
+                "lastUpdateDateTime": "2026-08-01T00:00:00.0000000Z",
+                "description": "fallback description text",
+            }
+        ).encode()
+
+        event = normalizer.normalize(payload)
+
+        assert event.message == "fallback description text"
+
+    def test_message_is_none_when_both_title_and_description_absent(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+        payload = json.dumps(
+            {"id": "a1", "lastUpdateDateTime": "2026-08-01T00:00:00.0000000Z"}
+        ).encode()
+
+        event = normalizer.normalize(payload)
+
+        assert event.message is None
+
+    def test_missing_lastupdatedatetime_raises_parsing_error(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+        payload = json.dumps({"id": "a1", "title": "no timestamp here"}).encode()
+
+        with pytest.raises(ParsingError, match="missing/invalid required 'lastUpdateDateTime'"):
+            normalizer.normalize(payload)
+
+    def test_invalid_json_raises_parsing_error(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+
+        with pytest.raises(ParsingError, match="not valid JSON"):
+            normalizer.normalize(b"{not-json")
+
+    def test_json_array_raises_parsing_error(self) -> None:
+        normalizer = DefenderAlertNormalizer()
+
+        with pytest.raises(ParsingError, match="did not decode to a JSON object"):
+            normalizer.normalize(b"[1, 2, 3]")
+
+
 class TestGetDefaultStreamNormalizerRegistry:
     def test_zeek_conn_log_registered_by_default(self) -> None:
         registry = get_default_stream_normalizer_registry()
@@ -336,3 +453,11 @@ class TestGetDefaultStreamNormalizerRegistry:
 
         assert normalizer is not None
         assert isinstance(normalizer, WazuhAlertNormalizer)
+
+    def test_defender_registered_by_default(self) -> None:
+        registry = get_default_stream_normalizer_registry()
+
+        normalizer = registry.for_source("ms-defender-alerts")
+
+        assert normalizer is not None
+        assert isinstance(normalizer, DefenderAlertNormalizer)

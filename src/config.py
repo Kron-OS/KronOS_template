@@ -334,6 +334,40 @@ class Settings(BaseSettings):
         description="Whether to verify the Sentinel DCE endpoint's TLS cert (httpx 'verify=').",
     )
 
+    # Microsoft Defender Graph Security API alerts_v2 poll source (roadmap
+    # M-integrations/Q4) -- same "all three must be set, honest disabled
+    # state otherwise" shape as splunk_hec_url/splunk_hec_token above. No
+    # real Entra ID tenant exists in this sandbox (verified: no
+    # AZURE_TENANT_ID/AZURE_CLIENT_ID/ENTRA-related config anywhere in this
+    # repo's env/secrets setup) -- these three being unset is the honest,
+    # expected state until a real deployment provisions a real Entra ID app
+    # registration with SecurityAlert.Read.All.
+    defender_tenant_id: str | None = Field(
+        default=None,
+        description=(
+            "Entra ID tenant ID (GUID or verified domain) for the Defender "
+            "Graph API app registration."
+        ),
+    )
+    defender_client_id: str | None = Field(
+        default=None,
+        description=(
+            "Entra ID app registration (client) ID for the Defender Graph "
+            "API OAuth2 client-credentials grant."
+        ),
+    )
+    defender_client_secret: SecretStr | None = Field(
+        default=None,
+        description="Entra ID app registration client secret -- never logged.",
+    )
+    defender_graph_base_url: str = Field(
+        default="https://graph.microsoft.com/v1.0",
+        description=(
+            "Microsoft Graph API base URL. Override for a real local stand-in "
+            "server in test/dev, or a sovereign-cloud Graph endpoint in prod."
+        ),
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

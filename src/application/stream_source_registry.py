@@ -382,8 +382,124 @@ class WazuhAlertNormalizer(StreamSourceNormalizer):
         )
 
 
+class DefenderAlertNormalizer(StreamSourceNormalizer):
+    """Normalizes a real Microsoft Graph Security API ``alerts_v2`` alert
+    object (roadmap Q4) into ECS-shaped fields.
+
+    Field reference verified against Microsoft's own current documented
+    resource shape (`alert resource type
+    <https://learn.microsoft.com/en-us/graph/api/resources/security-alert?view=graph-rest-1.0>`_,
+    fetched 2026-08-09), including its own full worked JSON example -- see
+    ``src/external/integration_sources/defender.py``'s own module docstring
+    for the full doc-verification trail (including the real
+    ``lastUpdateDateTime`` vs. this roadmap's own originally-assumed
+    ``lastUpdateTime`` naming correction) and
+    ``poc/integration_source_defender/output.txt`` for the exact captured
+    fixture alert this mapping was exercised against:
+
+    - ``lastUpdateDateTime`` (the real, documented cursor property this
+      connector polls by -- ``DateTimeOffset``, ISO-8601) -> ``@timestamp``.
+      Deliberately not ``createdDateTime``: an alert can be updated
+      (reclassified, reassigned, evidence added) long after creation, and
+      the timeline record should reflect what changed most recently, the
+      same reasoning the connector's own cursor uses.
+    - ``title``, falling back to ``description`` when absent -> ``message``,
+      mirroring ``WazuhAlertNormalizer``'s own "always produce a real,
+      non-empty message" idiom (``full_log`` -> ``rule.description``).
+    - Every real ``alerts_v2`` entry is, by definition, an already-fired
+      detection (there is no "informational, non-alert" resource under this
+      endpoint) -> ``event_kind = "alert"``, ``event_category =
+      ["intrusion_detection"]``, ``event_type = ["info"]`` -- the same safe,
+      generic EDR/XDR baseline ``WazuhAlertNormalizer`` uses for its own
+      analogous case, since Defender's real ``serviceSource`` values
+      (``microsoftDefenderForEndpoint``, ``microsoftDefenderForIdentity``,
+      ``microsoftDefenderForCloudApps``, ``microsoftSentinel``, etc.) don't
+      map to a single more-specific ECS category without a speculative
+      per-source-product table this pass does not invent.
+    - ``id``, ``providerAlertId``, ``incidentId``, ``status``, ``severity``,
+      ``classification``, ``determination``, ``serviceSource``,
+      ``detectionSource``, ``categories``, ``mitreTechniques``, ``tenantId``,
+      ``alertWebUrl`` preserved verbatim under ``extra["ms_defender.*"]`` --
+      not dropped, mirroring every other normalizer's own "no ECS field
+      exists for this, namespace it" convention.
+    - ``evidence`` (the alert's own device/file/process/registry-key entity
+      collection) is preserved verbatim, unflattened, under
+      ``extra["ms_defender.evidence"]`` -- deliberately conservative, not an
+      oversight: it is genuinely artifact-shaped
+      (``StructuredArtifact``-shaped, not timeline-event-shaped), and this
+      normalizer's own return type (``NormalizedStreamEvent``) has no
+      artifact-shaped counterpart yet (the real, named, still-open gap
+      ``src/application/integration_source.py``'s own module docstring
+      flags for exactly this connector). ``host_name``/``user_name`` are
+      therefore left unset here rather than fragile-parsed out of one
+      evidence subtype among several real, heterogeneous ones
+      (``deviceEvidence``, ``userEvidence``, ``processEvidence``, ...).
+    """
+
+    @property
+    def source_id(self) -> str:
+        return "ms-defender-alerts"
+
+    @property
+    def normalizer_version(self) -> str:
+        return "1.0.0"
+
+    def normalize(self, payload: bytes) -> NormalizedStreamEvent:
+        try:
+            doc = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ParsingError(
+                "Defender alert payload is not valid JSON",
+                context={"source_id": self.source_id, "error": str(exc)},
+            ) from exc
+
+        if not isinstance(doc, dict):
+            raise ParsingError(
+                "Defender alert payload did not decode to a JSON object",
+                context={"source_id": self.source_id, "decoded_type": type(doc).__name__},
+            )
+
+        try:
+            timestamp = datetime.fromisoformat(str(doc["lastUpdateDateTime"]))
+        except (KeyError, ValueError) as exc:
+            raise ParsingError(
+                "Defender alert missing/invalid required 'lastUpdateDateTime' field",
+                context={"source_id": self.source_id, "error": str(exc)},
+            ) from exc
+
+        message = doc.get("title") or doc.get("description")
+
+        extra: dict[str, Any] = {
+            "ms_defender.id": doc.get("id"),
+            "ms_defender.provider_alert_id": doc.get("providerAlertId"),
+            "ms_defender.incident_id": doc.get("incidentId"),
+            "ms_defender.status": doc.get("status"),
+            "ms_defender.severity": doc.get("severity"),
+            "ms_defender.classification": doc.get("classification"),
+            "ms_defender.determination": doc.get("determination"),
+            "ms_defender.service_source": doc.get("serviceSource"),
+            "ms_defender.detection_source": doc.get("detectionSource"),
+            "ms_defender.categories": doc.get("categories", []),
+            "ms_defender.mitre_techniques": doc.get("mitreTechniques", []),
+            "ms_defender.tenant_id": doc.get("tenantId"),
+            "ms_defender.alert_web_url": doc.get("alertWebUrl"),
+            "ms_defender.evidence": doc.get("evidence", []),
+        }
+
+        return NormalizedStreamEvent(
+            timestamp=timestamp,
+            message=str(message) if message is not None else None,
+            event_kind="alert",
+            event_category=["intrusion_detection"],
+            event_type=["info"],
+            event_original=json.dumps(doc, sort_keys=True)[:32768],
+            extra=extra,
+        )
+
+
 def get_default_stream_normalizer_registry() -> StreamSourceNormalizerRegistry:
     registry = StreamSourceNormalizerRegistry()
     registry.register(ZeekConnLogNormalizer())
     registry.register(WazuhAlertNormalizer())
+    registry.register(DefenderAlertNormalizer())
     return registry

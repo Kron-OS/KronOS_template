@@ -1,0 +1,50 @@
+=== Real stdlib HTTP server (Entra ID token endpoint + Graph alerts_v2 stand-in) listening on 127.0.0.1:36049 ===
+
+=== Connecting to REAL shared dev Postgres for SourceCursor persistence ===
+[0] confirmed no pre-existing cursor row for this fresh (org, source) pair
+
+=== CYCLE 1: first-ever poll (no cursor -> no $filter, fetches all 4 alerts across 2 pages) ===
+    [server] real POST /b3c1b5fc-828c-45fa-a1e1-10d74f6d6e9c/oauth2/v2.0/token body='grant_type=client_credentials&client_id=00001111-aaaa-2222-bbbb-3333cccc4444&client_secret=poc-real-defender-secret-9f8e7d&scope=https%3A%2F%2Fgraph.microsoft.com%2F.default'
+    [server] real 200 token response={'token_type': 'Bearer', 'expires_in': 3599, 'access_token': 'real-poc-token-d73bdc075246448eab6af943324c8b1b'}
+    [server] real GET /v1.0/security/alerts_v2 $filter=None $skip=0 -> 4 eligible, returning 2, has_more=True
+    [server] real GET /v1.0/security/alerts_v2 $filter=None $skip=2 -> 4 eligible, returning 2, has_more=False
+[cycle 1] fetched 4 event(s), cursor_advanced=True
+[cycle 1] REAL persisted Postgres cursor: org_id=UUID('c055e4e0-58be-4761-bbc9-0a1710bbf165') source_id='defender-tenant-instance-1' cursor_value='2026-08-01T00:15:00.0000000Z' updated_at=datetime.datetime(2026, 8, 9, 14, 21, 11, 277451, tzinfo=datetime.timezone.utc)
+
+=== Simulating 3 NEW alerts (A5, A6, A7) arriving at the tenant after cycle 1 ===
+[server store] now holds 7 alerts total
+
+=== CYCLE 2: poll with REAL persisted cursor -> real $filter=lastUpdateDateTime gt ... ===
+    [server] real GET /v1.0/security/alerts_v2 $filter='lastUpdateDateTime gt 2026-08-01T00:15:00.0000000Z' $skip=0 -> 3 eligible, returning 2, has_more=True
+    [server] real GET /v1.0/security/alerts_v2 $filter='lastUpdateDateTime gt 2026-08-01T00:15:00.0000000Z' $skip=2 -> 3 eligible, returning 1, has_more=False
+[cycle 2] fetched 3 event(s), cursor_advanced=True
+[cycle 2] REAL persisted Postgres cursor: org_id=UUID('c055e4e0-58be-4761-bbc9-0a1710bbf165') source_id='defender-tenant-instance-1' cursor_value='2026-08-02T00:10:00.0000000Z' updated_at=datetime.datetime(2026, 8, 9, 14, 21, 11, 288135, tzinfo=datetime.timezone.utc)
+[final] real stream length after cycles 1+2: 7
+
+=== CYCLE 3: poll again immediately, no new alerts -> empty page must not advance cursor ===
+    [server] real GET /v1.0/security/alerts_v2 $filter='lastUpdateDateTime gt 2026-08-02T00:10:00.0000000Z' $skip=0 -> 0 eligible, returning 0, has_more=False
+[cycle 3] fetched 0 event(s), cursor_advanced=False
+[cycle 3] REAL persisted Postgres cursor unchanged: '2026-08-02T00:10:00.0000000Z'
+
+=== Normalizer proof: DefenderAlertNormalizer against every real fetched alert ===
+    normalized: @timestamp=2026-08-01T00:00:00+00:00 message='Suspicious execution of hidden file' severity='high'
+    normalized: @timestamp=2026-08-01T00:05:00+00:00 message='Suspicious execution of hidden file' severity='medium'
+    normalized: @timestamp=2026-08-01T00:10:00+00:00 message='Suspicious execution of hidden file' severity='high'
+    normalized: @timestamp=2026-08-01T00:15:00+00:00 message='Suspicious execution of hidden file' severity='medium'
+    normalized: @timestamp=2026-08-02T00:00:00+00:00 message='New suspicious PowerShell execution' severity='high'
+    normalized: @timestamp=2026-08-02T00:05:00+00:00 message='New suspicious PowerShell execution' severity='medium'
+    normalized: @timestamp=2026-08-02T00:10:00+00:00 message='New suspicious PowerShell execution' severity='high'
+[normalizer] all 7 real alerts normalized without error
+
+=== Auth-failure proof: wrong client_secret must surface loudly, never silently ===
+    [server] real POST /b3c1b5fc-828c-45fa-a1e1-10d74f6d6e9c/oauth2/v2.0/token body='grant_type=client_credentials&client_id=00001111-aaaa-2222-bbbb-3333cccc4444&client_secret=wrong-secret&scope=https%3A%2F%2Fgraph.microsoft.com%2F.default'
+[auth-failure] real 401 from the stand-in token endpoint correctly surfaced as: OAuth2 token endpoint rejected client-credentials request (status=401, body='{"error": "invalid_client", "error_description": "AADSTS7000215: Invalid client secret"}')
+
+[final] real audit events recorded: 3
+    integration_source.poll_completed details={'source_id': 'defender-tenant-instance-1', 'source_type': 'ms-defender-alerts', 'auth_method': 'oauth2-client-credentials', 'event_count': 4, 'accepted_count': 4, 'duplicate_count': 0, 'cursor_advanced': True}
+    integration_source.poll_completed details={'source_id': 'defender-tenant-instance-1', 'source_type': 'ms-defender-alerts', 'auth_method': 'oauth2-client-credentials', 'event_count': 3, 'accepted_count': 3, 'duplicate_count': 0, 'cursor_advanced': True}
+    integration_source.poll_completed details={'source_id': 'defender-tenant-instance-1', 'source_type': 'ms-defender-alerts', 'auth_method': 'oauth2-client-credentials', 'event_count': 0, 'accepted_count': 0, 'duplicate_count': 0, 'cursor_advanced': False}
+
+=== DEFENDER POLL SOURCE PoC: ALL ASSERTIONS PASSED ===
+
+[cleanup] deleted this PoC run's own cursor row from real Postgres (table left in place)
