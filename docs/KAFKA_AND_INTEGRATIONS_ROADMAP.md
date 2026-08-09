@@ -827,6 +827,94 @@ against a real local syslog receiver — proves the ABC's second,
 non-HTTP, no-ack transport shape.
 **Depends on:** R1.
 
+**STATUS (2026-08-09): DONE — test-stage only (expected for a connector
+item, see §3).** Built across two dispatches (an initial pass that wrote
+`src/application/cef_detection_mapper.py`, both new test files, the
+`Settings`/DI/startup wiring, and a first cut of `run_poc.py` but hit a
+real session cutoff mid-flight before ever running the PoC once; a
+delta-aware resume that read every file the first pass had already written
+before touching anything, confirmed all imports were actually already
+correct, ran the PoC for the first time, found and fixed a real bug the
+first real run surfaced, then completed lint/mypy/regression verification).
+
+- **Design decision (sibling sink class vs. reuse) — reuse
+  `SyslogIntegrationSink` (R1) unchanged, the opposite conclusion from R2's
+  own sibling-class choice for Splunk HEC, and deliberately so.** CEF's
+  real wire shape (verified against the official Micro Focus/OpenText CEF
+  spec + corroborating docs, cross-checked against Microsoft Sentinel's own
+  CEF-via-AMA connector docs) is an ordinary RFC 3164 BSD-syslog line whose
+  message body starts with the literal token `CEF:0|...` — nothing about
+  it needs different *socket* behavior from any other line
+  `SyslogIntegrationSink` already sends; the entire CEF-specific
+  requirement (RFC 3164 header, escaping rules) is string-formatting work
+  that belongs to the mapper, not the transport. Only
+  `CefDetectionMapper` (`src/application/cef_detection_mapper.py`) is new;
+  `SyslogIntegrationSink` itself has zero changes this pass. Full reasoning
+  in `cef_detection_mapper.py`'s own module docstring and
+  `poc/integration_sink_cef_syslog/README.md`.
+- **Real, spec-verified escaping rules implemented** (Micro Focus/OpenText
+  CEF spec, corroborated by the CEF White Paper and Microsoft Sentinel's
+  CEF-via-AMA docs): header/"prefix" zone escapes `|`→`\|` and `\`→`\\`
+  (leaves `=` untouched); extension zone escapes `=`→`\=` and `\`→`\\`
+  (leaves `|` untouched); backslash-escaping always applied first in both
+  zones. RFC 3164 (not RFC 5424) confirmed as the universally-used
+  CEF-over-syslog framing across every real vendor guide found
+  (Palo Alto, Centrify, Microsoft Sentinel).
+- **Ack-modeling honesty re-confirmed, not assumed still true after R2**:
+  direct code reading confirms `SyslogIntegrationSink.push_events()` still
+  has exactly one `return` statement, always `SinkAckStatus.UNACKNOWLEDGED`
+  — structurally incapable of `ACKNOWLEDGED`, unchanged by this pass since
+  the file itself was not touched.
+- **Verified for real in `poc/integration_sink_cef_syslog/`** — real local
+  `asyncio` TCP + UDP receivers on `127.0.0.1` (no realistic free
+  self-hostable "real CEF SIEM" adds anything beyond a protocol-accurate
+  stand-in for this transport, unlike R2's Splunk case — the wire format
+  IS the whole contract), plus the real, live dev-stack Postgres 16 for the
+  audit-trail scenario. Six scenarios: clean TCP push + field-by-field
+  round-trip parse (independently re-derived parser, not reusing the
+  mapper's own escaping helpers); same over UDP; the roadmap's own required
+  deliberate escaping edge case (`|`, `\`, `=` all present in
+  `detector_name`/`rule_name`/`finding_id`) with both round-trip recovery
+  AND direct wire-byte assertions of the escaped form; re-confirmed
+  `UNACKNOWLEDGED`-only honesty; a real `ConnectionRefusedError` failure
+  path; and full `DetectionSinkPushService` orchestration with a real
+  Postgres audit hash chain independently re-verified from a fresh
+  connection. **35/35 checks passed** — see
+  `poc/integration_sink_cef_syslog/output.txt` for the full unedited run.
+- **Bug the first real run of this PoC actually found (the point of
+  §F/this doc's §1 invariant 7):** the PoC's own Scenario 3 wire-level
+  assertion asserted an unescaped substring for a header-zone field
+  (`rule_name`) that itself contains a `|` — the mapper correctly escaped
+  it to `\|` per spec, but the assertion expected the fully-unescaped
+  string. The round-trip recovery check (proving the mapper's actual
+  output was correct) passed from the first run; only the PoC's own
+  direct-wire-bytes assertion string was wrong. Fixed to assert the
+  correctly-escaped substring, with the check's label updated to explain
+  why. This was caught only because the PoC was actually run and its FAIL
+  output actually read.
+- **Tests:** 49 new unit tests this pass (`CefDetectionMapper` field
+  mapping/severity mapping/escaping for both header and extension zones/
+  optional `cs2`+`cn1` omission; DI wiring
+  `configure_cef_syslog_sink_from_settings`/`get_cef_syslog_sink`/
+  `get_cef_detection_mapper`, mirroring `test_splunk_hec_sink_wiring.py`'s
+  own shape). Full suite: **1579 passed, 1 skipped** (was 1530/1
+  pre-existing baseline, independently re-confirmed via a fresh
+  `git stash -u`/pop this pass — exactly +49, zero regressions). `mypy`:
+  29 pre-existing errors, unchanged (zero new, none in touched files) —
+  independently re-confirmed via the same `git stash -u`/pop this pass.
+  `ruff`/`black` clean on every touched file (`src/`, `tests/`, and the
+  `poc/` script).
+- **Stage reached (§3): test-stage only**, as expected — no
+  route/playbook-action triggers a real CEF push automatically yet, mirrors
+  R1/R2's own "foundation/connector only" precedent. Dev/prod wiring is
+  Milestone S scope.
+- **Not built here, by design (R3's own scope boundary):** any
+  route/playbook-action wiring that would push a `Detection` over
+  CEF-over-syslog automatically; retry/backoff on a failed push (mirrors
+  R1/R2's own identical deferral); LEEF (QRadar's other native format) —
+  flagged as a real, plausible-but-out-of-scope follow-up sharing most of
+  `SyslogIntegrationSink`'s transport, not silently assumed covered by CEF.
+
 ### R4 · Microsoft Sentinel sink connector — L2
 **Objective.** Real Logs Ingestion API push against a real pre-provisioned
 DCR/DCE/custom-table (needs a real Azure subscription — if unavailable,

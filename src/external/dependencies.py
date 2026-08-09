@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 
 from src.adapter.integration_sink.splunk_hec_sink import SplunkHecSink
+from src.adapter.integration_sink.syslog_sink import SyslogIntegrationSink, SyslogTransportProtocol
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.opensearch.correlation_client import CorrelationClient
 from src.adapter.opensearch.correlation_rule_provisioner import CorrelationRuleProvisioner
@@ -59,6 +60,7 @@ from src.adapter.storage.storage import EvidenceStorage
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.batch_sealing import BatchSealingService
+from src.application.cef_detection_mapper import CefDetectionMapper
 from src.application.collector_ingest import CollectorIngestService
 from src.application.correlation_sync import CorrelationSyncService
 from src.application.cost_gate import RuleCostGate
@@ -219,6 +221,13 @@ _org_quota_repository: OrgQuotaRepository = InMemoryOrgQuotaRepository()
 # from these two getters when/if they need one.
 _splunk_hec_sink: SplunkHecSink | None = None
 _splunk_detection_mapper: SplunkDetectionMapper | None = None
+# Generic CEF-over-syslog sink (roadmap R3) -- identical "None means
+# disabled" shape as _splunk_hec_sink above. Unlike Splunk, the sink class
+# itself (SyslogIntegrationSink) is R1's own, unmodified transport -- only
+# the mapper is new here (see cef_detection_mapper.py's own module
+# docstring for why no sibling sink class was built).
+_cef_syslog_sink: SyslogIntegrationSink | None = None
+_cef_detection_mapper: CefDetectionMapper | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +640,62 @@ def get_splunk_detection_mapper() -> SplunkDetectionMapper | None:
     """Return the configured ``SplunkDetectionMapper``, or None if the sink
     itself is unconfigured (see ``get_splunk_hec_sink``)."""
     return _splunk_detection_mapper
+
+
+def configure_cef_syslog_sink_from_settings() -> None:
+    """Wire a real ``SyslogIntegrationSink``/``CefDetectionMapper`` pair from
+    ``cef_syslog_host``/``cef_syslog_port``/``cef_syslog_protocol`` in
+    Settings (roadmap R3).
+
+    Call at application startup after ``configure_dependencies()``. Mirrors
+    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
+    if Settings can't be instantiated" shape for unit tests -- an
+    unconfigured CEF sink is an honest, legitimate "this deployment doesn't
+    push to a syslog SIEM" state, never a security control silently
+    downgrading.
+    """
+    global _cef_syslog_sink, _cef_detection_mapper
+    from src.config import Settings  # noqa: PLC0415
+
+    try:
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+    except Exception:
+        return  # keep both None in test/dev environments without full Settings
+
+    if not s.cef_syslog_host:
+        logger.info("cef_syslog_sink_not_configured", extra={"cef_syslog_host_set": False})
+        return
+
+    protocol = (
+        SyslogTransportProtocol.UDP
+        if s.cef_syslog_protocol.lower() == "udp"
+        else SyslogTransportProtocol.TCP
+    )
+    _cef_syslog_sink = SyslogIntegrationSink(
+        s.cef_syslog_host, s.cef_syslog_port, protocol=protocol
+    )
+    _cef_detection_mapper = CefDetectionMapper(
+        device_vendor=s.cef_device_vendor,
+        device_product=s.cef_device_product,
+        device_version=s.cef_device_version,
+    )
+
+
+def get_cef_syslog_sink() -> SyslogIntegrationSink | None:
+    """Return the configured ``SyslogIntegrationSink`` for CEF-over-syslog,
+    or None if unconfigured.
+
+    None is a valid, honest configuration (no ``cef_syslog_host`` set);
+    callers must treat it as "CEF-over-syslog push disabled", never
+    substitute a fabricated sink.
+    """
+    return _cef_syslog_sink
+
+
+def get_cef_detection_mapper() -> CefDetectionMapper | None:
+    """Return the configured ``CefDetectionMapper``, or None if the sink
+    itself is unconfigured (see ``get_cef_syslog_sink``)."""
+    return _cef_detection_mapper
 
 
 def get_task_queue() -> TaskQueue:
@@ -1121,6 +1186,7 @@ def reset_dependencies() -> None:
     global _integration_source_registry, _source_cursor_repository
     global _inbound_source_authenticator
     global _splunk_hec_sink, _splunk_detection_mapper
+    global _cef_syslog_sink, _cef_detection_mapper
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -1156,6 +1222,8 @@ def reset_dependencies() -> None:
     _timestamp_service = None
     _splunk_hec_sink = None
     _splunk_detection_mapper = None
+    _cef_syslog_sink = None
+    _cef_detection_mapper = None
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()

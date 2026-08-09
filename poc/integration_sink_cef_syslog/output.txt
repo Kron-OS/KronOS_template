@@ -1,0 +1,55 @@
+[2026-08-09T13:56:00.088949+00:00] === real local TCP CEF-over-syslog receiver listening on 127.0.0.1:45243 ===
+[2026-08-09T13:56:00.089059+00:00] === real local UDP CEF-over-syslog receiver listening on 127.0.0.1:37944 ===
+[2026-08-09T13:56:00.089122+00:00] === real tenant org_id=f55720d6-aea5-4006-87e1-e1a48a0e6d07 org_alias=r3poc9c794466 ===
+
+=== Scenario 1: clean CEF push over real TCP, real round-trip parse ===
+real raw CEF-over-syslog bytes sent (TCP):
+  <165>Aug  9 13:56:00 r3poc9c794466 CEF:0|KronOS|DetectionSink|1.0|kronos-r3poc-network-detector|Suspicious Outbound Connection|8|externalId=a9fcf589-5080-4b50-b7c1-2d66bc2e405b cat=kronos-r3poc-network-detector rt=1786283760089 msg=KronOS detection poc-r3-finding-tcp-clean-94b84653 (NEW) cs1Label=KronOS Org ID cs1=f55720d6-aea5-4006-87e1-e1a48a0e6d07 cs3Label=KronOS Triage State cs3=NEW cs4Label=KronOS ATT&CK Tags cs4=attack.t1041 cs2Label=KronOS Case ID cs2=b4eaa723-1d31-4b28-9ba8-65fd6f748fb9 cn1Label=KronOS Risk Score cn1=61.0
+[2026-08-09T13:56:00.089799+00:00] PASS: real TCP push returns UNACKNOWLEDGED -- NEVER ACKNOWLEDGED
+[2026-08-09T13:56:00.290572+00:00] PASS: real local TCP receiver actually received exactly the sent bytes
+real parsed-back fields: {'pri': 165, 'facility': 20, 'syslog_severity': 5, 'timestamp': 'Aug  9 13:56:00', 'host': 'r3poc9c794466', 'cef_version': 0, 'device_vendor': 'KronOS', 'device_product': 'DetectionSink', 'device_version': '1.0', 'device_event_class_id': 'kronos-r3poc-network-detector', 'name': 'Suspicious Outbound Connection', 'severity': 8, 'extension': {'externalId': 'a9fcf589-5080-4b50-b7c1-2d66bc2e405b', 'cat': 'kronos-r3poc-network-detector', 'rt': '1786283760089', 'msg': 'KronOS detection poc-r3-finding-tcp-clean-94b84653 (NEW)', 'cs1Label': 'KronOS Org ID', 'cs1': 'f55720d6-aea5-4006-87e1-e1a48a0e6d07', 'cs3Label': 'KronOS Triage State', 'cs3': 'NEW', 'cs4Label': 'KronOS ATT&CK Tags', 'cs4': 'attack.t1041', 'cs2Label': 'KronOS Case ID', 'cs2': 'b4eaa723-1d31-4b28-9ba8-65fd6f748fb9', 'cn1Label': 'KronOS Risk Score', 'cn1': '61.0'}, 'raw_extension': 'externalId=a9fcf589-5080-4b50-b7c1-2d66bc2e405b cat=kronos-r3poc-network-detector rt=1786283760089 msg=KronOS detection poc-r3-finding-tcp-clean-94b84653 (NEW) cs1Label=KronOS Org ID cs1=f55720d6-aea5-4006-87e1-e1a48a0e6d07 cs3Label=KronOS Triage State cs3=NEW cs4Label=KronOS ATT&CK Tags cs4=attack.t1041 cs2Label=KronOS Case ID cs2=b4eaa723-1d31-4b28-9ba8-65fd6f748fb9 cn1Label=KronOS Risk Score cn1=61.0'}
+[2026-08-09T13:56:00.291182+00:00] PASS: parsed CEF version is 0
+[2026-08-09T13:56:00.291206+00:00] PASS: parsed device vendor matches mapper default
+[2026-08-09T13:56:00.291218+00:00] PASS: parsed device product matches mapper default
+[2026-08-09T13:56:00.291230+00:00] PASS: parsed Device Event Class ID matches real Detection.detector_name
+[2026-08-09T13:56:00.291247+00:00] PASS: parsed Name matches real Detection.rule_matches[0].rule_name
+[2026-08-09T13:56:00.291257+00:00] PASS: parsed CEF severity matches 'high' -> 8 mapping
+[2026-08-09T13:56:00.291269+00:00] PASS: parsed syslog host matches real Detection.org_alias
+[2026-08-09T13:56:00.291293+00:00] PASS: parsed extension externalId matches real Detection.detection_id
+[2026-08-09T13:56:00.291308+00:00] PASS: parsed extension cs1 matches real Detection.org_id
+[2026-08-09T13:56:00.291322+00:00] PASS: parsed extension cs2 matches real Detection.case_id
+[2026-08-09T13:56:00.291337+00:00] PASS: parsed extension cn1 matches real Detection.risk_score
+
+=== Scenario 2: clean CEF push over real UDP, real round-trip parse ===
+[2026-08-09T13:56:00.292442+00:00] PASS: real UDP push returns UNACKNOWLEDGED
+[2026-08-09T13:56:00.492958+00:00] PASS: real local UDP receiver actually received exactly the sent datagram
+[2026-08-09T13:56:00.493430+00:00] PASS: UDP round-trip: parsed Device Event Class ID matches real detector_name
+[2026-08-09T13:56:00.493456+00:00] PASS: UDP round-trip: parsed extension msg matches real finding_id
+
+=== Scenario 3: escaping edge case ('|', '\\', '=' in real Detection fields) ===
+real raw CEF-over-syslog bytes sent (edge case):
+  <165>Aug  9 13:56:00 r3poc9c794466 CEF:0|KronOS|DetectionSink|1.0|malware\|scanner\\v2|Blocked C2 (proto=tcp\|udp)|8|externalId=988288e1-2d9a-486c-9266-4e93b4e4754c cat=malware|scanner\\v2 rt=1786283760493 msg=KronOS detection case\=1234|alert\=5678 (NEW) cs1Label=KronOS Org ID cs1=f55720d6-aea5-4006-87e1-e1a48a0e6d07 cs3Label=KronOS Triage State cs3=NEW cs4Label=KronOS ATT&CK Tags cs4=attack.t1041 cs2Label=KronOS Case ID cs2=2e455ca6-b56b-41ee-b6ba-b77ade3d4013 cn1Label=KronOS Risk Score cn1=61.0
+[2026-08-09T13:56:00.495751+00:00] PASS: edge-case push also returns UNACKNOWLEDGED
+[2026-08-09T13:56:00.696832+00:00] PASS: real receiver got the exact escaped bytes (2nd line on the same TCP connection... new connection per push_events(), so a fresh single-line read)
+real parsed-back edge-case fields: {'pri': 165, 'facility': 20, 'syslog_severity': 5, 'timestamp': 'Aug  9 13:56:00', 'host': 'r3poc9c794466', 'cef_version': 0, 'device_vendor': 'KronOS', 'device_product': 'DetectionSink', 'device_version': '1.0', 'device_event_class_id': 'malware|scanner\\v2', 'name': 'Blocked C2 (proto=tcp|udp)', 'severity': 8, 'extension': {'externalId': '988288e1-2d9a-486c-9266-4e93b4e4754c', 'cat': 'malware|scanner\\v2', 'rt': '1786283760493', 'msg': 'KronOS detection case=1234|alert=5678 (NEW)', 'cs1Label': 'KronOS Org ID', 'cs1': 'f55720d6-aea5-4006-87e1-e1a48a0e6d07', 'cs3Label': 'KronOS Triage State', 'cs3': 'NEW', 'cs4Label': 'KronOS ATT&CK Tags', 'cs4': 'attack.t1041', 'cs2Label': 'KronOS Case ID', 'cs2': '2e455ca6-b56b-41ee-b6ba-b77ade3d4013', 'cn1Label': 'KronOS Risk Score', 'cn1': '61.0'}, 'raw_extension': 'externalId=988288e1-2d9a-486c-9266-4e93b4e4754c cat=malware|scanner\\\\v2 rt=1786283760493 msg=KronOS detection case\\=1234|alert\\=5678 (NEW) cs1Label=KronOS Org ID cs1=f55720d6-aea5-4006-87e1-e1a48a0e6d07 cs3Label=KronOS Triage State cs3=NEW cs4Label=KronOS ATT&CK Tags cs4=attack.t1041 cs2Label=KronOS Case ID cs2=2e455ca6-b56b-41ee-b6ba-b77ade3d4013 cn1Label=KronOS Risk Score cn1=61.0'}
+[2026-08-09T13:56:00.697178+00:00] PASS: round-trip recovers the EXACT original detector_name despite embedded '|' and '\\' -- recovered='malware|scanner\\v2' original='malware|scanner\\v2'
+[2026-08-09T13:56:00.697195+00:00] PASS: round-trip recovers the EXACT original rule_name despite embedded '|' and '=' -- recovered='Blocked C2 (proto=tcp|udp)' original='Blocked C2 (proto=tcp|udp)'
+[2026-08-09T13:56:00.697206+00:00] PASS: round-trip recovers the EXACT original finding_id (embedded '=' and '|') from extension msg -- msg='KronOS detection case=1234|alert=5678 (NEW)'
+[2026-08-09T13:56:00.697213+00:00] PASS: 'cat' extension field carries detector_name's real '|' UNESCAPED (extension pipes need no escaping) -- cat='malware|scanner\\v2'
+[2026-08-09T13:56:00.697222+00:00] PASS: wire bytes: header zone escaped the real '|' in detector_name (\|)
+[2026-08-09T13:56:00.697229+00:00] PASS: wire bytes: header zone left '=' in rule_name UNESCAPED (the rule_name's OWN '|' is correctly escaped since it's also in the header zone)
+[2026-08-09T13:56:00.697236+00:00] PASS: wire bytes: extension zone escaped the real '=' in finding_id (msg field)
+
+=== Scenario 4: real ConnectionRefusedError through the unmodified sink ===
+[2026-08-09T13:56:00.698103+00:00] PASS: real TCP connection-refused raises IntegrationSinkError -- error=[Errno 111] Connect call failed ('127.0.0.1', 1)
+
+=== Scenario 5: DetectionSinkPushService + real Postgres audit trail ===
+[2026-08-09T13:56:00.793043+00:00] PASS: real push() reports the correct detection_count
+[2026-08-09T13:56:00.793055+00:00] PASS: real push() produced 3 batches (max_batch_events=1, one syslog line per batch)
+[2026-08-09T13:56:00.793063+00:00] PASS: every real batch honestly reports UNACKNOWLEDGED (never a fabricated ack)
+[2026-08-09T13:56:00.793068+00:00] PASS: SinkPushResult.all_acknowledged is honestly False for a syslog-only push
+[2026-08-09T13:56:00.828935+00:00] PASS: fresh read: real SINK_PUSH_ATTEMPTED rows exist for every real batch (>= 3)
+[2026-08-09T13:56:00.828949+00:00] PASS: fresh read: real SINK_PUSH_EXECUTED rows exist for all 3 successful batches
+[2026-08-09T13:56:00.828974+00:00] PASS: fresh read: every real EXECUTED row honestly records ack_status=unacknowledged
+[2026-08-09T13:56:00.830504+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-09T13:56:00.836204+00:00] PoC PASSED -- 35/35 checks passed against real local TCP/UDP receivers + the real, live dev-stack Postgres 16.

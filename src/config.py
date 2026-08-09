@@ -239,6 +239,47 @@ class Settings(BaseSettings):
         description="Whether to verify the Splunk HEC endpoint's TLS cert (httpx 'verify=').",
     )
 
+    # Generic CEF-over-syslog sink (roadmap M-integrations/R3) -- the
+    # vendor-neutral universal fallback (no auth, fire-and-forget). Same
+    # "one global endpoint, not per-org config" shape as splunk_hec_url
+    # above. cef_syslog_host must be set for get_cef_syslog_sink() to
+    # construct a real SyslogIntegrationSink; None means "not configured,"
+    # an honest, legitimate dev/test state (mirrors splunk_hec_url's own
+    # None-is-valid contract), never an error.
+    cef_syslog_host: str | None = Field(
+        default=None,
+        description=(
+            "Hostname/IP of the real CEF-over-syslog receiver "
+            "(e.g. a QRadar/generic SIEM syslog listener)."
+        ),
+    )
+    cef_syslog_port: int = Field(
+        default=514,
+        description=(
+            "Port of the real CEF-over-syslog receiver "
+            "(514 is syslog's own conventional default)."
+        ),
+    )
+    cef_syslog_protocol: str = Field(
+        default="tcp",
+        description=(
+            "'tcp' or 'udp' -- transport protocol for the CEF-over-syslog push "
+            "(SyslogTransportProtocol)."
+        ),
+    )
+    cef_device_vendor: str = Field(
+        default="KronOS",
+        description="CEF header 'Device Vendor' field applied to every pushed Detection event.",
+    )
+    cef_device_product: str = Field(
+        default="DetectionSink",
+        description="CEF header 'Device Product' field applied to every pushed Detection event.",
+    )
+    cef_device_version: str = Field(
+        default="1.0",
+        description="CEF header 'Device Version' field applied to every pushed Detection event.",
+    )
+
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")
     tls_key_path: str | None = Field(default=None, description="Path to service TLS private key")

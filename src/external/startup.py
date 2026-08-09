@@ -82,6 +82,7 @@ async def wire_dependencies_async() -> None:
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
+        configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
         configure_dependencies,
         configure_splunk_hec_sink_from_settings,
@@ -365,6 +366,7 @@ async def wire_dependencies_async() -> None:
     )
     configure_clamav_from_settings()
     configure_splunk_hec_sink_from_settings()
+    configure_cef_syslog_sink_from_settings()
 
     logger.info("startup: dependencies wired (async)")
 
