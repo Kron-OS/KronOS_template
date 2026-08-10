@@ -1,0 +1,199 @@
+--- boot timing: start 2026-08-10T09:18:04Z ---
+--- bringing up postgres/redis/minio/opensearch/keycloak (security genuinely enabled) ---
+ Network kronos-poc-cisec_default Creating 
+ Network kronos-poc-cisec_default Created 
+ Volume kronos-poc-cisec_postgres_data Creating 
+ Volume kronos-poc-cisec_postgres_data Created 
+ Volume kronos-poc-cisec_minio_data Creating 
+ Volume kronos-poc-cisec_minio_data Created 
+ Volume kronos-poc-cisec_opensearch_data Creating 
+ Volume kronos-poc-cisec_opensearch_data Created 
+ Container kronos-poc-cisec-redis-1 Creating 
+ Container kronos-poc-cisec-postgres-1 Creating 
+ Container kronos-poc-cisec-opensearch-1 Creating 
+ Container kronos-poc-cisec-keycloak-1 Creating 
+ Container kronos-poc-cisec-minio-1 Creating 
+ Container kronos-poc-cisec-opensearch-1 Created 
+ Container kronos-poc-cisec-keycloak-1 Created 
+ Container kronos-poc-cisec-minio-1 Created 
+ Container kronos-poc-cisec-redis-1 Created 
+ Container kronos-poc-cisec-postgres-1 Created 
+ Container kronos-poc-cisec-keycloak-1 Starting 
+ Container kronos-poc-cisec-redis-1 Starting 
+ Container kronos-poc-cisec-opensearch-1 Starting 
+ Container kronos-poc-cisec-postgres-1 Starting 
+ Container kronos-poc-cisec-minio-1 Starting 
+ Container kronos-poc-cisec-keycloak-1 Started 
+ Container kronos-poc-cisec-postgres-1 Started 
+ Container kronos-poc-cisec-minio-1 Started 
+ Container kronos-poc-cisec-opensearch-1 Started 
+ Container kronos-poc-cisec-redis-1 Started 
+--- waiting for base services to report healthy ---
+ Container kronos-poc-cisec-redis-1 Running 
+ Container kronos-poc-cisec-postgres-1 Running 
+ Container kronos-poc-cisec-keycloak-1 Running 
+ Container kronos-poc-cisec-opensearch-1 Running 
+ Container kronos-poc-cisec-minio-1 Running 
+ Container kronos-poc-cisec-keycloak-1 Waiting 
+ Container kronos-poc-cisec-opensearch-1 Waiting 
+ Container kronos-poc-cisec-minio-1 Waiting 
+ Container kronos-poc-cisec-redis-1 Waiting 
+ Container kronos-poc-cisec-postgres-1 Waiting 
+ Container kronos-poc-cisec-redis-1 Healthy 
+ Container kronos-poc-cisec-postgres-1 Healthy 
+ Container kronos-poc-cisec-minio-1 Healthy 
+ Container kronos-poc-cisec-opensearch-1 Healthy 
+ Container kronos-poc-cisec-keycloak-1 Healthy 
+--- base services healthy after 41s ---
+--- running opensearch-init + keycloak-init (real production provisioning scripts) ---
+ Container kronos-poc-cisec-keycloak-1 Running 
+ Container kronos-poc-cisec-opensearch-1 Running 
+ Container kronos-poc-cisec-opensearch-init-1 Creating 
+ Container kronos-poc-cisec-keycloak-init-1 Creating 
+ Container kronos-poc-cisec-keycloak-init-1 Created 
+ Container kronos-poc-cisec-opensearch-init-1 Created 
+Attaching to keycloak-init-1, opensearch-init-1
+ Container kronos-poc-cisec-opensearch-1 Waiting 
+ Container kronos-poc-cisec-keycloak-1 Waiting 
+ Container kronos-poc-cisec-opensearch-1 Healthy 
+ Container kronos-poc-cisec-opensearch-init-1 Starting 
+ Container kronos-poc-cisec-keycloak-1 Healthy 
+ Container kronos-poc-cisec-keycloak-init-1 Starting 
+keycloak-init-1  | provision_keycloak_org: realm=kronos org=kronos-test base=http://keycloak:8080
+ Container kronos-poc-cisec-keycloak-init-1 Started 
+ Container kronos-poc-cisec-opensearch-init-1 Started 
+keycloak-init-1  | Declared org_id as an admin-managed User Profile attribute.
+keycloak-init-1  | Creating organization kronos-test
+keycloak-init-1  | create organization -> HTTP 201
+keycloak-init-1  | Organization ID: 3bf8b946-51bb-4ccb-abf7-fe23a9ad3b3d
+keycloak-init-1  | Linked member 10000000-0000-4000-8000-000000000001 -> HTTP 201
+keycloak-init-1  | Set org_id attribute for 10000000-0000-4000-8000-000000000001 -> HTTP 204
+keycloak-init-1  | Linked member 10000000-0000-4000-8000-000000000002 -> HTTP 201
+keycloak-init-1  | Set org_id attribute for 10000000-0000-4000-8000-000000000002 -> HTTP 204
+keycloak-init-1  | Linked member 10000000-0000-4000-8000-000000000003 -> HTTP 201
+keycloak-init-1  | Set org_id attribute for 10000000-0000-4000-8000-000000000003 -> HTTP 204
+keycloak-init-1  | provision_keycloak_org: complete
+[Kkeycloak-init-1 exited with code 0
+opensearch-init-1  | openid authc domain configured.
+opensearch-init-1  | kronos-generic-tenant role + rolesmapping ensured.
+opensearch-init-1  | provision_opensearch_security: complete
+[Kopensearch-init-1 exited with code 0
+NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
+--- provisioning complete after 3s (total 44s) ---
+--- provisioning second org (kronos-ci-org-b) for the isolation proof (poc-local, not shipped) ---
+provision_ci_org_b: got admin token, realm=kronos
+create client kronos-ci-verifier -> HTTP 201
+attach kronos-dashboard-roles scope to kronos-ci-verifier -> HTTP 204
+create user ci-analyst-b -> HTTP 201
+assign analyst role to ci-analyst-b -> HTTP 204
+provision_keycloak_org: realm=kronos org=kronos-ci-org-b base=http://localhost:18080
+Declared org_id as an admin-managed User Profile attribute.
+Creating organization kronos-ci-org-b
+create organization -> HTTP 201
+Organization ID: b0db2cf3-1563-4d0c-adf2-b8d24f8615e1
+Linked member 34f3e4b8-6f1b-495d-a74f-ca1c01465b5c -> HTTP 201
+Set org_id attribute for 34f3e4b8-6f1b-495d-a74f-ca1c01465b5c -> HTTP 204
+provision_keycloak_org: complete
+
+{
+  "user_id": "34f3e4b8-6f1b-495d-a74f-ca1c01465b5c",
+  "org_b_alias": "kronos-ci-org-b"
+}
+provision_ci_org_b: complete
+--- running real verification (KeycloakTokenValidator + OpenSearchClient DLS isolation) ---
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:19200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+========== 1. Real password-grant logins (real Keycloak, real orgs) ==========
+analyst (org A) claims: {
+  "sub": "10000000-0000-4000-8000-000000000002",
+  "roles": [
+    "analyst"
+  ],
+  "organization": {
+    "kronos-test": {
+      "id": "3bf8b946-51bb-4ccb-abf7-fe23a9ad3b3d"
+    }
+  },
+  "org_id": "3bf8b946-51bb-4ccb-abf7-fe23a9ad3b3d",
+  "aud": "kronos-backend",
+  "typ": "Bearer"
+}
+ci-analyst-b (org B) claims: {
+  "sub": "34f3e4b8-6f1b-495d-a74f-ca1c01465b5c",
+  "roles": [
+    "offline_access",
+    "default-roles-kronos",
+    "analyst",
+    "uma_authorization"
+  ],
+  "organization": {
+    "kronos-ci-org-b": {
+      "id": "b0db2cf3-1563-4d0c-adf2-b8d24f8615e1"
+    }
+  },
+  "org_id": "b0db2cf3-1563-4d0c-adf2-b8d24f8615e1",
+  "aud": "kronos-backend",
+  "typ": "Bearer"
+}
+[PASS] real login succeeded for both real users (password grant, real Keycloak)
+[PASS] analyst's real JWT carries a flat org_id claim (kronos-test org)
+[PASS] ci-analyst-b's real JWT carries a flat org_id claim (kronos-ci-org-b)
+[PASS] the two real orgs have DIFFERENT real org_id values
+
+========== 2. Real KeycloakTokenValidator.validate_and_extract() (unmodified src/ class) ==========
+analyst -> TenantContext(org_id=3bf8b946-51bb-4ccb-abf7-fe23a9ad3b3d, org_alias=kronos-test, roles=['analyst'])
+ci-analyst-b -> TenantContext(org_id=b0db2cf3-1563-4d0c-adf2-b8d24f8615e1, org_alias=kronos-ci-org-b, roles=['analyst'])
+[PASS] real backend validator extracts a real TenantContext for analyst
+[PASS] real backend validator extracts a real TenantContext for ci-analyst-b
+[PASS] the two extracted TenantContexts have DIFFERENT org_id (real isolation signal)
+[PASS] a tampered token is rejected by the real validator -- AuthenticationError: JWT signature validation failed: Signature verification failed.
+
+========== 3. Real bulk_index() + real DLS isolation (unmodified src/ OpenSearchClient) ==========
+[PASS] both real docs indexed via the real, unmodified bulk_index()
+analyst (real org 3bf8b946-51bb-4ccb-abf7-fe23a9ad3b3d) sees: {'doc-org-a'}
+[PASS] analyst sees ONLY org A's doc via real DLS (real token) -- {'doc-org-a'}
+ci-analyst-b (real org b0db2cf3-1563-4d0c-adf2-b8d24f8615e1) sees: {'doc-org-b'}
+[PASS] ci-analyst-b sees ONLY org B's doc via real DLS (real token) -- {'doc-org-b'}
+
+============================================================
+11 passed, 0 failed
+============================================================
+--- total wall time (cold local run, images already pulled on this host): 46s ---
+--- tearing down kronos-poc-cisec (own containers/volumes only) ---
+ Container kronos-poc-cisec-minio-1 Stopping 
+ Container kronos-poc-cisec-postgres-1 Stopping 
+ Container kronos-poc-cisec-opensearch-init-1 Stopping 
+ Container kronos-poc-cisec-redis-1 Stopping 
+ Container kronos-poc-cisec-keycloak-init-1 Stopping 
+ Container kronos-poc-cisec-keycloak-init-1 Stopped 
+ Container kronos-poc-cisec-keycloak-init-1 Removing 
+ Container kronos-poc-cisec-opensearch-init-1 Stopped 
+ Container kronos-poc-cisec-opensearch-init-1 Removing 
+ Container kronos-poc-cisec-keycloak-init-1 Removed 
+ Container kronos-poc-cisec-keycloak-1 Stopping 
+ Container kronos-poc-cisec-opensearch-init-1 Removed 
+ Container kronos-poc-cisec-opensearch-1 Stopping 
+ Container kronos-poc-cisec-minio-1 Stopped 
+ Container kronos-poc-cisec-minio-1 Removing 
+ Container kronos-poc-cisec-minio-1 Removed 
+ Container kronos-poc-cisec-redis-1 Stopped 
+ Container kronos-poc-cisec-redis-1 Removing 
+ Container kronos-poc-cisec-postgres-1 Stopped 
+ Container kronos-poc-cisec-postgres-1 Removing 
+ Container kronos-poc-cisec-redis-1 Removed 
+ Container kronos-poc-cisec-keycloak-1 Stopped 
+ Container kronos-poc-cisec-keycloak-1 Removing 
+ Container kronos-poc-cisec-postgres-1 Removed 
+ Container kronos-poc-cisec-keycloak-1 Removed 
+ Container kronos-poc-cisec-opensearch-1 Stopped 
+ Container kronos-poc-cisec-opensearch-1 Removing 
+ Container kronos-poc-cisec-opensearch-1 Removed 
+ Volume kronos-poc-cisec_postgres_data Removing 
+ Volume kronos-poc-cisec_minio_data Removing 
+ Volume kronos-poc-cisec_opensearch_data Removing 
+ Network kronos-poc-cisec_default Removing 
+ Volume kronos-poc-cisec_opensearch_data Removed 
+ Volume kronos-poc-cisec_postgres_data Removed 
+ Volume kronos-poc-cisec_minio_data Removed 
+ Network kronos-poc-cisec_default Removed 
+EXIT_CODE=0

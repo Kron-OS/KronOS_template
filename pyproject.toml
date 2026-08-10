@@ -50,6 +50,7 @@ testpaths = ["tests"]
 addopts = ["--cov=src", "--cov=kronos_attest", "--cov-report=term-missing", "--cov-fail-under=80"]
 markers = [
     "integration: requires Docker (Postgres + MinIO containers)",
+    "security_stack: requires the full security-enabled docker-compose.test.yml stack (real OpenSearch security plugin + real Keycloak org) -- see poc/ci_security_enabled_stack/ and .github/workflows/security-integration-tests.yml (Gap Audit P1-14 / V3)",
 ]
 
 [tool.coverage.run]

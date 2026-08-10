@@ -423,3 +423,94 @@ mapper is not None` shape — so a second/third near-duplicate test was
 judged low-value, not skipped for lack of trying). Sentinel/CEF sinks'
 own HTTP-speaking behavior is unchanged and already covered by their own
 pre-existing dedicated tests, not re-verified here.
+
+---
+
+## V3 STATUS (2026-08-10): DONE (local verification) — GHA-hosted-runner fit asserted, not CI-confirmed
+
+Closed P1-14. Real resource-fit investigation before committing to an
+approach, per this item's own brief: measured the already-running real dev
+stack (`docker stats`, not torn down) to get real OpenSearch-security-ON
+vs. baseline numbers (opensearch 729MiB, keycloak 369MiB, clamav — the
+heaviest service in the whole dev stack — 949MiB), then read I1's own
+finding text closely to determine the real requirement was OpenSearch DLS
++ a real Keycloak-issued tenant context, **not** full mTLS/browser SSO
+(`step-ca`/`tls-init`/nginx exist only for the interactive Dashboards-SSO
+flow, which neither I1's harness nor this item's own minimum bar uses).
+Scoped the fix accordingly: enable OpenSearch security + real Keycloak org
+provisioning in `docker/docker-compose.test.yml`; deliberately leave out
+`step-ca`/TLS/ClamAV/tusd/nginx (not needed, and ClamAV alone would have
+added more RAM than every other new service combined).
+
+**Real, measured scoped-stack footprint** (fresh boot, `docker stats`):
+opensearch 933MiB, keycloak 548MiB, postgres 35MiB, redis 3.7MiB, minio
+105MiB — **~1.63GB total**, comfortably inside a standard GHA runner's 7GB.
+Real boot timing: base services healthy in 41s, full provisioning +
+verification in 46s wall time (warm local image cache — see PoC README for
+why this number can't be directly read as a GHA-cold-pull number).
+
+**Design decision:** `.github/workflows/security-integration-tests.yml` is
+a new, additive, **nightly cron + `workflow_dispatch`** workflow — not a
+per-PR gate, and not a replacement for the existing lightweight
+`integration-tests.yml`. This agrees with I1's own original recommendation
+but for a fuller, evidence-based set of reasons (tax proportionality —
+only security-plugin-dependent code paths need this; real GHA cold-image-pull
+risk this local measurement can't rule out; matches this initiative's own
+established "local now, scoped nightly CI follow-up" precedent) — full
+reasoning and the real numbers behind it in
+`poc/ci_security_enabled_stack/README.md`.
+
+**Real bugs found while building this** (not anticipated from
+source-reading alone; full accounts in the PoC README): (1) OpenSearch
+2.12.0+ (this file's own pinned 2.13.0, not dev's 2.11.1) refuses to boot
+at all without `OPENSEARCH_INITIAL_ADMIN_PASSWORD` — a genuine version-
+specific behavior change that copying dev's config verbatim would have
+missed entirely; (2) Compose override files concatenate `ports:` rather
+than replace them — needed the compose-spec `!override` merge tag for the
+PoC's own local, non-shipped port remap; (3) OpenSearch's real
+`roles_key=dashboard_roles` config (`scripts/provision_opensearch_security.py`)
+needs the `kronos-dashboard-roles` client scope explicitly attached to any
+new `directAccessGrantsEnabled` client — not one of the realm's default
+scopes, and every real shipped client has direct grants disabled, so this
+had never been exercised before.
+
+**What was verified for real, locally, and captured** (MINIMUM BAR, all
+three; `poc/ci_security_enabled_stack/output.txt`, 11/11 checks, and
+independently re-run as `tests/integration/test_security_enabled_stack.py`,
+3/3 passed against the same live stack): (a) OpenSearch's security plugin
+genuinely enabled (not `DISABLE_SECURITY_PLUGIN=true`) and DLS/tenant-role
+provisioning via the real, unmodified `provision_opensearch_security.py`;
+(b) a real Keycloak instance with the real `kronos-realm.json` import and a
+real provisioned org (`kronos-test`, via the real, unmodified
+`provision_keycloak_org.sh`) issuing a real JWT that
+`KeycloakTokenValidator` (previously never exercised against a live
+Keycloak anywhere in this repo — it's in `pyproject.toml`'s coverage `omit`
+list for exactly that reason) genuinely validates, including rejecting a
+tampered token; (c) an I1-equivalent tenant-isolation proof — two real
+users in two real, different Keycloak Organizations each see only their
+own org's document through OpenSearch's real DLS enforcement.
+
+**What remains unconfirmed, explicitly:** this item could not trigger an
+actual GitHub Actions run from this sandbox. The GHA-hosted-runner resource
+fit is asserted from this host's own real measurements (docker stats on an
+identical scoped stack) plus image-size arithmetic for the cold-pull
+question, not confirmed by a live GHA execution — mirrors this whole
+initiative's own "prod stage: compose config validated, no live cluster"
+honesty pattern. `docker compose -f docker-compose.test.yml config` and
+`-f docker-compose.dev.yml config` both re-validated clean after this
+change; `docker-compose.prod.yml` was not touched by this item.
+
+**Verification:** fresh `pytest tests/unit -q` (real `git stash -u` +
+re-run, not trusted from memory) — baseline **1701 passed, 1 skipped**,
+89.82% coverage (matches V2's own recorded numbers exactly); after this
+pass, **identical: 1701 passed, 1 skipped**, 89.82% coverage (zero new
+unit tests — this item is infra/`poc`/`tests/integration`-only, zero
+`src/` changes). `mypy src` baseline and post-change both **29 errors in 10
+files**, identical set, zero new. `ruff check`/`black --check` clean on
+every touched Python file (`poc/ci_security_enabled_stack/*.py`,
+`tests/integration/test_security_enabled_stack.py`).
+
+**Own PoC containers/volumes torn down** (`kronos-poc-cisec-*` project) at
+the end of this pass; the shared `docker-compose.dev.yml` stack and
+`portainer_agent` were only ever observed (`docker stats`), never
+started/stopped/modified.

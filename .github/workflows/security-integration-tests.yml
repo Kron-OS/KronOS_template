@@ -1,0 +1,76 @@
+name: Security-Enabled Integration Tests
+
+# Gap Audit P1-14 / Milestone V, item V3. Runs the real,
+# security-enabled docker/docker-compose.test.yml profile (OpenSearch
+# security plugin genuinely on + real Keycloak org provisioning) -- see
+# poc/ci_security_enabled_stack/README.md for the real, measured
+# resource-fit investigation and the reasoning behind the cadence below.
+#
+# Deliberately scheduled/nightly + manual, NOT a per-PR gate, even though
+# this workflow's own local-equivalent measurement (poc/ci_security_enabled_stack/
+# output.txt: ~46s wall time, ~1.6GB combined RSS at idle on a warm image
+# cache) shows the stack itself comfortably fits a standard GitHub Actions
+# runner (2 CPU / 7GB). Three reasons, not just "startup time" (see the
+# PoC README for the full account):
+#   1. Tax proportionality -- only OpenSearch-security/Keycloak-org-provisioning
+#      code paths need this; running it on every PR would add real minutes
+#      to every contributor's feedback loop regardless of what they changed.
+#   2. GHA cold-pull risk this measurement can't rule out locally -- this
+#      host's ~46s figure benefits from already-cached images; a real GHA
+#      runner pulls opensearchproject/opensearch (~890MB) + keycloak (~500MB)
+#      + postgres/redis/minio fresh on every run, a real, not-yet-measured
+#      source of both added time and Docker-Hub-rate-limit flakiness.
+#   3. Matches this initiative's own established precedent (I1/H-series:
+#      real local verification now, CI wiring as an explicit, scoped,
+#      nightly-not-per-PR follow-up for exactly this class of heavier stack).
+on:
+  schedule:
+    - cron: "0 3 * * *" # nightly, 03:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  security-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+        working-directory: .
+
+      - name: Bring up postgres/redis/minio/opensearch/keycloak
+        run: docker compose -f docker-compose.test.yml up -d postgres redis minio opensearch keycloak
+
+      - name: Wait for base services to report healthy
+        run: docker compose -f docker-compose.test.yml up -d --wait postgres redis minio opensearch keycloak
+
+      - name: Run opensearch-init + keycloak-init (real production provisioning scripts)
+        run: docker compose -f docker-compose.test.yml up opensearch-init keycloak-init
+
+      - name: Provision the second org for the isolation proof (poc-local, not shipped)
+        working-directory: poc/ci_security_enabled_stack
+        env:
+          KC_BASE: http://localhost:8080
+        run: python3 provision_ci_org_b.py
+
+      - name: Run the real security-enabled-stack integration tests
+        working-directory: .
+        env:
+          KRONOS_SECURITY_STACK_KC_BASE: http://localhost:8080
+          KRONOS_SECURITY_STACK_OS_BASE: https://localhost:9200
+          KRONOS_SECURITY_STACK_OS_ADMIN_PASSWORD: "KronOSCiTest#2026"
+        run: pytest tests/integration/test_security_enabled_stack.py -v --no-cov
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v --remove-orphans

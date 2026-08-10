@@ -1,0 +1,31 @@
+# Local-verification-only port remap. The real docker/docker-compose.test.yml
+# keeps its standard host ports (5432/6379/9000-9001/9200/9600/8080/...) --
+# correct for a real GitHub Actions runner, which has no conflicting stack.
+# This host, however, already has docker-compose.dev.yml's real dev stack
+# bound to every one of those same ports (CLAUDE.md's own standing
+# instruction: never touch containers/volumes this agent didn't create,
+# don't disrupt the shared dev stack) -- so this override remaps only the
+# host-side ports for THIS throwaway verification run. Container-internal
+# ports and all inter-service hostnames (opensearch:9200, keycloak:8080,
+# etc.) are untouched, since those resolve inside this stack's own isolated
+# compose network regardless of host port publishing.
+#
+# NOTE (real, reproduced finding): compose merges list-typed keys like
+# `ports:` by CONCATENATION, not replacement -- a first version of this file
+# with a plain `ports: [...]` override still additionally tried to bind the
+# BASE file's 9200/8080/etc too, and lost with "port is already allocated"
+# against the already-running dev stack. `!override` (compose-spec merge
+# tag, Docker Compose v2.24+ -- this host runs v5.3.1) replaces the list
+# instead of appending to it; it needs a space before the flow-sequence
+# value or the YAML tag scanner errors on the embedded ':' in "15432:5432".
+services:
+  postgres:
+    ports: !override ["15432:5432"]
+  redis:
+    ports: !override ["16379:6379"]
+  minio:
+    ports: !override ["19000:9000", "19001:9001"]
+  opensearch:
+    ports: !override ["19200:9200", "19600:9600"]
+  keycloak:
+    ports: !override ["18080:8080"]

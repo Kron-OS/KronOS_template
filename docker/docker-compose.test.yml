@@ -41,29 +41,89 @@ services:
       - minio_data:/data
 
   opensearch:
+    # Security genuinely enabled (Gap Audit P1-14 / V3) -- was
+    # DISABLE_SECURITY_PLUGIN=true, which defeated the whole A3
+    # tenant-isolation model (OpenSearch DLS keyed on a Keycloak-issued
+    # org_id claim) for every test that ran against this file. Kept at
+    # 2.13.0 (this file's own already-pinned version, not backported to
+    # dev's 2.11.1) per CLAUDE.md §F.2 step 1 -- re-verified for real
+    # against 2.13.0 specifically in poc/ci_security_enabled_stack/
+    # (provision_opensearch_security.py's securityconfig/roles/rolesmapping
+    # REST calls are confirmed to behave the same as on the 2.11.1 dev
+    # cluster they were originally verified against -- see that PoC's
+    # README for the real run).
     image: opensearchproject/opensearch:2.13.0
     environment:
       - discovery.type=single-node
-      - DISABLE_SECURITY_PLUGIN=true
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      # Same real, reproduced requirement as docker-compose.dev.yml's
+      # opensearch service: the security plugin's bundled demo installer
+      # needs to append its own transport-SSL cert paths, and this
+      # permission-gate setting (translated by the real entrypoint script
+      # into a JVM -E override, not a config-file edit) is the one
+      # necessary setting beyond the demo installer's own defaults for
+      # opensearch-init's own securityconfig PUT to be accepted afterward.
+      - plugins.security.unsupported.restapi.allow_securityconfig_modification=true
+      # Real, reproduced, VERSION-SPECIFIC finding (poc/ci_security_enabled_stack/):
+      # OpenSearch 2.12.0+ security plugin's demo installer refuses to start
+      # at all ("No custom admin password found... please provide a password
+      # via OPENSEARCH_INITIAL_ADMIN_PASSWORD") without this -- a breaking
+      # change vs. the 2.11.1 dev.yml pins, which needs no such var. Missing
+      # this crashes the container on every boot (exit 1), confirmed via
+      # `docker logs`. Must satisfy OpenSearch's own strength validator
+      # (>=8 chars, upper+lower+digit+special) or the same installer refuses
+      # to start with a *different* "password too simple" error (reproduced
+      # trying "admin" here first). Every OS_ADMIN_PASSWORD/OPENSEARCH_PASSWORD
+      # below must stay in lockstep with this value.
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=KronOSCiTest#2026
     ports:
       - "9200:9200"
       - "9600:9600"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      # -k -u: the security plugin's bundled demo config enables HTTPS with
+      # a self-signed cert and requires real credentials -- a bare
+      # unauthenticated http:// probe (the old healthcheck, from when
+      # DISABLE_SECURITY_PLUGIN=true) always fails once security is
+      # genuinely on. Same real, working probe as docker-compose.dev.yml,
+      # updated for the real 2.13.0-required admin password above.
+      test: ["CMD-SHELL", "curl -sk -u admin:KronOSCiTest#2026 -f https://localhost:9200/_cluster/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
     volumes:
       - opensearch_data:/usr/share/opensearch/data
 
+  # Adds the openid authc domain (trusting Keycloak) and the generic DLS
+  # tenant role to OpenSearch's security config, once OpenSearch itself is
+  # healthy. Real, unmodified production script -- same one dev/prod use.
+  # Verified for real against this file's own 2.13.0 pin in
+  # poc/ci_security_enabled_stack/ (Gap Audit P1-14 / V3).
+  opensearch-init:
+    image: python:3.12-alpine
+    depends_on:
+      opensearch: { condition: service_healthy }
+    restart: "no"
+    volumes:
+      - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
+    environment:
+      OS_BASE: https://opensearch:9200
+      OS_ADMIN_USER: admin
+      OS_ADMIN_PASSWORD: KronOSCiTest#2026
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+    entrypoint: ["python3", "/provision_opensearch_security.py"]
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.2
     command: start-dev --import-realm
     environment:
       KC_DB: dev-mem
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      # KC_BOOTSTRAP_ADMIN_* (not the deprecated KEYCLOAK_ADMIN* names,
+      # which Keycloak 26 warns on and a future major will remove) --
+      # aligned with docker-compose.dev.yml's already-fixed keycloak
+      # service.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_FEATURES: organization,token-exchange
       # Expose /health/* on the management port (9000); without this the
       # health endpoints 404 and the healthcheck below never passes (same
@@ -91,6 +151,30 @@ services:
       timeout: 10s
       retries: 10
 
+  # Creates the kronos-test organization via the Admin REST API and links
+  # the three realm-imported users (docker/keycloak/kronos-realm.json). The
+  # org is NOT in the realm import because Keycloak 26.2 cannot import an
+  # organizations block (see scripts/provision_keycloak_org.sh's own
+  # docstring). Real, unmodified production script/image -- same one
+  # dev/prod use (docker/init/Dockerfile.keycloak-init). Gap Audit P1-14 / V3.
+  keycloak-init:
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.keycloak-init
+    depends_on:
+      keycloak: { condition: service_healthy }
+    restart: "no"
+    environment:
+      KC_BASE: http://keycloak:8080
+      KC_REALM: kronos
+      KC_ADMIN_USER: admin
+      KC_ADMIN_PASSWORD: admin
+      ORG_NAME: KronOS CI Test
+      ORG_ALIAS: kronos-test
+      ORG_DESCRIPTION: CI security-enabled test organization
+      ORG_DOMAIN: kronos-test.local
+      ORG_MEMBER_IDS: "10000000-0000-4000-8000-000000000001 10000000-0000-4000-8000-000000000002 10000000-0000-4000-8000-000000000003"
+
   clamav:
     image: clamav/clamav:stable
     ports: ["3310:3310"]
@@ -110,7 +194,20 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: kronos_minio
       MINIO_SECRET_KEY: kronos_minio_password
-      OPENSEARCH_URL: http://opensearch:9200
+      # Gap Audit P1-14 / V3: OpenSearch security is now genuinely enabled
+      # above (was DISABLE_SECURITY_PLUGIN=true) -- these three were never
+      # set before, so this container previously could not even boot
+      # against a real security-enabled OpenSearch (opensearch_username/
+      # opensearch_password are required, no-default fields in
+      # src/config.py::Settings) and, before this fix, silently never
+      # called ensure_generic_tenant_role() at all (opensearch_security_enabled
+      # defaults to False). admin/admin matches opensearch-init's own
+      # OS_ADMIN_USER/PASSWORD above (the bundled security-plugin demo
+      # superuser), same convention as docker-compose.dev.yml.
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: KronOSCiTest#2026
+      OPENSEARCH_SECURITY_ENABLED: "true"
       KEYCLOAK_ISSUER: http://keycloak:8080/realms/kronos
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/kronos/protocol/openid-connect/certs
       CLAMD_HOST: clamav
@@ -121,6 +218,7 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
     command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000
 
   celery-worker:
@@ -133,10 +231,17 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: kronos_minio
       MINIO_SECRET_KEY: kronos_minio_password
-      OPENSEARCH_URL: http://opensearch:9200
+      # See kronos-backend's identical comment above -- same real,
+      # previously-unset-and-unbootable-against-real-security fields.
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: KronOSCiTest#2026
+      OPENSEARCH_SECURITY_ENABLED: "true"
     depends_on:
-      - redis
-      - postgres
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
 
   # RFC 3161 TSA — FreeTSA compatible mock for testing chain-of-custody timestamping
