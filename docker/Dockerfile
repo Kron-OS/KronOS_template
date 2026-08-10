@@ -53,6 +53,14 @@ COPY --from=builder --chown=nonroot:nonroot /opt/venv /opt/venv
 COPY --chown=nonroot:nonroot src/ ./src/
 COPY --chown=nonroot:nonroot kronos_attest/ ./kronos_attest/
 COPY --chown=nonroot:nonroot pyproject.toml .
+# Alembic (Gap Audit P1-12 / Milestone V4): the `db-migrate` service in
+# docker-compose.{dev,test,prod}.yml runs `alembic upgrade head` using THIS
+# same built image (command override, no separate Dockerfile) -- see
+# docs/DATABASE_MIGRATIONS.md. alembic.ini's own `script_location`/
+# `prepend_sys_path` are relative to WORKDIR /app, matching every other
+# path in this image.
+COPY --chown=nonroot:nonroot alembic.ini .
+COPY --chown=nonroot:nonroot migrations/ ./migrations/
 
 # nonroot-owned log dir (see builder stage) so the mounted kronos_app_logs
 # volume is writable by uid 65532. The runtime image has no shell, so this

@@ -1,0 +1,6 @@
+Alembic-produced tables: 21
+create_tables()-produced tables: 21
+
+Total tables compared: 21
+Mismatches: 0
+RESULT: SCHEMAS ARE IDENTICAL (modulo alembic_version bookkeeping table)

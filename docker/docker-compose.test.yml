@@ -184,6 +184,21 @@ services:
       timeout: 10s
       retries: 5
 
+  # Real schema migrations (Gap Audit P1-12 / Milestone V4) -- see
+  # docker-compose.dev.yml's identical `db-migrate` service for the full
+  # rationale (one-shot init step mirroring keycloak-init/opensearch-init,
+  # replacing create_tables() as the schema source of truth).
+  db-migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    command: alembic upgrade head
+
   kronos-backend:
     build:
       context: ..
@@ -219,6 +234,7 @@ services:
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
     command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000
 
   celery-worker:
@@ -242,6 +258,7 @@ services:
       postgres: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
 
   # RFC 3161 TSA — FreeTSA compatible mock for testing chain-of-custody timestamping

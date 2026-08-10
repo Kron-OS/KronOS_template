@@ -235,6 +235,27 @@ services:
     depends_on:
       - kronos-backend
 
+  # Real schema migrations (Gap Audit P1-12 / Milestone V4): a one-shot
+  # `alembic upgrade head` run using the exact same built/pushed backend
+  # image as kronos-backend/celery-worker below (command override only, no
+  # separate image) -- mirrors this file's own keycloak-init/opensearch-
+  # security-init one-shot-container pattern. This is now the ONLY schema-
+  # mutating step in this deployment: kronos-backend/celery-worker no
+  # longer call create_tables() at their own boot (see src/external/
+  # startup.py and docs/DATABASE_MIGRATIONS.md). A production deploy MUST
+  # run this (or an equivalent `docker compose run db-migrate` /
+  # `alembic upgrade head` step in whatever orchestrator replaces Compose
+  # for this environment) before rolling kronos-backend/celery-worker to a
+  # new image that expects a new column/table.
+  db-migrate:
+    image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    command: alembic upgrade head
+
   kronos-backend:
     image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
     # NOTE: Every var below maps to a required field in src/config.py (Settings).
@@ -349,6 +370,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
     deploy:
       replicas: 2
       resources:
@@ -425,9 +447,18 @@ services:
       SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
       SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
       SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
+    # Was a plain list-form `depends_on: [redis, postgres]` -- that form
+    # only orders container *start*, it does not wait for readiness, which
+    # is not good enough for db-migrate specifically: db-migrate is a
+    # one-shot `restart: "no"` container that must fully EXIT successfully
+    # (schema applied) before this worker's own boot (which no longer runs
+    # create_tables() itself, see src/external/startup.py) can rely on the
+    # schema existing. Converted to map form with explicit conditions
+    # (matching kronos-backend's own depends_on above) for all three.
     depends_on:
-      - redis
-      - postgres
+      redis: { condition: service_started }
+      postgres: { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
     deploy:
       replicas: 2

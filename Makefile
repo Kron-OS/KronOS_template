@@ -1,4 +1,5 @@
 .PHONY: dev dev-detach dev-down logs shell-backend shell-postgres reset-db \
+        migrate migration \
         test test-integration lint typecheck format \
         frontend-dev frontend-build frontend-lint \
         helm-lint helm-template helm-install-dev helm-install-prod \
@@ -32,6 +33,20 @@ reset-db:
 	docker compose -f docker/docker-compose.dev.yml exec postgres \
 		psql -U kronos -d kronos -c \
 		"DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	@echo "Schema dropped -- run 'make migrate' (or restart the stack, which" \
+	      "re-runs the one-shot db-migrate service) to rebuild it. See" \
+	      "docs/DATABASE_MIGRATIONS.md -- create_tables() no longer runs" \
+	      "automatically at app/worker boot (Gap Audit P1-12 / Milestone V4)."
+
+# ── Migrations (Gap Audit P1-12 / Milestone V4, see docs/DATABASE_MIGRATIONS.md) ──
+
+migrate:
+	docker compose -f docker/docker-compose.dev.yml run --rm db-migrate
+
+# Usage: make migration msg="add foo column to bar"
+migration:
+	docker compose -f docker/docker-compose.dev.yml run --rm db-migrate \
+		alembic revision --autogenerate -m "$(msg)"
 
 seed-data:
 	docker compose -f docker/docker-compose.dev.yml exec kronos-backend \

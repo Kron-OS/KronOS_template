@@ -453,6 +453,34 @@ services:
     volumes:
       - tls_certs:/certs
 
+  # Real schema migrations (Gap Audit P1-12 / Milestone V4): runs `alembic
+  # upgrade head` to completion, once, before any app/worker process starts
+  # -- mirrors this file's own keycloak-init/opensearch-init/dashboards-
+  # tenant-init pattern (a one-shot `restart: "no"` container gated by
+  # `depends_on: ... condition: service_completed_successfully`) rather
+  # than each process calling a schema-mutating step at its own startup.
+  # This REPLACES the 14 repositories' `create_tables()` calls that
+  # src/external/startup.py's wire_dependencies_async()/wire_dependencies_
+  # sync() used to invoke directly -- see that file's own comment and
+  # docs/DATABASE_MIGRATIONS.md for the full reasoning (short version: once
+  # Alembic owns schema evolution, letting `create_all(checkfirst=True)`
+  # also run at every process boot reintroduces exactly the "two sources
+  # of truth" ambiguity adopting a real migration tool exists to remove).
+  # The 14 repositories' own `create_tables()` classmethods are NOT
+  # deleted -- tests/integration/conftest.py's `postgres_engine` fixture
+  # still calls them directly for lightweight per-test schema setup.
+  db-migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kronos-backend:dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    command: alembic upgrade head
+
   kronos-backend:
     build:
       context: ..
@@ -569,6 +597,7 @@ services:
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
     command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
 
   celery-worker:
@@ -644,6 +673,7 @@ services:
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4 --loglevel=info
 
   celery-worker-plaso:
@@ -697,6 +727,7 @@ services:
       minio: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
 
   celery-beat:
@@ -740,6 +771,7 @@ services:
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   nginx:

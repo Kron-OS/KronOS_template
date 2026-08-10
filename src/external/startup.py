@@ -48,9 +48,6 @@ async def wire_dependencies_async() -> None:
         PostgresAuditLogRepository,
     )
     from src.adapter.repository.postgres_case import PostgresCaseRepository  # noqa: PLC0415
-    from src.adapter.repository.postgres_dead_letter import (  # noqa: PLC0415
-        PostgresDeadLetterSink,
-    )
     from src.adapter.repository.postgres_detection import (  # noqa: PLC0415
         PostgresDetectionRepository,
     )
@@ -68,9 +65,6 @@ async def wire_dependencies_async() -> None:
     )
     from src.adapter.repository.postgres_rule_pack import (  # noqa: PLC0415
         PostgresRulePackRepository,
-    )
-    from src.adapter.repository.postgres_sealed_batch import (  # noqa: PLC0415
-        PostgresSealedBatchRepository,
     )
     from src.adapter.repository.postgres_source_cursor import (  # noqa: PLC0415
         PostgresSourceCursorRepository,
@@ -128,34 +122,25 @@ async def wire_dependencies_async() -> None:
     # instance and celery_runtime.py's per-task one.
     source_cursor_repo = PostgresSourceCursorRepository(engine)
 
-    await PostgresAuditLogRepository.create_tables(engine)
-    await PostgresEvidenceRepository.create_tables(engine)
-    await PostgresCaseRepository.create_tables(engine)
-    await PostgresArtifactRepository.create_tables(engine)
-    await PostgresDetectionRepository.create_tables(engine)
-    await PostgresDetectionCorrelationRepository.create_tables(engine)
-    await PostgresRulePackRepository.create_tables(engine)
-    await PostgresYaraRulePackRepository.create_tables(engine)
-    await PostgresAssetRepository.create_tables(engine)
-    await PostgresIOCFeedRepository.create_tables(engine)
-    await PostgresSealedBatchRepository.create_tables(engine)
-    # Tenant storage quota (docs/TENANT_USAGE_QUOTA.md) -- create_tables()
-    # called here at real startup, not just at DI-container-configure time,
-    # deliberately repeating the pattern the DeadLetterSink comment above
-    # already documents to avoid D3's real, since-fixed gap (a new
-    # repository's table never created because create_tables() was missing
-    # from this exact list).
-    await PostgresOrgQuotaRepository.create_tables(engine)
-    await PostgresSourceCursorRepository.create_tables(engine)
-    # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
-    # nothing configures a Postgres-backed sink into the DI container below
-    # yet (StreamNormalizationService itself isn't wired into
-    # configure_dependencies() either, mirroring D4's own precedent) --
-    # deliberately NOT repeating D3's real, since-fixed gap where
-    # PostgresSealedBatchRepository.create_tables() was originally missing
-    # from this exact list and the table would not have existed for the
-    # first real production save.
-    await PostgresDeadLetterSink.create_tables(engine)
+    # Schema creation/evolution (Gap Audit P1-12 / Milestone V4): this used
+    # to call every repository's own `create_tables()` classmethod here, at
+    # every real FastAPI boot. That is now Alembic's job instead --
+    # `alembic upgrade head` runs once, to completion, in a dedicated
+    # `db-migrate` init step (docker-compose.{dev,test,prod}.yml) BEFORE
+    # this process ever starts, mirroring this repo's existing keycloak-
+    # init/opensearch-init one-shot-container pattern rather than having
+    # N independently-booting app/worker processes race each other via
+    # `_schema_lock.py`'s advisory lock. Deliberately NOT calling
+    # `create_tables()` here anymore: doing so alongside a real migration
+    # tool would reintroduce the exact "two sources of truth for schema"
+    # ambiguity adopting Alembic exists to remove (`create_all(checkfirst=
+    # True)` only ever ADDS missing tables -- it can silently paper over a
+    # `db-migrate` step that was skipped, rather than failing loudly the
+    # way a missing/failed migration should). The 14 repositories' own
+    # `create_tables()` classmethods are NOT deleted -- they still exist
+    # and are still used directly by tests/integration/conftest.py for
+    # lightweight per-test schema setup against a throwaway testcontainer.
+    # See docs/DATABASE_MIGRATIONS.md for the full reasoning and workflow.
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
@@ -398,9 +383,7 @@ def wire_dependencies_sync() -> None:
 
     Wires only the NON-loop-bound singletons (S3 storage via boto3+thread
     executor, CeleryTaskQueue, step-up ticket store, RFC3161 timestamp
-    client, ClamAV scanner) into the DI container, and runs create_tables()
-    once via a throwaway NullPool engine + throwaway loop that is fully
-    disposed before this function returns.
+    client, ClamAV scanner) into the DI container.
 
     Deliberately does NOT configure a pooled asyncpg engine, Postgres
     repositories, or an AsyncOpenSearch client as process-wide singletons
@@ -410,25 +393,19 @@ def wire_dependencies_sync() -> None:
     "Future attached to a different loop" / "Event loop is closed" — see
     src/external/celery_runtime.py, which builds fresh instances inside
     each task's own loop instead.
-    """
-    import asyncio  # noqa: PLC0415
 
+    Schema creation/evolution (Gap Audit P1-12 / Milestone V4): this used
+    to also run every repository's own `create_tables()` classmethod here,
+    via a throwaway NullPool engine + throwaway loop, at every real Celery
+    worker boot. That is now Alembic's job instead -- see
+    wire_dependencies_async()'s identical comment and
+    docs/DATABASE_MIGRATIONS.md for the full reasoning. The `db-migrate`
+    init step (docker-compose.{dev,test,prod}.yml) runs `alembic upgrade
+    head` to completion before either this worker or the FastAPI backend
+    ever starts, so there is no remaining caller here that needs its own
+    schema-creation safety net.
+    """
     from src.adapter.queue.celery_queue import CeleryTaskQueue  # noqa: PLC0415
-    from src.adapter.repository.postgres_artifact import (  # noqa: PLC0415
-        PostgresArtifactRepository,
-    )
-    from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
-        PostgresAuditLogRepository,
-    )
-    from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
-        PostgresEvidenceRepository,
-    )
-    from src.adapter.repository.postgres_quota import (  # noqa: PLC0415
-        PostgresOrgQuotaRepository,
-    )
-    from src.adapter.repository.postgres_source_cursor import (  # noqa: PLC0415
-        PostgresSourceCursorRepository,
-    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
@@ -443,32 +420,6 @@ def wire_dependencies_sync() -> None:
     )
 
     settings = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
-
-    async def _create_tables() -> None:
-        from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
-        from sqlalchemy.pool import NullPool  # noqa: PLC0415
-
-        engine = create_async_engine(settings.database_url.get_secret_value(), poolclass=NullPool)
-        try:
-            await PostgresAuditLogRepository.create_tables(engine)
-            await PostgresEvidenceRepository.create_tables(engine)
-            await PostgresArtifactRepository.create_tables(engine)
-            await PostgresOrgQuotaRepository.create_tables(engine)
-            # Poll-source cursor table (Gap Audit P1-8) -- created here so
-            # it exists before poll_defender_alerts' own per-task
-            # PostgresSourceCursorRepository (celery_defender.py) ever runs,
-            # same "create_tables at real startup, not just at DI-configure
-            # time" rationale as PostgresOrgQuotaRepository's own comment
-            # above. This process never keeps a loop-bound
-            # PostgresSourceCursorRepository singleton itself (see this
-            # function's own docstring on why Postgres repos stay
-            # per-task here), so it is deliberately NOT also passed to
-            # configure_dependencies() below.
-            await PostgresSourceCursorRepository.create_tables(engine)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_create_tables())
 
     _minio_scheme = "https" if settings.minio_use_tls else "http"
     storage = S3EvidenceStorage(
