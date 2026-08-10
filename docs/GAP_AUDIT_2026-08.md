@@ -322,3 +322,104 @@ relaxed for OpenSearch's self-signed demo cert
 `ssl.CERT_NONE` context. `docker compose -f docker-compose.prod.yml
 config` re-validated clean (exit 0, real required vars supplied) after
 the fix.
+
+---
+
+## V2 STATUS (2026-08-10): DONE — all three sub-items (a/b/c)
+
+Closed the "built but never called" loop for P1-1/P1-2/P1-8 in the order
+the audit itself specified ((c) first, smallest/de-risks (b)).
+
+**(c) — P1-8, `SourceCursorRepository`'s live default.** Confirmed the
+same pattern every other Postgres-backed repository in
+`src/external/dependencies.py` already uses (e.g. `_org_quota_repository`):
+the raw module-level literal stays `InMemorySourceCursorRepository()`
+(the honest "no real startup wiring has run yet" default), and the real
+flip happens in `wire_dependencies_async()`/`wire_dependencies_sync()` —
+`configure_dependencies()` gained a new `source_cursor_repository`
+parameter (same "`None` keeps current binding" idiom as
+`org_quota_repository`), `wire_dependencies_async()` now builds a real
+`PostgresSourceCursorRepository(engine)` and passes it in, and both
+`wire_*` functions now call `PostgresSourceCursorRepository.create_tables()`
+alongside every other repository's own table creation. Real Postgres
+round-trip proof (fresh engine writes, a **completely separate** fresh
+engine/repository instance reads the same cursor back, then updates it)
+captured in `poc/v2_connector_wiring/source_cursor_postgres_default/`
+against the real shared dev-stack `docker-postgres-1`.
+
+**(b) — P1-2, Defender poll beat task.** New `src/external/celery_defender.py`
+(`run_defender_poll_cycle()`) + a new `poll_defender_alerts` Celery beat
+task (`src/external/celery_app.py`, every 10 minutes, `q.index` queue).
+Design choice (full reasoning in `celery_defender.py`'s own docstring and
+the PoC's README): a **fresh, task-scoped `httpx.AsyncClient` per poll
+cycle**, not a dedicated long-lived event-loop thread — Microsoft's own
+v2.0 client-credentials docs (fetched 2026-08-10) show a real
+`expires_in: 3599` (~60 min) token lifetime, so losing the FastAPI
+process's cross-cycle token cache at a 10-minute poll interval costs one
+extra cheap token POST per cycle, a strictly smaller cost than risking
+the "Future attached to a different loop" failure class
+`wire_dependencies_sync()`'s own 2026-08-09 comment flagged as the reason
+Defender was never wired into Celery in the first place. Two new
+`Settings` fields (`defender_poll_org_id`, `defender_poll_source_id`)
+supply the explicit org attribution a poll-mode source needs (no honest
+per-alert attribution signal exists in the payload itself). Real,
+two-consecutive-invocation proof — real Postgres cursor persistence +
+advancement, real Redis stream production, real per-cycle audit trail,
+and the honest "not configured" skip path — captured in
+`poc/v2_connector_wiring/defender_poll_beat_task/`, using a real local
+`httpx.MockTransport` stand-in for Entra ID/Graph (never a live Microsoft
+call) that the real hardcoded production hostnames are asserted against.
+
+**(a) — P1-1, `DetectionSinkPushService` has a real caller.** New
+`SyncDetectionToSiemAction` (`src/application/sync_detection_to_siem_action.py`),
+mirroring `SyncDetectionTicketAction`'s exact shape (H4's own precedent):
+constructor-injected collaborators, tenant-scoped Detection lookup, and
+(unlike the ticket action) zero self-auditing — it delegates entirely to
+`DetectionSinkPushService`, which already logs
+`SINK_PUSH_ATTEMPTED`/`_EXECUTED`/`_FAILED` around the real outbound call.
+One instance is registered per configured sink (`action_name` is
+`sync_detection_to_siem_{splunk,cef,sentinel}`), so a deployment with more
+than one sink configured gets one action per sink, never a silent
+registry-overwrite. Also closed a larger, previously-undiscovered
+adjacent gap while wiring this in: `PlaybookActionRegistry`/
+`PlaybookExecutionService` had **zero DI wiring at all** anywhere in
+`src/external/dependencies.py` before this — every concrete
+`PlaybookAction` (including the two that already existed,
+`TransitionDetectionTriageAction`/`LogNotificationAction`) only ever got
+registered inside test files. New `get_playbook_action_registry()`/
+`get_playbook_execution_service()` FastAPI dependencies now build a real
+registry with all real, currently-wireable actions registered (Splunk/
+CEF/Sentinel `SyncDetectionToSiemAction`s only when their respective sink
+is actually configured; `SyncDetectionTicketAction` is deliberately still
+NOT registered — no concrete `TicketingSystem` implementation exists
+anywhere in this codebase yet, and registering it against a fabricated
+one would be exactly the "plausible code without a captured real run"
+failure mode CLAUDE.md §F exists to stop). No new HTTP route was added to
+actually *dispatch* a `Playbook` from a real request — that gap (there is
+still no route anywhere that calls `PlaybookExecutionService.execute()`)
+is real, larger than this item's own scope, and not closed here; flagged
+as a candidate follow-up, not silently left implied-fixed.
+
+**Verification:** fresh `pytest tests/unit -q` (no stash needed — tree
+was clean at `5b38559` before this pass started) baseline
+**1678 passed, 1 skipped**, 89.94% coverage; after this pass,
+**1701 passed, 1 skipped**, 89.82% coverage (23 new tests, zero
+regressions). `mypy src` baseline and post-change both **29 errors in 10
+files**, identical set, zero new. `ruff check`/`black --check` clean on
+every touched file.
+
+**What was NOT verified, and why:** the literal `@celery_app.task`
+decorator/dispatch glue for `poll_defender_alerts` itself was not
+separately unit-tested — `src/external/celery_app.py` is excluded from
+this repo's own coverage config (`pyproject.toml`'s `omit` list, "needs a
+real Celery broker"), matching the pre-existing convention that none of
+the other 6 beat tasks in that file have a direct unit test either; the
+underlying function it delegates to (`run_defender_poll_cycle()`) is
+both unit-tested (fast "not configured" branches) and proven for real
+end-to-end via the PoC. Splunk/CEF/Sentinel `SyncDetectionToSiemAction`
+registration was verified only for Splunk in the wiring test (CEF/
+Sentinel follow the identical code path — same `if sink is not None and
+mapper is not None` shape — so a second/third near-duplicate test was
+judged low-value, not skipped for lack of trying). Sentinel/CEF sinks'
+own HTTP-speaking behavior is unchanged and already covered by their own
+pre-existing dedicated tests, not re-verified here.

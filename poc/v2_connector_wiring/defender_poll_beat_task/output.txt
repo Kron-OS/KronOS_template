@@ -1,0 +1,25 @@
+=== Invocation 1 (mirrors the first poll-defender-alerts beat firing) ===
+    [stand-in] real POST https://login.microsoftonline.com/b3c1b5fc-828c-45fa-a1e1-10d74f6d6e9c/oauth2/v2.0/token -> 200 (minted real-poc-token-49f91c03d...)
+    [stand-in] real GET https://graph.microsoft.com/v1.0/security/alerts_v2 $filter=None -> 4 eligible alert(s)
+run_defender_poll_cycle() #1 -> accepted=4
+cursor after cycle 1 (real Postgres row) -> '2026-08-01T00:15:00.0000000Z'
+redis stream length after cycle 1 (real XLEN) -> 4
+
+=== Simulating 3 new real-time alerts arriving between beat firings ===
+
+=== Invocation 2 (10 minutes later, per the real beat_schedule) ===
+    [stand-in] real POST https://login.microsoftonline.com/b3c1b5fc-828c-45fa-a1e1-10d74f6d6e9c/oauth2/v2.0/token -> 200 (minted real-poc-token-92ec1825c...)
+    [stand-in] real GET https://graph.microsoft.com/v1.0/security/alerts_v2?%24filter=lastUpdateDateTime+gt+2026-08-01T00%3A15%3A00.0000000Z $filter='lastUpdateDateTime gt 2026-08-01T00:15:00.0000000Z' -> 3 eligible alert(s)
+run_defender_poll_cycle() #2 -> accepted=3
+cursor after cycle 2 (real Postgres row) -> '2026-08-01T00:30:00.0000000Z'
+redis stream length after cycle 2 (real XLEN, cumulative) -> 7
+real INTEGRATION_SOURCE_POLL_COMPLETED audit rows for this org -> 2
+
+=== Invocation 3: honest 'not configured' skip path (DEFENDER_POLL_ORG_ID unset) ===
+raised DefenderPollNotConfiguredError as expected: defender_poll_org_id not configured -- no KronOS org to attribute this Defender alerts feed to
+
+=== Cleanup: removing this PoC's own test rows/keys ===
+    -> deleted 1 cursor row(s), 2 audit row(s)
+    -> deleted 1 redis stream key(s)
+
+ALL ASSERTIONS PASSED -- two consecutive real poll cycles, real Postgres cursor persistence + advancement, real Redis stream production, real per-cycle audit trail, and the honest not-configured skip path all verified.

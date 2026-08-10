@@ -6,6 +6,10 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from src.adapter.repository.source_cursor import (
+    InMemorySourceCursorRepository,
+    SourceCursorRepository,
+)
 from src.adapter.storage.storage import EvidenceStorage, PresignedUploadResponse
 from src.domain.evidence import Evidence
 from src.external.dependencies import (
@@ -13,6 +17,7 @@ from src.external.dependencies import (
     get_audit_log_repository,
     get_evidence_repository,
     get_evidence_storage,
+    get_source_cursor_repository,
     reset_dependencies,
 )
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
@@ -112,6 +117,46 @@ class TestDIContainer:
         reset_dependencies()
         with pytest.raises(RuntimeError):
             get_audit_log_repository()
+
+    def test_default_source_cursor_repository_is_in_memory(self) -> None:
+        """The raw module-level default stays InMemory -- same "honest,
+        real, in-memory until an explicit wire_dependencies_*() call
+        configures Postgres" shape every other repository in this
+        container already uses (Gap Audit P1-8's own resolution: this
+        literal default is intentionally NOT flipped, only the real
+        startup-time wiring is -- see wire_dependencies_async())."""
+        assert isinstance(get_source_cursor_repository(), InMemorySourceCursorRepository)
+
+    def test_configure_dependencies_wires_a_real_source_cursor_repository(self) -> None:
+        """Gap Audit P1-8: configure_dependencies() now accepts
+        source_cursor_repository, mirroring org_quota_repository's own
+        "None means keep current binding" idiom exactly."""
+
+        class _FakeCursorRepo(SourceCursorRepository):
+            async def get(self, org_id, source_id):  # type: ignore[no-untyped-def]
+                return None
+
+            async def upsert(self, cursor):  # type: ignore[no-untyped-def]
+                return cursor
+
+        fake_repo = _FakeCursorRepo()
+        configure_dependencies(
+            audit_log_repository=InMemoryAuditLogRepository(),
+            evidence_repository=InMemoryEvidenceRepository(),
+            evidence_storage=_StubStorage(),
+            source_cursor_repository=fake_repo,
+        )
+        assert get_source_cursor_repository() is fake_repo
+
+    def test_configure_dependencies_none_keeps_current_cursor_binding(self) -> None:
+        assert isinstance(get_source_cursor_repository(), InMemorySourceCursorRepository)
+        before = get_source_cursor_repository()
+        configure_dependencies(
+            audit_log_repository=InMemoryAuditLogRepository(),
+            evidence_repository=InMemoryEvidenceRepository(),
+            evidence_storage=_StubStorage(),
+        )
+        assert get_source_cursor_repository() is before
 
 
 class TestPresignedUploadResponse:

@@ -66,6 +66,7 @@ from src.application.cef_detection_mapper import CefDetectionMapper
 from src.application.collector_ingest import CollectorIngestService
 from src.application.correlation_sync import CorrelationSyncService
 from src.application.cost_gate import RuleCostGate
+from src.application.detection_sink_push import DetectionSinkPushService
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
 from src.application.enrichment import EnrichmentPipeline
@@ -77,6 +78,9 @@ from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
 from src.application.parsing_orchestration import ParsingOrchestrationService
+from src.application.playbook import PlaybookActionRegistry
+from src.application.playbook_actions import LogNotificationAction, TransitionDetectionTriageAction
+from src.application.playbook_execution import PlaybookExecutionService
 from src.application.quota_gate import StorageQuotaGate
 from src.application.risk_scoring import DetectionRiskScorer
 from src.application.rule_pack_publisher import RulePackPublisher
@@ -85,6 +89,7 @@ from src.application.scanning import AntivirusScanner, NoOpScanner
 from src.application.sealing_trigger_policy import SealingTriggerPolicy
 from src.application.sentinel_detection_mapper import SentinelDetectionMapper
 from src.application.splunk_detection_mapper import SplunkDetectionMapper
+from src.application.sync_detection_to_siem_action import SyncDetectionToSiemAction
 from src.application.tenant_usage import TenantUsageService
 from src.application.timeline_ingest import TimelineIngestionService
 from src.application.timestamping import RFC3161TimestampService
@@ -356,6 +361,23 @@ def get_integration_source_registry() -> IntegrationSourceRegistry:
 
 def get_source_cursor_repository() -> SourceCursorRepository:
     return _source_cursor_repository
+
+
+def get_integration_source_max_stream_length() -> int:
+    """Expose the same backpressure ceiling ``get_integration_source_ingest_service``
+    already builds its own ``IntegrationSourceIngestService`` with -- a real
+    getter (not a re-declared literal) so a Celery beat task (e.g. the
+    Defender poll task, Gap Audit P1-2) building its own task-scoped
+    ``IntegrationSourceIngestService`` reuses this exact configured value
+    rather than duplicating the constant and risking the two silently
+    drifting apart."""
+    return _integration_source_max_stream_length
+
+
+def get_integration_source_dedup_ttl_seconds() -> int:
+    """See :func:`get_integration_source_max_stream_length` -- same reasoning,
+    for the dedup TTL half of the pair."""
+    return _integration_source_dedup_ttl_seconds
 
 
 def get_inbound_source_authenticator() -> InboundSourceAuthenticator:
@@ -1093,6 +1115,89 @@ def get_detection_triage_service(
     return DetectionTriageService(detection_repository=detection_repository, audit_log=audit_log)
 
 
+def get_playbook_action_registry(
+    detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
+    triage_service: Annotated[DetectionTriageService, Depends(get_detection_triage_service)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> PlaybookActionRegistry:
+    """FastAPI dependency for PlaybookActionRegistry (roadmap M7/H1).
+
+    Real, previously-undiscovered gap closed here (Gap Audit 2026-08 P1-1):
+    this registry never had ANY DI wiring at all before -- every concrete
+    ``PlaybookAction`` (``TransitionDetectionTriageAction``,
+    ``LogNotificationAction``, this getter's new
+    ``SyncDetectionToSiemAction``) only ever existed registered inside test
+    files, meaning a real ``PlaybookExecutionService.execute()`` call would
+    have found zero real actions to run. Built fresh per call (mirrors
+    ``get_storage_quota_gate``'s own "cheap object, no reason to make it a
+    process-wide singleton" idiom) -- unlike ``_parser_registry``/
+    ``_integration_source_registry``, nothing here needs to survive across
+    requests or accumulate registrations over time.
+
+    ``SyncDetectionTicketAction`` is deliberately NOT registered here: no
+    concrete ``TicketingSystem`` implementation exists anywhere in this
+    codebase yet (only the ABC, ``src/adapter/ticketing/ticketing_system.py``)
+    -- registering it against a fabricated/mock ticketing backend would be
+    exactly the "plausible code without a captured real run" CLAUDE.md
+    SS F treats as an automatic fail. Add it here the same way the
+    SyncDetectionToSiemAction sinks are added below once a real
+    TicketingSystem is built and wired.
+
+    One ``SyncDetectionToSiemAction`` is registered per SIEM sink that is
+    actually configured (``get_splunk_hec_sink()`` et al. -- all honestly
+    ``None`` until real ``splunk_hec_url``/``cef_syslog_host``/``sentinel_*``
+    settings are provided, see each getter's own docstring) -- an
+    unconfigured deployment ends up with zero SyncDetectionToSiemAction
+    registrations, never a fabricated one pointed at nothing.
+    """
+    registry = PlaybookActionRegistry()
+    registry.register(TransitionDetectionTriageAction(triage_service))
+    registry.register(LogNotificationAction())
+
+    splunk_sink = get_splunk_hec_sink()
+    splunk_mapper = get_splunk_detection_mapper()
+    if splunk_sink is not None and splunk_mapper is not None:
+        registry.register(
+            SyncDetectionToSiemAction(
+                "splunk",
+                detection_repository,
+                DetectionSinkPushService(splunk_sink, splunk_mapper, audit_log),
+            )
+        )
+
+    cef_sink = get_cef_syslog_sink()
+    cef_mapper = get_cef_detection_mapper()
+    if cef_sink is not None and cef_mapper is not None:
+        registry.register(
+            SyncDetectionToSiemAction(
+                "cef",
+                detection_repository,
+                DetectionSinkPushService(cef_sink, cef_mapper, audit_log),
+            )
+        )
+
+    sentinel_sink = get_sentinel_sink()
+    sentinel_mapper = get_sentinel_detection_mapper()
+    if sentinel_sink is not None and sentinel_mapper is not None:
+        registry.register(
+            SyncDetectionToSiemAction(
+                "sentinel",
+                detection_repository,
+                DetectionSinkPushService(sentinel_sink, sentinel_mapper, audit_log),
+            )
+        )
+
+    return registry
+
+
+def get_playbook_execution_service(
+    registry: Annotated[PlaybookActionRegistry, Depends(get_playbook_action_registry)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> PlaybookExecutionService:
+    """FastAPI dependency for PlaybookExecutionService (roadmap M7/H1)."""
+    return PlaybookExecutionService(registry, audit_log)
+
+
 def get_rule_pack_service(
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RulePackService:
@@ -1267,6 +1372,7 @@ def configure_dependencies(
     enrichment_pipeline: EnrichmentPipeline | None = None,
     ioc_feed_repository: IOCFeedRepository | None = None,
     org_quota_repository: OrgQuotaRepository | None = None,
+    source_cursor_repository: SourceCursorRepository | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -1282,7 +1388,7 @@ def configure_dependencies(
     global _custom_rule_client, _custom_rule_detector_binder
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
-    global _org_quota_repository
+    global _org_quota_repository, _source_cursor_repository
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -1336,6 +1442,8 @@ def configure_dependencies(
         _ioc_feed_repository = ioc_feed_repository
     if org_quota_repository is not None:
         _org_quota_repository = org_quota_repository
+    if source_cursor_repository is not None:
+        _source_cursor_repository = source_cursor_repository
 
 
 def reset_dependencies() -> None:

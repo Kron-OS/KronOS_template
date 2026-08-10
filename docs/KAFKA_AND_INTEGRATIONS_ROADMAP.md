@@ -901,6 +901,15 @@ cursor persistence, real `$filter` enforcement).**
   (touches `configure_dependencies()`'s own already-created `engine`, a
   one-line change) that was not made here to keep this connector's own
   diff scoped to Q4's actual objective.
+  **V2 UPDATE (2026-08-10, Gap Audit P1-8 — CLOSED.)** `configure_dependencies()`
+  gained a `source_cursor_repository` parameter (same "`None` keeps
+  current binding" idiom as `org_quota_repository`) and
+  `wire_dependencies_async()` now builds and wires a real
+  `PostgresSourceCursorRepository(engine)`, with `create_tables()` called
+  alongside every other repository's own. Real fresh-instance-survives-
+  restart round-trip proof in
+  `poc/v2_connector_wiring/source_cursor_postgres_default/`. See
+  `docs/GAP_AUDIT_2026-08.md`'s "V2 STATUS" section for the full account.
 - **Honesty notes:** `evidence[]` (device/file/process/registry-key
   entities) is deliberately preserved verbatim, not flattened into ECS
   host/user/process fields — a real, still-open gap
@@ -958,6 +967,22 @@ loop model without further work). **Stage reached: test-stage (unchanged)
 plus real, live-verified `.env.example`/prod-compose documentation** — no
 live Entra ID tenant to poll against exists in this sandbox, so this is the
 honest ceiling, not a gap.
+
+**V2 UPDATE (2026-08-10, Gap Audit P1-2 — CLOSED.)** The "registered but
+never invoked" gap described above is fixed: a real `poll_defender_alerts`
+Celery beat task (`src/external/celery_app.py`, every 10 minutes) now
+calls `IntegrationSourceIngestService.run_poll_cycle()` for real, via a
+new `src/external/celery_defender.py` module that builds a fresh,
+task-scoped `httpx.AsyncClient`/Postgres engine/Redis client per
+invocation rather than reusing the FastAPI process's own process-lifetime
+one (full design rationale in that module's docstring). Real,
+two-consecutive-cycle proof in
+`poc/v2_connector_wiring/defender_poll_beat_task/` — see
+`docs/GAP_AUDIT_2026-08.md`'s "V2 STATUS" section for the full account.
+Still true, unchanged by this fix: no live Entra ID tenant exists in this
+sandbox, so the real end-to-end proof uses a local `httpx.MockTransport`
+stand-in for Entra ID/Graph (never a live Microsoft call), same honest
+ceiling as Q4's own original PoC.
 
 ---
 
@@ -1046,6 +1071,19 @@ needed).
   dictionary, Sentinel DCR-shaped columns); route/playbook-action wiring
   (mirrors H4's own identical "foundation only" precedent); retry/backoff
   on a failed push.
+  **V2 UPDATE (2026-08-10, Gap Audit P1-1 — playbook-action wiring
+  CLOSED.)** `DetectionSinkPushService` now has a real caller:
+  `SyncDetectionToSiemAction` (`src/application/sync_detection_to_siem_action.py`),
+  one instance registered per configured sink into a real
+  `PlaybookActionRegistry` (`get_playbook_action_registry()` in
+  `src/external/dependencies.py`, which itself had zero DI wiring at all
+  before this — a larger, adjacent gap closed in passing). Retry/backoff
+  on a failed push remains genuinely not built (unchanged, still real
+  future scope). See `docs/GAP_AUDIT_2026-08.md`'s "V2 STATUS" section for
+  the full account, including the still-open gap this does NOT close: no
+  HTTP route anywhere actually calls `PlaybookExecutionService.execute()`
+  yet, so a `SyncDetectionToSiemAction` step is dispatchable in principle
+  but not yet triggerable from a real end-user request.
 - **Not independently re-verified this pass (flagged, not silently
   assumed):** a dedicated "UDP `sendto()` to a closed port does not
   raise" *positive* test — accepted as an established POSIX/asyncio

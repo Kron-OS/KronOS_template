@@ -367,6 +367,34 @@ class Settings(BaseSettings):
             "server in test/dev, or a sovereign-cloud Graph endpoint in prod."
         ),
     )
+    # Which KronOS org the poll_defender_alerts beat task (Gap Audit
+    # P1-2/V2) attributes this Entra ID app registration's alerts feed to.
+    # One Entra tenant/app registration maps to exactly one KronOS org --
+    # there is no honest per-alert attribution signal in the alert payload
+    # itself (mirrors IntegrationSourceIdentity's own "org_id must never be
+    # derived from the external tool's own payload" invariant), so this
+    # must be an explicit deployment-time setting, not inferred. Unset is
+    # the same honest "not provisioned yet" state as the three defender_*
+    # credentials above -- the beat task no-ops (logs, returns 0) rather
+    # than guessing an org.
+    defender_poll_org_id: str | None = Field(
+        default=None,
+        description=(
+            "KronOS org (UUID) this Defender alerts feed belongs to. Required, "
+            "alongside defender_tenant_id/client_id/client_secret, for "
+            "poll_defender_alerts to actually poll; unset is an honest "
+            "disabled state."
+        ),
+    )
+    defender_poll_source_id: str = Field(
+        default="ms-defender-alerts",
+        description=(
+            "IntegrationSourceIdentity.source_id this feed's SourceCursor/"
+            "dedup keys are stored under -- override only if a deployment "
+            "needs more than one Defender app registration polled into the "
+            "same org (each would need a distinct source_id)."
+        ),
+    )
 
     # mTLS (internal service-to-service)
     tls_cert_path: str | None = Field(default=None, description="Path to service TLS certificate")

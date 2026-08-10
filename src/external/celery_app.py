@@ -84,6 +84,7 @@ celery_app.conf.update(
         "kronos.abort_orphan_parses": {"queue": "q.index"},
         "kronos.anchor_audit_log": {"queue": "q.index"},
         "kronos.auto_resume_quota_held": {"queue": "q.index"},
+        "kronos.poll_defender_alerts": {"queue": "q.index"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -126,6 +127,22 @@ celery_app.conf.update(
             # for its own concern, just on a tighter interval given quota
             # holds are the more common, more analyst-visible case.
             "schedule": crontab(minute="*/15"),
+        },
+        "poll-defender-alerts": {
+            "task": "kronos.poll_defender_alerts",
+            # Every 10 min, not hourly like the orphan-cleanup tasks above:
+            # this is the ONLY trigger that ever calls
+            # IntegrationSourceIngestService.run_poll_cycle() for the
+            # Defender source (Gap Audit P1-2) -- unlike auto_dispatch_
+            # received/auto_resume_quota_held, which are safety nets for a
+            # primary trigger that already exists elsewhere, there is no
+            # other path that ever polls Microsoft Graph's alerts_v2 feed.
+            # 10 minutes balances real-world alert latency against Entra
+            # ID's own ~60-minute access-token lifetime (see
+            # celery_defender.py's own docstring): losing the FastAPI
+            # process's cross-cycle OAuth2 token cache costs one extra
+            # cheap token POST per cycle, never more than 6/hour.
+            "schedule": crontab(minute="*/10"),
         },
     },
     timezone="UTC",
@@ -633,6 +650,58 @@ def auto_resume_quota_held(self: object) -> int:
         logger.warning("auto_resume_quota_held: repository not configured; skipping")
     logger.info("auto_resume_quota_held_done", extra={"resumed_candidates": count})
     return count
+
+
+# ---------------------------------------------------------------------------
+# poll_defender_alerts: 10-minutely Microsoft Defender alerts_v2 poll
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.poll_defender_alerts", bind=True, max_retries=1)
+def poll_defender_alerts(self: object) -> int:
+    """Poll Microsoft Defender's ``alerts_v2`` feed for new/updated alerts
+    (Gap Audit 2026-08 P1-2 -- closes the "registered but never invoked"
+    gap: ``configure_defender_poll_source_from_settings()`` wired a real
+    ``DefenderPollSource`` at startup, but nothing ever called
+    ``IntegrationSourceIngestService.run_poll_cycle()`` for it before this
+    task existed).
+
+    Delegates entirely to ``src.external.celery_defender.run_defender_poll_cycle()``
+    -- see that module's own docstring for why this task cannot safely reuse
+    the FastAPI process's own process-lifetime ``DefenderPollSource``/
+    ``httpx.AsyncClient`` (``get_defender_poll_source()``) and instead builds
+    every loop-bound resource fresh, per invocation, exactly like
+    ``celery_runtime.py`` already does for the evidence-parsing DAG's own
+    Postgres/OpenSearch resources.
+
+    An unconfigured deployment (no real Entra ID app registration or no
+    ``defender_poll_org_id`` set yet) is treated exactly like every other
+    beat task's own "repository/source not configured; skipping" idiom
+    (``abort_orphan_uploads`` et al. above) -- an honest no-op, not a retry
+    or an error. A real poll failure (Graph API unreachable, malformed
+    response, etc.) is retried once, then surfaces loudly -- ``run_poll_cycle``
+    has already audited the failure (``INTEGRATION_SOURCE_POLL_FAILED``)
+    before this task ever sees the exception.
+
+    Returns the number of real, non-duplicate alerts produced onto the
+    stream this cycle (0 for a no-op skip or a genuinely empty poll result).
+    """
+    from src.external.celery_defender import (  # noqa: PLC0415
+        DefenderPollNotConfiguredError,
+        run_defender_poll_cycle,
+    )
+
+    try:
+        accepted = run_defender_poll_cycle()
+    except DefenderPollNotConfiguredError as exc:
+        logger.info("poll_defender_alerts_not_configured", extra={"reason": str(exc)})
+        return 0
+    except Exception as exc:
+        logger.error("poll_defender_alerts_failed", extra={"error": str(exc)})
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+    logger.info("poll_defender_alerts_done", extra={"accepted_count": accepted})
+    return accepted
 
 
 # ---------------------------------------------------------------------------

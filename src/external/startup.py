@@ -72,6 +72,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_sealed_batch import (  # noqa: PLC0415
         PostgresSealedBatchRepository,
     )
+    from src.adapter.repository.postgres_source_cursor import (  # noqa: PLC0415
+        PostgresSourceCursorRepository,
+    )
     from src.adapter.repository.postgres_yara_rule_pack import (  # noqa: PLC0415
         PostgresYaraRulePackRepository,
     )
@@ -111,6 +114,19 @@ async def wire_dependencies_async() -> None:
     asset_repo = PostgresAssetRepository(engine)
     ioc_feed_repo = PostgresIOCFeedRepository(engine)
     org_quota_repo = PostgresOrgQuotaRepository(engine)
+    # Poll-source cursor persistence (Gap Audit P1-8): real Postgres
+    # wiring is safe here (unlike the Celery/sync path -- see
+    # wire_dependencies_sync()'s own docstring) because this whole
+    # function already runs inside the one long-lived event loop FastAPI's
+    # own lifespan owns; this engine and every repository built from it
+    # live exactly as long as that loop does. Only the FastAPI PUSH route
+    # (get_integration_source_ingest_service) resolves this via
+    # get_source_cursor_repository() today -- the Defender POLL beat task
+    # (celery_app.py's poll_defender_alerts) is loop-bound per-task instead
+    # and builds its own throwaway PostgresSourceCursorRepository, exactly
+    # mirroring org_quota_repo's own split between this process-wide
+    # instance and celery_runtime.py's per-task one.
+    source_cursor_repo = PostgresSourceCursorRepository(engine)
 
     await PostgresAuditLogRepository.create_tables(engine)
     await PostgresEvidenceRepository.create_tables(engine)
@@ -130,6 +146,7 @@ async def wire_dependencies_async() -> None:
     # repository's table never created because create_tables() was missing
     # from this exact list).
     await PostgresOrgQuotaRepository.create_tables(engine)
+    await PostgresSourceCursorRepository.create_tables(engine)
     # DeadLetterSink (roadmap M3/D5): create_tables() runs even though
     # nothing configures a Postgres-backed sink into the DI container below
     # yet (StreamNormalizationService itself isn't wired into
@@ -365,6 +382,7 @@ async def wire_dependencies_async() -> None:
             [AssetContextEnricher(asset_repo), IOCMatchEnricher(ioc_feed_repo)]
         ),
         org_quota_repository=org_quota_repo,
+        source_cursor_repository=source_cursor_repo,
     )
     configure_clamav_from_settings()
     configure_splunk_hec_sink_from_settings()
@@ -408,6 +426,9 @@ def wire_dependencies_sync() -> None:
     from src.adapter.repository.postgres_quota import (  # noqa: PLC0415
         PostgresOrgQuotaRepository,
     )
+    from src.adapter.repository.postgres_source_cursor import (  # noqa: PLC0415
+        PostgresSourceCursorRepository,
+    )
     from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
     from src.application.timestamping import RFC3161TimestampService  # noqa: PLC0415
     from src.config import Settings  # noqa: PLC0415
@@ -433,6 +454,17 @@ def wire_dependencies_sync() -> None:
             await PostgresEvidenceRepository.create_tables(engine)
             await PostgresArtifactRepository.create_tables(engine)
             await PostgresOrgQuotaRepository.create_tables(engine)
+            # Poll-source cursor table (Gap Audit P1-8) -- created here so
+            # it exists before poll_defender_alerts' own per-task
+            # PostgresSourceCursorRepository (celery_defender.py) ever runs,
+            # same "create_tables at real startup, not just at DI-configure
+            # time" rationale as PostgresOrgQuotaRepository's own comment
+            # above. This process never keeps a loop-bound
+            # PostgresSourceCursorRepository singleton itself (see this
+            # function's own docstring on why Postgres repos stay
+            # per-task here), so it is deliberately NOT also passed to
+            # configure_dependencies() below.
+            await PostgresSourceCursorRepository.create_tables(engine)
         finally:
             await engine.dispose()
 
@@ -494,16 +526,20 @@ def wire_dependencies_sync() -> None:
     # holding one open at configure time -- so they don't reintroduce the
     # cross-event-loop sharing bug this function's own docstring documents
     # Postgres/OpenSearch having to avoid. configure_defender_poll_source_
-    # from_settings() is deliberately NOT added here: its own docstring
-    # states it constructs and keeps alive a single process-lifetime
-    # httpx.AsyncClient specifically so DefenderPollSource's OAuth2 token
-    # cache persists across poll cycles -- reusing that one client from
-    # inside Celery's own per-task fresh-event-loop model (see this
-    # function's own docstring above) would risk exactly the "Future
+    # from_settings() is deliberately STILL NOT added here: its own
+    # docstring states it constructs and keeps alive a single
+    # process-lifetime httpx.AsyncClient specifically so DefenderPollSource's
+    # OAuth2 token cache persists across poll cycles -- reusing that one
+    # client from inside Celery's own per-task fresh-event-loop model (see
+    # this function's own docstring above) would risk exactly the "Future
     # attached to a different loop" failure class this sync path was built
-    # to avoid. Wiring Defender polling into Celery correctly needs a
-    # celery_runtime.py-style per-task client, not a copy-paste of the
-    # async path's call -- a real, scoped follow-up, not done here.
+    # to avoid. Gap Audit P1-2/Milestone V2 closed the "wiring Defender
+    # polling into Celery correctly" follow-up flagged here on 2026-08-09 --
+    # see src/external/celery_defender.py's own module docstring and
+    # celery_app.py's poll_defender_alerts task: a celery_runtime.py-style
+    # per-task client, built and disposed fresh every 10-minute beat
+    # invocation, rather than a copy-paste of this function's own
+    # process-lifetime call.
     configure_splunk_hec_sink_from_settings()
     configure_cef_syslog_sink_from_settings()
     configure_sentinel_sink_from_settings()
