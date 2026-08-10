@@ -52,6 +52,7 @@ addopts = ["--cov=src", "--cov=kronos_attest", "--cov-report=term-missing", "--c
 markers = [
     "integration: requires Docker (Postgres + MinIO containers)",
     "security_stack: requires the full security-enabled docker-compose.test.yml stack (real OpenSearch security plugin + real Keycloak org) -- see poc/ci_security_enabled_stack/ and .github/workflows/security-integration-tests.yml (Gap Audit P1-14 / V3)",
+    "admin_routes_real_keycloak: requires a real, reachable Keycloak instance (default: the shared dev-stack Keycloak at localhost:8080) -- see poc/admin_routes_real_keycloak/README.md (Gap Audit P1-15 / V5)",
 ]
 
 [tool.coverage.run]

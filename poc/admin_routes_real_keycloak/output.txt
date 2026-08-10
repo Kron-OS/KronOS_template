@@ -1,0 +1,71 @@
+=== Real pytest run: tests/integration/test_admin_routes_real_keycloak.py ===
+(against the shared dev-stack Keycloak 26.2 at http://localhost:8080,
+real kronos realm, throwaway kronos-v5-test-a/kronos-v5-test-b orgs)
+
+$ /home/reca/venv/bin/python -m pytest tests/integration/test_admin_routes_real_keycloak.py -v --no-cov -p no:cacheprovider
+
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.1.1, pluggy-1.6.0 -- /home/reca/venv/bin/python
+rootdir: /home/reca/Claude/Kronos/KronOS_template/.claude/worktrees/agent-a33825d02875c40c6
+configfile: pyproject.toml
+plugins: Faker-40.32.0, cov-7.1.0, anyio-4.14.2, asyncio-1.4.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 6 items
+
+tests/integration/test_admin_routes_real_keycloak.py::test_invite_user_creates_real_user_linked_only_to_caller_org PASSED [ 16%]
+tests/integration/test_admin_routes_real_keycloak.py::test_invite_user_rejects_reusing_an_email_that_belongs_to_another_org PASSED [ 33%]
+tests/integration/test_admin_routes_real_keycloak.py::test_update_user_role_persists_in_real_keycloak PASSED [ 50%]
+tests/integration/test_admin_routes_real_keycloak.py::test_update_user_role_rejects_cross_org_target PASSED [ 66%]
+tests/integration/test_admin_routes_real_keycloak.py::test_remove_user_removes_real_org_membership PASSED [ 83%]
+tests/integration/test_admin_routes_real_keycloak.py::test_remove_user_cannot_remove_a_cross_org_member PASSED [100%]
+
+============================== 6 passed in 4.97s ===============================
+
+=== Standalone probe: real observed status code for remove_user's cross-org case ===
+(the pytest test above only asserts status_code >= 400; this probe captures
+the EXACT real value, run separately against a disposable probe org/user pair)
+
+$ /home/reca/venv/bin/python /tmp/probe_remove_cross_org.py
+
+REAL RESULT: remove_user(org-A-admin, cross-org target) -> HTTPException status_code=503 detail='Keycloak Admin API request failed'
+cleaned up probe org/user
+
+Finding (not a tenant-isolation bug -- the mutation is correctly blocked,
+the org-B user remains a real member of org B afterward in both the pytest
+test and this probe): remove_user's DELETE target
+(/organizations/{tenant.org_id}/members/{user_id}) is already org-scoped by
+construction, so Keycloak itself rejects a delete of a non-member with a
+real 404. admin.py's _to_http_error() only special-cases 400->422 and
+409->409; every other status (including this real 404) falls through to
+the generic 503 "Keycloak Admin API returned server error" branch. The
+isolation guarantee holds for real, but the surfaced error message
+(503/"service unavailable") is misleading to an org-admin who just tried to
+remove a user id that simply isn't in their org -- a real, if low-severity,
+error-mapping imprecision worth a follow-up (see GAP_AUDIT_2026-08.md P1-15
+V5 STATUS note).
+
+=== Real cleanup verification: shared dev-stack Keycloak left with zero test debris ===
+
+$ python3 /tmp/kc_check.py   # lists all real orgs in the kronos realm
+master admin token OK: eyJhbGciOiJSUzI1NiIs ...
+ORG: 482072f5-8086-4815-be03-879cc2eaecb5 kronos-dev KronOS Dev
+
+$ python3 /tmp/kc_check_users.py   # confirms no v5- prefixed users remain
+leftover v5- users: []
+ALL realm users now: ['admin', 'analyst', 'case-lead', 'poc-h2-user-09784061']
+
+('poc-h2-user-09784061' pre-existed before this V5 run -- debris from an
+earlier, unrelated milestone-H2 PoC, not created or touched by this item;
+left alone per this initiative's "never touch what you didn't create" rule.)
+
+=== Real service-account permission check performed before writing the suite ===
+(confirms the kronos-backend confidential client's service account --
+manage-users/view-users/manage-realm/view-realm per
+docker/keycloak/kronos-realm.json -- can actually call the Organizations
+Admin API that admin.py's routes depend on; this was not assumed)
+
+$ python3 /tmp/kc_check2.py
+kronos-backend service-account token OK: eyJhbGciOiJSUzI1NiIs ...
+GET /organizations -> 200 [{'id': '482072f5-8086-4815-be03-879cc2eaecb5', 'name': 'KronOS Dev', 'alias': 'kronos-dev', ...}]
+kronos-dev org id: 482072f5-8086-4815-be03-879cc2eaecb5
+GET members -> 200 [{'id': '10000000-0000-4000-8000-000000000001', 'username': 'admin', ...}]

@@ -113,7 +113,7 @@ of a section.
 | P1-12 (V4) | **V4 STATUS: RESOLVED.** Real `alembic>=1.13` (1.19.1 installed/exercised) adopted, async `env.py` per Alembic's own documented cookbook pattern, combined `MetaData` built from all 14 `postgres_*.py` modules (`migrations/target_metadata.py`), real baseline migration generated and verified against a real throwaway Postgres: `alembic upgrade head` from empty produces a schema column-for-column/constraint-for-constraint/index-for-index identical to `create_tables()`'s own output across all 21 tables (`poc/alembic_migration_baseline/`, real captured output, zero mismatches). Boot-sequence design decision: a one-shot `db-migrate` init container (mirroring the existing `keycloak-init`/`opensearch-init` pattern) now runs `alembic upgrade head` before `kronos-backend`/`celery-worker*`/`celery-beat` start in all three compose files; `create_tables()` invocations were REMOVED from `src/external/startup.py`'s `wire_dependencies_async()`/`wire_dependencies_sync()` (the 14 repositories' own `create_tables()` classmethods are unchanged and still used directly by `tests/integration/conftest.py`). | `alembic.ini`; `migrations/`; `docs/DATABASE_MIGRATIONS.md`; `poc/alembic_migration_baseline/` | Done — explicit stated gap: upgrade-from-an-existing-populated-database was not tested (only empty-database round-trip); `docs/DATABASE_MIGRATIONS.md` documents the `alembic stamp head` procedure for that case. |
 | P1-13 | **`TenantUsageService.get_current_usage_bytes()` is an uncached `SUM(size_bytes)` query, now confirmed live on every evidence upload** (`StorageQuotaGate` calls it on every quota check, not hypothetically — quota enforcement landed and is active). No caching/rate-limiting layer exists yet; real-world query cost under load has not been measured. | `src/application/tenant_usage.py`; `src/application/quota_gate.py` | S–M (measure first per CLAUDE.md §F discipline, then decide whether a cache is even needed) |
 | P1-14 | **`docker-compose.test.yml` still has `DISABLE_SECURITY_PLUGIN=true` and no TLS/Keycloak scaffolding**, blocking any CI-realistic run of anything that depends on the A3 isolation model (OpenSearch DLS, Keycloak-issued tenant context) — this is why the detection-validation harness (I1), and by extension any future connector's "dev stage" work, still runs manually against the shared dev stack rather than in CI. Confirmed unchanged by direct file read. This single fix would unblock CI wiring for I1's harness, all six Q/R connectors' own dev-stage verification, and any future security-plugin-dependent test. | `docker/docker-compose.test.yml`; flagged independently by I1 and `IMPROVEMENT_IDEAS.md` §3 | L (enable + verify security plugin in test compose, add TLS/`step-ca`/Keycloak-init scaffolding, confirm footprint fits a GitHub Actions runner — named by I1 as its own scoped follow-up) |
-| P1-15 | **Admin org-membership routes (`invite_user`/`update_user_role`/`remove_user`) have no real-Keycloak integration/PoC coverage.** Direct code read confirms these are correctly org-scoped and `_assert_user_in_org()`-checked before mutation (no tenant-isolation bug found), but `src/external/routes/admin.py` is only 61% unit-covered and every Keycloak-calling helper (`_keycloak_admin_request`, `_assign_realm_role`, `_add_org_member`, etc.) is exercised only against a mocked `httpx`, never a real Keycloak instance. Given these are the exact routes that grant/revoke org membership and roles, CLAUDE.md §F's "verification-first" bar arguably applies here as much as it does to the six new connectors. | `src/external/routes/admin.py`; `tests/unit/test_admin_routes.py` | M (a real-Keycloak PoC/integration test exercising invite → role-change → remove against a live container, mirroring the rigor already applied to Q1–Q4/R1–R4) |
+| P1-15 (V5) | **V5 STATUS: RESOLVED.** `invite_user`/`update_user_role`/`remove_user` now have real-Keycloak integration coverage (`tests/integration/test_admin_routes_real_keycloak.py`, 6/6 real checks passed against the shared dev-stack Keycloak 26.2), calling the real route handlers directly with zero mocks: real user creation + org-linking (confirmed via a second, independent Admin API call, never trusted from the route's own response), a real cross-org email-reuse rejection (409, AUTH-003/AUTH-011), a real role change that persists and is read back fresh, a real 403 cross-org role-change rejection, a real org-membership removal (confirmed the realm-level account survives — `remove_user` only unlinks org membership, documented not assumed), and a real cross-org removal attempt correctly blocked (surfaces as a real 503 — see "real bug" note below). Every mutation's audit event (`ORG_USER_INVITED`/`ORG_USER_ROLE_CHANGED`/`ORG_USER_REMOVED`) was independently read back from a fresh `PostgresAuditLogRepository` connection. **No tenant-isolation bug found** — the original P1-15 code-review finding holds up under real execution. **One real, minor, non-security finding:** `_to_http_error()` only special-cases Keycloak's 400/409; a real 404 (e.g. `remove_user` targeting a non-member) falls through to a generic 503 "service unavailable," which is misleading to an org-admin even though the isolation guarantee itself holds (confirmed: the target user is never actually removed). See `poc/admin_routes_real_keycloak/README.md` for the full account, including a real, previously-unverified precondition this item confirmed (the `kronos-backend` service account's `manage-realm` role is in fact sufficient for the Organizations Admin API in Keycloak 26.2 — not documented anywhere before this pass). | `src/external/routes/admin.py`; `tests/unit/test_admin_routes.py`; `tests/integration/test_admin_routes_real_keycloak.py`; `poc/admin_routes_real_keycloak/` | Done — follow-up noted: `_to_http_error()`'s 404→503 fallback could be made more precise (e.g. a dedicated 404 branch), left as a real but low-severity, non-blocking polish item, not fixed in this pass to keep it scoped to verification per the V5 brief. |
 | P1-16 | **Postgres and MinIO — the components the platform's actual custody guarantee depends on — remain single-instance with no HA/replication configured anywhere**, while this initiative spent real research effort on Kafka/Redpanda HA for the *stream ingest* layer (correctly concluded not worth adopting) without addressing the more load-bearing gap underneath it. Confirmed unchanged (§0 of the Kafka roadmap itself calls this "a real prioritization inconsistency" but no follow-up item was opened). | `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md` §0; `docker/docker-compose.prod.yml` | L (Postgres HA/replication and MinIO multi-node/erasure-coding are both real infra projects, not quick fixes — likely needs its own scoped research pass first, mirroring how the Kafka question itself was handled) |
 
 ### P2 — nice-to-have / polish / lower-risk debt
@@ -515,3 +515,105 @@ every touched Python file (`poc/ci_security_enabled_stack/*.py`,
 the end of this pass; the shared `docker-compose.dev.yml` stack and
 `portainer_agent` were only ever observed (`docker stats`), never
 started/stopped/modified.
+
+---
+
+## V5 STATUS (2026-08-10): DONE — real bug NOT found (isolation holds); one minor error-mapping finding
+
+Closed P1-15. Applied CLAUDE.md §F's verification-first bar to
+`src/external/routes/admin.py`'s `invite_user`/`update_user_role`/
+`remove_user` — previously exercised only against a mocked `httpx`
+(`tests/unit/test_admin_routes.py`).
+
+**Instance used:** the shared, already-running `docker-compose.dev.yml`
+Keycloak 26.2 (`docker-keycloak-1`, confirmed healthy via `docker ps`,
+reachable at `http://localhost:8080`), per this initiative's own standing
+instruction to use it directly rather than standing up a new one. Its real
+`kronos` realm and real `kronos-dev` org (three real users) were never
+touched — this item created and fully deleted its own two throwaway orgs
+(`kronos-v5-test-a`/`kronos-v5-test-b`) and throwaway users, independently
+re-verified clean afterward via a fresh Admin API read
+(`poc/admin_routes_real_keycloak/output.txt`).
+
+**Real precondition confirmed before writing anything** (not assumed): the
+`kronos-backend` confidential client's service account — the identity
+`admin.py`'s own `_get_service_account_token()` authenticates as — is only
+granted `manage-users`/`view-users`/`manage-realm`/`view-realm` in
+`kronos-realm.json`, none of which is named "manage-organizations." Tested
+directly against the real running Keycloak: a real client-credentials token
+for `kronos-backend` genuinely lists organizations and reads org members
+with 200s. This confirms `manage-realm` is in fact sufficient for the
+Organizations Admin API in Keycloak 26.2 — a real assumption every one of
+`admin.py`'s Keycloak calls depends on, never independently confirmed
+before this pass.
+
+**What was actually run, real, against real Keycloak** (all six routes
+called as real coroutines, zero `httpx` mocks; `tests/integration/
+test_admin_routes_real_keycloak.py`, 6/6 passed):
+
+1. `invite_user` — real user created, real org-A membership confirmed via a
+   **second, independent** Admin API call (never trusted from the route's
+   own return value), confirmed NOT linked to org B, confirmed the
+   `analyst` realm role, confirmed the `ORG_USER_INVITED` audit event by
+   reading it back from a **fresh** `PostgresAuditLogRepository` connection
+   (testcontainers Postgres, not the in-process writer).
+2. `invite_user` cross-org negative case — an org-A admin attempted to
+   reuse an email that is a real member of org B only: real 409
+   (AUTH-003/AUTH-011), confirmed the org-B user's role/membership
+   untouched.
+3. `update_user_role` — real role change, confirmed via a fresh Admin API
+   read that the stale managed role was removed and the new one persisted
+   (`_set_realm_role`'s set-replace semantics verified both directions),
+   confirmed the `ORG_USER_ROLE_CHANGED` audit event read back fresh.
+4. `update_user_role` cross-org negative case — real 403 from
+   `_assert_user_in_org`, confirmed the target's real roles were completely
+   unchanged, confirmed no audit event was written for the rejected
+   attempt.
+5. `remove_user` — real org-A membership removal confirmed via a fresh
+   Admin API read. **Documented, not assumed:** the realm-level account
+   (`GET /users/{id}`) still exists afterward — `remove_user` only ever
+   DELETEs the org-membership link, never the account itself.
+6. `remove_user` cross-org negative case — a standalone probe (outside the
+   pytest assertion's `>= 400` check) captured the **exact** real value:
+   `503` ("Keycloak Admin API returned server error"). Keycloak's own real
+   response to this DELETE against a non-member is a 404;
+   `_to_http_error()` only special-cases 400/409, so this real 404 falls
+   through to the generic 503 branch. **The isolation guarantee genuinely
+   holds** (the org-B user remains a real member of org B in both runs) —
+   this is a real, minor, non-security error-mapping imprecision, not a
+   tenant-isolation bug.
+
+**No tenant-isolation bug found** — the original P1-15 code-review finding
+("correctly org-scoped ... no tenant-isolation bug found") holds up under
+real execution against a real Keycloak, across all three routes and all
+four required scenarios (invite/role-change/remove/cross-tenant negative).
+
+**Real fixture-only finding along the way:** this realm's Keycloak rejects
+org creation with `domains: []` ("You must provide at least one domain") —
+`scripts/provision_keycloak_org.sh` nominally tolerates an empty
+`ORG_DOMAIN`, but every real invocation in this repo (dev's
+`ORG_DOMAIN=kronos.dev`, V3's `org-b.kronos-ci.test`) always sets one, so
+this path had never actually been exercised. Not a bug in `admin.py`
+(which never creates orgs) — just this item's own test fixture needing a
+real domain like every other real caller in the repo.
+
+**Verification:** fresh `pytest tests/unit -q` (real `git stash -u` +
+re-run, personally observed, not reconstructed from memory) — baseline
+**1701 passed, 1 skipped**; after this pass, **identical: 1701 passed, 1
+skipped** (zero new unit tests — this item is `tests/integration`/`poc`-only,
+zero `src/` changes). Full `tests/integration` suite: **123 passed, 1
+skipped** (includes this item's own 6 new tests; the 1 skip is pre-existing
+and unrelated — `testcontainers[minio]` path, not this item's Keycloak
+skip gate, which did not trigger since the real Keycloak was reachable).
+`mypy src` baseline and post-change both **29 errors in 10 files**,
+identical set, zero new (no `src/` files touched). `ruff check`/
+`black --check` clean on every touched Python file
+(`tests/integration/test_admin_routes_real_keycloak.py`) and on
+`pyproject.toml`'s new `admin_routes_real_keycloak` marker registration.
+
+**Real cleanup confirmed:** a fresh Admin API read after the run shows only
+the pre-existing `kronos-dev` org and its three real users
+(`admin`/`analyst`/`case-lead`), plus one unrelated, pre-existing
+`poc-h2-user-*` account from an earlier, different milestone's PoC that
+this item did not create and did not touch — zero `kronos-v5-*`/`v5-*`
+debris remained (`poc/admin_routes_real_keycloak/output.txt`).
