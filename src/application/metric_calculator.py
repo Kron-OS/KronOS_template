@@ -30,7 +30,7 @@ class MetricCalculator(ABC):
     @property
     @abstractmethod
     def metric_name(self) -> str:
-        """Stable registry key (e.g. ``"mttd_seconds"``)."""
+        """Stable registry key (e.g. ``"sa_cycle_time_seconds"``)."""
 
     @abstractmethod
     async def compute(self, tenant: TenantContext) -> MetricResult:

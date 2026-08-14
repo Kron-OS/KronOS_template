@@ -1,4 +1,4 @@
-"""Unit tests for MeanTimeToDetectCalculator (roadmap M8/I2)."""
+"""Unit tests for SecurityAnalyticsCycleTimeCalculator (roadmap M8/I2, Gap Audit P1-11 rename)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from src.adapter.opensearch.client import InMemoryOpenSearchClient
 from src.adapter.repository.detection import InMemoryDetectionRepository
-from src.application.metric_mttd import MeanTimeToDetectCalculator
+from src.application.metric_sa_cycle_time import SecurityAnalyticsCycleTimeCalculator
 from src.domain.detection import Detection
 from tests.fixtures.factories import make_tenant_context
 
@@ -31,10 +31,12 @@ def _detection(
     )
 
 
-class TestMeanTimeToDetectCalculator:
+class TestSecurityAnalyticsCycleTimeCalculator:
     @pytest.mark.asyncio
     async def test_no_detections_reports_unavailable(self) -> None:
-        calc = MeanTimeToDetectCalculator(InMemoryDetectionRepository(), InMemoryOpenSearchClient())
+        calc = SecurityAnalyticsCycleTimeCalculator(
+            InMemoryDetectionRepository(), InMemoryOpenSearchClient()
+        )
         result = await calc.compute(make_tenant_context())
 
         assert result.value is None
@@ -52,7 +54,9 @@ class TestMeanTimeToDetectCalculator:
         await timeline_index.bulk_index([(_INDEX, "doc-1", {"@timestamp": event_time.isoformat()})])
         await detection_repo.save(_detection(tenant.org_id, "finding-1", ("doc-1",), synced_at))
 
-        result = await MeanTimeToDetectCalculator(detection_repo, timeline_index).compute(tenant)
+        result = await SecurityAnalyticsCycleTimeCalculator(detection_repo, timeline_index).compute(
+            tenant
+        )
 
         assert result.value == pytest.approx(120.0)
         assert result.sample_size == 1
@@ -75,7 +79,9 @@ class TestMeanTimeToDetectCalculator:
             _detection(tenant.org_id, "finding-1", ("doc-early", "doc-late"), synced_at)
         )
 
-        result = await MeanTimeToDetectCalculator(detection_repo, timeline_index).compute(tenant)
+        result = await SecurityAnalyticsCycleTimeCalculator(detection_repo, timeline_index).compute(
+            tenant
+        )
 
         # min(event_times) is doc-early (00:00:00) -> 600s delta, not doc-late's 300s.
         assert result.value == pytest.approx(600.0)
@@ -89,7 +95,9 @@ class TestMeanTimeToDetectCalculator:
             _detection(tenant.org_id, "finding-1", ("missing-doc",), datetime.now(UTC))
         )
 
-        result = await MeanTimeToDetectCalculator(detection_repo, timeline_index).compute(tenant)
+        result = await SecurityAnalyticsCycleTimeCalculator(detection_repo, timeline_index).compute(
+            tenant
+        )
 
         assert result.value is None
         assert result.detail["skipped_missing_doc"] == 1
@@ -100,7 +108,7 @@ class TestMeanTimeToDetectCalculator:
         detection_repo = InMemoryDetectionRepository()
         await detection_repo.save(_detection(tenant.org_id, "finding-1", (), datetime.now(UTC)))
 
-        result = await MeanTimeToDetectCalculator(
+        result = await SecurityAnalyticsCycleTimeCalculator(
             detection_repo, InMemoryOpenSearchClient()
         ).compute(tenant)
 
@@ -120,7 +128,9 @@ class TestMeanTimeToDetectCalculator:
             _detection(tenant_b.org_id, "finding-1", ("doc-1",), datetime.now(UTC))
         )
 
-        result = await MeanTimeToDetectCalculator(detection_repo, timeline_index).compute(tenant_a)
+        result = await SecurityAnalyticsCycleTimeCalculator(detection_repo, timeline_index).compute(
+            tenant_a
+        )
 
         assert result.value is None
         assert result.detail["total_detections"] == 0

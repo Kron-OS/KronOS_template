@@ -21,7 +21,9 @@ up from this session's own H1-I1 PoC work, confirmed via
 
 This script exercises the real, unmodified src/ classes:
   src/application/metric_calculator.py  -- MetricCalculator/MetricRegistry/MetricsService
-  src/application/metric_mttd.py        -- MeanTimeToDetectCalculator
+  src/application/metric_sa_cycle_time.py -- SecurityAnalyticsCycleTimeCalculator
+    (formerly metric_mttd.py / MeanTimeToDetectCalculator -- see V7,
+    docs/GAP_AUDIT_2026-08.md P1-11 -- the numbers below predate the rename)
   src/application/metric_fp_rate.py     -- FalsePositiveRateCalculator
   src/application/metric_rule_coverage.py -- RuleCoverageCalculator
   src/application/metric_sealer_lag.py  -- SealerLagCalculator
@@ -79,8 +81,8 @@ from src.application.audit_log import AuditLogService  # noqa: E402
 from src.application.batch_sealing import BatchSealingService  # noqa: E402
 from src.application.metric_calculator import MetricRegistry, MetricsService  # noqa: E402
 from src.application.metric_fp_rate import FalsePositiveRateCalculator  # noqa: E402
-from src.application.metric_mttd import MeanTimeToDetectCalculator  # noqa: E402
 from src.application.metric_rule_coverage import RuleCoverageCalculator  # noqa: E402
+from src.application.metric_sa_cycle_time import SecurityAnalyticsCycleTimeCalculator  # noqa: E402
 from src.application.metric_sealer_lag import SealerLagCalculator  # noqa: E402
 from src.application.sealing_trigger_policy import SizeBoundTriggerPolicy  # noqa: E402
 from src.domain.user import Role, TenantContext  # noqa: E402
@@ -161,7 +163,7 @@ async def main() -> None:
     )
 
     registry = MetricRegistry()
-    registry.register(MeanTimeToDetectCalculator(detection_repo, opensearch))
+    registry.register(SecurityAnalyticsCycleTimeCalculator(detection_repo, opensearch))
     registry.register(FalsePositiveRateCalculator(audit_repo))
     registry.register(RuleCoverageCalculator(detection_repo, rule_catalog))
     registry.register(SealerLagCalculator(sealed_batch_repo, stream_adapter))
@@ -209,8 +211,10 @@ async def main() -> None:
             KRONOS_DEV_ORG_ID, LIVE_DEMO_SOURCE_ID, f"live-metrics-poc-event-{i}".encode()
         )
     sealed = await sealing_service.seal_pending(KRONOS_DEV_ORG_ID, LIVE_DEMO_SOURCE_ID)
-    print(f"Real seal_pending() result: batch_id={sealed.batch_id if sealed else None}, "
-          f"event_count={sealed.event_count if sealed else None}")
+    print(
+        f"Real seal_pending() result: batch_id={sealed.batch_id if sealed else None}, "
+        f"event_count={sealed.event_count if sealed else None}"
+    )
 
     # Produce more events WITHOUT consuming them -- a real, undelivered
     # backlog (the "lag" failure mode, not "pending").
