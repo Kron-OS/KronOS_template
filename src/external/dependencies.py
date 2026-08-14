@@ -669,7 +669,13 @@ def configure_splunk_hec_sink_from_settings() -> None:
         scheme="Splunk",
         verify=s.splunk_hec_verify_tls,
     )
-    _splunk_hec_sink = SplunkHecSink(s.splunk_hec_url, authenticator)
+    _splunk_hec_sink = SplunkHecSink(
+        s.splunk_hec_url,
+        authenticator,
+        enable_indexer_ack=s.splunk_hec_enable_indexer_ack,
+        ack_poll_timeout=s.splunk_hec_ack_poll_timeout,
+        ack_poll_interval=s.splunk_hec_ack_poll_interval,
+    )
     _splunk_detection_mapper = SplunkDetectionMapper(
         source=s.splunk_hec_source,
         sourcetype=s.splunk_hec_sourcetype,

@@ -101,7 +101,9 @@ of a section.
 | P1-1 | **No caller anywhere pushes a `Detection` to any of the three built sinks.** `DetectionSinkPushService`/`SplunkHecSink`/`CefSyslogSink`/`SentinelHttpSink` are all real, tested, and dev/prod-wired for config — but zero routes and zero `PlaybookAction`s call `DetectionSinkPushService.push()`. The entire R-series (Milestones R1–R4, six connectors' worth of sink work) is currently unreachable from any real KronOS workflow. | `src/application/detection_sink_push.py` (confirmed via grep: no callers in `src/external/routes/` or `src/application/playbook_actions.py`); roadmap R1–R4 "Not built here, by design" notes | M (a `SyncDetectionToSiemAction` `PlaybookAction`, mirroring `SyncDetectionTicketAction`/H4's own precedent) |
 | P1-2 | **Defender poll source is registered but never invoked.** `configure_defender_poll_source_from_settings()` runs at startup and registers a real `DefenderPollSource`, but `celery_app.py`'s `beat_schedule` has no task calling `IntegrationSourceIngestService.run_poll_cycle()` on a timer. Confirmed still true by direct re-read of `beat_schedule` (6 tasks, none integration-source-related). Setting real Defender credentials today makes the source *available*, not *active*. Same class of gap will recur for any future poll-mode source (CrowdStrike-class excepted, deferred). | `src/external/celery_app.py`; `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md` Q4 Milestone S update | S–M (new beat task + a `run_dependencies_sync`-safe per-task client, since Defender's OAuth2 strategy holds a process-lifetime `httpx.AsyncClient` — flagged as unsafe to naively copy R2/R3/R4's fix) |
 | P1-3 | **Splunk HEC `ackId` indexer-acknowledgement polling not built.** A 2xx+body from HEC only confirms the event was *accepted*, not that Splunk's indexer actually wrote it — the more rigorous ack mode exists in HEC's own protocol and is explicitly deferred. | `src/adapter/integration_sink/splunk_hec_sink.py` docstring; roadmap R2 | M |
+| P1-3 (V6) | **V6 STATUS: RESOLVED — built and verified for real.** `SplunkHecSink` now supports opt-in `enable_indexer_ack=True`: real `X-Splunk-Request-Channel` header on every push, real `ackId` parsed from the push response, and a new `check_ack_status()` method polling the real `/services/collector/ack` endpoint. Design decision (full reasoning in the sink's own module docstring): synchronous polling inside `push_events()` with a real, bounded, per-sink-configured timeout (`ack_poll_timeout`, default 30s), resolving to a genuine third `SinkAckStatus.ACK_PENDING` (`src/domain/integration_sink.py`) if the timeout elapses before confirmation — never raised, never fabricated as `ACKNOWLEDGED`. `check_ack_status()` doubles as the separate out-of-band resolution mechanism for a caller that would rather not block. Proven against a real `splunk/splunk:9.3.3` container with a real `useACK=1` HEC token (created via a real REST call, since neither `docker-splunk` nor `splunk-ansible`'s `getHEC()` exposes a `SPLUNK_HEC_*` env var for it — confirmed by re-reading `environ.py`'s source this pass): real push → real `ackId` → real poll returning `false` at t≈0.004s → real poll returning `true` at t≈1.02s (`poc/splunk_hec_ack_polling/output.txt`, 17/17 checks, first real run, no bug found). Also real-verified and now handled: HEC's own "read-once" ack semantics (a resolved `true` ackId returns `false` on re-query — matches Splunk's own documented behavior, not a bug), the real `400`/`code:10` "Data channel is missing" error when a channel is omitted against a `useACK=1` token, and the real `400`/`code:11` "Invalid data channel" error for an unrecognized channel. `DetectionSinkPushService`/`SinkPushResult.all_acknowledged` required **zero code changes** — both already treat any non-`ACKNOWLEDGED` status as unconfirmed by construction. | `src/adapter/integration_sink/splunk_hec_sink.py`; `src/domain/integration_sink.py`; `src/config.py`; `src/external/dependencies.py`; `poc/splunk_hec_ack_polling/` | Done — disabled by default (`splunk_hec_enable_indexer_ack=False`), since it requires a real, separate, operator-driven `useACK=1` token change on the Splunk side that KronOS cannot itself apply. |
 | P1-4 | **Sentinel push: 204 only confirms Logs Ingestion API acceptance, not DCR-transform/table-ingestion success** (structurally the same class of gap as P1-3 — ingestion is asynchronous past the synchronous API layer). No mechanism exists to confirm data actually landed in `KronOSDetection_CL`. | `src/adapter/integration_sink/sentinel_sink.py`; roadmap R4 | M–L (would need a real Azure subscription + Log Analytics query to close for real, not just design) |
+| P1-4 (V6) | **V6 STATUS: DESIGNED, explicitly NOT implemented or run** — same real constraint R4 itself already hit (no Azure subscription available in this sandbox; re-confirmed this pass: no `az` CLI, no `AZURE_*` env vars). A real, cited-against-current-docs design was added to `sentinel_sink.py`'s own module docstring: the real `azure-monitor-query` package (current major `2.0.0`), `azure.monitor.query.aio.LogsQueryClient.query_workspace(workspace_id, query, timespan=...)` (real method signature/return shape — `LogsQueryResult`/`LogsQueryStatus.SUCCESS` — fetched from Microsoft's own current SDK overview doc this pass), a real KQL query (`KronOSDetection_CL \| where FindingId == '<finding_id>' \| count`, using `FindingId` — the mapper's own real, non-nullable, documented column — as the correlation key), and a named, real, additional required Azure RBAC role (`Log Analytics Reader` on the destination workspace, distinct from ingestion's own `Monitoring Metrics Publisher` DCR role). Explicitly designed as a **standalone class outside the `IntegrationSink` hierarchy** (`SentinelIngestionConfirmationChecker`, not a `SentinelHttpSink` method) since the Query SDK takes an `azure-identity` `TokenCredential` directly, not this package's own `SinkAuthenticator`/`SinkAuthParams` contract — a real, justified reason no code was forced to fit the existing shape. No `src/` class was written, no dependency was added to `pyproject.toml`, and no stand-in/mocked client was built to simulate a "pass" — writing a class with nothing real to run it against would itself be the "plausible code without a captured real run" failure mode this initiative exists to stop. Closing this for real needs a real Azure subscription with a real Log Analytics workspace + DCR + app registration holding both RBAC roles. | `src/adapter/integration_sink/sentinel_sink.py` docstring | Design-only — not started as an implementation task, correctly gated on real Azure access per CLAUDE.md SS F. |
 | P1-5 | **fluent-bit `Syslog_Severity_Key level` bug: numeric 0–7 severity expected, KronOS's own structured logger emits a keyword string (`"info"`).** Confirmed live during Milestone S (`[warn] ... invalid severity: 'info'`) — falls back to a default severity rather than failing, so it's silently wrong rather than broken, which is worse for anyone relying on real severity-based syslog routing downstream. | `docker/fluent-bit/fluent-bit.conf`; roadmap Q3/Milestone S | S (a `modify`/`lua` filter translating level string → syslog severity int) |
 | P1-6 | **`nginx_logs` Docker volume exists with no real producer.** nginx doesn't write access logs to any shared volume in this repo, so the volume declaration is a no-op — anyone assuming nginx access logs flow into the SIEM stack (a reasonable assumption given fluent-bit/Wazuh/Falco all exist) would be wrong. | `docker/fluent-bit/docker-compose.fluent-bit.yml`; roadmap Q3/Milestone S | S–M (real nginx access-log config + volume mount) |
 | P1-7 | **`StaticApiKeyProvisioning` has no real per-(org, source) provisioning flow.** `configure_static_api_key_provisioning()` exists as a hook but is never called from `startup.py`; there's no way today for an operator to actually issue a customer a static API key for the generic-webhook/Wazuh PUSH path in a running deployment. Investigated (not just noted) during Q2's Milestone S pass and correctly judged to need a real design decision (how does an operator provision a per-tenant key — admin route? CLI? Vault-seeded?), not a copy-paste fix. | `src/external/middleware/integration_source_auth.py`; `src/external/startup.py`; roadmap Q1/Q2 | L (needs a design decision before implementation — candidate for its own scoped item, see §3) |
@@ -617,3 +619,142 @@ the pre-existing `kronos-dev` org and its three real users
 `poc-h2-user-*` account from an earlier, different milestone's PoC that
 this item did not create and did not touch — zero `kronos-v5-*`/`v5-*`
 debris remained (`poc/admin_routes_real_keycloak/output.txt`).
+
+---
+
+## V6 STATUS (2026-08-14): DONE — Splunk built-and-verified, Sentinel design-only (real constraint unchanged)
+
+Closed P1-3 (Splunk HEC `ackId` indexer-acknowledgement polling) for real;
+P1-4 (Sentinel ingestion confirmation) designed only, per its own real,
+unchanged "no Azure subscription available" constraint (same one R4 hit).
+
+**P1-3 — Splunk HEC `ackId` polling, built and verified against a real
+Splunk container.** `SplunkHecSink` gained opt-in `enable_indexer_ack`
+support: a real `X-Splunk-Request-Channel` GUID header on every push when
+enabled, real `ackId` parsing from the push response, and a new
+`check_ack_status()` method that POSTs the real `/services/collector/ack`
+endpoint. **Design decision** (full reasoning in the sink's own module
+docstring): synchronous polling inside `push_events()` with a real,
+bounded, per-sink-configured timeout (`ack_poll_timeout`, default 30s;
+`ack_poll_interval`, default 1s) — resolving to a genuine **third**
+`SinkAckStatus`, `ACK_PENDING` (`src/domain/integration_sink.py`), if the
+timeout elapses before confirmation. Never raises on a timeout (a real,
+expected, benign outcome of asynchronous indexing) and never fabricates
+`ACKNOWLEDGED`. `check_ack_status()` is also the separate, explicit
+out-of-band mechanism a caller can use to resolve a pending ack later
+without blocking. `DetectionSinkPushService`/`SinkPushResult.all_acknowledged`
+required **zero code changes** — both already treat any non-`ACKNOWLEDGED`
+status as unconfirmed by construction, so `ACK_PENDING` is handled
+correctly without a special case.
+
+**Real research before writing any code (CLAUDE.md §F):** confirmed by
+re-fetching `splunk-ansible`'s own current `inventory/environ.py`
+`getHEC()` source that no `SPLUNK_HEC_*` env var can enable `useACK` — it
+genuinely requires Splunk Web or a real REST call
+(`POST .../data/inputs/http/<name> -d useACK=1`, Splunk's own documented
+cURL-management page, fetched this pass). A real ack-enabled HEC token was
+created via that exact real REST call against a fresh
+`kronos-poc-splunk-hec-ack` container (`splunk/splunk:9.3.3`, same pinned
+digest R2 already verified). The real wire contract was then hand-verified
+with `curl` *before* touching `splunk_hec_sink.py`: `ackId` (not `ackID`)
+is the real response key; a push without the channel header against a
+`useACK=1` token returns a real, distinct `400`/`{"code":10,"text":"Data
+channel is missing"}`; the ack-poll response shape is
+`{"acks":{"<id>":true|false}}`; and — a real, previously-undocumented-in-
+this-repo behavior confirmed by hand — **once an `ackId` resolves `true`,
+Splunk deletes its status; re-querying the same id returns `false` again**
+(matches Splunk's own documented language, not a bug). An unrecognized/
+malformed channel on the ack endpoint returns a further real, distinct
+`400`/`{"code":11,"text":"Invalid data channel"}`.
+
+**Real captured proof** (`poc/splunk_hec_ack_polling/`, 17/17 checks
+passed, first real run, no bug found): a real push through the real,
+unmodified production `SplunkHecSink` returned a real `ackId`; the real
+poll sequence observed was **`false` at t≈0.004s, `true` at t≈1.02s**
+(`ack_poll_attempts=2`, `ack_poll_elapsed_seconds≈1.02`) — a genuine,
+timing-dependent confirmation, not assumed instant. A second scenario with
+a deliberately near-zero `ack_poll_timeout=0.001` produced a real
+`ACK_PENDING` (one real poll attempt observing `false`, no exception); a
+third scenario then resolved that same pending `ack_id` to `true` via the
+separate `check_ack_status()` call after a real 2-second wait, proving the
+out-of-band mechanism works independently of `push_events()`. Real negative
+cases (missing channel → `code:10`; invalid channel → `code:11`) were also
+proven, along with full `DetectionSinkPushService` orchestration whose
+`SINK_PUSH_EXECUTED` audit row was read back fresh from Postgres with the
+honestly-confirmed `ack_status: "acknowledged"`, and the audit hash chain
+verified intact.
+
+**P1-4 — Sentinel ingestion confirmation: designed, explicitly NOT run.**
+Same real constraint R4 itself already hit, re-confirmed this pass (`which
+az` → no output; `env | grep -i azure` → no output — no Azure CLI, no
+`AZURE_*` credentials, no path to a real DCE/DCR/Log Analytics workspace in
+this sandbox). Per this item's own brief, no stand-in "confirmation" was
+built against a fake client — a stand-in has no real DCR transform
+pipeline to confirm anything against, so a passing PoC against one would
+prove nothing real and would itself be a fabricated-honesty failure. Instead,
+`sentinel_sink.py`'s own module docstring was extended with a real,
+cited-against-current-docs design: the real `azure-monitor-query` package
+(current major `2.0.0`), `azure.monitor.query.aio.LogsQueryClient.query_workspace(workspace_id,
+query, timespan=...)` (real method signature/return shape —
+`LogsQueryResult`/`LogsQueryStatus.SUCCESS`/`.tables` — fetched from
+Microsoft's own current SDK overview doc this pass), a real KQL query
+(`KronOSDetection_CL | where FindingId == '<finding_id>' | count`, using
+`FindingId` — the mapper's own real, non-nullable, already-documented
+column — as the correlation key), and a named, real, additional required
+Azure RBAC role (`Log Analytics Reader` on the destination workspace,
+distinct from ingestion's own `Monitoring Metrics Publisher` DCR role — a
+real, separate grant an operator must make). Designed as a **standalone
+class outside the `IntegrationSink` hierarchy**
+(`SentinelIngestionConfirmationChecker`) with a real, justified reason: the
+Query SDK takes an `azure-identity` `TokenCredential` directly, not this
+package's own `SinkAuthenticator`/`SinkAuthParams` contract, so it
+genuinely cannot be a `push_events()`-shaped method on `SentinelHttpSink`.
+**No `src/` class was written, no dependency was added to `pyproject.toml`,
+and no stand-in/mocked client was built** — closing this for real needs a
+real Azure subscription with a real Log Analytics workspace + DCR + app
+registration holding both RBAC roles.
+
+**Hard invariant re-verified by direct code reading (not assumed):** the
+`SinkAck`/`SinkAckStatus`/`IntegrationSink` ABC's core honesty property —
+a caller can never mistake "accepted" for "confirmed" — was strengthened,
+not weakened, by this work. Every `raise IntegrationSinkError(...)` site in
+`splunk_hec_sink.py` was counted by hand: **11 total** (7 pre-existing and
+unchanged from R2 — empty batch, wrong-transport-family payload, oversized
+event, unreachable backend, non-2xx response, no usable code/text, and
+non-zero code — plus **4 new this pass**: missing `ackId` when
+`enable_indexer_ack=True`, and 3 inside the new `check_ack_status()`
+covering unreachable backend, non-2xx response, and a malformed/non-dict
+`acks` body). Every one is tied to a specific real, never-fabricated
+cause. The only two non-exceptional returns from `push_events()` are the
+pre-existing `ACKNOWLEDGED` path (code==0, ack disabled or confirmed
+within the poll window) and the new `ACK_PENDING` path (poll timeout,
+indexer confirmation not yet obtained) — no path can return `ACKNOWLEDGED`
+without either a real `code==0` (ack disabled) or a real
+`indexer_confirmed=True` (ack enabled) actually observed.
+
+**Verification:** fresh `pytest tests/unit -q` (real `git stash -u` +
+re-run, personally observed) — baseline **1701 passed, 1 skipped**, 90.14%
+coverage (matches V5's own recorded test count exactly; coverage % differs
+by a fraction of a percent from V5's own recorded 89.82%, consistent with
+normal cross-run coverage-tool rounding on an unchanged tree, not a real
+discrepancy); after this pass, **1715 passed, 1 skipped**, 90.19% coverage
+(14 new tests — 13 in `tests/unit/adapter/test_splunk_hec_sink.py`
+covering the channel header, `ackId` parsing, confirmed-within-window,
+timeout-to-`ACK_PENDING`, missing-`ackId` rejection, ack-URL derivation,
+and `check_ack_status()`'s own success/failure/malformed-response paths;
+1 in `tests/unit/application/test_splunk_hec_sink_wiring.py` proving the
+three new `Settings` fields actually reach the real `SplunkHecSink`
+constructor — zero regressions). Fixing the DI wiring change also required
+updating two pre-existing test fixtures
+(`tests/unit/application/test_splunk_hec_sink_wiring.py`,
+`tests/unit/external/test_playbook_action_registry_wiring.py`) whose
+`SimpleNamespace` `Settings` stand-ins didn't yet have the three new
+fields — a real, expected consequence of extending `Settings`, not a bug.
+`mypy src` baseline and post-change both **29 errors in 10 files**,
+identical set, zero new. `ruff check`/`black --check` clean on every
+touched Python file.
+
+**Own PoC container torn down** (`kronos-poc-splunk-hec-ack`) at the end of
+this pass — the shared `docker-postgres-1` container was only ever used
+(never stopped/modified), matching this initiative's own standing
+convention.

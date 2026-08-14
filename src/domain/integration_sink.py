@@ -28,6 +28,22 @@ Zero framework imports (CLAUDE.md SS A.3) -- pure Pydantic, no httpx/socket
 here. Producing a ``SinkAck`` (making the real outbound call) is
 ``IntegrationSink``'s job (adapter layer); composing multiple pushes and
 auditing them is ``DetectionSinkPushService``'s job (application layer).
+
+**A third honest state (gap audit V6, P1-3/P1-4): "accepted, deeper
+confirmation still pending."** Some HTTP-JSON push-with-ack targets
+(Splunk HEC's indexer-acknowledgement feature, Sentinel's DCR-transform
+pipeline) themselves have TWO real confirmation layers, not one -- a
+synchronous "the API accepted this batch" layer, and an asynchronous "the
+data was actually written/indexed" layer that can only be confirmed by a
+real follow-up call (HEC's ``ackId`` polling; Sentinel's own answer is a
+follow-up KQL query, not yet built -- see ``sentinel_sink.py``'s own
+module docstring). Collapsing this into a binary ACKNOWLEDGED/
+UNACKNOWLEDGED would force a choice between two dishonest options: either
+call the synchronous accept "confirmed" (loses real information the
+target itself offers) or block forever/raise on a real, expected, benign
+timeout (treats normal async indexing latency as failure). Instead
+``SinkAckStatus.ACK_PENDING`` names this real, distinct, honest third
+state explicitly -- see its own docstring below.
 """
 
 from __future__ import annotations
@@ -65,6 +81,23 @@ class SinkAckStatus(StrEnum):
     # ingested the event -- only that KronOS's own local write did not
     # fail.
     UNACKNOWLEDGED = "unacknowledged"
+    # A real, structured, application-layer confirmation was received that
+    # the event was ACCEPTED FOR PROCESSING (not fabricated -- e.g. Splunk
+    # HEC's own real indexer-acknowledgement ``ackId``, gap audit P1-3), but
+    # the deeper, real confirmation that the target actually finished
+    # writing/indexing the event was not obtained within the caller's own
+    # bounded wait -- either because polling is disabled/out-of-band, or a
+    # real, bounded poll genuinely timed out before the target's indexer
+    # caught up (this is expected, normal, and NOT an error; real indexing
+    # latency is asynchronous by construction on every vendor that offers
+    # this class of stronger ack). A caller with this status has strictly
+    # MORE information than ``UNACKNOWLEDGED`` (a real tracking id exists,
+    # see ``SinkAck.detail``) but strictly LESS than ``ACKNOWLEDGED`` (no
+    # confirmed write) -- MUST NOT be treated as confirmed delivery, but MAY
+    # be resolved later via the concrete ``IntegrationSink``'s own
+    # out-of-band ack-check mechanism (e.g. ``SplunkHecSink.check_ack_status()``)
+    # using the real tracking id(s) carried in ``detail``.
+    ACK_PENDING = "ack_pending"
 
 
 class SinkAck(BaseModel):

@@ -50,6 +50,9 @@ def _fake_splunk_settings(
         splunk_hec_sourcetype="kronos:test-detection",
         splunk_hec_index="kronos_idx",
         splunk_hec_verify_tls=True,
+        splunk_hec_enable_indexer_ack=False,
+        splunk_hec_ack_poll_timeout=30.0,
+        splunk_hec_ack_poll_interval=1.0,
     )
 
 

@@ -1,0 +1,34 @@
+[2026-08-14T09:03:39.466364+00:00] === real tenant org_id=95118dac-403a-4347-a4d2-d2d3ad37be16 org_alias=v6ackpoc4b621a30 ===
+
+=== Scenario 1: real push_events() with enable_indexer_ack=True (default timeout) ===
+[2026-08-14T09:03:40.501928+00:00] PASS: real push with indexer ack enabled returns ACKNOWLEDGED (real indexer confirmation observed within the real bounded poll) -- status=acknowledged detail={'status_code': 200, 'code': 0, 'text': 'Success', 'event_count': 1, 'ack_id': 0, 'channel': 'd414023e-c8c6-4ee7-b88d-5c8c364d77d1', 'indexer_confirmed': True, 'ack_poll_attempts': 2, 'ack_poll_elapsed_seconds': 1.0209947191178799}
+[2026-08-14T09:03:40.501944+00:00] PASS: SinkAck.detail carries the real ack_id
+[2026-08-14T09:03:40.501949+00:00] PASS: SinkAck.detail carries the real channel GUID used for this push
+[2026-08-14T09:03:40.501952+00:00] PASS: SinkAck.detail honestly reports indexer_confirmed=True
+[2026-08-14T09:03:40.501956+00:00] PASS: SinkAck.detail's real ack_poll_attempts is >= 2 (proves a real FALSE was observed before the real TRUE, not an instant match) -- ack_poll_attempts=2
+[2026-08-14T09:03:40.501974+00:00] PASS: SinkAck.detail's real ack_poll_elapsed_seconds reflects real indexing latency (>= 1 real poll interval, not 0) -- elapsed=1.0209947191178799
+
+=== Scenario 2: real check_ack_status() re-query of an already-resolved ackId ===
+[2026-08-14T09:03:40.510393+00:00] PASS: real re-query of an already-True ackId returns False (HEC's own real documented one-shot-readable contract, not a bug) -- already_resolved={0: False}
+
+=== Scenario 3: real near-zero timeout -> real ACK_PENDING (not an error) ===
+[2026-08-14T09:03:40.527468+00:00] PASS: real push with a near-zero timeout returns ACK_PENDING, not ACKNOWLEDGED and not an exception -- status=ack_pending detail={'status_code': 200, 'code': 0, 'text': 'Success', 'event_count': 1, 'ack_id': 0, 'channel': 'ef8cd25f-79ac-4d18-a34f-051f98db1f2f', 'indexer_confirmed': False, 'ack_poll_attempts': 1, 'ack_poll_elapsed_seconds': 0.008343635126948357}
+[2026-08-14T09:03:40.527493+00:00] PASS: ACK_PENDING SinkAck.detail honestly reports indexer_confirmed=False
+[2026-08-14T09:03:40.527498+00:00] PASS: ACK_PENDING SinkAck.detail still carries the real ack_id/channel needed to resolve it later
+
+=== Scenario 4: real out-of-band check_ack_status() resolves the pending ack ===
+[2026-08-14T09:03:42.542386+00:00] PASS: real out-of-band poll (SEPARATE from push_events()) resolves the real pending ack_id to True once indexing genuinely finished -- resolved_later={0: True}
+
+=== Scenario 5: real negative -- no channel header against a useACK=1 token ===
+[2026-08-14T09:03:42.551405+00:00] PASS: real 400/code=10 'Data channel is missing' surfaced honestly, never silently accepted -- context={'endpoint_url': 'http://127.0.0.1:18188/services/collector/event', 'status_code': 400, 'body': '{"text":"Data channel is missing","code":10}', 'code': 10, 'text': 'Data channel is missing'}
+
+=== Scenario 6: real negative -- check_ack_status() with an invalid channel ===
+[2026-08-14T09:03:42.560034+00:00] PASS: real 400/code=11 'Invalid data channel' surfaced honestly -- context={'ack_url': 'http://127.0.0.1:18188/services/collector/ack', 'channel': 'not-a-real-channel-guid', 'status_code': 400, 'body': '{"text":"Invalid data channel","code":11}', 'code': 11, 'text': 'Invalid data channel'}
+
+=== Scenario 7: DetectionSinkPushService orchestration with indexer ack enabled ===
+[2026-08-14T09:03:43.609195+00:00] PASS: real orchestrated push reports detection_count == 1
+[2026-08-14T09:03:43.609219+00:00] PASS: real orchestrated push result.all_acknowledged is True (indexer genuinely confirmed within the bounded poll) -- acks=[<SinkAckStatus.ACKNOWLEDGED: 'acknowledged'>]
+--- independent fresh-connection audit re-verification ---
+[2026-08-14T09:03:43.647545+00:00] PASS: fresh read: real SINK_PUSH_EXECUTED row's own ack_status is honestly 'acknowledged' (indexer-confirmed, not just accepted) -- executed_rows_ack_status=['acknowledged']
+[2026-08-14T09:03:43.649228+00:00] PASS: fresh read: real audit hash chain intact end-to-end (detail=None)
+[2026-08-14T09:03:43.656051+00:00] PoC PASSED -- 17/17 checks passed against a REAL splunk/splunk:9.3.3 container with a real useACK=1 HEC token (kronos-poc-splunk-hec-ack) and the real, live dev-stack Postgres 16 (Scenario 7).

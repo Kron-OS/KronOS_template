@@ -238,6 +238,33 @@ class Settings(BaseSettings):
         default=True,
         description="Whether to verify the Splunk HEC endpoint's TLS cert (httpx 'verify=').",
     )
+    # Indexer-acknowledgement polling (gap audit V6, P1-3) -- opt-in, since
+    # it requires the HEC token itself to have useACK=1 set (a real,
+    # separate admin action, not something KronOS can turn on remotely --
+    # see splunk_hec_sink.py's own module docstring). False/defaults here
+    # preserve the existing coarser code==0 confirmation for every
+    # deployment that hasn't opted a token into useACK.
+    splunk_hec_enable_indexer_ack: bool = Field(
+        default=False,
+        description=(
+            "Enable Splunk HEC indexer-acknowledgement polling (requires the "
+            "configured token to have useACK=1 set on the Splunk side)."
+        ),
+    )
+    splunk_hec_ack_poll_timeout: float = Field(
+        default=30.0,
+        description=(
+            "Real, bounded max seconds push_events() polls "
+            "/services/collector/ack before returning ACK_PENDING."
+        ),
+    )
+    splunk_hec_ack_poll_interval: float = Field(
+        default=1.0,
+        description=(
+            "Seconds between successive /services/collector/ack polls "
+            "while awaiting indexer confirmation."
+        ),
+    )
 
     # Generic CEF-over-syslog sink (roadmap M-integrations/R3) -- the
     # vendor-neutral universal fallback (no auth, fire-and-forget). Same

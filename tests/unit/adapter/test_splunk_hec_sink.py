@@ -1,11 +1,16 @@
-"""Unit tests for SplunkHecSink (mocked httpx, roadmap R2).
+"""Unit tests for SplunkHecSink (mocked httpx, roadmap R2; indexer-ack
+polling, gap audit V6/P1-3).
 
 Response shapes and wire-format assertions here (real HEC "code"/"text"
-body, concatenated-JSON batch body, "Authorization: Splunk <token>" header)
-were independently verified against the real official Splunk docs first --
-see poc/integration_sink_splunk_hec/README.md for the exact quotes/sources
--- and against a real local HEC-protocol-accurate stand-in receiver in that
-same PoC. Mirrors test_http_json_sink.py's own httpx-mocking idiom.
+body, concatenated-JSON batch body, "Authorization: Splunk <token>" header,
+and -- for the indexer-ack tests below -- the real "ackId"/"acks" shapes
+and the real "channel missing"/"invalid channel" error codes) were
+independently verified against the real official Splunk docs first -- see
+poc/integration_sink_splunk_hec/README.md (R2) and
+poc/splunk_hec_ack_polling/README.md (V6) for the exact quotes/sources --
+and against a real local HEC-protocol-accurate stand-in receiver (R2) or a
+real splunk/splunk:9.3.3 container with a real useACK=1 token (V6).
+Mirrors test_http_json_sink.py's own httpx-mocking idiom.
 """
 
 from __future__ import annotations
@@ -264,3 +269,238 @@ class TestSplunkHecSinkBatchCeilings:
         # Never a JSON array wrapper.
         assert not captured["content"].startswith(b"[")
         assert not captured["content"].startswith(b'{"events"')
+
+
+def _make_ack_aware_post(push_url: str, ack_url: str, ack_sequence: list[bool]):  # type: ignore[no-untyped-def]
+    """A stateful ``client.post`` side effect that distinguishes the real
+    HEC event endpoint from the real HEC ack endpoint by URL (mirroring how
+    a real client actually calls two distinct real HEC paths), and returns
+    successive real ``{"acks": {"<id>": bool}}`` bodies from *ack_sequence*
+    for each successive poll -- proving ``push_events()``'s own poll loop
+    genuinely re-calls the real ack endpoint rather than looping locally."""
+    state = {"ack_calls": 0}
+
+    async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+        if url == push_url:
+            body = json.loads(content.decode("utf-8"))
+            assert "acks" not in body  # sanity: this is a push, not a poll
+            return _resp(200, {"text": "Success", "code": 0, "ackId": 0})
+        if url == ack_url:
+            idx = min(state["ack_calls"], len(ack_sequence) - 1)
+            state["ack_calls"] += 1
+            confirmed = ack_sequence[idx]
+            return _resp(200, {"acks": {"0": confirmed}})
+        raise AssertionError(f"unexpected URL posted to: {url}")
+
+    return post, state
+
+
+class TestSplunkHecSinkIndexerAck:
+    """Real, documented HEC indexer-acknowledgement wire contract (verified
+    against a real splunk/splunk:9.3.3 container with a real useACK=1
+    token -- poc/splunk_hec_ack_polling/README.md): a push against an
+    ack-enabled token must carry X-Splunk-Request-Channel, the real 2xx
+    response then also carries a real "ackId" integer, and that ackId is
+    resolved via a separate POST to /services/collector/ack."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_no_channel_header_no_polling(self) -> None:
+        """enable_indexer_ack defaults to False -- existing behavior (no
+        channel header, no ackId parsing, no polling) is fully preserved."""
+        seen_headers = {}
+
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            seen_headers.update(headers)
+            return _resp(200, {"text": "Success", "code": 0})
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            ack = await sink.push_events(_events(1))
+
+        assert "X-Splunk-Request-Channel" not in seen_headers
+        assert ack.status == SinkAckStatus.ACKNOWLEDGED
+        assert "ack_id" not in ack.detail
+
+    @pytest.mark.asyncio
+    async def test_enabled_sends_channel_header_on_push(self) -> None:
+        seen_headers = {}
+
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            body = json.loads(content.decode("utf-8"))
+            if "acks" in body:
+                seen_headers["ack_poll"] = dict(headers)
+                return _resp(200, {"acks": {"0": True}})
+            seen_headers.update(headers)
+            return _resp(200, {"text": "Success", "code": 0, "ackId": 0})
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(
+                _HEC_URL,
+                NullAuthenticator(),
+                enable_indexer_ack=True,
+                ack_poll_timeout=1.0,
+                ack_poll_interval=0.0,
+            )
+            await sink.push_events(_events(1))
+
+        channel = seen_headers.get("X-Splunk-Request-Channel")
+        assert channel is not None
+        # A real GUID -- 36 chars, 4 hyphens, per uuid.uuid4()'s own format.
+        assert len(channel) == 36 and channel.count("-") == 4
+
+    @pytest.mark.asyncio
+    async def test_confirmed_within_poll_window_returns_acknowledged(self) -> None:
+        """Real, deterministic re-derivation of the FALSE-then-TRUE
+        sequence actually observed against real Splunk (see
+        poc/splunk_hec_ack_polling/output.txt): the first poll returns
+        False, the second returns True -- push_events() must keep polling
+        past a False, not stop at the first attempt."""
+        push_url = _HEC_URL
+        ack_url = "https://splunk.example.com:8088/services/collector/ack"
+        post, state = _make_ack_aware_post(push_url, ack_url, [False, True])
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(
+                push_url,
+                NullAuthenticator(),
+                enable_indexer_ack=True,
+                ack_poll_timeout=5.0,
+                ack_poll_interval=0.0,
+            )
+            ack = await sink.push_events(_events(1))
+
+        assert ack.status == SinkAckStatus.ACKNOWLEDGED
+        assert ack.detail["ack_id"] == 0
+        assert ack.detail["indexer_confirmed"] is True
+        assert ack.detail["ack_poll_attempts"] == 2
+        assert state["ack_calls"] == 2
+
+    @pytest.mark.asyncio
+    async def test_timeout_before_confirmation_returns_ack_pending_never_raises(self) -> None:
+        """A real, bounded timeout that elapses before the target confirms
+        must resolve to ACK_PENDING, not an exception and not a fabricated
+        ACKNOWLEDGED -- this is the whole point of the third SinkAckStatus."""
+        push_url = _HEC_URL
+        ack_url = "https://splunk.example.com:8088/services/collector/ack"
+        # Every poll returns False -- the real timeout must still be honored
+        # rather than polling forever.
+        post, state = _make_ack_aware_post(push_url, ack_url, [False, False, False])
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(
+                push_url,
+                NullAuthenticator(),
+                enable_indexer_ack=True,
+                ack_poll_timeout=0.001,
+                ack_poll_interval=0.0,
+            )
+            ack = await sink.push_events(_events(1))
+
+        assert ack.status == SinkAckStatus.ACK_PENDING
+        assert ack.detail["indexer_confirmed"] is False
+        assert ack.detail["ack_id"] == 0
+        assert isinstance(ack.detail["channel"], str)
+        # Never raised -- a timeout is an honest, expected outcome, not a failure.
+
+    @pytest.mark.asyncio
+    async def test_missing_ackid_in_2xx_response_raises_never_fabricates(self) -> None:
+        """enable_indexer_ack=True but the response carries no real ackId
+        (e.g. the token doesn't actually have useACK enabled) must raise,
+        never silently fall back to the coarser code==0 confirmation as if
+        it were the stronger one the caller explicitly opted into."""
+
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, {"text": "Success", "code": 0})  # no ackId
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator(), enable_indexer_ack=True)
+            with pytest.raises(IntegrationSinkError, match="no usable real ackId"):
+                await sink.push_events(_events(1))
+
+    def test_ack_url_derived_from_event_endpoint(self) -> None:
+        sink = SplunkHecSink(
+            "https://splunk.example.com:8088/services/collector/event", NullAuthenticator()
+        )
+        assert (
+            sink._ack_url == "https://splunk.example.com:8088/services/collector/ack"
+        )  # noqa: SLF001
+
+    def test_ack_url_derived_from_bare_collector_endpoint(self) -> None:
+        sink = SplunkHecSink(
+            "https://splunk.example.com:8088/services/collector", NullAuthenticator()
+        )
+        assert (
+            sink._ack_url == "https://splunk.example.com:8088/services/collector/ack"
+        )  # noqa: SLF001
+
+    def test_ack_url_override_respected(self) -> None:
+        sink = SplunkHecSink(
+            _HEC_URL,
+            NullAuthenticator(),
+            ack_endpoint_url="https://splunk.example.com:8088/custom/ack/path",
+        )
+        assert sink._ack_url == "https://splunk.example.com:8088/custom/ack/path"  # noqa: SLF001
+
+
+class TestSplunkHecSinkCheckAckStatus:
+    """Direct tests of the separate check_ack_status() method -- the
+    out-of-band mechanism a caller uses to resolve an ACK_PENDING SinkAck
+    later, independent of push_events()."""
+
+    @pytest.mark.asyncio
+    async def test_parses_real_acks_shape(self) -> None:
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            assert url == "https://splunk.example.com:8088/services/collector/ack"
+            body = json.loads(content.decode("utf-8"))
+            assert body == {"acks": [0, 1]}
+            assert headers["X-Splunk-Request-Channel"] == "chan-123"
+            return _resp(200, {"acks": {"0": True, "1": False}})
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            result = await sink.check_ack_status("chan-123", [0, 1])
+
+        assert result == {0: True, 1: False}
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_raises_with_real_code_text(self) -> None:
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(400, {"text": "Invalid data channel", "code": 11})
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            with pytest.raises(IntegrationSinkError) as excinfo:
+                await sink.check_ack_status("bad-channel", [0])
+
+        assert excinfo.value.context["status_code"] == 400
+        assert excinfo.value.context["code"] == 11
+
+    @pytest.mark.asyncio
+    async def test_missing_acks_key_raises_never_fabricates(self) -> None:
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, {"text": "unexpected"})
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            with pytest.raises(IntegrationSinkError, match="no usable real 'acks'"):
+                await sink.check_ack_status("chan-123", [0])
+
+    @pytest.mark.asyncio
+    async def test_non_dict_acks_value_raises_never_fabricates(self) -> None:
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, {"acks": [0, 1]})  # real shape is an object, not an array
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            with pytest.raises(IntegrationSinkError, match="no usable real 'acks'"):
+                await sink.check_ack_status("chan-123", [0])
+
+    @pytest.mark.asyncio
+    async def test_unreachable_backend_raises(self) -> None:
+        async def post(url, content, headers, **kwargs):  # type: ignore[no-untyped-def]
+            raise httpx.ConnectError("connection refused")
+
+        with patch("httpx.AsyncClient", return_value=_make_client(post)):
+            sink = SplunkHecSink(_HEC_URL, NullAuthenticator())
+            with pytest.raises(IntegrationSinkError):
+                await sink.check_ack_status("chan-123", [0])

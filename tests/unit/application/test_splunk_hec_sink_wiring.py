@@ -42,6 +42,9 @@ def _fake_settings(
     splunk_hec_sourcetype: str = "kronos:test-detection",
     splunk_hec_index: str | None = "kronos_idx",
     splunk_hec_verify_tls: bool = True,
+    splunk_hec_enable_indexer_ack: bool = False,
+    splunk_hec_ack_poll_timeout: float = 30.0,
+    splunk_hec_ack_poll_interval: float = 1.0,
 ) -> SimpleNamespace:
     token_obj = None
     if splunk_hec_token is not None:
@@ -54,6 +57,9 @@ def _fake_settings(
         splunk_hec_sourcetype=splunk_hec_sourcetype,
         splunk_hec_index=splunk_hec_index,
         splunk_hec_verify_tls=splunk_hec_verify_tls,
+        splunk_hec_enable_indexer_ack=splunk_hec_enable_indexer_ack,
+        splunk_hec_ack_poll_timeout=splunk_hec_ack_poll_timeout,
+        splunk_hec_ack_poll_interval=splunk_hec_ack_poll_interval,
     )
 
 
@@ -100,6 +106,29 @@ class TestSplunkHecSinkWiring:
         assert isinstance(mapper, SplunkDetectionMapper)
         # Real, documented HEC default ceiling applied.
         assert sink.max_batch_bytes == 838_860_800
+        # Indexer-ack polling (gap audit V6) defaults to disabled -- the
+        # wiring must not silently opt every deployment into it.
+        assert sink._enable_indexer_ack is False  # noqa: SLF001
+
+    def test_indexer_ack_settings_propagate_through_wiring(self) -> None:
+        """The three new Settings fields (splunk_hec_enable_indexer_ack/
+        ack_poll_timeout/ack_poll_interval) must actually reach the real
+        SplunkHecSink constructor, not just exist in Settings unused."""
+        with patch(
+            "src.config.Settings",
+            return_value=_fake_settings(
+                splunk_hec_enable_indexer_ack=True,
+                splunk_hec_ack_poll_timeout=45.0,
+                splunk_hec_ack_poll_interval=2.5,
+            ),
+        ):
+            configure_splunk_hec_sink_from_settings()
+
+        sink = get_splunk_hec_sink()
+        assert sink is not None
+        assert sink._enable_indexer_ack is True  # noqa: SLF001
+        assert sink._ack_poll_timeout == 45.0  # noqa: SLF001
+        assert sink._ack_poll_interval == 2.5  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_wired_authenticator_uses_real_splunk_scheme(self) -> None:

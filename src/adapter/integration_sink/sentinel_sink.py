@@ -107,18 +107,118 @@ interface, or bolting an adapter between two ABCs that were never designed
 to compose -- strictly worse than using the collaborator R1 already built
 for this. No new authenticator class was written for R4.
 
-**Not implemented here, flagged as real follow-up, not silently skipped**
-(mirrors R2 Splunk HEC's own ``ackId``-polling deferral, applied to
-Sentinel's structurally equivalent gap): a 204 here confirms the Logs
+**Not implemented AS RUNNING CODE here -- DESIGNED (not built, not
+executed) in this pass, gap audit V6/P1-4.** A 204 here confirms the Logs
 Ingestion API's own synchronous, real, documented acceptance of the batch
 for processing -- it does NOT confirm the data was actually written into
 the destination Log Analytics table, since DCR transformation/ingestion is
 itself asynchronous and any transform-time failure (e.g. a KQL
 ``transformKql`` error) surfaces only in the DCR's own Azure Monitor
-metrics, never back to this synchronous caller. Confirming true
-end-to-end landing would require a follow-up KQL query against the
-destination table (structurally the same class of gap as HEC's own
-``ackId`` polling, deliberately not built in this pass either).
+metrics, never back to this synchronous caller.
+
+**Design for a real follow-up KQL confirmation query (mirrors HEC's own
+``ackId`` polling structurally, but the confirmation mechanism itself is a
+genuinely different shape -- a read query against the destination table,
+not a status-lookup-by-id endpoint like HEC's ``/services/collector/ack``).
+Explicitly a DESIGN ONLY: cited against Microsoft's own current docs
+(fetched this pass, see below), a real method signature is given, but
+NOTHING here was run end-to-end -- gap audit V6's own hard constraint,
+identical to R4's own original "no real Azure subscription available in
+this sandbox" limitation (``poc/integration_sink_sentinel/README.md``),
+which still applies unchanged.**
+
+- **Real package/client, fetched this pass**:
+  ``learn.microsoft.com/en-us/python/api/overview/azure/monitor-query-readme``
+  -- the ``azure-monitor-query`` PyPI package (current major ``2.0.0``,
+  confirmed via the doc's own "As of version 2.0.0" callout), class
+  ``azure.monitor.query.aio.LogsQueryClient`` (the async form, matching
+  this codebase's async-first discipline, CLAUDE.md SS A.5), method
+  ``await client.query_workspace(workspace_id, query, timespan=...)`` --
+  real, verbatim signature and return shape confirmed from the doc's own
+  worked examples: returns a ``LogsQueryResult`` (``.status``,
+  ``.tables`` -- a list of ``LogsTable`` with ``.rows``/``.columns``) on
+  success, or a ``LogsQueryPartialResult``/raises ``HttpResponseError`` on
+  failure -- the doc's own quoted code checks
+  ``response.status == LogsQueryStatus.SUCCESS`` before trusting
+  ``response.tables``, which any real implementation here must do too
+  (never assume success from "no exception" alone -- exactly the class of
+  honesty gap this whole ``IntegrationSink`` package exists to prevent, so
+  the discipline transfers even though this class lives outside the
+  ``IntegrationSink`` hierarchy, see below).
+- **Real auth is NOT ``SinkAuthenticator``/``SinkAuthParams``** -- the
+  Query SDK takes an ``azure.identity`` ``TokenCredential`` object
+  directly (e.g. ``azure.identity.aio.ClientSecretCredential(tenant_id,
+  client_id, client_secret)``) and manages its own token acquisition
+  internally; it does not accept a pre-built ``Authorization`` header the
+  way every real ``IntegrationSink`` in this package does. This is also
+  why a confirmation checker cannot be another ``push_events()``-shaped
+  ``IntegrationSink`` at all -- querying is not pushing, there is no
+  ``MappedSinkEvent``/``SinkAck`` on this side, so the honest design is a
+  **separate, standalone class outside the ``IntegrationSink`` hierarchy**
+  (mirrors ``SplunkHecSink.check_ack_status()``'s own "separate mechanism"
+  precedent conceptually, but cannot literally be a method on
+  ``SentinelHttpSink`` since it needs an entirely different SDK/credential
+  type, not just a different HTTP call on the same client).
+- **Real, documented, ADDITIONAL required Azure RBAC permission**, distinct
+  from ingestion's own ``Monitoring Metrics Publisher`` DCR role (this
+  module's own docstring above): the app registration querying Logs needs
+  a **Log Analytics Reader** role on the destination workspace -- a real,
+  separate grant an operator must make, not automatically implied by the
+  ingestion-side role. Not verified against a live tenant (no Azure
+  subscription available, see below) -- flagged as a real, named
+  precondition rather than silently assumed.
+- **Real target method signature this design specifies** (not implemented,
+  not tested against any real or stand-in endpoint -- pure design, per
+  this item's own required proof bar):
+
+  .. code-block:: python
+
+      class SentinelIngestionConfirmationChecker:
+          \"\"\"Real follow-up KQL query against the destination Log
+          Analytics workspace table -- confirms a specific pushed
+          Detection genuinely landed after DCR transform, closing the gap
+          a 204 alone cannot close. NOT an IntegrationSink (no
+          push_events() -- this reads, never writes).\"\"\"
+
+          def __init__(
+              self, workspace_id: str, credential: "azure.identity.aio.TokenCredential",
+              *, table_name: str = DEFAULT_TABLE_NAME, timeout: float = 30.0,
+          ) -> None: ...
+
+          async def confirm_ingested(
+              self, finding_id: str, *, lookback: "datetime.timedelta" = ...,
+          ) -> bool:
+              \"\"\"Real KQL: f"{table_name} | where FindingId == '{finding_id}' |
+              count" against workspace_id via LogsQueryClient.query_workspace()
+              -- FindingId is this module's own real, documented, non-nullable
+              column (see the 14-column table above), the natural real
+              correlation key back to the Detection that was pushed. Real
+              count > 0 -- confirmed landed; count == 0 -- either not yet
+              transformed (real DCR latency) or a real, silent transform
+              failure (indistinguishable from here without also checking the
+              DCR's own Azure Monitor diagnostic metrics, which this design
+              does not attempt to fold in). finding_id must be escaped
+              (single-quote-doubled at minimum) before interpolation --
+              KronOS's own finding_id values are server-generated, not raw
+              user input, but this is a real, not-yet-addressed KQL-injection
+              surface worth flagging explicitly rather than silently assuming
+              safe.\"\"\"
+
+- **Explicitly NOT implemented, NOT run, NOT stubbed with a fake client**:
+  no ``src/`` code for ``SentinelIngestionConfirmationChecker`` exists --
+  writing a class that imports ``azure-monitor-query``/``azure-identity``
+  (neither currently a dependency of this repo -- would need adding to
+  ``pyproject.toml``) with no real workspace to run a single real query
+  against would be exactly the "plausible code without a captured real
+  run" failure mode CLAUDE.md SS F and this item's own brief both name as
+  an automatic fail. This section is a design-only, cited-against-current-
+  docs specification -- closing it for real requires a real Azure
+  subscription with a real Log Analytics workspace + DCR + app
+  registration with both the ingestion (``Monitoring Metrics Publisher``)
+  and query (``Log Analytics Reader``) roles granted, none of which are
+  available in this sandbox (re-confirmed this pass: no ``az`` CLI, no
+  ``AZURE_*`` env vars -- see ``poc/integration_sink_sentinel/README.md``'s
+  own original check, unchanged).
 """
 
 from __future__ import annotations
