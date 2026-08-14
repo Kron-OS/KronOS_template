@@ -54,19 +54,27 @@ services:
 # existed; `docker compose up` with this file would have failed at runtime
 # with "external volume kronos_app_logs not found". This file's own header
 # comment documents the correct usage as always including
-# docker-compose.dev.yml (which declares `kronos_app_logs` canonically,
-# non-external) and docker/falco/docker-compose.falco.yml (which declares
-# `falco_logs` the same way) in the *same* `docker compose ... up`
-# invocation -- when that's true, Compose's own multi-file merge already
-# resolves both volumes correctly without any redeclaration here.
-# `nginx_logs` has no real producer anywhere in this repo today (the
-# `nginx` service in docker-compose.dev.yml does not mount or write to any
-# such volume) -- declared here as a plain, non-external volume so `up`
-# does not fail, but the `kronos.nginx` INPUT in fluent-bit.conf has no
-# real data source until nginx itself is wired to write access.log to a
-# shared volume. Flagged, not fixed here -- out of Milestone S's scope
-# (nginx access logging was never part of the Q3/fluent-bit gap this pass
-# was chartered to fix).
+# docker-compose.dev.yml (which declares `kronos_app_logs`/`nginx_logs`
+# canonically, non-external) and docker/falco/docker-compose.falco.yml
+# (which declares `falco_logs` the same way) in the *same*
+# `docker compose ... up` invocation -- when that's true, Compose's own
+# multi-file merge already resolves all three volumes correctly without any
+# redeclaration here.
+#
+# Real fix, P1-6 (2026-08-14, Milestone V8): `nginx_logs` moved OUT of this
+# file's `volumes:` block entirely -- no redeclaration at all, not even
+# `external: true`. Tried `external: true` first and caught a real,
+# self-inflicted repeat of the exact bug this comment already warns about:
+# `docker compose ... config` (all four files together) resolved it to
+# `{name: nginx_logs, external: true}` -- the literal, un-prefixed name,
+# not `docker_nginx_logs` -- because `external: true` pins the literal
+# name and is NOT subject to Compose's own project-prefixing the way a
+# plain/non-external declaration is. `kronos_app_logs`/`falco_logs` avoid
+# this by not being declared here at all, relying entirely on
+# docker-compose.dev.yml's own canonical, non-external, project-prefixed
+# declaration being present in the same `docker compose -f ... -f ...`
+# invocation (see this file's header comment) -- `nginx_logs` now follows
+# that identical, already-proven-correct pattern instead of inventing a
+# second one.
 volumes:
-  nginx_logs:
   fluent_storage:

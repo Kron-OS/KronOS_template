@@ -13,9 +13,74 @@ limit_req_zone $binary_remote_addr zone=auth:10m   rate=10r/s;
 # Body size defaults (override per-location as needed)
 client_max_body_size 10m;
 
+# Real fix, P1-6 (2026-08-14, Milestone V8; gap flagged twice, originally
+# and at Milestone S, never fixed until now -- see
+# poc/fluent_bit_severity_and_nginx_logs/nginx_access_log/README.md for the
+# full real captured verification). JSON (not the default "combined" text
+# format) because docker/fluent-bit/fluent-bit.conf's own pre-existing
+# `kronos.nginx` [INPUT] block already declares `Parser json` on this exact
+# path (anticipated, never fed, until this fix) -- matching that keeps the
+# whole pipeline coherent instead of also having to change fluent-bit's
+# parser. `escape=json` is a real nginx feature (1.11.8+; this image's real
+# `nginx:alpine` base is well past that) that JSON-escapes each variable's
+# value, so a request line containing a literal `"` or control character
+# can't produce invalid JSON. `log_format` is an http-context-only
+# directive in real nginx -- it must sit here, at this file's own top
+# level, not inside the `server {}` block below (this file's own top-level
+# `upstream`/`limit_req_zone`/`client_max_body_size` directives confirm this
+# file's top level already IS http context: it's included from
+# /etc/nginx/conf.d/*.conf, itself `include`d inside the base image's own
+# nginx.conf http {} block).
+#
+# Field named "timestamp", NOT "time" -- real, reproduced finding: fluent-bit's
+# own bundled `json` PARSER (/fluent-bit/etc/parsers.conf, used by every
+# `Parser json` INPUT in docker/fluent-bit/fluent-bit.conf, this one
+# included) hardcodes `Time_Key time` + `Time_Format %d/%b/%Y:%H:%M:%S %z`
+# (an Apache/nginx-combined-log-style format). A field literally named
+# "time" collides with that and produces a real captured
+# "[warn] [parser:json] invalid time format ... for '2026-...'" on every
+# record. "timestamp" avoids the collision AND matches the field name this
+# repo's own structlog-based kronos.backend/kronos.celery sources already
+# use (structlog.processors.TimeStamper's own default key) -- see
+# poc/fluent_bit_severity_and_nginx_logs/nginx_access_log/README.md for the
+# full real captured before/after.
+log_format kronos_json escape=json
+    '{'
+        '"timestamp":"$time_iso8601",'
+        '"remote_addr":"$remote_addr",'
+        '"request_method":"$request_method",'
+        '"request_uri":"$request_uri",'
+        '"server_protocol":"$server_protocol",'
+        '"status":$status,'
+        '"body_bytes_sent":$body_bytes_sent,'
+        '"request_time":$request_time,'
+        '"http_referer":"$http_referer",'
+        '"http_user_agent":"$http_user_agent",'
+        '"service":"nginx"'
+    '}';
+
 server {
     listen 80;
     server_name _;
+
+    # Real, reproduced finding (poc/fluent_bit_severity_and_nginx_logs/
+    # nginx_access_log/README.md): the real, official `nginx:alpine` base
+    # image ships `/var/log/nginx/access.log`/`error.log` as symlinks to
+    # `/dev/stdout`/`/dev/stderr` (confirmed via `docker run --rm
+    # docker-nginx:latest ls -la /var/log/nginx/`). A real, empty, freshly
+    # mounted `nginx_logs` named volume at `/var/log/nginx` (see
+    # docker-compose.dev.yml) copies the image directory's own contents on
+    # first use -- including those two symlinks -- so directing
+    # `access_log` at the DEFAULT `access.log` filename would silently
+    # follow the symlink straight back to stdout, never producing a real
+    # file fluent-bit's `tail` [INPUT] could read. Using a different
+    # filename (`kronos-access.log`) sidesteps the symlink entirely and
+    # creates a genuine regular file in the volume -- verified for real:
+    # the file lands owned by uid 101 (nginx, this image's own non-root
+    # USER -- see docker/Dockerfile.frontend), writable, with real request
+    # lines landing in it after a real curl.
+    access_log /var/log/nginx/kronos-access.log kronos_json;
+    error_log  /var/log/nginx/kronos-error.log warn;
 
     # -----------------------------------------------------------------------
     # Security headers — applied globally, overridden where needed

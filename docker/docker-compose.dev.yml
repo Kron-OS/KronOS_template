@@ -802,6 +802,13 @@ services:
       OPENSEARCH_DASHBOARDS_URL: "https://kronos.local:5602"
     volumes:
       - tls_certs:/etc/kronos/tls:ro
+      # Real fix, P1-6 (Milestone V8): nginx now writes real JSON access
+      # logs to /var/log/nginx/kronos-access.log (docker/nginx/nginx.conf.
+      # template's own access_log directive) -- this is the real producer
+      # for the volume docker/fluent-bit/docker-compose.fluent-bit.yml's
+      # own `kronos.nginx` tail INPUT expects, mirroring how kronos_app_logs
+      # is already shared with the backend/celery services below.
+      - nginx_logs:/var/log/nginx
     ports:
       - "80:80"
       - "443:443"
@@ -840,6 +847,14 @@ volumes:
   # docker/falco/docker-compose.falco.yml already uses for falco_logs
   # (COMP-8).
   kronos_app_logs:
+  # Real fix, P1-6 (Milestone V8): same pattern as kronos_app_logs above --
+  # canonical, non-external definition here (nginx writes to it directly,
+  # see the nginx service's own volumes: block), mounted read-only in
+  # docker/fluent-bit/docker-compose.fluent-bit.yml as `nginx_logs:
+  # external: true` (that file's own previous plain/non-external
+  # declaration -- a stand-in for exactly this real producer being
+  # missing -- is removed now that one exists).
+  nginx_logs:
   # tls-init's leaf cert + root CA, mounted read-only into nginx. See
   # docker/init/Dockerfile.tls-init / tls-init-entrypoint.sh.
   tls_certs:

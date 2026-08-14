@@ -1,0 +1,104 @@
+=== Filter mechanism smoke test (real fluent/fluent-bit:3.1.10, `modify` + Condition Key_Value_Equals) ===
+
+Fluent Bit v3.1.10
+[2026/08/14 13:59:59] [ info] [fluent bit] version=3.1.10, commit=e28f447995, pid=1
+[2026/08/14 13:59:59] [ info] [input:tail:tail.0] initializing
+[2026/08/14 13:59:59] [ info] [input:tail:tail.0] storage_strategy='memory' (memory only)
+[2026/08/14 13:59:59] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1417027 watch_fd=1 name=/var/log/kronos-poc/app.log
+[2026/08/14 13:59:59] [ info] [output:stdout:stdout.0] worker #0 started
+(zero config errors for any of the 5 [FILTER] Name modify / Condition Key_Value_Equals blocks)
+
+After appending one real JSON line per level:
+{"date":1786716041.367538,"level":"debug","service":"kronos-backend","event":"poc live debug","timestamp":"2026-08-14T00:00:05Z","severity_num":"7"}
+{"date":1786716044.537738,"level":"info","service":"kronos-backend","event":"poc live info","timestamp":"2026-08-14T00:00:06Z","severity_num":"6"}
+{"date":1786716045.63445,"level":"warning","service":"kronos-backend","event":"poc live warning","timestamp":"2026-08-14T00:00:07Z","severity_num":"4"}
+{"date":1786716046.265073,"level":"error","service":"kronos-backend","event":"poc live error","timestamp":"2026-08-14T00:00:08Z","severity_num":"3"}
+{"date":1786716046.489256,"level":"critical","service":"kronos-backend","event":"poc live critical","timestamp":"2026-08-14T00:00:09Z","severity_num":"2"}
+
+=== BEFORE: real fluent-bit container log (fluent-bit-before.conf, the real unfixed Syslog_Severity_Key level) ===
+
+[2026/08/14 14:01:33] [ info] [storage] ver=1.5.2, type=memory, sync=normal, checksum=off, max_chunks_up=128
+[2026/08/14 14:01:33] [ info] [input:tail:tail.0] initializing
+[2026/08/14 14:01:33] [ info] [input:tail:tail.0] storage_strategy='memory' (memory only)
+[2026/08/14 14:01:33] [ info] [output:syslog:syslog.0] setup done for 127.0.0.1:5514 (TLS=off)
+[2026/08/14 14:01:33] [ info] [http_server] listen iface=0.0.0.0 tcp_port=2020
+[2026/08/14 14:01:33] [ info] [sp] stream processor started
+[2026/08/14 14:01:33] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1417141 watch_fd=1 name=/var/log/kronos-poc/app.log
+[2026/08/14 14:01:33] [ info] [output:stdout:stdout.1] worker #0 started
+{"date":1786716100.266254,"level":"debug","service":"kronos-backend","event":"poc before debug","timestamp":"2026-08-14T00:10:00Z"}
+{"date":1786716100.308765,"level":"info","service":"kronos-backend","event":"poc before info","timestamp":"2026-08-14T00:10:01Z"}
+{"date":1786716100.345328,"level":"warning","service":"kronos-backend","event":"poc before warning","timestamp":"2026-08-14T00:10:02Z"}
+{"date":1786716100.476511,"level":"error","service":"kronos-backend","event":"poc before error","timestamp":"2026-08-14T00:10:03Z"}
+{"date":1786716100.737808,"level":"critical","service":"kronos-backend","event":"poc before critical","timestamp":"2026-08-14T00:10:04Z"}
+[2026/08/14 14:01:41] [ warn] [output:syslog:syslog.0] invalid severity: 'debug'
+[2026/08/14 14:01:41] [ warn] [output:syslog:syslog.0] invalid severity: 'info'
+[2026/08/14 14:01:41] [ warn] [output:syslog:syslog.0] invalid severity: 'warning'
+[2026/08/14 14:01:41] [ warn] [output:syslog:syslog.0] invalid severity: 'error'
+[2026/08/14 14:01:41] [ warn] [output:syslog:syslog.0] invalid severity: 'critical'
+
+=== BEFORE: real local UDP syslog receiver (udp_syslog_receiver.py), decoded PRI headers ===
+
+=== real local UDP syslog receiver listening on 127.0.0.1:5514 ===
+=== waiting up to 18.0s for real fluent-bit syslog OUTPUT datagrams ===
+[RAW] '<15>1 2026-08-14T14:01:40.266254Z - kronos-backend - - -'
+    -> PRI=15 facility=1 severity=7 (debug) appname=kronos-backend timestamp=2026-08-14T14:01:40.266254Z host=-
+[RAW] '<14>1 2026-08-14T14:01:40.308765Z - kronos-backend - - -'
+    -> PRI=14 facility=1 severity=6 (info) appname=kronos-backend timestamp=2026-08-14T14:01:40.308765Z host=-
+[RAW] '<12>1 2026-08-14T14:01:40.345328Z - kronos-backend - - -'
+    -> PRI=12 facility=1 severity=4 (warning) appname=kronos-backend timestamp=2026-08-14T14:01:40.345328Z host=-
+[RAW] '<14>1 2026-08-14T14:01:40.476511Z - kronos-backend - - -'
+    -> PRI=14 facility=1 severity=6 (info) appname=kronos-backend timestamp=2026-08-14T14:01:40.476511Z host=-
+[RAW] '<14>1 2026-08-14T14:01:40.737807Z - kronos-backend - - -'
+    -> PRI=14 facility=1 severity=6 (info) appname=kronos-backend timestamp=2026-08-14T14:01:40.737807Z host=-
+
+[SUMMARY] real datagrams received: 5
+
+REAL FINDING: "debug"(7)/"info"(6)/"warning"(4) landed correct BY COINCIDENCE
+(fluent-bit's fallback keyword table recognizes RFC 5424's own severity
+names even while still logging "invalid severity"); "error" and "critical"
+silently landed as severity=6 (info) -- WRONG -- because RFC 5424's real
+keywords for those are the abbreviations "err"/"crit", which "error"/
+"critical" do not match.
+
+=== AFTER: real fluent-bit container log (fluent-bit-after.conf, the real fix, Syslog_Severity_Key severity_num) ===
+
+[2026/08/14 14:02:27] [ info] [input:tail:tail.0] initializing
+[2026/08/14 14:02:27] [ info] [input:tail:tail.0] storage_strategy='memory' (memory only)
+[2026/08/14 14:02:27] [ info] [output:syslog:syslog.0] setup done for 127.0.0.1:5514 (TLS=off)
+[2026/08/14 14:02:27] [ info] [output:stdout:stdout.1] worker #0 started
+[2026/08/14 14:02:27] [ info] [http_server] listen iface=0.0.0.0 tcp_port=2020
+[2026/08/14 14:02:27] [ info] [sp] stream processor started
+[2026/08/14 14:02:27] [ info] [input:tail:tail.0] inotify_fs_add(): inode=1417205 watch_fd=1 name=/var/log/kronos-poc/app.log
+{"date":1786716151.728769,"level":"debug","service":"kronos-backend","event":"poc after debug","timestamp":"2026-08-14T00:20:00Z","severity_num":"7"}
+{"date":1786716151.784776,"level":"info","service":"kronos-backend","event":"poc after info","timestamp":"2026-08-14T00:20:01Z","severity_num":"6"}
+{"date":1786716151.816533,"level":"warning","service":"kronos-backend","event":"poc after warning","timestamp":"2026-08-14T00:20:02Z","severity_num":"4"}
+{"date":1786716151.90095,"level":"error","service":"kronos-backend","event":"poc after error","timestamp":"2026-08-14T00:20:03Z","severity_num":"3"}
+{"date":1786716152.161459,"level":"critical","service":"kronos-backend","event":"poc after critical","timestamp":"2026-08-14T00:20:04Z","severity_num":"2"}
+
+*** ZERO "[warn]" or "[error]" lines anywhere in this container's full log after boot -- the "invalid severity" warning is completely gone. ***
+
+=== AFTER: real local UDP syslog receiver (udp_syslog_receiver.py), decoded PRI headers ===
+
+=== real local UDP syslog receiver listening on 127.0.0.1:5514 ===
+=== waiting up to 18.0s for real fluent-bit syslog OUTPUT datagrams ===
+[RAW] '<15>1 2026-08-14T14:02:31.728768Z - kronos-backend - - -'
+    -> PRI=15 facility=1 severity=7 (debug) appname=kronos-backend timestamp=2026-08-14T14:02:31.728768Z host=-
+[RAW] '<14>1 2026-08-14T14:02:31.784775Z - kronos-backend - - -'
+    -> PRI=14 facility=1 severity=6 (info) appname=kronos-backend timestamp=2026-08-14T14:02:31.784775Z host=-
+[RAW] '<12>1 2026-08-14T14:02:31.816532Z - kronos-backend - - -'
+    -> PRI=12 facility=1 severity=4 (warning) appname=kronos-backend timestamp=2026-08-14T14:02:31.816532Z host=-
+[RAW] '<11>1 2026-08-14T14:02:31.900949Z - kronos-backend - - -'
+    -> PRI=11 facility=1 severity=3 (err) appname=kronos-backend timestamp=2026-08-14T14:02:31.900949Z host=-
+[RAW] '<10>1 2026-08-14T14:02:32.161458Z - kronos-backend - - -'
+    -> PRI=10 facility=1 severity=2 (crit) appname=kronos-backend timestamp=2026-08-14T14:02:32.161458Z host=-
+
+[SUMMARY] real datagrams received: 5
+
+RESULT: debug=7, info=6, warning=4, error=3(err), critical=2(crit) -- exactly
+the real RFC 5424 table, for every real level string KronOS's structured
+logger actually emits. Fix verified for real.
+
+=== Cleanup confirmation ===
+
+$ docker ps -a --format '{{.Names}}' | grep kronos-poc
+(no output, exit code 1 -- no kronos-poc-fb-* container remains)
