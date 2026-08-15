@@ -9,9 +9,15 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from src.adapter.repository.case_repository import InMemoryCaseRepository
+from src.domain.case import Case, CaseMetadata
 from src.domain.evidence import Evidence, EvidenceState
 from src.domain.user import Role, TenantContext
-from src.external.dependencies import get_evidence_repository, get_tenant_context
+from src.external.dependencies import (
+    get_case_repository,
+    get_evidence_repository,
+    get_tenant_context,
+)
 from src.external.fastapi_app import create_app
 from src.external.routes import sse as sse_module
 from tests.conftest import InMemoryEvidenceRepository
@@ -42,17 +48,37 @@ def sse_client():
         )
 
     evidence_repo = InMemoryEvidenceRepository()
+    case_repo = InMemoryCaseRepository()
     app = create_app()
     app.dependency_overrides[get_tenant_context] = _fixed_tenant
     app.dependency_overrides[get_evidence_repository] = lambda: evidence_repo
-    return TestClient(app), fixed_org, fixed_user, evidence_repo
+    app.dependency_overrides[get_case_repository] = lambda: case_repo
+    return TestClient(app), fixed_org, fixed_user, evidence_repo, case_repo
 
 
 class TestCreateSSETicket:
+    """Fixed 2026-08-15 (Task #14 security/red-team assessment, P1-SEC-1):
+    create_sse_ticket now requires the caller to have real case-level access
+    (case exists, belongs to their org, and they own/are a member of it --
+    or are org-admin) before minting a ticket -- mirrors cases.py's own
+    get_by_id + assert_case_access pattern. Every test below seeds a real,
+    access-granted case first; the two new tests at the bottom prove the
+    fix itself (case not found -> 404; real case, caller not a member,
+    not org-admin -> 403)."""
+
     def test_creates_ticket(self, sse_client):
-        client, org_id, _, _ = sse_client
-        case_id = uuid.uuid4()
-        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
+        client, org_id, user_id, _, case_repo = sse_client
+        case = asyncio.run(
+            case_repo.save(
+                Case(
+                    org_id=org_id,
+                    org_alias="testorg",
+                    owner_user_id=user_id,
+                    metadata=CaseMetadata(title="t", description="d", reference_number="C-1"),
+                )
+            )
+        )
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case.case_id)})
         assert resp.status_code == 201
         data = resp.json()
         assert "ticket" in data
@@ -60,23 +86,68 @@ class TestCreateSSETicket:
         assert data["ticket"] in sse_module._tickets
 
     def test_ticket_is_scoped_to_case(self, sse_client):
-        client, org_id, _, _ = sse_client
-        case_id = uuid.uuid4()
-        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
+        client, org_id, user_id, _, case_repo = sse_client
+        case = asyncio.run(
+            case_repo.save(
+                Case(
+                    org_id=org_id,
+                    org_alias="testorg",
+                    owner_user_id=user_id,
+                    metadata=CaseMetadata(title="t", description="d", reference_number="C-1"),
+                )
+            )
+        )
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case.case_id)})
         ticket = resp.json()["ticket"]
-        assert sse_module._tickets[ticket]["case_id"] == str(case_id)
+        assert sse_module._tickets[ticket]["case_id"] == str(case.case_id)
 
     def test_ticket_is_scoped_to_org(self, sse_client):
-        client, org_id, _, _ = sse_client
-        case_id = uuid.uuid4()
-        resp = client.post("/api/sse/ticket", json={"caseId": str(case_id)})
+        client, org_id, user_id, _, case_repo = sse_client
+        case = asyncio.run(
+            case_repo.save(
+                Case(
+                    org_id=org_id,
+                    org_alias="testorg",
+                    owner_user_id=user_id,
+                    metadata=CaseMetadata(title="t", description="d", reference_number="C-1"),
+                )
+            )
+        )
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case.case_id)})
         ticket = resp.json()["ticket"]
         assert sse_module._tickets[ticket]["org_id"] == str(org_id)
+
+    def test_nonexistent_case_returns_404(self, sse_client):
+        """Real proof of the fix: no case seeded at all -- must not mint a ticket."""
+        client, _, _, _, _ = sse_client
+        resp = client.post("/api/sse/ticket", json={"caseId": str(uuid.uuid4())})
+        assert resp.status_code == 404
+        assert sse_module._tickets == {}
+
+    def test_case_caller_is_not_a_member_of_returns_403(self, sse_client):
+        """Real proof of the fix (P1-SEC-1): a real case in the caller's own
+        org, but the caller is neither its owner nor a listed member and
+        holds no org-admin role -- must not mint a ticket for it."""
+        client, org_id, _, _, case_repo = sse_client
+        other_owner = uuid.uuid4()
+        case = asyncio.run(
+            case_repo.save(
+                Case(
+                    org_id=org_id,
+                    org_alias="testorg",
+                    owner_user_id=other_owner,
+                    metadata=CaseMetadata(title="t", description="d", reference_number="C-2"),
+                )
+            )
+        )
+        resp = client.post("/api/sse/ticket", json={"caseId": str(case.case_id)})
+        assert resp.status_code == 403
+        assert sse_module._tickets == {}
 
 
 class TestSSEStream:
     def test_expired_ticket_returns_401(self, sse_client):
-        client, _, _, _ = sse_client
+        client, _, _, _, _ = sse_client
         case_id = uuid.uuid4()
         ticket = str(uuid.uuid4())
         # Insert an already-expired ticket
@@ -92,7 +163,7 @@ class TestSSEStream:
         assert resp.status_code == 401
 
     def test_wrong_case_id_returns_401(self, sse_client):
-        client, org_id, _, _ = sse_client
+        client, org_id, _, _, _ = sse_client
         case_id = uuid.uuid4()
         wrong_case = uuid.uuid4()
         ticket = str(uuid.uuid4())
@@ -108,7 +179,7 @@ class TestSSEStream:
         assert resp.status_code == 401
 
     def test_missing_ticket_returns_401(self, sse_client):
-        client, _, _, _ = sse_client
+        client, _, _, _, _ = sse_client
         case_id = uuid.uuid4()
         resp = client.get(
             f"/api/sse/cases/{case_id}/evidence?ticket=nonexistent",
@@ -117,7 +188,7 @@ class TestSSEStream:
         assert resp.status_code == 401
 
     def test_valid_ticket_consumed_once(self, sse_client):
-        client, org_id, _, evidence_repo = sse_client
+        client, org_id, _, evidence_repo, _ = sse_client
         case_id = uuid.uuid4()
         ticket = str(uuid.uuid4())
         sse_module._tickets[ticket] = {
