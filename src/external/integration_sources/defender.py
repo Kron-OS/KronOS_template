@@ -102,9 +102,27 @@ logger = logging.getLogger(__name__)
 # on, so an alert missing it cannot honestly be watermark-tracked).
 _REQUIRED_ALERT_KEYS = ("id", "lastUpdateDateTime")
 
-# Defensive cap on @odata.nextLink hops within one poll() call -- fail
-# loudly on a malformed/looping stand-in or a real API misbehaving, rather
-# than an unbounded loop (CLAUDE.md invariant #8).
+# Defensive cap on @odata.nextLink hops within one poll() call. This is a
+# safety valve, not a hard correctness assumption that a real backlog will
+# ever fit in 50 pages -- it genuinely won't after a long outage of this
+# beat task or for a very active tenant. Two different situations hit this
+# cap and are handled differently (see the branch in the loop below):
+#   - Genuine truncation of a real, legitimate backlog (at least one alert
+#     was fetched across the capped run): pagination is stopped and the
+#     partial-but-valid result accumulated so far is returned normally, with
+#     its own advanced cursor, rather than discarded. The next scheduled
+#     poll cycle (crontab-driven) resumes from that cursor and drains the
+#     next slice of backlog -- self-healing, incremental, autonomous
+#     recovery, no human intervention required (mirrors CLAUDE.md SS E.4's
+#     own philosophy for the evidence pipeline, applied here).
+#   - Zero real progress across the *entire* capped run (not a single alert
+#     was ever fetched): a real backlog still yields real alerts on every
+#     page, so fetching 50 full pages of nothing is a strong signal of a
+#     malformed/looping response (e.g. a stand-in or a misbehaving API
+#     returning a `@odata.nextLink` that never terminates and never advances
+#     the watermark) rather than genuine data. This case still fails loudly
+#     -- silently truncating it would hide a real bug instead of recovering
+#     from real backlog (CLAUDE.md SS F: fail loudly on a genuine bug).
 _MAX_PAGES_PER_POLL = 50
 
 
@@ -162,10 +180,32 @@ class DefenderPollSource(IntegrationSource):
         while next_url is not None:
             pages_fetched += 1
             if pages_fetched > _MAX_PAGES_PER_POLL:
-                raise IntegrationSourceError(
-                    f"alerts_v2 pagination exceeded {_MAX_PAGES_PER_POLL} pages in one "
-                    "poll cycle -- aborting rather than looping unboundedly"
+                if not raw_events:
+                    # Zero progress across the whole capped run -- not a
+                    # legitimate backlog (see _MAX_PAGES_PER_POLL comment).
+                    raise IntegrationSourceError(
+                        f"alerts_v2 pagination exceeded {_MAX_PAGES_PER_POLL} pages in one "
+                        "poll cycle without fetching a single alert -- aborting rather than "
+                        "looping unboundedly (this looks like a malformed/looping response, "
+                        "not a real backlog)"
+                    )
+                # A real, legitimate backlog: every page fetched so far was
+                # successfully parsed and is a valid partial result. Stop
+                # paginating here and return it normally (same shape as a
+                # clean, non-truncated success) instead of discarding it --
+                # see _MAX_PAGES_PER_POLL's own comment for why this is safe
+                # and self-healing.
+                logger.warning(
+                    "alerts_v2 pagination truncated at the %d-page cap for org_id=%s "
+                    "source_id=%s -- returning %d event(s) fetched so far with an "
+                    "advanced cursor; a real backlog remains and will be picked up "
+                    "incrementally on subsequent poll cycles",
+                    _MAX_PAGES_PER_POLL,
+                    identity.org_id,
+                    identity.source_id,
+                    len(raw_events),
                 )
+                break
 
             try:
                 headers = await self._auth.headers()

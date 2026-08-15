@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import httpx
@@ -187,7 +187,50 @@ class TestDefenderPollSource:
         assert second_call.kwargs["params"] is None
 
     @pytest.mark.asyncio
-    async def test_pagination_exceeding_max_pages_raises(self) -> None:
+    async def test_pagination_exceeding_max_pages_with_real_backlog_truncates_and_returns_partial(
+        self,
+    ) -> None:
+        """A real, legitimate backlog larger than the 50-page cap must not be
+        discarded: poll() should stop paginating, log a warning, and return
+        the partial-but-valid result (events fetched so far + the newest
+        watermark seen) exactly like a clean success -- so the caller
+        (``run_poll_cycle``) persists the advanced cursor and the *next*
+        poll cycle drains the next slice of backlog incrementally."""
+        timestamps = [
+            (datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=i)).strftime(
+                "%Y-%m-%dT%H:%M:%S.0000000Z"
+            )
+            for i in range(50)
+        ]
+        next_link_base = "https://graph.example/v1.0/security/alerts_v2"
+        pages = [
+            _mock_response(
+                200,
+                {
+                    "value": [_alert(f"a{i}", timestamps[i])],
+                    "@odata.nextLink": f"{next_link_base}?$skip={i + 1}",
+                },
+            )
+            for i in range(50)
+        ]
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get.side_effect = pages
+        source = _source(client)
+
+        result = await source.poll(_identity(), None)
+
+        assert len(result.raw_events) == 50
+        assert result.next_cursor == timestamps[-1]
+        # Pagination stopped at the cap -- the 51st page (which would have
+        # been requested via that last page's own nextLink) is never fetched.
+        assert client.get.await_count == 50
+
+    @pytest.mark.asyncio
+    async def test_pagination_exceeding_max_pages_with_zero_progress_raises(self) -> None:
+        """If the entire capped run produces zero real alerts, that is not a
+        legitimate backlog (a real backlog still yields real alerts on every
+        page) -- it looks like a malformed/looping response, so this must
+        still fail loudly rather than being silently truncated."""
         looping_page = _mock_response(
             200,
             {
@@ -199,7 +242,7 @@ class TestDefenderPollSource:
         client.get.return_value = looping_page  # same response forever -> infinite nextLink loop
         source = _source(client)
 
-        with pytest.raises(IntegrationSourceError, match="exceeded"):
+        with pytest.raises(IntegrationSourceError, match="without fetching a single alert"):
             await source.poll(_identity(), None)
 
     @pytest.mark.asyncio
