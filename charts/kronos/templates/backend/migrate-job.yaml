@@ -1,0 +1,85 @@
+{{- if .Values.migrate.enabled }}
+# Pre-install/pre-upgrade hook that runs `alembic upgrade head` against the
+# real Postgres schema before the backend Deployment (and Celery workers) is
+# ever created (install) or updated (upgrade). This is the Helm/Kubernetes
+# equivalent of docker-compose.{dev,test,prod}.yml's own `db-migrate`
+# one-shot service (see docker-compose.dev.yml and docs/DATABASE_MIGRATIONS.md)
+# -- Milestone V4 (Gap Audit P1-12) replaced the old create_tables()-at-boot
+# path used by wire_dependencies_async()/wire_dependencies_sync() with a
+# real Alembic-managed schema, but that change only ever touched the Compose
+# files, not this chart. Helm has no `depends_on: service_completed_successfully`
+# construct, so a hook Job blocking the whole install/upgrade is the closest
+# equivalent. Without this, a fresh install reports every pod Ready
+# (src/external/fastapi_app.py's /healthz is deliberately DB-independent --
+# do NOT add a DB check there, see its own comment: a transient downstream
+# outage must never cause Kubernetes to kill an otherwise-healthy backend)
+# against an empty schema, with zero error signal from Kubernetes -- every
+# DB-touching request just 500s.
+#
+# Uses the same backend image: alembic.ini/migrations/ are baked into it
+# (see docker/Dockerfile's own "Alembic (Gap Audit P1-12 / Milestone V4)"
+# comment), no separate image/Dockerfile needed, same as db-migrate's own
+# `image: kronos-backend:dev` in docker-compose.dev.yml. Loads DATABASE_URL
+# from the exact same kronos-app-secrets secret the backend Deployment
+# itself uses (charts/kronos/templates/backend/deployment.yaml) -- no new
+# secret name or env var invented.
+#
+# hook-weight "0": lower than keycloak.provisionOrg / opensearch.securityInit's
+# post-install hook-weight "5" above -- though those run in a different hook
+# phase entirely (post-install/post-upgrade, after every resource including
+# the backend Deployment already exists), so this weight mostly matters
+# relative to any other pre-install/pre-upgrade hook added later.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kronos.fullname" . }}-db-migrate
+  namespace: kronos
+  labels:
+    {{- include "kronos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit | default 3 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kronos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db-migrate
+        app.kubernetes.io/zone: app
+    spec:
+      serviceAccountName: {{ include "kronos.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -212,6 +212,20 @@ celery:
       queues: "q.index,q.intake"
       concurrency: 8
 
+# Runs `alembic upgrade head` as a pre-install/pre-upgrade Helm hook Job
+# (templates/backend/migrate-job.yaml) before the backend Deployment is ever
+# created or updated -- see that template's own comment for the full
+# reasoning (Milestone V4 / Gap Audit P1-12). Enabled by default, UNLIKE
+# keycloak.provisionOrg and opensearch.securityInit above (both opt-in):
+# those mutate a shared *external* system's own state (a live Keycloak
+# realm, a live OpenSearch cluster) that an operator may deliberately not
+# want touched by every install/upgrade, whereas a migrated schema is not
+# optional for this application to function at all -- an un-migrated
+# install is just broken, not a valid alternate configuration.
+migrate:
+  enabled: true
+  backoffLimit: 3
+
 gvisorRuntimeClass: "gvisor"
 firecrackerRuntimeClass: "firecracker"
 

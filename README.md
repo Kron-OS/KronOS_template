@@ -120,11 +120,33 @@ make dev-down          # stop and remove the stack
 
 ### Frontend dev (hot reload, against the dev backend)
 
+`kronos.local` is the sole domain Keycloak will complete a login for —
+`docker/keycloak/kronos-realm.json`'s `kronos-frontend` client only allows
+`redirectUris`/`webOrigins` on `https://kronos.local` (no `localhost`/bare-IP
+entries). `frontend/.env.example` already points at that domain
+(`https://kronos.local:8443` for Keycloak, `https://kronos.local` for the
+API) — **not** `localhost:8080`/`:8000`. See
+[`docs/lan-dev-access.md`](./docs/lan-dev-access.md) for the full
+`/etc/hosts` + trusted-CA setup this requires.
+
 ```bash
-cp frontend/.env.example frontend/.env   # points at localhost:8080 / :8000
+cp frontend/.env.example frontend/.env
 cd frontend && npm install
-npm run dev                              # http://localhost:5173
+npm run dev                              # Vite picks its own port (default 5173)
 ```
+
+`npm run dev`'s Vite server has no HTTPS/`kronos.local` binding and nginx
+has no reverse-proxy route to it (`docker/nginx/nginx-lan-https.conf.template`'s
+`:443` server block only serves the built SPA from
+`/usr/share/nginx/html`) — so hitting the Vite dev server directly cannot
+complete a real Keycloak login (`frontend/src/keycloak.ts`'s
+`resolveKeycloakUrl()` deliberately has no `localhost` fallback; see its
+docstring for the reproduced session-cookie bug that ruled one out). Use
+`npm run dev` for UI iteration that doesn't need a real login; for anything
+that exercises actual auth, follow `docs/lan-dev-access.md` and browse
+`https://kronos.local`, which serves the frontend built into the dev
+`nginx` image (`make dev` rebuilds it on `docker-compose.dev.yml` changes —
+no HMR, but a real login).
 
 ---
 
@@ -248,12 +270,15 @@ Keycloak/Vault (configured via `values.yaml`).
 make helm-lint                 # lint the chart
 make helm-template             # render manifests for review
 
-# Create the secrets the chart references (names per values.yaml), e.g.:
+# Create the secret the chart references — every backend/Celery Deployment
+# loads it in full via `envFrom: secretRef: name: kronos-app-secrets`
+# (charts/kronos/templates/backend/deployment.yaml et al.), so key names
+# must match the app's env vars exactly. Full list: docs/deployment.md.
 kubectl create namespace kronos
-kubectl -n kronos create secret generic kronos-secrets \
-  --from-literal=database-url='postgresql+asyncpg://...' \
-  --from-literal=keycloak-client-secret='...' \
-  --from-literal=vault-token='...'        # etc.
+kubectl -n kronos create secret generic kronos-app-secrets \
+  --from-literal=DATABASE_URL='postgresql+asyncpg://...' \
+  --from-literal=KEYCLOAK_CLIENT_SECRET='...' \
+  --from-literal=VAULT_TOKEN='...'        # etc.
 
 # Install
 make helm-install-dev          # values-dev.yaml
