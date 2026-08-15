@@ -127,12 +127,17 @@ class PostgresRulePackRepository(RulePackRepository):
                 ) from exc
         return version
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> RulePackVersion | None:
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> RulePackVersion | None:
         async with self._engine.connect() as conn:
             row = (
                 await conn.execute(
                     rule_pack_versions_table.select()
-                    .where(rule_pack_versions_table.c.pack_id == pack_id)
+                    .where(
+                        rule_pack_versions_table.c.pack_id == pack_id,
+                        rule_pack_versions_table.c.org_id == org_id,
+                    )
                     .order_by(rule_pack_versions_table.c.version.desc())
                     .limit(1)
                 )
@@ -170,12 +175,15 @@ class PostgresRulePackRepository(RulePackRepository):
                 )
             )
 
-    async def get_published_opensearch_id(self, rule_id: uuid.UUID) -> str | None:
+    async def get_published_opensearch_id(
+        self, rule_id: uuid.UUID, org_id: uuid.UUID
+    ) -> str | None:
         async with self._engine.connect() as conn:
             row = (
                 await conn.execute(
                     published_custom_rules_table.select().where(
-                        published_custom_rules_table.c.rule_id == rule_id
+                        published_custom_rules_table.c.rule_id == rule_id,
+                        published_custom_rules_table.c.org_id == org_id,
                     )
                 )
             ).one_or_none()

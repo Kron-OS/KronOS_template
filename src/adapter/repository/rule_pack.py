@@ -36,9 +36,13 @@ class RulePackRepository(ABC):
         already exists -- versions are append-only, never overwritten."""
 
     @abstractmethod
-    async def get_latest_version(self, pack_id: uuid.UUID) -> RulePackVersion | None:
-        """Return the highest-numbered version for *pack_id*, or None if the
-        pack has no versions yet."""
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> RulePackVersion | None:
+        """Return the highest-numbered version for *pack_id* scoped to
+        *org_id*, or None if the pack has no versions yet or does not
+        belong to *org_id* (defense-in-depth org scoping, mirrors
+        ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
     async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
@@ -54,9 +58,13 @@ class RulePackRepository(ABC):
         recorded with the same mapping."""
 
     @abstractmethod
-    async def get_published_opensearch_id(self, rule_id: uuid.UUID) -> str | None:
-        """Return the OpenSearch rule id *rule_id* was published as, or None
-        if it has never been published."""
+    async def get_published_opensearch_id(
+        self, rule_id: uuid.UUID, org_id: uuid.UUID
+    ) -> str | None:
+        """Return the OpenSearch rule id *rule_id* was published as, scoped
+        to *org_id*, or None if it has never been published or was
+        published under a different org (defense-in-depth org scoping,
+        mirrors ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
     async def delete_publication(self, rule_id: uuid.UUID) -> None:
@@ -70,7 +78,10 @@ class InMemoryRulePackRepository(RulePackRepository):
     def __init__(self) -> None:
         self._packs: dict[uuid.UUID, RulePack] = {}
         self._versions: dict[uuid.UUID, list[RulePackVersion]] = {}
-        self._publications: dict[uuid.UUID, str] = {}
+        # rule_id -> (org_id, opensearch_rule_id) -- org_id kept alongside the
+        # value so get_published_opensearch_id can scope its lookup, mirroring
+        # published_custom_rules_table.org_id in the Postgres implementation.
+        self._publications: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
 
     async def get_or_create_pack(self, org_id: uuid.UUID, name: str) -> RulePack:
         for pack in self._packs.values():
@@ -93,8 +104,10 @@ class InMemoryRulePackRepository(RulePackRepository):
         existing.append(version)
         return version
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> RulePackVersion | None:
-        versions = self._versions.get(pack_id, [])
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> RulePackVersion | None:
+        versions = [v for v in self._versions.get(pack_id, []) if v.org_id == org_id]
         if not versions:
             return None
         return max(versions, key=lambda v: v.version)
@@ -105,10 +118,15 @@ class InMemoryRulePackRepository(RulePackRepository):
     async def record_publication(
         self, rule_id: uuid.UUID, org_id: uuid.UUID, opensearch_rule_id: str
     ) -> None:
-        self._publications[rule_id] = opensearch_rule_id
+        self._publications[rule_id] = (org_id, opensearch_rule_id)
 
-    async def get_published_opensearch_id(self, rule_id: uuid.UUID) -> str | None:
-        return self._publications.get(rule_id)
+    async def get_published_opensearch_id(
+        self, rule_id: uuid.UUID, org_id: uuid.UUID
+    ) -> str | None:
+        entry = self._publications.get(rule_id)
+        if entry is None or entry[0] != org_id:
+            return None
+        return entry[1]
 
     async def delete_publication(self, rule_id: uuid.UUID) -> None:
         self._publications.pop(rule_id, None)

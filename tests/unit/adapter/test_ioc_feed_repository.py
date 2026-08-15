@@ -42,16 +42,33 @@ class TestInMemoryIOCFeedRepository:
         )
 
         await repo.save_version(version)
-        latest = await repo.get_latest_version(feed.feed_id)
+        latest = await repo.get_latest_version(feed.feed_id, org_id)
 
         assert latest == version
 
     @pytest.mark.asyncio
     async def test_no_versions_yet_returns_none(self) -> None:
         repo = InMemoryIOCFeedRepository()
-        feed = await repo.get_or_create_feed(uuid.uuid4(), "f")
+        org_id = uuid.uuid4()
+        feed = await repo.get_or_create_feed(org_id, "f")
 
-        assert await repo.get_latest_version(feed.feed_id) is None
+        assert await repo.get_latest_version(feed.feed_id, org_id) is None
+
+    @pytest.mark.asyncio
+    async def test_get_latest_version_cross_org_isolation(self) -> None:
+        """P2-W10 defense-in-depth: a lookup with the wrong org_id must
+        return None even though the feed_id is real, mirroring
+        DetectionRepository.get_by_id's own cross-org isolation contract."""
+        repo = InMemoryIOCFeedRepository()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        feed = await repo.get_or_create_feed(org_a, "f")
+        version = IOCFeedVersion(
+            feed_id=feed.feed_id, version=1, org_id=org_a, source_format="stix2.1"
+        )
+        await repo.save_version(version)
+
+        assert await repo.get_latest_version(feed.feed_id, org_a) == version
+        assert await repo.get_latest_version(feed.feed_id, org_b) is None
 
     @pytest.mark.asyncio
     async def test_duplicate_version_raises_storage_error(self) -> None:

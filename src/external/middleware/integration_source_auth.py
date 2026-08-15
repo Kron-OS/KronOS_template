@@ -35,6 +35,7 @@ class of mistake CLAUDE.md SS G.1 warns against for parallel hierarchies):
 
 from __future__ import annotations
 
+import hmac
 import logging
 import time
 import uuid
@@ -132,7 +133,7 @@ class StaticApiKeyInboundAuthenticator(InboundSourceAuthenticator):
             raise IntegrationSourceAuthError(
                 f"Missing required '{self._HEADER_NAME}' header on inbound push request"
             )
-        provisioning = self._provisioned_keys.get(api_key)
+        provisioning = self._match_provisioned_key(api_key)
         if provisioning is None:
             raise IntegrationSourceAuthError("Inbound push API key is not provisioned")
         return IntegrationSourceIdentity(
@@ -141,6 +142,28 @@ class StaticApiKeyInboundAuthenticator(InboundSourceAuthenticator):
             source_type=provisioning.source_type,
             auth_method="api-key",
         )
+
+    def _match_provisioned_key(self, api_key: str) -> StaticApiKeyProvisioning | None:
+        """Constant-time lookup against every provisioned key.
+
+        A plain ``dict.get(api_key)`` hashes the attacker-supplied header
+        value and then does a bucket-local ``==`` comparison -- CPython's
+        string equality short-circuits on length/first-byte mismatch, which
+        is a real (if low-severity) timing side channel for guessing a valid
+        key byte-by-byte across many requests. The number of provisioned
+        keys per deployment is small (one per (org, source) pair), so a
+        linear ``hmac.compare_digest`` scan over all of them is the correct,
+        proportionate fix -- no hashed-lookup-table scheme needed. The loop
+        never short-circuits on a match (no ``break``) so every candidate is
+        compared exactly once regardless of where in iteration order the
+        real match falls.
+        """
+        api_key_bytes = api_key.encode("utf-8")
+        match: StaticApiKeyProvisioning | None = None
+        for candidate_key, provisioning in self._provisioned_keys.items():
+            if hmac.compare_digest(api_key_bytes, candidate_key.encode("utf-8")):
+                match = provisioning
+        return match
 
 
 # --- Outbound (POLL): attach credentials to KronOS's own HTTP call ---------

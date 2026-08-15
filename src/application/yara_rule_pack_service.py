@@ -73,7 +73,7 @@ class YaraRulePackService:
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
         rule = YaraRule(name=rule_name, rule_source=rule_source)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         new_rules = (prev.rules if prev else ()) + (rule,)
         await self._append_version(
             tenant, pack, new_rules, RulePackSourceTier.TENANT_CUSTOM, signature_verified=False
@@ -89,7 +89,7 @@ class YaraRulePackService:
         a new rule).
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         if prev is None or not any(r.name == rule_name for r in prev.rules):
             raise ValidationError(
                 "No existing rule with this name to update",
@@ -109,7 +109,7 @@ class YaraRulePackService:
         against the new version.
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         if prev is None:
             return
         remaining = tuple(r for r in prev.rules if r.name != rule_name)
@@ -122,8 +122,10 @@ class YaraRulePackService:
     async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
         return await self._repo.list_versions(pack_id)
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
-        return await self._repo.get_latest_version(pack_id)
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
+        return await self._repo.get_latest_version(pack_id, org_id)
 
     async def import_signed_pack(
         self,
@@ -161,7 +163,7 @@ class YaraRulePackService:
             )
 
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         rules = tuple(
             YaraRule(name=name, rule_source=rule_source) for name, rule_source in rule_specs
         )
@@ -214,8 +216,10 @@ class YaraRulePackService:
         )
         return target
 
-    async def get_published_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
-        return await self._repo.get_published_version(pack_id)
+    async def get_published_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
+        return await self._repo.get_published_version(pack_id, org_id)
 
     async def _append_version(
         self,
@@ -227,7 +231,7 @@ class YaraRulePackService:
         signature_verified: bool,
         content_sha256: str | None = None,
     ) -> YaraRulePackVersion:
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         next_version_num = (prev.version + 1) if prev else 1
         version = YaraRulePackVersion(
             pack_id=pack.pack_id,

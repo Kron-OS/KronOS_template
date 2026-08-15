@@ -45,9 +45,13 @@ class YaraRulePackRepository(ABC):
         already exists -- versions are append-only, never overwritten."""
 
     @abstractmethod
-    async def get_latest_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
-        """Return the highest-numbered version for *pack_id*, or None if the
-        pack has no versions yet."""
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
+        """Return the highest-numbered version for *pack_id* scoped to
+        *org_id*, or None if the pack has no versions yet or does not
+        belong to *org_id* (defense-in-depth org scoping, mirrors
+        ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
     async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
@@ -69,9 +73,13 @@ class YaraRulePackRepository(ABC):
         """
 
     @abstractmethod
-    async def get_published_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
-        """Return the currently-published version for *pack_id*, or None if
-        no version has ever been published."""
+    async def get_published_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
+        """Return the currently-published version for *pack_id* scoped to
+        *org_id*, or None if no version has ever been published or the pack
+        does not belong to *org_id* (defense-in-depth org scoping, mirrors
+        ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
     async def list_published_versions_for_org(self, org_id: uuid.UUID) -> list[YaraRulePackVersion]:
@@ -116,8 +124,10 @@ class InMemoryYaraRulePackRepository(YaraRulePackRepository):
         existing.append(version)
         return version
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
-        versions = self._versions.get(pack_id, [])
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
+        versions = [v for v in self._versions.get(pack_id, []) if v.org_id == org_id]
         if not versions:
             return None
         return max(versions, key=lambda v: v.version)
@@ -128,12 +138,14 @@ class InMemoryYaraRulePackRepository(YaraRulePackRepository):
     async def publish_version(self, pack_id: uuid.UUID, version: int) -> None:
         self._published[pack_id] = version
 
-    async def get_published_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
+    async def get_published_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
         published_num = self._published.get(pack_id)
         if published_num is None:
             return None
         for v in self._versions.get(pack_id, []):
-            if v.version == published_num:
+            if v.version == published_num and v.org_id == org_id:
                 return v
         return None
 
@@ -142,7 +154,7 @@ class InMemoryYaraRulePackRepository(YaraRulePackRepository):
         for pack in self._packs.values():
             if pack.org_id != org_id:
                 continue
-            published = await self.get_published_version(pack.pack_id)
+            published = await self.get_published_version(pack.pack_id, org_id)
             if published is not None:
                 results.append(published)
         return results

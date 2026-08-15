@@ -42,7 +42,7 @@ class IOCFeedIngestionService:
         indicators = parse_stix21_bundle(raw_bundle)
 
         feed = await self._repository.get_or_create_feed(org_id, feed_name)
-        latest = await self._repository.get_latest_version(feed.feed_id)
+        latest = await self._repository.get_latest_version(feed.feed_id, org_id)
         next_version = 1 if latest is None else latest.version + 1
 
         version = IOCFeedVersion(

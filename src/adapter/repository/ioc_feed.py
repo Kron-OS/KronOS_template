@@ -37,9 +37,13 @@ class IOCFeedRepository(ABC):
         already exists -- versions are append-only, never overwritten."""
 
     @abstractmethod
-    async def get_latest_version(self, feed_id: uuid.UUID) -> IOCFeedVersion | None:
-        """Return the highest-numbered version for *feed_id*, or None if the
-        feed has no versions yet."""
+    async def get_latest_version(
+        self, feed_id: uuid.UUID, org_id: uuid.UUID
+    ) -> IOCFeedVersion | None:
+        """Return the highest-numbered version for *feed_id* scoped to
+        *org_id*, or None if the feed has no versions yet or does not
+        belong to *org_id* (defense-in-depth org scoping, mirrors
+        ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
     async def list_versions(self, feed_id: uuid.UUID) -> list[IOCFeedVersion]:
@@ -83,8 +87,10 @@ class InMemoryIOCFeedRepository(IOCFeedRepository):
         existing.append(version)
         return version
 
-    async def get_latest_version(self, feed_id: uuid.UUID) -> IOCFeedVersion | None:
-        versions = self._versions.get(feed_id, [])
+    async def get_latest_version(
+        self, feed_id: uuid.UUID, org_id: uuid.UUID
+    ) -> IOCFeedVersion | None:
+        versions = [v for v in self._versions.get(feed_id, []) if v.org_id == org_id]
         if not versions:
             return None
         return max(versions, key=lambda v: v.version)
@@ -99,7 +105,7 @@ class InMemoryIOCFeedRepository(IOCFeedRepository):
         for feed in self._feeds.values():
             if feed.org_id != org_id:
                 continue
-            latest = await self.get_latest_version(feed.feed_id)
+            latest = await self.get_latest_version(feed.feed_id, org_id)
             if latest is None:
                 continue
             for indicator in latest.indicators:

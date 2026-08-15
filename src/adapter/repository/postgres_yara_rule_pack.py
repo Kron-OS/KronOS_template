@@ -135,12 +135,17 @@ class PostgresYaraRulePackRepository(YaraRulePackRepository):
                 ) from exc
         return version
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
         async with self._engine.connect() as conn:
             row = (
                 await conn.execute(
                     yara_rule_pack_versions_table.select()
-                    .where(yara_rule_pack_versions_table.c.pack_id == pack_id)
+                    .where(
+                        yara_rule_pack_versions_table.c.pack_id == pack_id,
+                        yara_rule_pack_versions_table.c.org_id == org_id,
+                    )
                     .order_by(yara_rule_pack_versions_table.c.version.desc())
                     .limit(1)
                 )
@@ -179,12 +184,15 @@ class PostgresYaraRulePackRepository(YaraRulePackRepository):
             )
             await conn.execute(stmt)
 
-    async def get_published_version(self, pack_id: uuid.UUID) -> YaraRulePackVersion | None:
+    async def get_published_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> YaraRulePackVersion | None:
         async with self._engine.connect() as conn:
             pointer_row = (
                 await conn.execute(
                     yara_rule_pack_published_table.select().where(
-                        yara_rule_pack_published_table.c.pack_id == pack_id
+                        yara_rule_pack_published_table.c.pack_id == pack_id,
+                        yara_rule_pack_published_table.c.org_id == org_id,
                     )
                 )
             ).one_or_none()
@@ -196,6 +204,7 @@ class PostgresYaraRulePackRepository(YaraRulePackRepository):
                     yara_rule_pack_versions_table.select().where(
                         yara_rule_pack_versions_table.c.pack_id == pack_id,
                         yara_rule_pack_versions_table.c.version == published_version,
+                        yara_rule_pack_versions_table.c.org_id == org_id,
                     )
                 )
             ).one_or_none()

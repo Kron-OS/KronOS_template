@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -90,6 +90,67 @@ class TestStaticApiKeyInboundAuthenticator:
 
     def test_auth_error_is_an_authentication_error(self) -> None:
         assert issubclass(IntegrationSourceAuthError, AuthenticationError)
+
+    @pytest.mark.asyncio
+    async def test_multiple_provisioned_keys_each_resolve_correctly(self) -> None:
+        """P2-W9 correctness check: with several provisioned keys, the linear
+        hmac.compare_digest scan must still resolve each one to ITS OWN
+        provisioning, not e.g. always the first/last key in the dict."""
+        org_1, org_2 = uuid.uuid4(), uuid.uuid4()
+        provisioning_1 = StaticApiKeyProvisioning(
+            api_key="key-one", org_id=org_1, source_id="s1", source_type="wazuh"
+        )
+        provisioning_2 = StaticApiKeyProvisioning(
+            api_key="key-two", org_id=org_2, source_id="s2", source_type="crowdstrike"
+        )
+        authenticator = StaticApiKeyInboundAuthenticator(
+            {"key-one": provisioning_1, "key-two": provisioning_2}
+        )
+
+        identity_1 = await authenticator.authenticate({"X-KronOS-Source-Key": "key-one"})
+        identity_2 = await authenticator.authenticate({"X-KronOS-Source-Key": "key-two"})
+
+        assert identity_1.org_id == org_1
+        assert identity_1.source_id == "s1"
+        assert identity_2.org_id == org_2
+        assert identity_2.source_id == "s2"
+
+    @pytest.mark.asyncio
+    async def test_key_comparison_uses_hmac_compare_digest(self) -> None:
+        """Proves the fix actually replaced the dict-keyed lookup with
+        hmac.compare_digest -- not a timing proof (CLAUDE.md SS F.2: timing
+        itself is not easily unit-testable), just a correctness/wiring
+        proof that the constant-time primitive is really on the hot path."""
+        org_id = uuid.uuid4()
+        authenticator = StaticApiKeyInboundAuthenticator(
+            {"secret-key-1": self._provisioning(org_id)}
+        )
+
+        with patch(
+            "src.external.middleware.integration_source_auth.hmac.compare_digest",
+            wraps=__import__("hmac").compare_digest,
+        ) as spy:
+            identity = await authenticator.authenticate({"X-KronOS-Source-Key": "secret-key-1"})
+
+        assert identity.org_id == org_id
+        spy.assert_called_once_with(b"secret-key-1", b"secret-key-1")
+
+    @pytest.mark.asyncio
+    async def test_no_early_exit_all_candidates_compared(self) -> None:
+        """The scan must not ``break`` on match -- every provisioned key is
+        compared exactly once per request regardless of iteration order,
+        so total comparison count doesn't leak which key matched."""
+        org_id = uuid.uuid4()
+        provisioning_map = {f"key-{i}": self._provisioning(org_id) for i in range(5)}
+        authenticator = StaticApiKeyInboundAuthenticator(provisioning_map)
+
+        with patch(
+            "src.external.middleware.integration_source_auth.hmac.compare_digest",
+            wraps=__import__("hmac").compare_digest,
+        ) as spy:
+            await authenticator.authenticate({"X-KronOS-Source-Key": "key-0"})
+
+        assert spy.call_count == len(provisioning_map)
 
 
 class TestApiKeyOutboundAuthStrategy:

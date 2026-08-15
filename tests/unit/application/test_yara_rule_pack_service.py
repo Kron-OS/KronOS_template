@@ -44,7 +44,7 @@ class TestAddRule:
         assert rule.rule_source == _RULE_A
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.version == 1
         assert len(version.rules) == 1
@@ -69,7 +69,7 @@ class TestAddRule:
         tenant = make_tenant_context()
         await service.add_rule(tenant, "pack1", "RuleA", _RULE_A)
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.org_id == tenant.org_id
 
@@ -81,7 +81,7 @@ class TestAddRule:
         await service.add_rule(tenant, "pack1", "RuleA", _RULE_A)
         await service.add_rule(tenant, "pack1", "RuleB", _RULE_B)
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         combined = version.combined_rule_source
         assert combined is not None
@@ -100,7 +100,7 @@ class TestUpdateAndDeleteRule:
         assert updated.rule_source == _RULE_B
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.version == 2
         assert len(version.rules) == 1  # replaced, not appended
@@ -118,7 +118,7 @@ class TestUpdateAndDeleteRule:
         await service.delete_rule(tenant, "pack1", "RuleA")
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.version == 2
         assert len(version.rules) == 0
@@ -130,7 +130,7 @@ class TestUpdateAndDeleteRule:
         await service.delete_rule(tenant, "pack1", "Nonexistent")
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.version == 1  # no new version created
 
@@ -163,7 +163,7 @@ class TestImportSignedPack:
             )
 
         pack = await service.get_or_create_pack(tenant, "bad-pack")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is None
 
     @pytest.mark.asyncio
@@ -195,7 +195,7 @@ class TestPublishVersion:
         published = await service.publish_version(tenant, "pack1", 1)
         assert published.version == 1
 
-        current = await service.get_published_version(pack.pack_id)
+        current = await service.get_published_version(pack.pack_id, tenant.org_id)
         assert current is not None
         assert current.version == 1
 
@@ -211,7 +211,7 @@ class TestPublishVersion:
         await service.publish_version(tenant, "pack1", 1)
         await service.publish_version(tenant, "pack1", 2)
 
-        current = await service.get_published_version(pack.pack_id)
+        current = await service.get_published_version(pack.pack_id, tenant.org_id)
         assert current is not None
         assert current.version == 2
         # version 1 remains independently retrievable -- publishing never
@@ -235,4 +235,4 @@ class TestPublishVersion:
         await service.add_rule(tenant, "pack1", "RuleA", _RULE_A)
         pack = await service.get_or_create_pack(tenant, "pack1")
 
-        assert await service.get_published_version(pack.pack_id) is None
+        assert await service.get_published_version(pack.pack_id, tenant.org_id) is None

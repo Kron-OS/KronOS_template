@@ -68,13 +68,16 @@ class RulePackPublisher:
         mutation).
         """
         pack = await self._repo.get_or_create_pack(tenant.org_id, pack_name)
-        version = await self._repo.get_latest_version(pack.pack_id)
+        version = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         if version is None:
             return 0
 
         published = 0
         for rule in version.rules_for_log_type(log_type):
-            if await self._repo.get_published_opensearch_id(rule.rule_id) is not None:
+            if (
+                await self._repo.get_published_opensearch_id(rule.rule_id, tenant.org_id)
+                is not None
+            ):
                 continue
             if await self._publish_one(tenant, pack_name, rule, log_type):
                 published += 1
@@ -123,7 +126,9 @@ class RulePackPublisher:
         for rule in rules:
             if rule.log_type != log_type or not rule.is_accepted:
                 continue
-            published_id = await self._repo.get_published_opensearch_id(rule.rule_id)
+            published_id = await self._repo.get_published_opensearch_id(
+                rule.rule_id, tenant.org_id
+            )
             if published_id is not None:
                 opensearch_ids.append(published_id)
         await self._detector_binder.sync_custom_detector(

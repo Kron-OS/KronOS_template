@@ -57,7 +57,7 @@ class TestAddCustomRule:
         assert rule.is_accepted
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is not None
         assert version.version == 1
         assert len(version.rules) == 1
@@ -69,7 +69,7 @@ class TestAddCustomRule:
         assert not rule.is_accepted
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert len(version.rules) == 1
         assert len(version.accepted_rules) == 0
 
@@ -92,7 +92,7 @@ class TestAddCustomRule:
         tenant = make_tenant_context()
         await service.add_custom_rule(tenant, "pack1", "Rule A", _REASONABLE_RULE, "network")
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version.org_id == tenant.org_id
 
 
@@ -105,7 +105,7 @@ class TestUpdateAndDeleteCustomRule:
         assert not updated.is_accepted
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version.version == 2
         assert len(version.rules) == 1  # replaced, not appended
 
@@ -122,7 +122,7 @@ class TestUpdateAndDeleteCustomRule:
         await service.delete_custom_rule(tenant, "pack1", "Rule A")
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version.version == 2
         assert len(version.rules) == 0
 
@@ -133,7 +133,7 @@ class TestUpdateAndDeleteCustomRule:
         await service.delete_custom_rule(tenant, "pack1", "Nonexistent")
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version.version == 1  # no new version created
 
 
@@ -165,7 +165,7 @@ class TestImportSignedPack:
             )
 
         pack = await service.get_or_create_pack(tenant, "bad-pack")
-        version = await service.get_latest_version(pack.pack_id)
+        version = await service.get_latest_version(pack.pack_id, tenant.org_id)
         assert version is None
 
     @pytest.mark.asyncio

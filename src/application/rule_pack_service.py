@@ -62,7 +62,7 @@ class RulePackService:
         rule = CustomRule(
             title=title, log_type=log_type, sigma_yaml=sigma_yaml, cost_gate_verdict=verdict
         )
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         new_rules = (prev.rules if prev else ()) + (rule,)
         await self._append_version(
             tenant, pack, new_rules, RulePackSourceTier.TENANT_CUSTOM, signature_verified=False
@@ -83,7 +83,7 @@ class RulePackService:
         accepted tradeoff this implies.
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         if prev is None or not any(r.title == title for r in prev.rules):
             raise ValidationError(
                 "No existing rule with this title to update",
@@ -107,7 +107,7 @@ class RulePackService:
         org's real detector so it stops referencing the removed rule.
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         if prev is None:
             return
         remaining = tuple(r for r in prev.rules if r.title != title)
@@ -120,8 +120,10 @@ class RulePackService:
     async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
         return await self._repo.list_versions(pack_id)
 
-    async def get_latest_version(self, pack_id: uuid.UUID) -> RulePackVersion | None:
-        return await self._repo.get_latest_version(pack_id)
+    async def get_latest_version(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> RulePackVersion | None:
+        return await self._repo.get_latest_version(pack_id, org_id)
 
     async def import_signed_pack(
         self,
@@ -155,7 +157,7 @@ class RulePackService:
             )
 
         pack = await self.get_or_create_pack(tenant, pack_name)
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         rules = tuple(
             CustomRule(
                 title=title,
@@ -184,7 +186,7 @@ class RulePackService:
         signature_verified: bool,
         content_sha256: str | None = None,
     ) -> RulePackVersion:
-        prev = await self._repo.get_latest_version(pack.pack_id)
+        prev = await self._repo.get_latest_version(pack.pack_id, tenant.org_id)
         next_version_num = (prev.version + 1) if prev else 1
         version = RulePackVersion(
             pack_id=pack.pack_id,

@@ -102,7 +102,7 @@ class TestIOCFeedIngestionService:
             await service.ingest_stix_bundle(org_id, "my-feed", b'{"type": "not-a-bundle"}')
 
         feed = await repo.get_or_create_feed(org_id, "my-feed")
-        assert await repo.get_latest_version(feed.feed_id) is None
+        assert await repo.get_latest_version(feed.feed_id, org_id) is None
 
     @pytest.mark.asyncio
     async def test_ingested_indicators_are_immediately_matchable(self) -> None:
