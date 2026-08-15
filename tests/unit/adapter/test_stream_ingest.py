@@ -34,7 +34,9 @@ class TestRedisStreamIngestAdapterProduce:
 
         message_id = await adapter.produce(org, "zeek-conn", b"payload-bytes")
 
-        redis.xadd.assert_awaited_once_with(f"kronos:stream:{org}:zeek-conn", {b"payload": b"payload-bytes"})
+        redis.xadd.assert_awaited_once_with(
+            f"kronos:stream:{org}:zeek-conn", {b"payload": b"payload-bytes"}
+        )
         assert message_id == "123-0"
 
 
@@ -54,10 +56,13 @@ class TestRedisStreamIngestAdapterEnsureConsumerGroup:
     @pytest.mark.asyncio
     async def test_idempotent_swallows_busygroup(self) -> None:
         redis = AsyncMock()
-        redis.xgroup_create.side_effect = ResponseError("BUSYGROUP Consumer Group name already exists")
+        redis.xgroup_create.side_effect = ResponseError(
+            "BUSYGROUP Consumer Group name already exists"
+        )
         adapter = RedisStreamIngestAdapter(redis)
 
-        await adapter.ensure_consumer_group(uuid.uuid4(), "zeek-conn", "ingest-cg")  # must not raise
+        # must not raise
+        await adapter.ensure_consumer_group(uuid.uuid4(), "zeek-conn", "ingest-cg")
 
     @pytest.mark.asyncio
     async def test_reraises_non_busygroup_errors(self) -> None:
@@ -80,7 +85,9 @@ class TestRedisStreamIngestAdapterConsume:
         ]
         adapter = RedisStreamIngestAdapter(redis)
 
-        messages = await adapter.consume(org, "zeek-conn", "cg", "consumer-1", count=5, block_ms=100)
+        messages = await adapter.consume(
+            org, "zeek-conn", "cg", "consumer-1", count=5, block_ms=100
+        )
 
         redis.xreadgroup.assert_awaited_once_with(
             "cg", "consumer-1", {f"kronos:stream:{org}:zeek-conn": ">"}, count=5, block=100
@@ -130,10 +137,16 @@ class TestRedisStreamIngestAdapterReclaimStale:
         adapter = RedisStreamIngestAdapter(redis)
         org = uuid.uuid4()
 
-        reclaimed = await adapter.reclaim_stale(org, "zeek-conn", "cg", "consumer-2", min_idle_ms=30000)
+        reclaimed = await adapter.reclaim_stale(
+            org, "zeek-conn", "cg", "consumer-2", min_idle_ms=30000
+        )
 
         redis.xautoclaim.assert_awaited_once_with(
-            f"kronos:stream:{org}:zeek-conn", "cg", "consumer-2", min_idle_time=30000, start_id="0-0"
+            f"kronos:stream:{org}:zeek-conn",
+            "cg",
+            "consumer-2",
+            min_idle_time=30000,
+            start_id="0-0",
         )
         assert reclaimed == [StreamMessage(message_id="1-0", payload=b"stuck")]
 
@@ -208,8 +221,11 @@ class TestRedisStreamIngestAdapterConsumerGroupHealth:
         health = await adapter.consumer_group_health(uuid.uuid4(), "zeek-conn", "cg")
 
         assert health == ConsumerGroupHealth(
-            pending_count=0, min_pending_id=None, max_pending_id=None,
-            consumer_pending_counts={}, lag=None,
+            pending_count=0,
+            min_pending_id=None,
+            max_pending_id=None,
+            consumer_pending_counts={},
+            lag=None,
         )
         redis.xinfo_groups.assert_not_awaited()
 
@@ -227,8 +243,14 @@ class TestRedisStreamIngestAdapterConsumerGroupHealth:
         redis = AsyncMock()
         redis.xpending.return_value = {"pending": 0, "min": None, "max": None, "consumers": []}
         redis.xinfo_groups.return_value = [
-            {"name": "cg", "consumers": 1, "pending": 0, "last-delivered-id": b"0-0",
-             "entries-read": 0, "lag": 5}
+            {
+                "name": "cg",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": b"0-0",
+                "entries-read": 0,
+                "lag": 5,
+            }
         ]
         adapter = RedisStreamIngestAdapter(redis)
 
@@ -236,6 +258,65 @@ class TestRedisStreamIngestAdapterConsumerGroupHealth:
 
         assert health.pending_count == 0
         assert health.lag == 5
+
+
+class TestRedisStreamIngestAdapterListActiveStreams:
+    """Real SCAN-cursor semantics (roadmap Milestone W/W1) verified live
+    against Redis 7 in a throwaway script before this method was written --
+    see poc/autonomous_detection_pipeline/README.md. These tests mock only
+    the redis client's own ``scan`` call shape."""
+
+    @pytest.mark.asyncio
+    async def test_single_scan_page_parses_org_and_source(self) -> None:
+        redis = AsyncMock()
+        org = uuid.uuid4()
+        redis.scan.return_value = (0, [f"kronos:stream:{org}:zeek-conn".encode()])
+        adapter = RedisStreamIngestAdapter(redis)
+
+        pairs = await adapter.list_active_streams()
+
+        assert pairs == [(org, "zeek-conn")]
+        redis.scan.assert_awaited_once_with(cursor=0, match="kronos:stream:*:*", count=500)
+
+    @pytest.mark.asyncio
+    async def test_follows_cursor_across_multiple_scan_pages(self) -> None:
+        redis = AsyncMock()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        redis.scan.side_effect = [
+            (111, [f"kronos:stream:{org_a}:wazuh".encode()]),
+            (0, [f"kronos:stream:{org_b}:zeek-conn".encode()]),
+        ]
+        adapter = RedisStreamIngestAdapter(redis)
+
+        pairs = await adapter.list_active_streams()
+
+        assert set(pairs) == {(org_a, "wazuh"), (org_b, "zeek-conn")}
+        assert redis.scan.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_unparseable_keys_without_raising(self) -> None:
+        redis = AsyncMock()
+        org = uuid.uuid4()
+        redis.scan.return_value = (
+            0,
+            [
+                b"kronos:stream:not-a-uuid:zeek-conn",  # bad org_id -- skipped
+                f"kronos:stream:{org}:wazuh".encode(),  # good -- kept
+            ],
+        )
+        adapter = RedisStreamIngestAdapter(redis)
+
+        pairs = await adapter.list_active_streams()
+
+        assert pairs == [(org, "wazuh")]
+
+    @pytest.mark.asyncio
+    async def test_no_streams_returns_empty_list(self) -> None:
+        redis = AsyncMock()
+        redis.scan.return_value = (0, [])
+        adapter = RedisStreamIngestAdapter(redis)
+
+        assert await adapter.list_active_streams() == []
 
 
 class TestInMemoryStreamIngestAdapterContract:
@@ -308,9 +389,17 @@ class TestInMemoryStreamIngestAdapterContract:
         # No group ever created for this (org, source) -> lag=None, not 0.
         never = await adapter.consumer_group_health(org, "src", "cg")
         assert never == ConsumerGroupHealth(
-            pending_count=0, min_pending_id=None, max_pending_id=None,
-            consumer_pending_counts={}, lag=None,
+            pending_count=0,
+            min_pending_id=None,
+            max_pending_id=None,
+            consumer_pending_counts={},
+            lag=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_consumer_group_health_lag_after_partial_consume(self) -> None:
+        adapter = InMemoryStreamIngestAdapter()
+        org = uuid.uuid4()
 
         await adapter.produce(org, "src", b"one")
         await adapter.produce(org, "src", b"two")
@@ -325,3 +414,19 @@ class TestInMemoryStreamIngestAdapterContract:
         # but lag is real: 2 entries ("two", "three") never delivered yet.
         assert health.pending_count == 0
         assert health.lag == 2
+
+    @pytest.mark.asyncio
+    async def test_list_active_streams_discovers_every_produced_pair(self) -> None:
+        adapter = InMemoryStreamIngestAdapter()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        await adapter.produce(org_a, "wazuh", b"one")
+        await adapter.produce(org_b, "zeek-conn", b"two")
+
+        pairs = await adapter.list_active_streams()
+
+        assert set(pairs) == {(org_a, "wazuh"), (org_b, "zeek-conn")}
+
+    @pytest.mark.asyncio
+    async def test_list_active_streams_empty_when_nothing_produced(self) -> None:
+        adapter = InMemoryStreamIngestAdapter()
+        assert await adapter.list_active_streams() == []

@@ -21,9 +21,12 @@ zero changes to any caller.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,10 @@ class StreamIngestAdapter(ABC):
 
     @abstractmethod
     async def produce(self, org_id: uuid.UUID, source_id: str, payload: bytes) -> str:
-        """Durably append *payload* to this (org, source)'s own stream. Returns the new message id."""
+        """Durably append *payload* to this (org, source)'s own stream.
+
+        Returns the new message id.
+        """
 
     @abstractmethod
     async def ensure_consumer_group(
@@ -168,6 +174,31 @@ class StreamIngestAdapter(ABC):
         what ``pending_count`` vs ``lag`` each actually mean.
         """
 
+    @abstractmethod
+    async def list_active_streams(self) -> list[tuple[uuid.UUID, str]]:
+        """Enumerate every real (org_id, source_id) pair with a stream key
+        that currently exists (roadmap Milestone W/W1).
+
+        There is no separate, enumerable Postgres-backed registry of
+        "provisioned (org, source) pairs" anywhere in this codebase
+        (confirmed by direct grep: ``IntegrationSourceRegistry`` is a
+        *source_type handler* registry keyed by string, not an (org,
+        source)-pair registry; ``SourceCursorRepository`` only ever gets a
+        row written for POLL-mode sources after a completed cycle, never for
+        push/mTLS collectors). This method is the honest, minimal discovery
+        mechanism a scheduled ``seal_pending()`` beat task needs: the
+        stream key itself (``kronos:stream:{org_id}:{source_id}``, this
+        adapter's own real naming convention) is the only durable,
+        self-describing record that a given (org, source) pair has ever
+        produced real telemetry. A pair with a stream key but zero
+        *pending* (unacked) messages is a safe, cheap no-op call into
+        ``seal_pending()`` (that method already returns ``None`` for
+        "nothing to seal yet") -- so this method deliberately does not try
+        to pre-filter by pending count itself, keeping the discovery and
+        the seal-or-not decision separate the same way this class's other
+        methods already do.
+        """
+
 
 class RedisStreamIngestAdapter(StreamIngestAdapter):
     """Real Redis Streams implementation, verified against Redis 7.4.9.
@@ -189,12 +220,47 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
         # result backend -- stream data uses its own, separate DB).
         self._redis = redis_client
 
+    _KEY_PATTERN = "kronos:stream:*:*"
+
     def _key(self, org_id: uuid.UUID, source_id: str) -> str:
         return f"kronos:stream:{org_id}:{source_id}"
 
     async def produce(self, org_id: uuid.UUID, source_id: str, payload: bytes) -> str:
         message_id = await self._redis.xadd(self._key(org_id, source_id), {self._FIELD: payload})
         return message_id.decode() if isinstance(message_id, bytes) else str(message_id)
+
+    async def list_active_streams(self) -> list[tuple[uuid.UUID, str]]:
+        # SCAN (not KEYS): non-blocking, cursor-based iteration -- this is a
+        # beat-task-only, infrequent (once-per-minute-class) call, but Redis
+        # is a single shared instance serving the Celery broker/result
+        # backend too (see scale_reliability_review.md's own P1-W7 finding),
+        # so a blocking O(N) KEYS scan is never acceptable here regardless of
+        # call frequency.
+        pairs: list[tuple[uuid.UUID, str]] = []
+        cursor = 0
+        while True:
+            cursor, keys = await self._redis.scan(cursor=cursor, match=self._KEY_PATTERN, count=500)
+            for raw_key in keys:
+                key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+                # "kronos:stream:{org_id}:{source_id}" -- source_id itself
+                # may contain no further colons (validated at provisioning
+                # time, e.g. StaticApiKeyProvisioning.source_id), so a
+                # maxsplit=3 split is a safe, exact inverse of _key() above.
+                parts = key.split(":", 3)
+                if len(parts) != 4:
+                    logger.warning("list_active_streams_unexpected_key_shape", extra={"key": key})
+                    continue
+                _, _, org_id_str, source_id = parts
+                try:
+                    pairs.append((uuid.UUID(org_id_str), source_id))
+                except ValueError:
+                    logger.warning(
+                        "list_active_streams_unparseable_org_id",
+                        extra={"key": key, "org_id_str": org_id_str},
+                    )
+            if cursor == 0:
+                break
+        return pairs
 
     async def ensure_consumer_group(
         self, org_id: uuid.UUID, source_id: str, group: str, *, start: str = "$"
@@ -431,3 +497,13 @@ class InMemoryStreamIngestAdapter(StreamIngestAdapter):
             consumer_pending_counts={},
             lag=max(total - cursor, 0),
         )
+
+    async def list_active_streams(self) -> list[tuple[uuid.UUID, str]]:
+        pairs: list[tuple[uuid.UUID, str]] = []
+        for key in self._streams:
+            parts = key.split(":", 3)
+            if len(parts) != 4:
+                continue
+            _, _, org_id_str, source_id = parts
+            pairs.append((uuid.UUID(org_id_str), source_id))
+        return pairs

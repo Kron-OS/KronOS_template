@@ -285,6 +285,40 @@ gap for a platform whose entire value proposition is legal admissibility.
 | F6 | **`StaticApiKeyProvisioning` has no real per-(org, source) provisioning route** — confirmed still true (Gap Audit P1-7, unaddressed by V1–V10). An operator cannot actually issue the Wazuh org in this scenario a real API key for the `/api/integrations/push/{source_type}` route through any admin UI/API. | `src/external/middleware/integration_source_auth.py`; `src/external/startup.py` | **Significant** (blocks step 2 of the scenario at the very first hop, before F1/F2 even matter, for any org that hasn't had a key manually seeded) | Build the admin provisioning route/CLI Gap Audit P1-7 already scoped as needing a design decision first. |
 | F7 | **Up to ~30 minutes of silent "stuck" evidence** is possible if `q.intake` backs up — the only backstop is the `abort_orphan_intake` beat sweep (30 min) or `abort_orphan_uploads` (2h). No mid-flight status finer than the FSM state itself is exposed over SSE. | `src/external/celery_app.py:448-492` | **Minor** | Acceptable given CLAUDE.md's own autonomous-pipeline design; a "queued, position N" SSE event would be a nice-to-have, not a correctness gap. |
 
+**W1 STATUS (2026-08-15): F1, F2, and F3 are CLOSED, verified live —
+table rows above left unmodified as the original point-in-time findings.**
+`docs/ASSESSMENT_SYNTHESIS_2026-08.md`'s W1 (P0-W1) shipped all three
+missing pieces this table identified:
+
+- **F1** (`sync_org_findings()` had zero production callers): now called
+  autonomously by the `kronos.sync_detection_findings` beat task
+  (`src/external/celery_app.py`), iterating every real Keycloak org via
+  `KeycloakAdminClient.list_organizations()`
+  (`src/external/celery_streaming.py`).
+- **F2** (`seal_pending()`/`normalize_batch()` had zero production
+  callers): now called autonomously by the `kronos.seal_pending_streams`
+  beat task, which `apply_async`s `kronos.normalize_stream_batch`
+  event-chained right after a real seal (`src/external/celery_app.py`,
+  `src/external/celery_streaming.py`).
+- **F3** (no HTTP route called `PlaybookExecutionService.execute()`): now
+  reachable via `POST /api/detections/{id}/sync-to-siem/{sink}`
+  (`src/external/routes/detections.py`).
+
+Real, live proof (not re-derived from memory): `poc/autonomous_detection_
+pipeline/run_poc.py`, run end-to-end against the real dev stack (real
+Redis, Postgres, MinIO, OpenSearch 2.11.1, Keycloak 26.2) with a real,
+throwaway `celery worker`/`celery beat` process pair — no manual
+`seal_pending()`/`normalize_batch()`/`sync_org_findings()` call anywhere
+in the script below the initial event injection. 24/24 checks passed
+across two full trigger rounds, including provenance linkage
+(`Detection.matched_document_ids` → real OpenSearch doc →
+`kronos.batch_id` matches the real sealed batch) and idempotency (a
+second sync cycle creates zero duplicate `Detection` rows), plus the F3
+route itself: `POST /api/detections/{id}/sync-to-siem/splunk` returned
+200 with `succeeded: true`, and a real stand-in SIEM receiver observed
+the pushed event. See `poc/autonomous_detection_pipeline/` for the PoC
+and captured run output.
+
 **What worked correctly, worth stating plainly:** the evidence-intake FSM
 (§1.1), its audit trail, and its two distinct retry paths are all real,
 correct, and match CLAUDE.md §E's contract exactly on direct code

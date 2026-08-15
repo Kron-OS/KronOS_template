@@ -9,11 +9,14 @@ this repo's established pattern of a small typed fake for a small ABC
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import pytest
 
-from src.adapter.keycloak.admin_client import KeycloakAdminClient, KeycloakSession
+from src.adapter.keycloak.admin_client import (
+    KeycloakAdminClient,
+    KeycloakOrganization,
+    KeycloakSession,
+)
 from src.application.approval_gate import StaticPolicyApprovalGate
 from src.application.audit_log import AuditLogService
 from src.application.containment_actions import RevokeKeycloakSessionAction
@@ -37,6 +40,7 @@ class _FakeKeycloakAdminClient(KeycloakAdminClient):
         self.org_members = org_members or set()
         self.sessions_by_user = sessions_by_user or {}
         self.revoked_session_ids: list[str] = []
+        self.org_aliases: dict[uuid.UUID, str] = {}
 
     async def list_user_sessions(self, user_id: uuid.UUID) -> tuple[KeycloakSession, ...]:
         return self.sessions_by_user.get(user_id, ())
@@ -46,6 +50,15 @@ class _FakeKeycloakAdminClient(KeycloakAdminClient):
 
     async def is_org_member(self, org_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         return user_id in self.org_members
+
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        return self.org_aliases.get(org_id)
+
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        return tuple(
+            KeycloakOrganization(org_id=org_id, alias=alias)
+            for org_id, alias in self.org_aliases.items()
+        )
 
 
 def _approved_gate(tenant: TenantContext) -> StaticPolicyApprovalGate:
@@ -85,9 +98,7 @@ class TestRevokeKeycloakSessionActionApproved:
         )
         action = RevokeKeycloakSessionAction(admin, _approved_gate(tenant), audit_log)
 
-        output = await action.execute(
-            {"user_id": str(target_user), "session_id": "sess-1"}, tenant
-        )
+        output = await action.execute({"user_id": str(target_user), "session_id": "sess-1"}, tenant)
 
         assert output == {"user_id": str(target_user), "session_id": "sess-1", "revoked": True}
         assert admin.revoked_session_ids == ["sess-1"]
@@ -101,9 +112,7 @@ class TestRevokeKeycloakSessionActionApproved:
         admin = _FakeKeycloakAdminClient(
             org_members={target_user},
             sessions_by_user={
-                target_user: (
-                    KeycloakSession("sess-1", str(target_user), "victim", "10.0.0.5", 0),
-                )
+                target_user: (KeycloakSession("sess-1", str(target_user), "victim", "10.0.0.5", 0),)
             },
         )
         action = RevokeKeycloakSessionAction(admin, _approved_gate(tenant), audit_log)
@@ -111,7 +120,9 @@ class TestRevokeKeycloakSessionActionApproved:
         await action.execute({"user_id": str(target_user), "session_id": "sess-1"}, tenant)
 
         events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
-        executed = next(e for e in events if e.event_type == AuditEventType.CONTAINMENT_ACTION_EXECUTED)
+        executed = next(
+            e for e in events if e.event_type == AuditEventType.CONTAINMENT_ACTION_EXECUTED
+        )
         assert executed.details["output"]["revoked"] is True
 
 
@@ -203,7 +214,9 @@ class TestRevokeKeycloakSessionActionMalformedParams:
             await action.execute({}, tenant)
 
     @pytest.mark.asyncio
-    async def test_non_uuid_user_id_raises_validation_error(self, audit_log: AuditLogService) -> None:
+    async def test_non_uuid_user_id_raises_validation_error(
+        self, audit_log: AuditLogService
+    ) -> None:
         tenant = make_tenant_context()
         admin = _FakeKeycloakAdminClient()
         action = RevokeKeycloakSessionAction(admin, _approved_gate(tenant), audit_log)

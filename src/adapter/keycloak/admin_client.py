@@ -21,6 +21,25 @@ an already-gone session, 200/404 on the org-membership check) was
 confirmed against the real, live Keycloak 26.2.5 container
 (``docker-keycloak-1``) before this file was written -- see
 ``poc/containment_approval_gate/output.txt``.
+
+**Organizations lookups (``get_organization_alias``/``list_organizations``,
+roadmap Milestone W/W1)** were added later, for a different real problem:
+Celery beat tasks that discover an ``org_id`` from something other than an
+authenticated JWT (e.g. a Redis stream key, per
+``StreamIngestAdapter.list_active_streams()``) have no ``TenantContext`` to
+read ``org_alias`` off of -- the JWT's own ``organization`` claim
+(``src/external/middleware/keycloak_auth.py::_extract_tenant``) is the
+*only* other place ``org_alias`` is ever resolved in this codebase, and it
+does not exist without a request. Keycloak Organizations is this
+platform's own explicit source of truth for tenant identity (CLAUDE.md
+"Key Decisions: Keycloak 26+ Organizations for multi-tenancy"), so a real
+Admin API lookup here -- not a second, drifting local copy -- is the
+correct fix. Both new methods' exact response shapes (200 with a real
+``alias`` field, 404 ``{"errorMessage":"Organization not found."}``) were
+confirmed live against ``docker-keycloak-1`` using the same
+``kronos-backend`` service-account credentials ``HttpxKeycloakAdminClient``
+already authenticates with for ``is_org_member`` above -- see
+``poc/autonomous_detection_pipeline/README.md``.
 """
 
 from __future__ import annotations
@@ -51,6 +70,17 @@ class KeycloakSession:
     started_at_epoch_ms: int
 
 
+@dataclass(frozen=True)
+class KeycloakOrganization:
+    """The fields of a real Keycloak ``OrganizationRepresentation`` a beat
+    task actually needs -- ``org_id``/``alias`` are the only two fields
+    ``sync_org_findings``'s per-task ``TenantContext`` construction and
+    stream-index naming (``build_stream_index_name``) ever read."""
+
+    org_id: uuid.UUID
+    alias: str
+
+
 class KeycloakAdminClient(ABC):
     """Real Keycloak Admin REST API operations this platform needs for
     containment. New operations = new abstract methods here (small,
@@ -75,6 +105,21 @@ class KeycloakAdminClient(ABC):
     async def is_org_member(self, org_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         """Real, live membership check -- never trust a caller-supplied claim
         that a user belongs to a given org (roadmap invariant #3)."""
+
+    @abstractmethod
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        """Real, live ``alias`` for *org_id*, or ``None`` if no such
+        organization exists (roadmap Milestone W/W1) -- see this class's own
+        module docstring for why a Celery beat task needs this at all."""
+
+    @abstractmethod
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        """Every real organization in this realm right now (roadmap
+        Milestone W/W1) -- Keycloak Organizations is this platform's own
+        tenant registry (CLAUDE.md "Key Decisions"), so this is the
+        authoritative "list every real tenant" primitive a beat task needs
+        to discover which orgs to do per-org work for, without inventing a
+        second, locally-drifting tenant list."""
 
 
 class HttpxKeycloakAdminClient(KeycloakAdminClient):
@@ -182,3 +227,45 @@ class HttpxKeycloakAdminClient(KeycloakAdminClient):
             "Failed to check Keycloak org membership",
             context={"org_id": str(org_id), "user_id": str(user_id), "status": resp.status_code},
         )
+
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        resp = await self._admin_request("GET", f"/organizations/{org_id}")
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise KeycloakAdminError(
+                "Failed to fetch Keycloak organization",
+                context={"org_id": str(org_id), "status": resp.status_code, "body": resp.text},
+            )
+        body = resp.json()
+        alias = body.get("alias")
+        if not alias:
+            # Real Keycloak 26.2 always returns a non-empty alias for a real
+            # org (confirmed live) -- an empty/missing one on a 200 response
+            # is a genuinely unexpected upstream shape, not a "no org"
+            # outcome, so this must not be silently treated the same as 404.
+            raise KeycloakAdminError(
+                "Keycloak organization response has no alias",
+                context={"org_id": str(org_id), "body": resp.text},
+            )
+        return str(alias)
+
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        resp = await self._admin_request("GET", "/organizations")
+        if resp.status_code != 200:
+            raise KeycloakAdminError(
+                "Failed to list Keycloak organizations",
+                context={"status": resp.status_code, "body": resp.text},
+            )
+        organizations: list[KeycloakOrganization] = []
+        for org in resp.json():
+            try:
+                organizations.append(
+                    KeycloakOrganization(org_id=uuid.UUID(org["id"]), alias=org["alias"])
+                )
+            except (KeyError, ValueError) as exc:
+                raise KeycloakAdminError(
+                    "Keycloak organization list entry missing/malformed id or alias",
+                    context={"entry": org, "error": str(exc)},
+                ) from exc
+        return tuple(organizations)

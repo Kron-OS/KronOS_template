@@ -18,12 +18,17 @@ from pydantic import BaseModel
 
 from src.adapter.repository.detection import DetectionRepository
 from src.application.detection_triage import DetectionTriageService
+from src.application.playbook import PlaybookActionRegistry
+from src.application.playbook_execution import PlaybookExecutionService
 from src.domain.detection import Detection, DetectionTriageState
+from src.domain.playbook import Playbook, PlaybookStep
 from src.domain.user import Role, TenantContext
 from src.exceptions import DetectionStateError, ValidationError
 from src.external.dependencies import (
     get_detection_repository,
     get_detection_triage_service,
+    get_playbook_action_registry,
+    get_playbook_execution_service,
     get_tenant_context,
 )
 from src.external.middleware.rbac import requires_role
@@ -84,6 +89,26 @@ class TriageIn(BaseModel):
     """Request body for POST /detections/{id}/triage."""
 
     targetState: DetectionTriageState
+
+
+class PlaybookStepResultOut(BaseModel):
+    """API response DTO for one PlaybookStepResult (roadmap M7/H1/W1)."""
+
+    stepId: str
+    actionName: str
+    outcome: str
+    output: dict[str, object] | None
+    error: str | None
+
+
+class PlaybookExecutionResultOut(BaseModel):
+    """API response DTO for one PlaybookExecutionResult."""
+
+    executionId: uuid.UUID
+    playbookName: str
+    succeeded: bool
+    haltedEarly: bool
+    stepResults: list[PlaybookStepResultOut]
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +208,90 @@ async def triage_detection(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return _to_detection_out(updated)
+
+
+@router.post("/{detection_id}/sync-to-siem/{sink_name}", response_model=PlaybookExecutionResultOut)
+async def sync_detection_to_siem(
+    detection_id: uuid.UUID,
+    sink_name: str,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
+    registry: Annotated[PlaybookActionRegistry, Depends(get_playbook_action_registry)],
+    execution_service: Annotated[PlaybookExecutionService, Depends(get_playbook_execution_service)],
+) -> PlaybookExecutionResultOut:
+    """Fire ``SyncDetectionToSiemAction`` for one Detection via a real,
+    audited ``PlaybookExecutionService.execute()`` call (roadmap Milestone
+    W/W1, IR walkthrough F3) -- the first HTTP route anywhere in this
+    codebase that reaches the playbook engine.
+
+    **Real, honestly-reported scope decision.** There is no persisted
+    ``Playbook``/playbook-definition repository anywhere in this codebase
+    (confirmed by repo-wide grep: every ``Playbook(...)`` construction site
+    outside this route is a test file -- ``PlaybookExecutionService
+    .execute()`` had zero real callers before this route). Building a
+    general "look up a named, stored, multi-step Playbook" mechanism is
+    real, separate, larger follow-up scope, not invented here under this
+    item's own budget. This route instead constructs one honest, single-step
+    ad hoc ``Playbook`` per request, wrapping exactly the one real,
+    already-registered action this incident-response scenario actually
+    needs (``SyncDetectionToSiemAction``, one instance per configured SIEM
+    sink -- see that class's own docstring). ``sink_name`` selects which of
+    the (possibly several) real configured sinks to use, since hardcoding
+    exactly one would silently break for any deployment with more than one
+    sink configured; it does not reintroduce a general "playbook by name"
+    indirection -- ``PlaybookActionRegistry.get_action`` is a real,
+    already-existing lookup this codebase's own DI wiring
+    (``get_playbook_action_registry``) has used since roadmap V2.
+
+    404 when no ``SyncDetectionToSiemAction`` is registered for *sink_name*
+    (mirrors this file's own "404, not a fabricated success" idiom) --
+    happens when that sink's config (e.g. ``splunk_hec_url``) is unset in
+    this deployment, an honest "not configured" state, not a KronOS bug.
+
+    Otherwise always returns 200: whether the Detection existed in the
+    caller's own org, and whether the real SIEM push itself succeeded, are
+    both reflected in the returned ``PlaybookExecutionResult`` (``succeeded``/
+    ``stepResults[0].error``) rather than mapped to a separate HTTP status --
+    ``PlaybookExecutionService.execute()`` already audits every outcome
+    (``PLAYBOOK_STEP_FAILED``/``_EXECUTED``, invariant #4), so the response
+    body is a direct, honest mirror of that same audit trail, not a second,
+    competing shape for the same information.
+    """
+    action_name = f"sync_detection_to_siem_{sink_name}"
+    if registry.get_action(action_name) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No SIEM sink named '{sink_name}' is configured in this deployment",
+        )
+
+    playbook = Playbook(
+        name=f"ad-hoc-sync-detection-to-siem-{sink_name}",
+        steps=(
+            PlaybookStep(
+                step_id="sync-to-siem",
+                action_name=action_name,
+                params={"detection_id": str(detection_id)},
+            ),
+        ),
+    )
+    result = await execution_service.execute(playbook, tenant)
+    return PlaybookExecutionResultOut(
+        executionId=result.execution_id,
+        playbookName=result.playbook_name,
+        succeeded=result.succeeded,
+        haltedEarly=result.halted_early,
+        stepResults=[
+            PlaybookStepResultOut(
+                stepId=r.step_id,
+                actionName=r.action_name,
+                outcome=r.outcome.value,
+                output=r.output,
+                error=r.error,
+            )
+            for r in result.step_results
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

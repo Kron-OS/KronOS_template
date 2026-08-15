@@ -1,0 +1,146 @@
+
+==============================================================================
+-1. Real, fresh, ephemeral Keycloak org for this run only
+==============================================================================
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:37:54.079418Z"}
+{"event": "HTTP Request: POST http://localhost:8080/admin/realms/kronos/organizations \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:37:54.085886Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations?first=0&max=1000 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:37:54.090477Z"}
+real Keycloak org created: alias=kronos-poc-w1-e85abe43 id=73bddb89-7faf-4f26-8135-a773aa180d42
+
+==============================================================================
+0. Real local TSA responder + real throwaway Celery worker/beat
+==============================================================================
+real local TSA responder listening on http://127.0.0.1:20330
+real throwaway celery worker started: pid=710100 (log: /tmp/kronos_poc_autonomous_kxg360j1/worker.log)
+real throwaway celery beat started: pid=710101 (log: /tmp/kronos_poc_autonomous_kxg360j1/beat.log, seal-pending-streams every 10s, sync-detection-findings every 15s -- shortened for THIS verification run only, see _beat_schedule_override.py)
+[PASS] real worker process is alive after boot
+[PASS] real beat process is alive after boot
+T0 (worker+beat confirmed alive, BEFORE any real telemetry exists): 2026-08-15T14:38:02.257783+00:00
+
+==============================================================================
+1. Real events onto the real Redis stream directly (org=kronos-poc-w1-e85abe43, source=zeek-conn-log)
+==============================================================================
+[PASS] fresh org has NO prior sealed_batches watermark for this source_id -- unexpected baseline=None
+T1 (round-1 events produced onto real Redis stream): 2026-08-15T14:38:02.322133+00:00
+[PASS] real Redis XRANGE shows exactly 3 round-1 entries -- count=3
+
+==============================================================================
+2. WAIT for the real beat schedule to autonomously seal + normalize batch #1
+==============================================================================
+(no manual seal_pending()/normalize_batch() call anywhere below this line)
+[PASS] real BatchSealingService.seal_pending() sealed batch #1 AUTONOMOUSLY (beat-triggered) -- batch_id=376c7b19-7dd5-4fdf-a8c7-afab235e3079 sealed_at_wallclock=2026-08-15T14:39:05.476114+00:00
+T_sealed1 (real Postgres sealed_batches row observed, beat-triggered): 2026-08-15T14:39:05.476114+00:00 (+63.2s after T1)
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:05.484956Z"}
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:08.495168Z"}
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:11.499681Z"}
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:14.504954Z"}
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:17.510251Z"}
+[PASS] real StreamNormalizationService.normalize_batch() indexed batch #1 AUTONOMOUSLY (event-chained) -- count=3
+T_normalized1 (real OpenSearch docs observed, event-chained from seal_pending_streams): 2026-08-15T14:39:17.510481+00:00 (+12.0s after T_sealed1)
+
+==============================================================================
+3. Real SA field-alias mapping + real per-org SA detector (C1/C2's own verified mechanism)
+==============================================================================
+{"event": "HTTP Request: POST https://localhost:9200/_plugins/_security_analytics/mappings \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:17.540870Z"}
+[PASS] real SA field-alias mapping POST accepted (200) -- {"acknowledged":true}
+{"event": "HTTP Request: POST https://localhost:9200/_plugins/_security_analytics/rules/_search?pre_packaged=true \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:17.550848Z"}
+[PASS] real prepackaged 'network' rules fetched, including known-good target rule
+{"event": "HTTP Request: POST https://localhost:9200/_plugins/_security_analytics/detectors \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:39:17.750263Z"}
+[PASS] real detector created (201), AFTER round-1 index already existed -- {"_id":"R8_cBaABG52zb-VT5Pvs","_version":1,"detector":{"name":"kronos-kronos-poc-w1-e85abe43-network-detector","detector_type":"network","enabled":true,"schedule":{"period":{"interval":1,"unit":"MINUT
+real detector created: kronos-kronos-poc-w1-e85abe43-network-detector indices=kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*
+
+==============================================================================
+4. ROUND 2: real trigger event onto the real Redis stream, strictly AFTER detector creation
+==============================================================================
+T2 (round-2 trigger event produced onto real Redis stream): 2026-08-15T14:39:17.751366+00:00
+
+==============================================================================
+5. WAIT for the real beat schedule to autonomously seal + normalize batch #2
+==============================================================================
+[PASS] real seal_pending_streams sealed batch #2 AUTONOMOUSLY (contains the RDP trigger event)
+T_sealed2: 2026-08-15T14:40:20.883963+00:00 (+63.1s after T2)
+{"event": "HTTP Request: POST https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:40:20.888978Z"}
+[PASS] real normalize_stream_batch indexed batch #2 AUTONOMOUSLY (event-chained) -- count=2
+T_normalized2: 2026-08-15T14:40:20.889173+00:00 (+0.0s after T_sealed2)
+[PASS] real indexed trigger document's source.ip alias-resolves correctly (public IP)
+
+==============================================================================
+6. WAIT for the real SA monitor's own scheduled execution to fire
+==============================================================================
+{"event": "HTTP Request: POST https://localhost:9200/.opensearch-sap-*-findings-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:40:20.891272Z"}
+{"event": "HTTP Request: POST https://localhost:9200/.opensearch-sap-*-findings-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:40:35.911194Z"}
+{"event": "HTTP Request: POST https://localhost:9200/.opensearch-sap-*-findings-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:40:50.932030Z"}
+{"event": "HTTP Request: POST https://localhost:9200/.opensearch-sap-*-findings-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:05.952256Z"}
+{"event": "HTTP Request: POST https://localhost:9200/.opensearch-sap-*-findings-*/_search \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:20.972425Z"}
+[PASS] at least one real SA finding produced for this run's own fresh detector -- total=2
+T_finding (real SA monitor fired on its OWN schedule): 2026-08-15T14:41:20.972636+00:00
+
+==============================================================================
+7. WAIT for the real beat schedule to autonomously sync this finding into a Detection row
+==============================================================================
+(no manual sync_org_findings() call anywhere in this script)
+[PASS] real DetectionSyncService.sync_org_findings() created a real Detection row AUTONOMOUSLY (beat-triggered)
+T_detected (real Postgres detections row observed, beat-triggered): 2026-08-15T14:41:25.985925+00:00
+[PASS] real Detection row's org_id == the real Keycloak org (computed, never read from the finding)
+[PASS] real Detection row carries the real target ATT&CK tag -- ('attack.t1021.001',)
+
+==============================================================================
+8. Honest provenance-linkage check: Detection -> matched_document_ids -> real OpenSearch doc -> kronos.batch_id
+==============================================================================
+{"event": "HTTP Request: GET https://localhost:9200/kronos-kronos-poc-w1-e85abe43-stream-zeek-conn-log-202608/_doc/d2314a6b6634ce3484119b4e8849fc568229474f \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:26.002598Z"}
+[PASS] real GET of the linked trigger document succeeds
+[PASS] linked document's real kronos.batch_id matches real sealed batch #2 -- doc kronos.batch_id=898ce27c-9ed5-4785-840b-9f569d08204e
+[PASS] linked document's real kronos.source_id matches our real source_id
+
+==============================================================================
+9. Idempotency: one more real autonomous sync cycle creates zero duplicate Detection rows
+==============================================================================
+[PASS] re-running the real autonomous sync cycle creates no duplicate Detection rows -- count=1
+
+==============================================================================
+10. Stop the real throwaway worker/beat -- everything above already happened autonomously
+==============================================================================
+real throwaway beat process stopped (pid=710101)
+real throwaway worker process stopped (pid=710100)
+
+==============================================================================
+11. W1 item (d): real HTTP route -> PlaybookExecutionService.execute() -> real (stand-in) SIEM push
+==============================================================================
+real HEC-protocol-accurate stand-in listening on http://127.0.0.1:34181/services/collector/event
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-15T14:41:56.242024Z", "event_id": "f2102f2b-4881-43b4-a8f5-c16c3c7b1765", "event_type": "playbook.execution_started", "seq": 9}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-15T14:41:56.249311Z", "event_id": "642608c0-8d1a-4e0c-b520-caf7086ea7de", "event_type": "sink.push_attempted", "seq": 10}
+{"event": "HTTP Request: POST http://127.0.0.1:34181/services/collector/event \"HTTP/1.0 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:56.257613Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-15T14:41:56.261918Z", "event_id": "34a3be1e-779a-41ad-ac24-9caac3c2afc3", "event_type": "sink.push_executed", "seq": 11}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-15T14:41:56.266163Z", "event_id": "2b9cb94e-530e-47e2-9455-b2a68f332c71", "event_type": "playbook.step_executed", "seq": 12}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-15T14:41:56.269646Z", "event_id": "9a5c8ed6-e06e-4128-8a53-cf0b4d857cb9", "event_type": "playbook.execution_completed", "seq": 13}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-15T14:41:56.269779Z", "execution_id": "aa368409-03d5-4b6d-bbb4-7367c41af5e1", "playbook_id": "1bc5e547-d556-46ba-83c1-745df07c85ff", "halted_early": false, "succeeded": true}
+{"event": "HTTP Request: POST http://poc/api/detections/21e16cf1-3081-4302-b161-e3ee5f999812/sync-to-siem/splunk \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:56.270076Z"}
+[PASS] real HTTP route POST /api/detections/{id}/sync-to-siem/splunk returns 200 -- {"executionId":"aa368409-03d5-4b6d-bbb4-7367c41af5e1","playbookName":"ad-hoc-sync-detection-to-siem-splunk","succeeded":true,"haltedEarly":false,"stepResults":[{"stepId":"sync-to-siem","actionName":"sync_detection_to_siem_splunk","outcome":"success","output":{"detection_id":"21e16cf1-3081-4302-b161-
+[PASS] real PlaybookExecutionService.execute() reports succeeded=true -- {"executionId": "aa368409-03d5-4b6d-bbb4-7367c41af5e1", "playbookName": "ad-hoc-sync-detection-to-siem-splunk", "succeeded": true, "haltedEarly": false, "stepResults": [{"stepId": "sync-to-siem", "actionName": "sync_detection_to_siem_splunk", "outcome": "success", "output": {"detection_id": "21e16cf
+[PASS] real stand-in SIEM receiver actually received the real HTTP push -- count=1
+[PASS] the real pushed event carries this run's own real finding_id -- pushed finding_id=f53d1ad7-b671-4d66-b5b9-4449bae07c29
+T_end: 2026-08-15T14:41:56.270246+00:00
+
+==============================================================================
+SUMMARY: real wall-clock timestamps, no manual seal/normalize/sync call anywhere above
+==============================================================================
+T0 (worker+beat alive, empty backlog)      : 2026-08-15T14:38:02.257783+00:00
+T1 (round-1 events produced)                : 2026-08-15T14:38:02.322133+00:00
+T_sealed1 (autonomous seal)                 : 2026-08-15T14:39:05.476114+00:00 (+63.2s)
+T_normalized1 (autonomous, event-chained)   : 2026-08-15T14:39:17.510481+00:00 (+12.0s)
+T2 (round-2 trigger event produced)         : 2026-08-15T14:39:17.751366+00:00
+T_sealed2 (autonomous seal)                 : 2026-08-15T14:40:20.883963+00:00 (+63.1s)
+T_normalized2 (autonomous, event-chained)   : 2026-08-15T14:40:20.889173+00:00 (+0.0s)
+T_finding (real SA monitor's OWN schedule)  : 2026-08-15T14:41:20.972636+00:00
+T_detected (autonomous sync -> Detection)   : 2026-08-15T14:41:25.985925+00:00
+T_end (route (d) verified, teardown)        : 2026-08-15T14:41:56.270246+00:00
+TOTAL wall-clock window T0 -> T_detected     : 203.7s
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:56.773904Z"}
+{"event": "HTTP Request: DELETE http://localhost:8080/admin/realms/kronos/organizations/73bddb89-7faf-4f26-8135-a773aa180d42 \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-15T14:41:56.782553Z"}
+real throwaway Keycloak org deleted: id=73bddb89-7faf-4f26-8135-a773aa180d42
+
+work_dir left for inspection: /tmp/kronos_poc_autonomous_kxg360j1
+NOTE: real Redis stream entries, real sealed batches (Postgres+MinIO+TSA), real OpenSearch documents, real findings, and real Detection/audit_log rows this run created are deliberately left in place as inspectable proof, matching this chain's own precedent (poc/l3_chain_collector_to_detect/).
+NOTE: the throwaway SA detector itself was NOT cleaned up in this run (left for inspection); it is not part of any committed src/ path.
+
+24/24 real checks passed

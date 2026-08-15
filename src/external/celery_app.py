@@ -8,6 +8,20 @@ Task graph:
   abort_orphan_intake    (beat, hourly) — timeout stuck SCANNING/HASHING evidence
   abort_orphan_parses    (beat, hourly) — timeout stuck PARSING evidence
   anchor_audit_log       (beat, daily)  — Merkle-root all events, TSA-anchor
+  poll_defender_alerts   (beat, 10 min) — Microsoft Defender alerts_v2 poll
+
+  Autonomous detection pipeline (roadmap Milestone W/W1 -- closes the
+  incident-response walkthrough's F1/F2/F3, the highest-priority finding in
+  docs/ASSESSMENT_SYNTHESIS_2026-08.md; poc/l3_chain_collector_to_detect/
+  already manually proved every stage below works, this is what makes it
+  run without a human driving each step):
+  seal_pending_streams   (beat, 60 sec) — BatchSealingService.seal_pending()
+                            per discovered (org, source) pair; chains...
+    → normalize_stream_batch (event-driven, apply_async per newly-sealed
+                            batch, never separately scheduled) —
+                            StreamNormalizationService.normalize_batch()
+  sync_detection_findings (beat, 5 min) — DetectionSyncService
+                            .sync_org_findings() per real Keycloak org
 """
 
 from __future__ import annotations
@@ -85,6 +99,9 @@ celery_app.conf.update(
         "kronos.anchor_audit_log": {"queue": "q.index"},
         "kronos.auto_resume_quota_held": {"queue": "q.index"},
         "kronos.poll_defender_alerts": {"queue": "q.index"},
+        "kronos.seal_pending_streams": {"queue": "q.index"},
+        "kronos.normalize_stream_batch": {"queue": "q.index"},
+        "kronos.sync_detection_findings": {"queue": "q.index"},
     },
     task_serializer="json",
     result_serializer="json",
@@ -144,6 +161,41 @@ celery_app.conf.update(
             # cheap token POST per cycle, never more than 6/hour.
             "schedule": crontab(minute="*/10"),
         },
+        "seal-pending-streams": {
+            "task": "kronos.seal_pending_streams",
+            # Every 60 real seconds, not a crontab-minute-boundary interval
+            # like every other beat task above: this is the ONLY trigger
+            # that ever calls BatchSealingService.seal_pending() (roadmap
+            # Milestone W/W1, IR walkthrough F2) -- continuous telemetry
+            # cannot wait a day, or even a full crontab minute boundary,
+            # for custody (see celery_streaming.py's own module docstring).
+            # 60 seconds matches this task's own TimeBoundTriggerPolicy
+            # threshold (celery_streaming._SEAL_MAX_AGE_SECONDS) -- running
+            # much less often than the time-trigger's own bound would leave
+            # real telemetry waiting past its own stated custody ceiling
+            # before the trigger is even evaluated.
+            "schedule": 60.0,
+        },
+        "sync-detection-findings": {
+            "task": "kronos.sync_detection_findings",
+            # Every 5 min, not tighter: the real OpenSearch Security
+            # Analytics monitor and AD/RCF anomaly-detector cadences this
+            # task trails are 5 min and 10 min respectively (confirmed live
+            # -- detector_provisioner.py/custom_rule_detector_provisioner.py
+            # schedule SA monitors every 5 MINUTES,
+            # anomaly_detector_provisioner.py schedules AD/RCF detection
+            # every 10 MINUTES). 5 min catches SA findings within one cycle
+            # of their own real execution window and AD/RCF findings within
+            # at most one extra 5-min cycle -- never tighter than the real
+            # underlying detector data can actually change (scale/
+            # reliability review's own explicit caution).
+            "schedule": crontab(minute="*/5"),
+        },
+        # normalize_stream_batch has NO beat_schedule entry -- it is
+        # event-driven only, apply_async'd by seal_pending_streams right
+        # after it seals a batch (see celery_streaming.py's own module
+        # docstring for why polling isn't a real option here: SealedBatch
+        # has no persisted "normalized yet" field to poll on).
     },
     timezone="UTC",
 )
@@ -764,3 +816,126 @@ def anchor_audit_log(self: object) -> dict[str, str]:
         return roots
 
     return run_evidence_coro(_work)
+
+
+# ---------------------------------------------------------------------------
+# seal_pending_streams / normalize_stream_batch / sync_detection_findings:
+# the autonomous continuous-telemetry -> Detection pipeline (roadmap
+# Milestone W/W1). Each task delegates entirely to
+# src.external.celery_streaming's own per-task, loop-scoped resource
+# construction, exactly the same "build every loop-bound resource fresh
+# inside this task's own asyncio.run() loop" pattern poll_defender_alerts
+# already established for celery_defender.py above -- see that module's
+# own docstring for the full reasoning.
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="kronos.seal_pending_streams", bind=True, max_retries=1)
+def seal_pending_streams(self: object) -> int:
+    """Seal every real (org, source) pair's pending stream data that its own
+    ``SealingTriggerPolicy`` says is ready (roadmap Milestone W/W1, IR
+    walkthrough F2). This is the ONLY trigger that ever calls
+    ``BatchSealingService.seal_pending()`` in this deployment.
+
+    For every batch newly sealed this cycle, chains a follow-up
+    ``normalize_stream_batch`` task (Celery ``apply_async`` from within a
+    running task -- the same established chaining idiom
+    ``parse_artefact_fast``/``_heavy`` already use for
+    ``finalize_evidence`` above) so normalization runs event-driven, not on
+    its own separate poll -- see ``celery_streaming.py``'s own module
+    docstring for why polling isn't a real option for that stage.
+
+    A real per-pair sealing failure is already logged and skipped inside
+    ``run_seal_pending_cycle()`` itself (one bad pair must never block every
+    other pair's own real seal attempt) -- only a failure in the cycle's
+    own *discovery* step (Redis/Postgres/MinIO unreachable entirely) reaches
+    this task's own retry/error handling.
+
+    Returns the number of batches newly sealed this cycle (0 is an honest,
+    expected outcome when nothing was ready yet).
+    """
+    from src.external.celery_streaming import run_seal_pending_cycle  # noqa: PLC0415
+
+    try:
+        sealed_batches = run_seal_pending_cycle()
+    except Exception as exc:
+        logger.error("seal_pending_streams_failed", extra={"error": str(exc)})
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+    for descriptor in sealed_batches:
+        normalize_stream_batch.apply_async(
+            kwargs={"org_id": descriptor["org_id"], "batch_id": descriptor["batch_id"]},
+            queue="q.index",
+        )
+
+    logger.info("seal_pending_streams_done", extra={"batches_sealed": len(sealed_batches)})
+    return len(sealed_batches)
+
+
+@celery_app.task(
+    name="kronos.normalize_stream_batch",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def normalize_stream_batch(self: object, *, org_id: str, batch_id: str) -> dict[str, object]:
+    """Normalize and index exactly one already-sealed batch (roadmap
+    Milestone W/W1, IR walkthrough F2) -- ``StreamNormalizationService
+    .normalize_batch()``'s only production caller.
+
+    Event-driven only: enqueued by ``seal_pending_streams`` right after it
+    seals *this exact* batch, never separately scheduled (see
+    ``celery_streaming.py``'s own module docstring for why ``SealedBatch``
+    has no "normalized yet" field to poll on instead). A retryable failure
+    here (e.g. a transient OpenSearch outage) is safe to retry as-is: this
+    task is idempotent per batch (``StreamNormalizationService``'s own
+    deterministic ``batch_id:offset`` document ids, see that module's
+    docstring), so re-running it after a failure never double-indexes.
+    """
+    from src.external.celery_streaming import run_normalize_batch  # noqa: PLC0415
+
+    try:
+        result = run_normalize_batch(org_id, batch_id)
+    except Exception as exc:
+        logger.error(
+            "normalize_stream_batch_failed",
+            extra={"org_id": org_id, "batch_id": batch_id, "error": str(exc)},
+        )
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+    logger.info("normalize_stream_batch_task_done", extra=result)
+    return result
+
+
+@celery_app.task(name="kronos.sync_detection_findings", bind=True, max_retries=1)
+def sync_detection_findings(self: object) -> int:
+    """Mirror every real org's real OpenSearch Security Analytics findings
+    into KronOS's own audited ``Detection`` rows (roadmap Milestone W/W1, IR
+    walkthrough F1) -- ``DetectionSyncService.sync_org_findings()``'s only
+    production caller.
+
+    A real per-org sync failure is already logged and skipped inside
+    ``run_sync_org_findings_cycle()`` itself (one org's own real failure
+    must never block every other org's own real sync this cycle) -- only a
+    failure in the cycle's own org-discovery step (Keycloak/Postgres/
+    OpenSearch unreachable entirely) reaches this task's own retry/error
+    handling.
+
+    Returns the total count of new ``Detection`` rows created across every
+    org this cycle (0 is an honest, expected outcome when nothing new
+    fired).
+    """
+    from src.external.celery_streaming import run_sync_org_findings_cycle  # noqa: PLC0415
+
+    try:
+        created_by_org = run_sync_org_findings_cycle()
+    except Exception as exc:
+        logger.error("sync_detection_findings_failed", extra={"error": str(exc)})
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+    total_created = sum(created_by_org.values())
+    logger.info(
+        "sync_detection_findings_done",
+        extra={"orgs_synced": len(created_by_org), "total_created": total_created},
+    )
+    return total_created

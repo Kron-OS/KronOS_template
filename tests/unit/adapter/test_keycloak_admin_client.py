@@ -189,6 +189,148 @@ class TestHttpxKeycloakAdminClientOrgMembership:
                 await client.is_org_member(uuid.uuid4(), uuid.uuid4())
 
 
+class TestHttpxKeycloakAdminClientOrganizationAlias:
+    """Response shapes here (200 with a real ``alias`` field, 404
+    ``{"errorMessage":"Organization not found."}``) were independently
+    confirmed against the real, live Keycloak 26.2 dev-stack container
+    first, using the same ``kronos-backend`` service-account credentials
+    ``is_org_member`` already uses in production -- see
+    poc/autonomous_detection_pipeline/README.md."""
+
+    @pytest.mark.asyncio
+    async def test_200_returns_the_real_alias(self) -> None:
+        org_id = uuid.uuid4()
+
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            assert method == "GET"
+            assert url.endswith(f"/organizations/{org_id}")
+            return _resp(
+                200,
+                {
+                    "id": str(org_id),
+                    "name": "KronOS Dev",
+                    "alias": "kronos-dev",
+                    "enabled": True,
+                },
+            )
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            alias = await client.get_organization_alias(org_id)
+
+        assert alias == "kronos-dev"
+
+    @pytest.mark.asyncio
+    async def test_404_returns_none(self) -> None:
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(404, {"errorMessage": "Organization not found."})
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            assert await client.get_organization_alias(uuid.uuid4()) is None
+
+    @pytest.mark.asyncio
+    async def test_other_status_fails_loudly(self) -> None:
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(500, text="boom")
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            with pytest.raises(KeycloakAdminError):
+                await client.get_organization_alias(uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_200_with_empty_alias_fails_loudly_not_silently(self) -> None:
+        """A real org always has a non-empty alias (confirmed live) -- an
+        empty one on a 200 is a genuinely unexpected upstream shape, must
+        not be treated the same as a legitimate 404 "no such org"."""
+
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, {"id": "u1", "name": "Weird Org", "alias": ""})
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            with pytest.raises(KeycloakAdminError):
+                await client.get_organization_alias(uuid.uuid4())
+
+
+class TestHttpxKeycloakAdminClientListOrganizations:
+    @pytest.mark.asyncio
+    async def test_returns_real_shaped_organizations(self) -> None:
+        org_id = uuid.uuid4()
+
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            assert method == "GET"
+            assert url.endswith("/organizations")
+            return _resp(
+                200,
+                [{"id": str(org_id), "name": "KronOS Dev", "alias": "kronos-dev"}],
+            )
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            organizations = await client.list_organizations()
+
+        assert len(organizations) == 1
+        assert organizations[0].org_id == org_id
+        assert organizations[0].alias == "kronos-dev"
+
+    @pytest.mark.asyncio
+    async def test_non_200_raises_keycloak_admin_error(self) -> None:
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(500, text="boom")
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            with pytest.raises(KeycloakAdminError):
+                await client.list_organizations()
+
+    @pytest.mark.asyncio
+    async def test_malformed_entry_fails_loudly(self) -> None:
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, [{"id": "not-a-uuid", "alias": "x"}])
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            with pytest.raises(KeycloakAdminError):
+                await client.list_organizations()
+
+
 class TestHttpxKeycloakAdminClientTokenHandling:
     @pytest.mark.asyncio
     async def test_token_fetch_failure_raises_keycloak_admin_error(self) -> None:

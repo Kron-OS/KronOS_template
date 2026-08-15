@@ -17,9 +17,17 @@ from fastapi.testclient import TestClient
 from src.adapter.repository.detection import InMemoryDetectionRepository
 from src.application.audit_log import AuditLogService
 from src.application.detection_triage import DetectionTriageService
+from src.application.playbook import PlaybookAction, PlaybookActionRegistry
+from src.application.playbook_execution import PlaybookExecutionService
 from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState
 from src.domain.user import Role, TenantContext
-from src.external.dependencies import get_detection_repository, get_detection_triage_service
+from src.exceptions import PlaybookError
+from src.external.dependencies import (
+    get_detection_repository,
+    get_detection_triage_service,
+    get_playbook_action_registry,
+    get_playbook_execution_service,
+)
 from src.external.fastapi_app import create_app
 from src.external.middleware.tenant_context import get_tenant_context
 from tests.conftest import InMemoryAuditLogRepository
@@ -78,6 +86,8 @@ def detection_repo() -> InMemoryDetectionRepository:
 def _build_client(
     detection_repo: InMemoryDetectionRepository,
     tenant: TenantContext,
+    *,
+    playbook_registry: PlaybookActionRegistry | None = None,
 ) -> TestClient:
     audit_svc = AuditLogService(InMemoryAuditLogRepository())
     triage_service = DetectionTriageService(detection_repo, audit_svc)
@@ -86,7 +96,36 @@ def _build_client(
     app.dependency_overrides[get_tenant_context] = lambda: tenant
     app.dependency_overrides[get_detection_repository] = lambda: detection_repo
     app.dependency_overrides[get_detection_triage_service] = lambda: triage_service
+    if playbook_registry is not None:
+        app.dependency_overrides[get_playbook_action_registry] = lambda: playbook_registry
+        app.dependency_overrides[get_playbook_execution_service] = lambda: PlaybookExecutionService(
+            playbook_registry, audit_svc
+        )
     return TestClient(app)
+
+
+class _FakeSyncToSiemAction(PlaybookAction):
+    """Minimal, hand-written PlaybookAction fake for these route tests --
+    the real SyncDetectionToSiemAction is already covered by
+    tests/unit/application/test_sync_detection_to_siem_action.py; this route
+    only needs to prove PlaybookExecutionService.execute() is genuinely
+    reachable and its result correctly shaped in the HTTP response, per
+    CLAUDE.md SS B.5 ("mock only external dependencies")."""
+
+    def __init__(self, sink_name: str, *, fail: bool = False) -> None:
+        self._sink_name = sink_name
+        self._fail = fail
+        self.calls: list[dict[str, object]] = []
+
+    @property
+    def action_name(self) -> str:
+        return f"sync_detection_to_siem_{self._sink_name}"
+
+    async def execute(self, params: dict[str, object], tenant: TenantContext) -> dict[str, object]:
+        self.calls.append({"params": params, "org_id": tenant.org_id})
+        if self._fail:
+            raise PlaybookError("simulated real sink push failure", context={"params": params})
+        return {"detection_id": params["detection_id"], "sink": self._sink_name, "pushed": True}
 
 
 class TestListDetections:
@@ -304,3 +343,98 @@ class TestTriageDetection:
             json={"targetState": "INVESTIGATING"},
         )
         assert resp.status_code == 403
+
+
+class TestSyncDetectionToSiem:
+    """POST /api/detections/{id}/sync-to-siem/{sink_name} (roadmap Milestone
+    W/W1, IR walkthrough F3) -- the first HTTP route anywhere in this
+    codebase that reaches PlaybookExecutionService.execute()."""
+
+    def test_registered_sink_pushes_and_returns_succeeded_true(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        action = _FakeSyncToSiemAction("splunk")
+        registry = PlaybookActionRegistry()
+        registry.register(action)
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.ANALYST), playbook_registry=registry
+        )
+
+        resp = client.post(f"/api/detections/{detection.detection_id}/sync-to-siem/splunk")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["succeeded"] is True
+        assert body["haltedEarly"] is False
+        assert body["stepResults"][0]["actionName"] == "sync_detection_to_siem_splunk"
+        assert body["stepResults"][0]["output"]["pushed"] is True
+        assert action.calls[0]["params"]["detection_id"] == str(detection.detection_id)
+        assert action.calls[0]["org_id"] == ORG_A
+
+    def test_unconfigured_sink_returns_404(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        registry = PlaybookActionRegistry()  # no sinks registered -- honest "unconfigured"
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.ANALYST), playbook_registry=registry
+        )
+
+        resp = client.post(f"/api/detections/{detection.detection_id}/sync-to-siem/splunk")
+
+        assert resp.status_code == 404
+
+    def test_action_failure_is_reflected_not_raised(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        registry = PlaybookActionRegistry()
+        registry.register(_FakeSyncToSiemAction("splunk", fail=True))
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.ANALYST), playbook_registry=registry
+        )
+
+        resp = client.post(f"/api/detections/{detection.detection_id}/sync-to-siem/splunk")
+
+        assert resp.status_code == 200  # audited failure, not a raised HTTP error
+        body = resp.json()
+        assert body["succeeded"] is False
+        assert body["haltedEarly"] is True
+        assert "simulated real sink push failure" in body["stepResults"][0]["error"]
+
+    def test_read_only_role_forbidden(self, detection_repo: InMemoryDetectionRepository) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        registry = PlaybookActionRegistry()
+        registry.register(_FakeSyncToSiemAction("splunk"))
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.READ_ONLY), playbook_registry=registry
+        )
+
+        resp = client.post(f"/api/detections/{detection.detection_id}/sync-to-siem/splunk")
+
+        assert resp.status_code == 403
+
+    def test_multiple_sinks_select_by_name(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Roadmap-honest design decision: sink_name in the URL, not one
+        hardcoded action, so a deployment with >1 real configured sink
+        (e.g. Splunk AND Sentinel) is fully reachable, not silently
+        limited to whichever one happened to be hardcoded."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        splunk_action = _FakeSyncToSiemAction("splunk")
+        sentinel_action = _FakeSyncToSiemAction("sentinel")
+        registry = PlaybookActionRegistry()
+        registry.register(splunk_action)
+        registry.register(sentinel_action)
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.ANALYST), playbook_registry=registry
+        )
+
+        resp = client.post(f"/api/detections/{detection.detection_id}/sync-to-siem/sentinel")
+
+        assert resp.status_code == 200
+        assert resp.json()["stepResults"][0]["actionName"] == "sync_detection_to_siem_sentinel"
+        assert len(sentinel_action.calls) == 1
+        assert len(splunk_action.calls) == 0

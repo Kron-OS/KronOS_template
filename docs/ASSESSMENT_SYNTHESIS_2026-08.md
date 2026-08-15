@@ -55,7 +55,7 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 
 | # | Finding | Source | Size |
 |---|---|---|---|
-| P0-W1 | **The autonomous streaming-detection-to-response pipeline has FOUR separate "wired but never triggered" gaps** (§0 above) — the platform's core value proposition doesn't run today without manual intervention. | IR walkthrough F1/F2/F3, scale review §5 | L (four real beat-task/route additions, each individually small, but the design work of sequencing them correctly — seal → normalize → sync → (optionally) auto-response — needs care) |
+| P0-W1 | **CLOSED (2026-08-15, verified live — see §2 W1 STATUS below).** ~~The autonomous streaming-detection-to-response pipeline has FOUR separate "wired but never triggered" gaps~~ (§0 above) — all four now wired and proven autonomous end-to-end against real services, `poc/autonomous_detection_pipeline/run_poc.py`, 24/24 checks. | IR walkthrough F1/F2/F3, scale review §5 | L (four real beat-task/route additions, each individually small, but the design work of sequencing them correctly — seal → normalize → sync → (optionally) auto-response — needs care) |
 | P0-W2 | **`README.md`'s local frontend-dev instructions are actively wrong**, not stale — `kronos.local` has been the only valid Keycloak redirect URI for 3 weeks (commits `06e243939`/`dcf7047`/`c173c14`), but the README still documents `localhost:5173`, which cannot log in at all. This is the single biggest blocker to a "10-minute local demo." | UX review §2 | S |
 | P0-W3 | **A fresh Helm install silently reports all pods Ready with an empty Postgres schema** — V4 removed `create_tables()`-at-boot in favor of a real `db-migrate` init container, but `charts/kronos/templates/` has zero Alembic/migration mechanism, and every pod's healthcheck is deliberately DB-independent. A newcomer (or a real production operator) gets no error signal at all. | UX review §2 | M |
 
@@ -109,6 +109,41 @@ tasks/routes, sequenced correctly:
   triaged → a real SOAR action fires) before any `src/` change, mirroring
   `poc/l3_chain_collector_to_detect/`'s own manual proof but now
   autonomous.
+
+  **W1 STATUS (2026-08-15): CLOSED, verified live.** All four beat
+  tasks/routes (a)-(d) exist in `src/external/celery_app.py` +
+  `src/external/celery_streaming.py` + `src/external/routes/detections.py`,
+  and `poc/autonomous_detection_pipeline/run_poc.py` proves the full
+  autonomous chain end-to-end against real services with zero manual
+  `seal_pending()`/`normalize_batch()`/`sync_org_findings()` calls: real
+  Redis Stream event → autonomous seal (beat-triggered,
+  `BatchSealingService.seal_pending()`) → autonomous normalize
+  (event-chained) → real per-org SA detector fires on its own schedule →
+  autonomous `DetectionSyncService.sync_org_findings()` creates the
+  `Detection` row (beat-triggered) → real
+  `POST /api/detections/{id}/sync-to-siem/splunk` reaches
+  `PlaybookExecutionService.execute()` and a real stand-in SIEM receiver
+  observes the push. Run twice for a two-round proof (a second, later
+  trigger event through the whole chain again with the detector already
+  live) plus idempotency (a second sync cycle creates zero duplicate
+  `Detection` rows) and provenance linkage (`Detection.matched_document_ids`
+  → real OpenSearch doc → `kronos.batch_id` matches the real sealed batch).
+  24/24 real checks passed, `TOTAL wall-clock window T0 -> T_detected` ~204s
+  for one full run (see `poc/autonomous_detection_pipeline/`). Two real,
+  narrow bugs were found and fixed in the course of getting a clean run —
+  both in the PoC harness itself, not in the `src/` integration code: (1)
+  an early attempt reused one Keycloak org's `org_id`/`source_id` pair
+  across multiple runs, colliding with stale `sealed_batches` watermark
+  history from a previous run for that exact pair — fixed by using a
+  fresh, run-unique org every run; (2) the PoC's own round-2 wait budget
+  for `seal_pending_streams` was 60s against the real, correct, unmodified
+  production `_SEAL_MAX_AGE_SECONDS = 60.0` threshold in
+  `celery_streaming.py` (never loosened) plus the PoC's own detector name
+  didn't match `SecurityAnalyticsDetectorProvisioner`'s real
+  `kronos-{org_alias}-{log_type}-detector` naming convention, so
+  `DetectionSyncService`'s findings query could never discover it; both
+  fixed in `poc/autonomous_detection_pipeline/run_poc.py` and
+  `_beat_schedule_override.py` only.
 
 **W2 · Fix the two actively-wrong onboarding docs (P0-W2, P0-W3, P1-W8).**
 Small, urgent, no design ambiguity: sync `README.md`'s Keycloak
