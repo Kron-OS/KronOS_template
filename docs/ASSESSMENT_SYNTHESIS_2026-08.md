@@ -82,7 +82,7 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 | P2-W14 | No "connector status" view in the frontend — a real, user-visible gap given six connectors now exist; a new user has no way to see whether Wazuh/Splunk/etc. are configured/healthy. | UX review §1 | M |
 | P2-W15 | **CLOSED (2026-08-16, commit `6ef2aa6`).** ~~`docs/ingestion-pipeline.md` is stale~~ — rewritten to match the real current `process_intake`-split pipeline, every claim cross-checked against the actual code. | IR walkthrough F5 | S |
 | P2-W16 | **CLOSED (2026-08-16, commit `6ef2aa6`) as docs-only guidance, per its own "needs real measurement" framing.** ~~OpenSearch resource sizing doesn't obviously reconcile with the "100+ GB evidence" design goal~~ — `docs/deployment.md` now states plainly that pinned heap values are demo defaults, cites real OpenSearch heap-sizing guidance, and names exactly what real measurement work is still needed before a production sizing claim could be made honestly. The underlying measurement work itself remains undone (by design — this item's own scope was docs, not a real load test). | Scale review §4 | M (needs real measurement, not just a values.yaml bump) |
-| P2-W17 | `GenericPollSource` has zero production scheduler — same class of gap as P0-W1's Defender-specific instance, but for the generic stand-in itself (lower priority since it's a stand-in, not a named connector). | Scale review §5 | S |
+| P2-W17 | **CLOSED as "not warranted" (2026-08-16), same legitimate-conclusion pattern as the Kafka and Redis Cluster questions.** ~~`GenericPollSource` has zero production scheduler~~ — confirmed by direct grep (`src/external/dependencies.py`, `src/external/startup.py`, `src/config.py`): `GenericPollSource` has ZERO real config/DI wiring anywhere in this codebase, only self-references in its own file and one docstring cross-reference from `defender.py`. It is explicitly a reference/stand-in implementation proving the `IntegrationSource` abstraction (see its own module docstring, "Not a named vendor... this is the real 'lowest common denominator' cursor-poll shape"), not a connector any real org could configure today. A beat task scheduling it would first require inventing a full `Settings`-level config surface (base_url/org_id/auth) for a component with zero real users — not "add a beat task pointing at code that already works" (V2/W1's own established pattern), a materially different and unjustified scope expansion for a stand-in. Revisit only if/when this becomes a real, named connector with real config wiring (at which point it stops being this finding and becomes a new Defender-shaped item). | Scale review §5 | S |
 | P2-W18 | Six Q/R connectors are correctness-proven, never throughput-proven — no real load/sustained-volume test exists for any of them. Not urgent absent a real production deployment, but should be closed before any customer-facing throughput claim. | Scale review §5 | L (needs a real load-test harness, its own scoped design) |
 
 ---
@@ -260,6 +260,15 @@ P2-W18).** Lowest priority in this synthesis — the generic stand-in
 scheduler is cheap but low-value (no real named connector uses it
 directly), and a real load-test harness for the six connectors is a
 genuine, separate, scoped project, not a quick fix.
+
+**W10 STATUS (2026-08-16): P2-W17 CLOSED as "not warranted"** — see that
+row above for the full reasoning. **P2-W18 (Q/R throughput proof) remains
+open, deliberately not attempted** — it is its own genuine, separately-scoped
+project (a real load-test harness, real sustained-volume runs against each
+of the six connectors), not urgent absent a real production deployment
+hitting a real throughput ceiling, and should not be rushed into a
+generic W-item dispatch. Tracked here as the one remaining legitimately
+open item from the entire Task #14 → Milestone W cycle.
 
 **W11 · Fix `kronos_attest` case/day report chain-validity bug (P1-W19,
 new 2026-08-16).** Real design work, not a quick patch: `ChainVerifier`/
