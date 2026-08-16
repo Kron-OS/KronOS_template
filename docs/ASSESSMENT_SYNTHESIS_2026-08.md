@@ -213,6 +213,31 @@ verified: real screenshots inspected directly (`poc/frontend_theme_fix/`),
 `npm run build`/`npm run lint` clean, vitest 43→47 tests (+4, real
 before/after delta via a detached-HEAD checkout of the parent commit).
 
+**W14 STATUS (2026-08-16): CLOSED, verified live.** Design decision made
+on the question W7 deferred: the view honestly splits connectors into two
+kinds rather than presenting one uniform "health" concept. PUSH sources
+(Wazuh/Suricata-Zeek/generic webhooks) are real per-org self-service —
+`GET /api/admin/connectors/status` enriches W8's
+`IntegrationSourceKeyRepository.list_by_org` with a real `lastIngestedAt`/
+`status` derived from the org's own audit log
+(`INTEGRATION_SOURCE_PUSH_INGESTED`). Microsoft Defender, the one real
+POLL source, is NOT per-org self-service — it is wired from a single
+global `Settings.defender_poll_org_id` — so its entry is included only
+when that setting names the caller's own org, and is labeled
+"platform-configured (global)" in the UI, never implying an org admin can
+change it from this view. `GenericPollSource` stays untouched (closed
+not-warranted, P2-W17). New frontend page at `/admin/connectors`
+(`ConnectorStatusPage.tsx`), nav-linked from `Layout.tsx`'s existing
+admin-only section. Verified per CLAUDE.md SS F:
+`poc/connector_status_view/run_poc.py` proves the route end-to-end
+against real Postgres (real key provisioning, a real webhook push,
+real audit-derived `lastIngestedAt`, and real Defender inclusion/exclusion
+via the real `Settings`/DI path); `run_poc_frontend.mjs` captures real
+Playwright screenshots of the page in light and dark mode. 16 new backend
+unit tests (1932→1948 passing), 6 new frontend tests (47→53 passing);
+`ruff`/`black`/`mypy` clean on touched files (mypy: the same 29
+pre-existing errors, unchanged).
+
 **W8 · `StaticApiKeyProvisioning` real provisioning route (P1-W5).**
 Larger, needs the same design-decision-first treatment Gap Audit P1-7
 already flagged (how does an operator issue a key — admin route? CLI?
