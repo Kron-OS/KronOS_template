@@ -196,6 +196,15 @@ class AuditEventType(StrEnum):
     INTEGRATION_SOURCE_POLL_COMPLETED = "integration_source.poll_completed"
     INTEGRATION_SOURCE_POLL_FAILED = "integration_source.poll_failed"
 
+    # Integration source API-key provisioning (Milestone W8, Gap Audit
+    # P1-7) -- credential issuance/revocation, at least as sensitive as
+    # evidence deletion (both require aal2 step-up, see admin_integration_
+    # sources.py), so both get their own real, auditable event distinct
+    # from the push/poll ingestion events above. Audit details never
+    # include the plaintext key (CLAUDE.md SS B.4: no credentials in logs).
+    INTEGRATION_SOURCE_KEY_PROVISIONED = "integration_source.key_provisioned"
+    INTEGRATION_SOURCE_KEY_REVOKED = "integration_source.key_revoked"
+
     # Generic
     SYSTEM_ERROR = "system.error"
 

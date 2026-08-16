@@ -57,6 +57,9 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
+    from src.adapter.repository.postgres_integration_source_key import (  # noqa: PLC0415
+        PostgresIntegrationSourceKeyRepository,
+    )
     from src.adapter.repository.postgres_ioc_feed import (  # noqa: PLC0415
         PostgresIOCFeedRepository,
     )
@@ -121,6 +124,12 @@ async def wire_dependencies_async() -> None:
     # mirroring org_quota_repo's own split between this process-wide
     # instance and celery_runtime.py's per-task one.
     source_cursor_repo = PostgresSourceCursorRepository(engine)
+    # Inbound-push API-key provisioning (Milestone W8 / Gap Audit P1-7):
+    # real per-(org, source) key storage, queried per-request by
+    # StaticApiKeyInboundAuthenticator (src/external/middleware/
+    # integration_source_auth.py) -- replaces the boot-time-only static
+    # dict that had no real admin-facing provisioning route wired to it.
+    integration_source_key_repo = PostgresIntegrationSourceKeyRepository(engine)
 
     # Schema creation/evolution (Gap Audit P1-12 / Milestone V4): this used
     # to call every repository's own `create_tables()` classmethod here, at
@@ -368,6 +377,7 @@ async def wire_dependencies_async() -> None:
         ),
         org_quota_repository=org_quota_repo,
         source_cursor_repository=source_cursor_repo,
+        integration_source_key_repository=integration_source_key_repo,
     )
     configure_clamav_from_settings()
     configure_splunk_hec_sink_from_settings()

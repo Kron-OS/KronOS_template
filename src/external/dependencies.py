@@ -42,6 +42,10 @@ from src.adapter.repository.detection_correlation import (
     InMemoryDetectionCorrelationRepository,
 )
 from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.repository.integration_source_key import (
+    InMemoryIntegrationSourceKeyRepository,
+    IntegrationSourceKeyRepository,
+)
 from src.adapter.repository.ioc_feed import InMemoryIOCFeedRepository, IOCFeedRepository
 from src.adapter.repository.quota import InMemoryOrgQuotaRepository, OrgQuotaRepository
 from src.adapter.repository.rule_pack import InMemoryRulePackRepository, RulePackRepository
@@ -105,7 +109,6 @@ from src.external.middleware.integration_source_auth import (
     InboundSourceAuthenticator,
     OAuth2ClientCredentialsOutboundAuthStrategy,
     StaticApiKeyInboundAuthenticator,
-    StaticApiKeyProvisioning,
 )
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
 from src.external.middleware.step_up_store import (
@@ -156,19 +159,28 @@ _collector_ingest_service: CollectorIngestService | None = None
 # (GenericWebhookPushSource) so DI never hard-fails before a real vendor
 # connector (Q2+) registers itself -- mirrors _ism_tier_resolver's own
 # "always-real, always-safe default" idiom, not an empty placeholder.
-# _inbound_source_authenticator defaults to zero provisioned keys (an
-# honestly disabled state -- every request is rejected -- same pattern as
-# _yara_runner: None until E4 configures a real one); real per-(org,source)
-# API-key provisioning is real, but dev/prod-stage wiring (roadmap SS3) is
-# a follow-up, not yet called from startup.py.
+# _integration_source_key_repository defaults to a real (if in-memory)
+# repository -- same "honestly real, in-memory until Postgres is wired"
+# shape as _rule_pack_repository/_org_quota_repository below, NOT the
+# "None means disabled" shape _yara_runner uses: an empty in-memory
+# repository is real (every get_by_key lookup honestly finds nothing,
+# never fabricates a match), matching InMemoryRulePackRepository's own
+# precedent. wire_dependencies_async() (src/external/startup.py) swaps
+# this for PostgresIntegrationSourceKeyRepository at real startup --
+# Milestone W8/Gap Audit P1-7 closed the "provisioning only ever happens
+# once, at boot, from a static dict" gap this comment used to describe.
+_integration_source_key_repository: IntegrationSourceKeyRepository = (
+    InMemoryIntegrationSourceKeyRepository()
+)
 _integration_source_registry: IntegrationSourceRegistry = IntegrationSourceRegistry()
 _integration_source_registry.register(GenericWebhookPushSource())
 # WazuhPushSource (roadmap Q2) -- the first real, named-vendor connector
 # built on this foundation, registered unconditionally like
 # GenericWebhookPushSource above: registering a PUSH source costs nothing
-# until a real StaticApiKeyProvisioning entry actually routes traffic to
-# source_type="wazuh" (see _inbound_source_authenticator's own "zero
-# provisioned keys by default" comment above).
+# until a real key is actually provisioned (via
+# POST /api/admin/integration-sources/wazuh/provision) to route traffic to
+# source_type="wazuh" -- see _integration_source_key_repository's own
+# comment above.
 _integration_source_registry.register(WazuhPushSource())
 # SuricataEvePushSource/ZeekJsonPushSource (roadmap Q3) -- live-tail
 # connectors fed by fluent-bit's real `tail`+`http` output (see that
@@ -176,7 +188,14 @@ _integration_source_registry.register(WazuhPushSource())
 _integration_source_registry.register(SuricataEvePushSource())
 _integration_source_registry.register(ZeekJsonPushSource())
 _source_cursor_repository: SourceCursorRepository = InMemorySourceCursorRepository()
-_inbound_source_authenticator: InboundSourceAuthenticator = StaticApiKeyInboundAuthenticator({})
+# Wraps whatever _integration_source_key_repository currently is -- a real,
+# per-request repository lookup (never a boot-time dict snapshot), so
+# provisioning/revoking a key takes effect on the very next push with no
+# process restart. configure_dependencies()/reset_dependencies() rebuild
+# this whenever the repository itself is swapped (see both functions below).
+_inbound_source_authenticator: InboundSourceAuthenticator = StaticApiKeyInboundAuthenticator(
+    _integration_source_key_repository
+)
 _integration_source_max_stream_length: int = 1_000_000
 _integration_source_dedup_ttl_seconds: int = 3600
 _findings_client: FindingsClient | None = None
@@ -384,6 +403,15 @@ def get_inbound_source_authenticator() -> InboundSourceAuthenticator:
     return _inbound_source_authenticator
 
 
+def get_integration_source_key_repository() -> IntegrationSourceKeyRepository:
+    """FastAPI dependency for IntegrationSourceKeyRepository (Milestone W8,
+    Gap Audit P1-7) -- the real per-(org, source) API-key provisioning
+    store ``admin_integration_sources.py``'s routes read/write, and the
+    same instance ``_inbound_source_authenticator`` above queries per
+    request."""
+    return _integration_source_key_repository
+
+
 def get_integration_source_ingest_service(
     registry: Annotated[IntegrationSourceRegistry, Depends(get_integration_source_registry)],
     cursor_repository: Annotated[SourceCursorRepository, Depends(get_source_cursor_repository)],
@@ -408,18 +436,25 @@ def get_integration_source_ingest_service(
     )
 
 
-def configure_static_api_key_provisioning(
-    provisioned_keys: dict[str, StaticApiKeyProvisioning],
+def configure_integration_source_key_repository(
+    repository: IntegrationSourceKeyRepository,
 ) -> None:
-    """Real startup wiring hook for API-key-authenticated PUSH sources.
+    """Swap the live ``IntegrationSourceKeyRepository`` (e.g. for
+    ``PostgresIntegrationSourceKeyRepository`` at real startup) and rebuild
+    ``_inbound_source_authenticator`` to wrap it.
 
-    Not yet called from ``startup.py`` -- real per-(org,source) key
-    provisioning (Vault/env-sourced) is dev/prod-stage wiring (roadmap SS3),
-    a follow-up once a real named vendor (Q2+) needs it. Exists now so that
-    wiring is a one-line startup.py addition later, not a new abstraction.
+    Milestone W8 (Gap Audit P1-7): replaces the former
+    ``configure_static_api_key_provisioning(provisioned_keys: dict[...])``
+    hook, which took a one-shot, boot-time dict snapshot and had zero real
+    callers anywhere in ``src/`` -- confirmed via a direct grep before this
+    change -- because there was never a real admin-facing route that could
+    call it with freshly-provisioned keys. A dict snapshot can't be
+    rebuilt without a process restart; a repository can be queried fresh on
+    every request, which is the entire point of this milestone.
     """
-    global _inbound_source_authenticator
-    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(provisioned_keys)
+    global _integration_source_key_repository, _inbound_source_authenticator
+    _integration_source_key_repository = repository
+    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(repository)
 
 
 def get_sealed_batch_repository() -> SealedBatchRepository:
@@ -1379,6 +1414,7 @@ def configure_dependencies(
     ioc_feed_repository: IOCFeedRepository | None = None,
     org_quota_repository: OrgQuotaRepository | None = None,
     source_cursor_repository: SourceCursorRepository | None = None,
+    integration_source_key_repository: IntegrationSourceKeyRepository | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -1395,6 +1431,7 @@ def configure_dependencies(
     global _yara_runner, _yara_rule_provider, _yara_rule_pack_repository
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     global _org_quota_repository, _source_cursor_repository
+    global _integration_source_key_repository, _inbound_source_authenticator
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -1450,6 +1487,15 @@ def configure_dependencies(
         _org_quota_repository = org_quota_repository
     if source_cursor_repository is not None:
         _source_cursor_repository = source_cursor_repository
+    if integration_source_key_repository is not None:
+        _integration_source_key_repository = integration_source_key_repository
+        # Rebuild the authenticator to wrap the newly-configured repository
+        # -- see configure_integration_source_key_repository's own
+        # docstring for why a stale-repository-reference authenticator
+        # would defeat this whole milestone's purpose.
+        _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(
+            _integration_source_key_repository
+        )
 
 
 def reset_dependencies() -> None:
@@ -1470,7 +1516,7 @@ def reset_dependencies() -> None:
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     global _org_quota_repository
     global _integration_source_registry, _source_cursor_repository
-    global _inbound_source_authenticator
+    global _inbound_source_authenticator, _integration_source_key_repository
     global _splunk_hec_sink, _splunk_detection_mapper
     global _cef_syslog_sink, _cef_detection_mapper
     global _sentinel_sink, _sentinel_detection_mapper
@@ -1503,7 +1549,10 @@ def reset_dependencies() -> None:
     _integration_source_registry.register(SuricataEvePushSource())
     _integration_source_registry.register(ZeekJsonPushSource())
     _source_cursor_repository = InMemorySourceCursorRepository()
-    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator({})
+    _integration_source_key_repository = InMemoryIntegrationSourceKeyRepository()
+    _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(
+        _integration_source_key_repository
+    )
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()
     _event_dedup_checker = InMemoryEventDedupChecker()
     _collector_ingest_service = None

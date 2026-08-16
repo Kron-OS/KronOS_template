@@ -76,9 +76,9 @@ yet" bug discovered later in application logs.
    ```
    This runs `alembic revision --autogenerate` inside a throwaway
    `db-migrate` container against your running dev Postgres, using the
-   combined `MetaData` `migrations/target_metadata.py` builds from all 14
+   combined `MetaData` `migrations/target_metadata.py` builds from all 15
    repository modules (see that file's own docstring for why a combined
-   registry is needed — this repo has 14 separate `_metadata = sa.MetaData()`
+   registry is needed — this repo has 15 separate `_metadata = sa.MetaData()`
    registries, not one shared declarative `Base`).
 3. **Read the generated file in `migrations/versions/` before committing
    it.** Autogenerate is a diffing tool, not magic — it does not detect
@@ -153,7 +153,7 @@ already-deployed KronOS database, the correct procedure is:
 - `migrations/env.py` — the real async environment, following Alembic's
   own documented "Using Asyncio with Alembic" cookbook recipe.
 - `migrations/target_metadata.py` — builds the combined `MetaData`
-  autogenerate diffs against, by importing all 14 `postgres_*.py` modules
+  autogenerate diffs against, by importing all 15 `postgres_*.py` modules
   and copying (`Table.tometadata()`, non-mutating) their tables into one
   registry. Add a new module here the same release you add a new
   `postgres_*.py` repository.

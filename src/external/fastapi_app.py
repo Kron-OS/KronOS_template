@@ -21,6 +21,7 @@ from src.exceptions import (
 )
 from src.external.logging_config import configure_logging
 from src.external.routes import admin as admin_routes
+from src.external.routes import admin_integration_sources as admin_integration_sources_routes
 from src.external.routes import audit as audit_routes
 from src.external.routes import auth as auth_routes
 from src.external.routes import cases as cases_routes
@@ -111,6 +112,7 @@ def create_app(
     app.include_router(evidence_routes.router)
     app.include_router(detections_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(admin_integration_sources_routes.router)
     app.include_router(audit_routes.router)
     app.include_router(sse_routes.router)
     app.include_router(step_up_routes.router)

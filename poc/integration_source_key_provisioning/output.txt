@@ -1,0 +1,88 @@
+==============================================================================
+1. Real Alembic migration against the real dev-stack Postgres
+==============================================================================
+`alembic current` (before) -> exit=0
+913567ca653a (head)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+
+`alembic upgrade head` -> exit=0
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+
+[32m[PASS][0m real `alembic upgrade head` exits 0 against docker-postgres-1 
+`alembic current` (after) -> exit=0
+913567ca653a (head)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+
+[32m[PASS][0m database is now stamped at the integration_source_keys revision 913567ca653a (head)INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+
+==============================================================================
+2. Real PostgresIntegrationSourceKeyRepository + PostgresAuditLogRepository
+==============================================================================
+[32m[PASS][0m repository + audit-log wiring constructed against real engine 
+
+==============================================================================
+3. Real HTTP: POST /api/admin/integration-sources/{source_type}/provision
+==============================================================================
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T09:20:17.208318Z", "ticket_id": "afbeef84-7df7-404d-8541-f593c8aa8bf1", "operation": "integration_source_key.provision"}
+{"event": "step_up_ticket_consumed", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T09:20:17.265669Z", "ticket_id": "afbeef84-7df7-404d-8541-f593c8aa8bf1", "operation": "integration_source_key.provision"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T09:20:17.279880Z", "event_id": "4037ac1e-7824-4895-973e-c75bbb495e93", "event_type": "integration_source.key_provisioned", "seq": 1}
+{"event": "HTTP Request: POST http://poc/api/admin/integration-sources/generic-webhook/provision \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T09:20:17.280396Z"}
+provision -> status=201
+{"sourceId":"poc-wazuh-1","sourceType":"generic-webhook","apiKey":"_6gvvnPZ_JDQFptYfJ-M36qL3xFvzKuGh1u_--yg_yI","createdAt":"2026-08-16T09:20:17.265763+00:00"}
+[32m[PASS][0m provision route returns 201 
+[32m[PASS][0m response includes a real, non-empty plaintext apiKey 
+[32m[PASS][0m sourceId echoed correctly 
+[32m[PASS][0m sourceType echoed correctly 
+
+==============================================================================
+4. Real HTTP: GET /api/admin/integration-sources (list, no plaintext)
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/admin/integration-sources \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T09:20:17.285832Z"}
+list -> status=200
+{"items":[{"sourceId":"poc-wazuh-1","sourceType":"generic-webhook","createdAt":"2026-08-16T09:20:17.265763+00:00","revokedAt":null}],"total":1}
+[32m[PASS][0m list route returns 200 
+[32m[PASS][0m list contains exactly the 1 real provisioned key 
+[32m[PASS][0m list item never contains the plaintext key 
+
+==============================================================================
+5. Real HTTP: POST /api/integrations/push/{source_type} using the REAL key
+==============================================================================
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T09:20:17.303039Z", "event_id": "80a14c98-c74e-45af-bfc8-3d9cce3d6428", "event_type": "integration_source.push_ingested", "seq": 2}
+{"event": "HTTP Request: POST http://poc/api/integrations/push/generic-webhook \"HTTP/1.1 202 Accepted\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T09:20:17.303347Z"}
+push (with real key) -> status=202
+{"results":[{"accepted":true,"duplicate":false,"messageId":"1-0"}]}
+[32m[PASS][0m push accepted (202) using the real key returned by provision 
+[32m[PASS][0m push outcome accepted=True 
+
+==============================================================================
+6. Real HTTP: DELETE /api/admin/integration-sources/{source_type}/{source_id}
+==============================================================================
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T09:20:17.303571Z", "ticket_id": "a2c627db-0c79-4267-9715-7a3a68056b40", "operation": "integration_source_key.revoke"}
+{"event": "step_up_ticket_consumed", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T09:20:17.306017Z", "ticket_id": "a2c627db-0c79-4267-9715-7a3a68056b40", "operation": "integration_source_key.revoke"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T09:20:17.313771Z", "event_id": "be7d60a6-b7bd-49c8-a611-fe5b077bb760", "event_type": "integration_source.key_revoked", "seq": 3}
+{"event": "HTTP Request: DELETE http://poc/api/admin/integration-sources/generic-webhook/poc-wazuh-1 \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T09:20:17.314016Z"}
+revoke -> status=204
+[32m[PASS][0m revoke route returns 204 
+
+==============================================================================
+7. Real HTTP: same push, same real key, AFTER revocation -- must be rejected
+==============================================================================
+{"event": "HTTP Request: POST http://poc/api/integrations/push/generic-webhook \"HTTP/1.1 401 Unauthorized\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T09:20:17.318710Z"}
+push (revoked key) -> status=401
+{"detail":"Inbound push API key is not provisioned"}
+[32m[PASS][0m push REJECTED (401) using the same key after revocation 
+
+==============================================================================
+8. Real audit events (INTEGRATION_SOURCE_KEY_PROVISIONED / _REVOKED)
+==============================================================================
+[32m[PASS][0m exactly 1 real KEY_PROVISIONED audit event persisted 
+[32m[PASS][0m exactly 1 real KEY_REVOKED audit event persisted 
+[32m[PASS][0m provisioned audit event never contains the plaintext key 
+
+==============================================================================
+ALL CHECKS PASSED
+==============================================================================

@@ -14,7 +14,7 @@ provenance) actually owns "which external tool authenticated this call" or
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -75,6 +75,68 @@ class IntegrationSourceIdentity(BaseModel):
             "never re-derived from it."
         )
     )
+
+
+class StaticApiKeyProvisioning(BaseModel):
+    """One provisioned (org, source) pair's static API key.
+
+    Moved here from ``src/external/middleware/integration_source_auth.py``
+    (Milestone W8, Gap Audit P1-7) when key storage moved from a
+    boot-time-only static dict to a real, per-request-queried
+    ``IntegrationSourceKeyRepository`` (see that ABC's own module
+    docstring) -- a repository return type belongs in the domain layer
+    alongside ``IntegrationSourceIdentity``, not in the external/middleware
+    layer that merely *consumes* it (CLAUDE.md SS A.3: adapters may not
+    import from the external layer above them).
+
+    ``api_key`` is always the caller-supplied (or freshly generated, at
+    provision time) PLAINTEXT value -- never persisted in this shape.
+    ``IntegrationSourceKeyRepository`` only ever stores/queries a SHA-256
+    hash of it (see that module's own docstring for the hashing rationale);
+    this object is reconstructed with the plaintext already in hand (either
+    because ``provision()`` just generated it, or because
+    ``get_by_key(api_key)``'s caller already supplied it and the hash
+    matched) -- config data, never derived from anything a request claims
+    about itself, same invariant this class has always documented.
+    """
+
+    model_config = {"frozen": True}
+
+    api_key: str
+    org_id: uuid.UUID
+    source_id: str
+    source_type: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    revoked_at: datetime | None = None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
+
+
+class ProvisionedApiKeySummary(BaseModel):
+    """Admin-listing-safe view of a provisioned key: everything EXCEPT the
+    plaintext/hash secret material.
+
+    A deliberately separate type from ``StaticApiKeyProvisioning`` rather
+    than "the same object with api_key blanked out" -- the whole point is
+    that ``IntegrationSourceKeyRepository.list_by_org`` structurally cannot
+    leak the plaintext key, because this type has no field to put it in
+    (CLAUDE.md's own "no silent side effects" principle applied to a type
+    signature, not just a runtime check that could be forgotten later).
+    """
+
+    model_config = {"frozen": True}
+
+    org_id: uuid.UUID
+    source_id: str
+    source_type: str
+    created_at: datetime
+    revoked_at: datetime | None = None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
 
 
 class SourceCursor(BaseModel):

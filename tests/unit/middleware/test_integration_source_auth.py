@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import time
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from src.adapter.repository.integration_source_key import (
+    InMemoryIntegrationSourceKeyRepository,
+)
 from src.domain.collector import CollectorIdentity
 from src.exceptions import AuthenticationError
 from src.external.middleware.integration_source_auth import (
@@ -22,7 +25,6 @@ from src.external.middleware.integration_source_auth import (
     MtlsOutboundAuthStrategy,
     OAuth2ClientCredentialsOutboundAuthStrategy,
     StaticApiKeyInboundAuthenticator,
-    StaticApiKeyProvisioning,
     identity_from_collector_identity,
 )
 
@@ -46,19 +48,33 @@ class TestIdentityFromCollectorIdentity:
 
 
 class TestStaticApiKeyInboundAuthenticator:
-    def _provisioning(self, org_id: uuid.UUID) -> StaticApiKeyProvisioning:
-        return StaticApiKeyProvisioning(
-            api_key="secret-key-1", org_id=org_id, source_id="s1", source_type="generic-webhook"
-        )
+    """Milestone W8 (Gap Audit P1-7): the authenticator now takes a real
+    ``IntegrationSourceKeyRepository`` and queries it per request, instead
+    of the boot-time-only static dict + linear ``hmac.compare_digest`` scan
+    Milestone W6/P2-W9 added (see this module's own updated docstring for
+    why that scan's own timing-side-channel concern is superseded, not
+    regressed, by a real hash-indexed DB lookup). The old dict-specific
+    tests (multiple-keys-in-one-dict resolution, hmac.compare_digest
+    wiring, no-early-exit scan behavior) are gone because the mechanism
+    they proved no longer exists; ``InMemoryIntegrationSourceKeyRepository``
+    itself is covered directly in
+    ``tests/unit/adapter/test_integration_source_key_repository.py``.
+    """
+
+    async def _repo_with_key(
+        self, org_id: uuid.UUID, source_id: str = "s1", source_type: str = "generic-webhook"
+    ) -> tuple[InMemoryIntegrationSourceKeyRepository, str]:
+        repo = InMemoryIntegrationSourceKeyRepository()
+        record = await repo.provision(org_id, source_id, source_type)
+        return repo, record.api_key
 
     @pytest.mark.asyncio
     async def test_valid_key_resolves_to_provisioned_identity(self) -> None:
         org_id = uuid.uuid4()
-        authenticator = StaticApiKeyInboundAuthenticator(
-            {"secret-key-1": self._provisioning(org_id)}
-        )
+        repo, api_key = await self._repo_with_key(org_id)
+        authenticator = StaticApiKeyInboundAuthenticator(repo)
 
-        identity = await authenticator.authenticate({"X-KronOS-Source-Key": "secret-key-1"})
+        identity = await authenticator.authenticate({"X-KronOS-Source-Key": api_key})
 
         assert identity.org_id == org_id
         assert identity.source_id == "s1"
@@ -68,23 +84,22 @@ class TestStaticApiKeyInboundAuthenticator:
     @pytest.mark.asyncio
     async def test_header_lookup_is_case_insensitive(self) -> None:
         org_id = uuid.uuid4()
-        authenticator = StaticApiKeyInboundAuthenticator(
-            {"secret-key-1": self._provisioning(org_id)}
-        )
+        repo, api_key = await self._repo_with_key(org_id)
+        authenticator = StaticApiKeyInboundAuthenticator(repo)
 
-        identity = await authenticator.authenticate({"x-kronos-source-key": "secret-key-1"})
+        identity = await authenticator.authenticate({"x-kronos-source-key": api_key})
 
         assert identity.org_id == org_id
 
     @pytest.mark.asyncio
     async def test_missing_header_raises(self) -> None:
-        authenticator = StaticApiKeyInboundAuthenticator({})
+        authenticator = StaticApiKeyInboundAuthenticator(InMemoryIntegrationSourceKeyRepository())
         with pytest.raises(IntegrationSourceAuthError):
             await authenticator.authenticate({})
 
     @pytest.mark.asyncio
     async def test_unknown_key_raises(self) -> None:
-        authenticator = StaticApiKeyInboundAuthenticator({})
+        authenticator = StaticApiKeyInboundAuthenticator(InMemoryIntegrationSourceKeyRepository())
         with pytest.raises(IntegrationSourceAuthError):
             await authenticator.authenticate({"X-KronOS-Source-Key": "not-provisioned"})
 
@@ -93,22 +108,17 @@ class TestStaticApiKeyInboundAuthenticator:
 
     @pytest.mark.asyncio
     async def test_multiple_provisioned_keys_each_resolve_correctly(self) -> None:
-        """P2-W9 correctness check: with several provisioned keys, the linear
-        hmac.compare_digest scan must still resolve each one to ITS OWN
-        provisioning, not e.g. always the first/last key in the dict."""
+        """With several provisioned keys (possibly different orgs), a
+        lookup by one org's key must resolve to THAT org's identity, never
+        another's."""
         org_1, org_2 = uuid.uuid4(), uuid.uuid4()
-        provisioning_1 = StaticApiKeyProvisioning(
-            api_key="key-one", org_id=org_1, source_id="s1", source_type="wazuh"
-        )
-        provisioning_2 = StaticApiKeyProvisioning(
-            api_key="key-two", org_id=org_2, source_id="s2", source_type="crowdstrike"
-        )
-        authenticator = StaticApiKeyInboundAuthenticator(
-            {"key-one": provisioning_1, "key-two": provisioning_2}
-        )
+        repo = InMemoryIntegrationSourceKeyRepository()
+        rec_1 = await repo.provision(org_1, "s1", "wazuh")
+        rec_2 = await repo.provision(org_2, "s2", "crowdstrike")
+        authenticator = StaticApiKeyInboundAuthenticator(repo)
 
-        identity_1 = await authenticator.authenticate({"X-KronOS-Source-Key": "key-one"})
-        identity_2 = await authenticator.authenticate({"X-KronOS-Source-Key": "key-two"})
+        identity_1 = await authenticator.authenticate({"X-KronOS-Source-Key": rec_1.api_key})
+        identity_2 = await authenticator.authenticate({"X-KronOS-Source-Key": rec_2.api_key})
 
         assert identity_1.org_id == org_1
         assert identity_1.source_id == "s1"
@@ -116,41 +126,36 @@ class TestStaticApiKeyInboundAuthenticator:
         assert identity_2.source_id == "s2"
 
     @pytest.mark.asyncio
-    async def test_key_comparison_uses_hmac_compare_digest(self) -> None:
-        """Proves the fix actually replaced the dict-keyed lookup with
-        hmac.compare_digest -- not a timing proof (CLAUDE.md SS F.2: timing
-        itself is not easily unit-testable), just a correctness/wiring
-        proof that the constant-time primitive is really on the hot path."""
+    async def test_revoked_key_is_rejected(self) -> None:
+        """A key that was provisioned then revoked must behave exactly
+        like a never-provisioned key -- the whole point of ``revoke``."""
         org_id = uuid.uuid4()
-        authenticator = StaticApiKeyInboundAuthenticator(
-            {"secret-key-1": self._provisioning(org_id)}
-        )
+        repo, api_key = await self._repo_with_key(org_id)
+        authenticator = StaticApiKeyInboundAuthenticator(repo)
 
-        with patch(
-            "src.external.middleware.integration_source_auth.hmac.compare_digest",
-            wraps=__import__("hmac").compare_digest,
-        ) as spy:
-            identity = await authenticator.authenticate({"X-KronOS-Source-Key": "secret-key-1"})
+        # Sanity: works before revocation.
+        await authenticator.authenticate({"X-KronOS-Source-Key": api_key})
 
-        assert identity.org_id == org_id
-        spy.assert_called_once_with(b"secret-key-1", b"secret-key-1")
+        await repo.revoke(org_id, "s1")
+
+        with pytest.raises(IntegrationSourceAuthError):
+            await authenticator.authenticate({"X-KronOS-Source-Key": api_key})
 
     @pytest.mark.asyncio
-    async def test_no_early_exit_all_candidates_compared(self) -> None:
-        """The scan must not ``break`` on match -- every provisioned key is
-        compared exactly once per request regardless of iteration order,
-        so total comparison count doesn't leak which key matched."""
-        org_id = uuid.uuid4()
-        provisioning_map = {f"key-{i}": self._provisioning(org_id) for i in range(5)}
-        authenticator = StaticApiKeyInboundAuthenticator(provisioning_map)
+    async def test_org_isolation_one_orgs_key_never_resolves_to_another(self) -> None:
+        """Confirms the identity's org_id always comes from the matched
+        provisioning record itself, never guessable/overridable by the
+        caller -- two different orgs' distinct keys must never cross-match."""
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        repo = InMemoryIntegrationSourceKeyRepository()
+        rec_a = await repo.provision(org_a, "s-a", "generic-webhook")
+        await repo.provision(org_b, "s-b", "generic-webhook")
+        authenticator = StaticApiKeyInboundAuthenticator(repo)
 
-        with patch(
-            "src.external.middleware.integration_source_auth.hmac.compare_digest",
-            wraps=__import__("hmac").compare_digest,
-        ) as spy:
-            await authenticator.authenticate({"X-KronOS-Source-Key": "key-0"})
+        identity = await authenticator.authenticate({"X-KronOS-Source-Key": rec_a.api_key})
 
-        assert spy.call_count == len(provisioning_map)
+        assert identity.org_id == org_a
+        assert identity.org_id != org_b
 
 
 class TestApiKeyOutboundAuthStrategy:

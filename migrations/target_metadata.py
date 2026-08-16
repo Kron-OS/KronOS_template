@@ -1,7 +1,7 @@
 """Combined SQLAlchemy Core ``MetaData`` for Alembic autogenerate.
 
 This repo does NOT have one shared SQLAlchemy declarative ``Base``/registry
-(confirmed via a repo-wide grep before writing this): there are 14 separate
+(confirmed via a repo-wide grep before writing this): there are 15 separate
 ``src/adapter/repository/postgres_*.py`` modules, each with its own private
 module-level ``_metadata = sa.MetaData()`` and its own ``sa.Table(...)`` Core
 definitions, each consumed by that module's own ``create_tables(engine)``
@@ -11,7 +11,7 @@ processes can call ``create_tables()`` concurrently at boot).
 
 Alembic's autogenerate needs exactly ONE ``MetaData`` object to diff the
 live database against. Rather than inventing a second, parallel registry
-that the 14 repositories would have to remember to also register into (an
+that the 15 repositories would have to remember to also register into (an
 easy-to-forget step -- exactly the kind of gap that caused two of this
 repo's own real, shipped bugs per ``create_tables()``'s own callers), this
 module builds a throwaway COMBINED ``MetaData`` at import time by copying
@@ -32,7 +32,7 @@ import sqlalchemy as sa
 # One entry per postgres_*.py repository module that defines its own
 # `_metadata = sa.MetaData()` + `sa.Table(...)` pair (confirmed via
 # `grep -rn "^_metadata = sa.MetaData()" src/adapter/repository/*.py` --
-# 14 modules, matching this list exactly). Add a new module here the same
+# 15 modules, matching this list exactly). Add a new module here the same
 # release a new `postgres_*.py` repository is added -- nothing else needs to
 # change for autogenerate to see it.
 _REPOSITORY_MODULE_NAMES: tuple[str, ...] = (
@@ -44,6 +44,7 @@ _REPOSITORY_MODULE_NAMES: tuple[str, ...] = (
     "src.adapter.repository.postgres_detection",
     "src.adapter.repository.postgres_detection_correlation",
     "src.adapter.repository.postgres_evidence",
+    "src.adapter.repository.postgres_integration_source_key",
     "src.adapter.repository.postgres_ioc_feed",
     "src.adapter.repository.postgres_quota",
     "src.adapter.repository.postgres_rule_pack",

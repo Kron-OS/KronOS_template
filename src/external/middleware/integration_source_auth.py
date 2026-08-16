@@ -23,6 +23,28 @@ class of mistake CLAUDE.md SS G.1 warns against for parallel hierarchies):
      webhook transport is plain TLS + a shared-secret header (Wazuh's
      ``wazuh-integratord`` is exactly this shape: ``hook_url`` + `api_key`
      in ``ossec.conf``, per the roadmap's own SS0 research).
+
+     Milestone W8 (Gap Audit P1-7): ``StaticApiKeyInboundAuthenticator``
+     used to take a boot-time ``dict[str, StaticApiKeyProvisioning]``
+     snapshot, seeded once from ``Settings``/Vault at process start with no
+     real admin-facing provisioning route ever wired to rebuild it -- an
+     operator had no way to issue a new (org, source) key without
+     restarting the whole backend. It now takes an
+     ``IntegrationSourceKeyRepository`` and does a real lookup per request
+     instead, so a key an admin provisions via
+     ``POST /api/admin/integration-sources/{source_type}/provision`` is
+     usable on the very next push, no restart required. This also
+     supersedes the ``_match_provisioned_key`` linear
+     ``hmac.compare_digest`` scan Milestone W6/P2-W9 added (see that
+     method's own removed docstring in git history): that scan defended
+     against a real, if low-severity, timing side channel in a plain
+     ``dict.get`` over an in-process map. A hash-indexed DB lookup makes
+     that specific concern moot by construction (the plaintext key is
+     hashed before any comparison happens at all, and the "does this hash
+     exist" DB-level signal is not a practical per-byte timing oracle the
+     way a linear plaintext-comparison loop was) -- see
+     ``src/adapter/repository/integration_source_key.py``'s own module
+     docstring for the full hashing rationale.
 2. **Outbound** (POLL): KronOS is the one making the HTTP call to the
    external tool's own API, so "authenticate" means "attach the right
    credential to an outbound request" -- a completely different shape
@@ -35,10 +57,8 @@ class of mistake CLAUDE.md SS G.1 warns against for parallel hierarchies):
 
 from __future__ import annotations
 
-import hmac
 import logging
 import time
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -46,8 +66,12 @@ from typing import Any
 
 import httpx
 
+from src.adapter.repository.integration_source_key import IntegrationSourceKeyRepository
 from src.domain.collector import CollectorIdentity
-from src.domain.integration_source import IntegrationSourceIdentity
+from src.domain.integration_source import (  # noqa: F401 -- re-exported, see comment below
+    IntegrationSourceIdentity,
+    StaticApiKeyProvisioning,
+)
 from src.exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
@@ -96,31 +120,29 @@ class InboundSourceAuthenticator(ABC):
         valid, provisioned credential."""
 
 
-@dataclass(frozen=True)
-class StaticApiKeyProvisioning:
-    """One provisioned (org, source) pair's static API key -- config data,
-    never derived from anything a request supplies about itself."""
-
-    api_key: str
-    org_id: uuid.UUID
-    source_id: str
-    source_type: str
+# StaticApiKeyProvisioning now lives in src/domain/integration_source.py
+# (Milestone W8) -- re-exported here (imported above) so every existing
+# call site importing it FROM this module keeps working unchanged.
 
 
 class StaticApiKeyInboundAuthenticator(InboundSourceAuthenticator):
-    """Looks up a shared-secret header against provisioned API keys.
+    """Looks up a shared-secret header against a real, per-request-queried
+    ``IntegrationSourceKeyRepository`` -- see this module's own docstring
+    (Milestone W8) for why this replaced the old boot-time static dict +
+    linear ``hmac.compare_digest`` scan.
 
-    Provisioning is explicit, out-of-band config (constructor argument) --
-    never inferred from the request itself (the exact invariant
+    Provisioning itself happens out-of-band, via
+    ``POST /api/admin/integration-sources/{source_type}/provision``
+    (``src/external/routes/admin_integration_sources.py``) -- never
+    inferred from the inbound request itself (the exact invariant
     ``CollectorIdentity``'s own docstring establishes for mTLS, applied here
-    to the API-key transport). A real deployment sources
-    ``provisioned_keys`` from Vault/env via ``Settings``, never hardcoded.
+    to the API-key transport).
     """
 
     _HEADER_NAME = "X-KronOS-Source-Key"
 
-    def __init__(self, provisioned_keys: Mapping[str, StaticApiKeyProvisioning]) -> None:
-        self._provisioned_keys = dict(provisioned_keys)
+    def __init__(self, repository: IntegrationSourceKeyRepository) -> None:
+        self._repository = repository
 
     async def authenticate(self, headers: Mapping[str, str]) -> IntegrationSourceIdentity:
         # Header lookups must be case-insensitive per RFC 7230 SS3.2, but a
@@ -133,7 +155,7 @@ class StaticApiKeyInboundAuthenticator(InboundSourceAuthenticator):
             raise IntegrationSourceAuthError(
                 f"Missing required '{self._HEADER_NAME}' header on inbound push request"
             )
-        provisioning = self._match_provisioned_key(api_key)
+        provisioning = await self._repository.get_by_key(api_key)
         if provisioning is None:
             raise IntegrationSourceAuthError("Inbound push API key is not provisioned")
         return IntegrationSourceIdentity(
@@ -142,28 +164,6 @@ class StaticApiKeyInboundAuthenticator(InboundSourceAuthenticator):
             source_type=provisioning.source_type,
             auth_method="api-key",
         )
-
-    def _match_provisioned_key(self, api_key: str) -> StaticApiKeyProvisioning | None:
-        """Constant-time lookup against every provisioned key.
-
-        A plain ``dict.get(api_key)`` hashes the attacker-supplied header
-        value and then does a bucket-local ``==`` comparison -- CPython's
-        string equality short-circuits on length/first-byte mismatch, which
-        is a real (if low-severity) timing side channel for guessing a valid
-        key byte-by-byte across many requests. The number of provisioned
-        keys per deployment is small (one per (org, source) pair), so a
-        linear ``hmac.compare_digest`` scan over all of them is the correct,
-        proportionate fix -- no hashed-lookup-table scheme needed. The loop
-        never short-circuits on a match (no ``break``) so every candidate is
-        compared exactly once regardless of where in iteration order the
-        real match falls.
-        """
-        api_key_bytes = api_key.encode("utf-8")
-        match: StaticApiKeyProvisioning | None = None
-        for candidate_key, provisioning in self._provisioned_keys.items():
-            if hmac.compare_digest(api_key_bytes, candidate_key.encode("utf-8")):
-                match = provisioning
-        return match
 
 
 # --- Outbound (POLL): attach credentials to KronOS's own HTTP call ---------
