@@ -77,8 +77,8 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 | P2-W9 | **CLOSED (2026-08-15, commit `14474fb`).** ~~Inbound integration-source API-key comparison uses a plain `dict.get()`~~ — replaced with a linear `hmac.compare_digest` scan over every provisioned key, no early exit. | Security review P2-SEC-2 | S |
 | P2-W10 | **CLOSED (2026-08-15, commit `14474fb`).** ~~Five repository lookup methods lack `org_id` scoping~~ — `org_id` added to all five (ABC + Postgres + InMemory), real `WHERE org_id = ...` filtering, every internal call site threaded (zero real route call sites existed). | Security review P2-SEC-3 | S |
 | P2-W11 | **CLOSED (2026-08-15, commit `14474fb`).** ~~`python-jose` pinned floor-only~~ — tightened to `>=3.4` (fixes CVE-2024-33663/-33664); `KeycloakTokenValidator`'s RS256/PS256 allow-list mitigation re-confirmed solid before this was treated as pin-hygiene rather than a live vuln. | Security review P2-SEC-4 | S |
-| P2-W12 | Dark-mode toggle in `Layout.tsx` is real, clickable, and persisted — but only 2 CSS rules respond to it, producing a visibly broken half-themed page (worse than the feature being absent). | UX review §4 | M |
-| P2-W13 | No root React error boundary anywhere — a render exception produces a blank screen rather than a real error state. | UX review §1 | S |
+| P2-W12 | **CLOSED (2026-08-16, commit `b1606bf`).** ~~Dark-mode toggle in `Layout.tsx` is real, clickable, and persisted — but only 2 CSS rules respond to it~~ — all 15 files using hardcoded gray-scale/indigo classes paired with real `dark:` variants; a second real bug (theme never applied on `/login`, which never mounts `Layout`) found via actual browser testing and fixed by hoisting the sync effect to `App.tsx`. Verified with real Playwright screenshots (light/dark) of `/login` and an authenticated page. | UX review §4 | M |
+| P2-W13 | **CLOSED (2026-08-16, commit `b1606bf`).** ~~No root React error boundary anywhere~~ — real class-component `ErrorBoundary` wraps the router in `App.tsx`, themed fallback UI (no stack trace exposed — info-disclosure-conscious for a forensics product), `console.error` logging only (no error-reporting sink exists yet, not invented here). Verified with a real screenshot + a real caught-error unit test. | UX review §1 | S |
 | P2-W14 | No "connector status" view in the frontend — a real, user-visible gap given six connectors now exist; a new user has no way to see whether Wazuh/Splunk/etc. are configured/healthy. | UX review §1 | M |
 | P2-W15 | **CLOSED (2026-08-16, commit `6ef2aa6`).** ~~`docs/ingestion-pipeline.md` is stale~~ — rewritten to match the real current `process_intake`-split pipeline, every claim cross-checked against the actual code. | IR walkthrough F5 | S |
 | P2-W16 | **CLOSED (2026-08-16, commit `6ef2aa6`) as docs-only guidance, per its own "needs real measurement" framing.** ~~OpenSearch resource sizing doesn't obviously reconcile with the "100+ GB evidence" design goal~~ — `docs/deployment.md` now states plainly that pinned heap values are demo defaults, cites real OpenSearch heap-sizing guidance, and names exactly what real measurement work is still needed before a production sizing claim could be made honestly. The underlying measurement work itself remains undone (by design — this item's own scope was docs, not a real load test). | Scale review §4 | M (needs real measurement, not just a values.yaml bump) |
@@ -193,6 +193,25 @@ honest removal of the broken toggle until it's real), a root error
 boundary, and a connector-status view — three real, independent frontend
 items, could be one dispatch or three depending on how much frontend
 context-loading overhead sharing one dispatch saves.
+
+**W7 STATUS (2026-08-16, commit `b1606bf`): P2-W12/P2-W13 CLOSED, verified
+live. P2-W14 (connector-status view) deliberately deferred** — it needs
+its own design pass (what does "connector health" mean per source: last
+successful poll? last error? per source_type or per source_id? does it
+build on W8's new `GET /api/admin/integration-sources` list, which only
+covers inbound-push keys, not poll-mode connectors like Defender?) rather
+than being folded opportunistically into a dispatch scoped for the other
+two items. Real bug found via actual Playwright browser testing (not
+visible from source alone): the theme-sync effect lived only inside
+`Layout`, which never mounts on `/login` — a cold load of `/login` always
+rendered light-mode-only regardless of saved preference. Fixed by hoisting
+`useDarkMode()` to `App.tsx` so it runs on every route. This repo had no
+browser-automation tooling before this item; Playwright was added as a
+real devDependency (kept, not stripped back out) since it worked and
+closes a real gap in this frontend's own verifiability. Independently
+verified: real screenshots inspected directly (`poc/frontend_theme_fix/`),
+`npm run build`/`npm run lint` clean, vitest 43→47 tests (+4, real
+before/after delta via a detached-HEAD checkout of the parent commit).
 
 **W8 · `StaticApiKeyProvisioning` real provisioning route (P1-W5).**
 Larger, needs the same design-decision-first treatment Gap Audit P1-7
