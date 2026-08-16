@@ -64,7 +64,7 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 | # | Finding | Source | Size |
 |---|---|---|---|
 | P1-W4 | **CLOSED (2026-08-16, commit `7a56a49`).** ~~`kronos-attest case-report`/`day-report` has no real export mechanism~~ — `GET /api/audit/export` added, verified against the real installed CLI. Surfaced a new, separate, NOT-yet-fixed bug in the process: see P1-W19 below. | IR walkthrough F4 | M |
-| P1-W5 | `StaticApiKeyProvisioning` has no real per-(org, source) provisioning route — confirmed still true (Gap Audit P1-7, unaddressed by V1–V10). Blocks step 2 of the IR scenario at the very first hop for any org without a manually-seeded key. | IR walkthrough F6, Gap Audit P1-7 | L (needs a design decision first, same as when Gap Audit originally flagged it) |
+| P1-W5 | **CLOSED (2026-08-16, commit `b25d1c6`).** ~~`StaticApiKeyProvisioning` has no real per-(org, source) provisioning route~~ — real Postgres-backed `IntegrationSourceKeyRepository` (hash-only storage, plaintext never persisted) + `POST/GET/DELETE /api/admin/integration-sources/...` routes, ORG_ADMIN + aal2 step-up gated on mutations, audited. Verified end-to-end against the real dev-stack Postgres: provision → real key → real push accepted → revoke → same key rejected. | IR walkthrough F6, Gap Audit P1-7 | L (needs a design decision first, same as when Gap Audit originally flagged it) |
 | P1-W6 | **CLOSED (2026-08-15, commit `993ae81`).** ~~`poll_defender_alerts` can get permanently stuck~~ — `DefenderPollSource.poll()` now truncates-and-continues at the page cap (returns the valid partial batch with an advanced cursor) instead of raising, so the next scheduled cycle drains the next slice of backlog autonomously; a genuinely zero-progress capped run still fails loudly. Independently verified: 1873→1874 tests. | Scale review §2 | S |
 | P1-W7 | **CLOSED as research (2026-08-16, commit `137c4ac`), matching how V10 itself closed.** ~~Prod Redis's real combined blast radius is wider than documented anywhere~~ — `docs/REDIS_BLAST_RADIUS_RESEARCH.md` documents the real four-role blast radius, researches DB-role separation vs. Sentinel vs. Cluster against real vendor docs, and gives a reasoned verdict: adopt DB-role separation now (zero code changes, `src/config.py` already models each role as an independent DSN), defer Sentinel HA behind named trigger conditions, rule out Cluster entirely for the Celery broker/backend roles (Kombu has no supported Redis Cluster broker integration). Actual role-separation implementation remains open as a real follow-up item (§7 of that doc), by design — this item's own scope was research, not implementation, mirroring V10. | Scale review §3 | M (documentation + a real design decision on whether DB-role separation across ≥2 Redis instances is worth the operational cost — mirrors V10's own research-first discipline) |
 | P1-W8 | **CLOSED (2026-08-15, commit `53aab6c`).** ~~`Helm secret-creation snippet` in `README.md` has the wrong secret name~~ — fixed to `kronos-app-secrets` with correct key casing, matching `docs/deployment.md` and every chart template's real `secretRef`. | UX review §2 | S |
@@ -199,6 +199,32 @@ Larger, needs the same design-decision-first treatment Gap Audit P1-7
 already flagged (how does an operator issue a key — admin route? CLI?
 Vault-seeded?) — sequence after W1 lands, since W1 makes this gap's real
 impact concrete rather than theoretical.
+
+**W8 STATUS (2026-08-16, commit `b25d1c6`): CLOSED, verified live.**
+Design decision made: real Postgres-backed `IntegrationSourceKeyRepository`
+(`src/adapter/repository/integration_source_key.py`/
+`postgres_integration_source_key.py`) replaces the old boot-time-only
+static dict (`configure_static_api_key_provisioning`, confirmed zero real
+callers anywhere in `src/` before this) — queried per-request so an
+admin-provisioned key takes effect immediately, no backend restart. Only
+a SHA-256 hash of each 256-bit random key (`secrets.token_urlsafe(32)`) is
+ever persisted; the plaintext is returned exactly once, at provision time
+(standard "shown once" API-key UX). New `POST/GET/DELETE
+/api/admin/integration-sources/...` routes, `ORG_ADMIN`-gated, mutations
+also aal2-step-up-gated identically to `DELETE /api/evidence/{id}`, every
+mutation audited. Real Alembic migration for the new table. Superseded
+Milestone W6/P2-W9's in-memory `hmac.compare_digest` linear-scan fix (that
+concern is moot once lookups are real, hash-indexed DB queries — reasoning
+documented in the repository module's own docstring). Verified per
+CLAUDE.md SS F: `poc/integration_source_key_provisioning/` ran a real
+`alembic upgrade head` against the real dev-stack Postgres, then
+end-to-end via `httpx.ASGITransport` (the pattern W3 established): real
+provision → real returned key → real `POST /api/integrations/push/...`
+accepted with that exact key → real revoke → same key rejected (401) →
+real audit rows confirmed, neither containing the plaintext. Independently
+verified: 1899→1932 tests (+33, all passing, `git stash`-equivalent
+before/after delta), ruff/black clean, mypy 29 pre-existing errors
+unchanged (none in touched files).
 
 **W9 · Docs/sizing cleanup batch (P2-W15, P2-W16).** `docs/
 ingestion-pipeline.md` refresh + a real OpenSearch sizing pass — low
