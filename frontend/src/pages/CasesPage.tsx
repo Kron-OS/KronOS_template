@@ -17,11 +17,13 @@ function CaseCard({ c }: { c: Case }) {
     <Link
       to="/cases/$caseId"
       params={{ caseId: c.id }}
-      className="block rounded-lg border border-gray-800 bg-gray-900 p-5 hover:border-indigo-700 hover:bg-gray-800/60 transition-colors"
+      className="block rounded-lg border border-gray-200 bg-white p-5 transition-colors hover:border-indigo-300 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-indigo-700 dark:hover:bg-gray-800/60"
     >
       <div className="mb-1 flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-100 leading-tight">{c.title}</h3>
-        <span className="shrink-0 rounded bg-gray-800 px-2 py-0.5 font-mono text-xs text-gray-400">
+        <h3 className="text-sm font-semibold leading-tight text-gray-900 dark:text-gray-100">
+          {c.title}
+        </h3>
+        <span className="shrink-0 rounded bg-gray-200 px-2 py-0.5 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
           {c.reference}
         </span>
       </div>
@@ -57,8 +59,8 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-xl">
-        <h2 className="mb-4 text-base font-semibold text-gray-100">New Case</h2>
+      <div className="w-full max-w-md rounded-lg border border-gray-300 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+        <h2 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">New Case</h2>
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -67,7 +69,7 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
           className="space-y-4"
         >
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="case-title">
+            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="case-title">
               Title
             </label>
             <input
@@ -75,12 +77,12 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
               required
               value={form.title}
               onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               placeholder="Investigation title"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="case-ref">
+            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="case-ref">
               Reference
             </label>
             <input
@@ -88,12 +90,12 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
               required
               value={form.reference}
               onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-sm text-gray-100 placeholder-gray-500 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 placeholder-gray-500 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               placeholder="CASE-2026-001"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="case-desc">
+            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="case-desc">
               Description
             </label>
             <textarea
@@ -101,7 +103,7 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
               rows={3}
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-indigo-500 focus:outline-none resize-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-indigo-500 focus:outline-none resize-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               placeholder="Brief description (optional)"
             />
           </div>
@@ -112,7 +114,7 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
             <button
               type="button"
               onClick={onClose}
-              className="rounded px-4 py-2 text-sm text-gray-400 hover:bg-gray-800"
+              className="rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-gray-800"
             >
               Cancel
             </button>
@@ -142,7 +144,7 @@ export function CasesPage() {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-100">Cases</h1>
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Cases</h1>
         <button
           type="button"
           onClick={() => setShowCreate(true)}

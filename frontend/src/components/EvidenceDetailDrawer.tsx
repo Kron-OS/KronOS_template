@@ -20,9 +20,9 @@ interface FieldRowProps {
 
 function FieldRow({ label, value }: FieldRowProps) {
   return (
-    <div className="flex flex-col gap-0.5 py-2.5 border-b border-gray-800 last:border-0">
+    <div className="flex flex-col gap-0.5 border-b border-gray-200 py-2.5 last:border-0 dark:border-gray-800">
       <span className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</span>
-      <span className="text-sm text-gray-200 break-all">{value}</span>
+      <span className="text-sm text-gray-800 break-all dark:text-gray-200">{value}</span>
     </div>
   )
 }
@@ -72,16 +72,16 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
         aria-hidden="true"
       />
       <aside
-        className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col bg-gray-900 shadow-2xl"
+        className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col bg-white shadow-2xl dark:bg-gray-900"
         role="dialog"
         aria-label="Evidence details"
       >
-        <div className="flex items-center justify-between border-b border-gray-800 px-5 py-4">
-          <h2 className="text-sm font-semibold text-gray-100">Evidence Details</h2>
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Evidence Details</h2>
           <button
             type="button"
             onClick={onClose}
-            className="text-lg leading-none text-gray-400 hover:text-gray-200"
+            className="text-lg leading-none text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
             aria-label="Close"
           >
             ×
@@ -98,19 +98,19 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
             value={new Date(evidence.uploadedAt).toLocaleString()}
           />
 
-          <div className="flex flex-col gap-0.5 py-2.5 border-b border-gray-800">
+          <div className="flex flex-col gap-0.5 border-b border-gray-200 py-2.5 dark:border-gray-800">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
               SHA-256
             </span>
             <div className="flex items-start gap-2">
-              <span className="flex-1 break-all font-mono text-xs text-gray-300">
+              <span className="flex-1 break-all font-mono text-xs text-gray-700 dark:text-gray-300">
                 {evidence.sha256 ?? 'not yet computed'}
               </span>
               {evidence.sha256 && (
                 <button
                   type="button"
                   onClick={() => void copyHash()}
-                  className="shrink-0 rounded px-2 py-1 text-xs text-indigo-400 hover:bg-gray-800"
+                  className="shrink-0 rounded px-2 py-1 text-xs text-indigo-600 hover:bg-gray-200 dark:text-indigo-400 dark:hover:bg-gray-800"
                 >
                   {copied ? 'Copied' : 'Copy'}
                 </button>
@@ -122,7 +122,7 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
             label="RFC 3161 timestamp"
             value={
               evidence.rfc3161Token ? (
-                <span className="text-green-400">Present</span>
+                <span className="text-green-600 dark:text-green-400">Present</span>
               ) : (
                 <span className="text-gray-500">Not anchored yet</span>
               )
@@ -144,7 +144,7 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
                 </button>
               )}
               {retryMutation.isError && (
-                <span className="text-xs text-red-400">
+                <span className="text-xs text-red-600 dark:text-red-400">
                   Retry failed — please try again.
                 </span>
               )}

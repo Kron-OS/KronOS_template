@@ -75,18 +75,20 @@ interface ErrorCatalogueChipProps {
 export function ErrorCatalogueChip({ reasonCode, diagnosticId }: ErrorCatalogueChipProps) {
   const entry = lookupError(reasonCode)
   return (
-    <div className="rounded-md border border-red-900/50 bg-red-950/30 p-3 text-sm">
+    <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm dark:border-red-900/50 dark:bg-red-950/30">
       <div className="flex items-start justify-between gap-2">
-        <p className="font-medium text-red-300">{entry.title}</p>
+        <p className="font-medium text-red-700 dark:text-red-300">{entry.title}</p>
         {entry.retryable && (
-          <span className="shrink-0 rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-400">
+          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
             retryable
           </span>
         )}
       </div>
-      <p className="mt-1 text-red-400/80">{entry.hint}</p>
+      <p className="mt-1 text-red-600/80 dark:text-red-400/80">{entry.hint}</p>
       {diagnosticId && (
-        <p className="mt-2 font-mono text-xs text-gray-600">ID: {diagnosticId}</p>
+        <p className="mt-2 font-mono text-xs text-gray-500 dark:text-gray-600">
+          ID: {diagnosticId}
+        </p>
       )}
     </div>
   )

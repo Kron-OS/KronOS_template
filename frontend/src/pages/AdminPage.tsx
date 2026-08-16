@@ -76,8 +76,8 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-xl">
-        <h2 className="mb-4 text-base font-semibold text-gray-100">Create User</h2>
+      <div className="w-full max-w-sm rounded-lg border border-gray-300 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+        <h2 className="mb-4 text-base font-semibold text-gray-900 dark:text-gray-100">Create User</h2>
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -87,7 +87,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         >
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-first-name">
+              <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="invite-first-name">
                 First name
               </label>
               <input
@@ -97,11 +97,11 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
                 autoComplete="given-name"
                 value={form.firstName}
                 onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
-                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-last-name">
+              <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="invite-last-name">
                 Last name
               </label>
               <input
@@ -111,12 +111,12 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
                 autoComplete="family-name"
                 value={form.lastName}
                 onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
-                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-email">
+            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="invite-email">
               Email
             </label>
             <input
@@ -126,26 +126,29 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               autoComplete="email"
               value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
           <div>
             <div className="mb-1 flex items-center justify-between">
-              <label className="block text-xs font-medium text-gray-400" htmlFor="invite-password">
+              <label
+                className="block text-xs font-medium text-gray-600 dark:text-gray-400"
+                htmlFor="invite-password"
+              >
                 Initial password
               </label>
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
-                  className="text-xs text-indigo-400 hover:text-indigo-300"
+                  className="text-xs text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
                 >
                   Generate
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowPassword((s) => !s)}
-                  className="text-xs text-gray-400 hover:text-gray-300"
+                  className="text-xs text-gray-600 hover:text-gray-500 dark:text-gray-400 dark:hover:text-gray-300"
                 >
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
@@ -159,7 +162,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               autoComplete="new-password"
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             />
             <p className="mt-1 text-xs text-gray-500">
               At least {MIN_PASSWORD_LENGTH} characters, and cannot contain the user's email. Share this
@@ -167,14 +170,14 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
             </p>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="invite-role">
+            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400" htmlFor="invite-role">
               Role
             </label>
             <select
               id="invite-role"
               value={form.role}
               onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))}
-              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             >
               {ROLES.map((r) => (
                 <option key={r} value={r}>{r}</option>
@@ -185,7 +188,11 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
             <ErrorBanner message={getErrorDetail(mutation.error, 'Failed to create user.')} />
           )}
           <div className="flex justify-end gap-3">
-            <button type="button" onClick={onClose} className="rounded px-4 py-2 text-sm text-gray-400 hover:bg-gray-800">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-gray-800"
+            >
               Cancel
             </button>
             <button
@@ -223,14 +230,14 @@ function UserRow({ user }: { user: OrgUser }) {
 
   return (
     <>
-      <tr className="hover:bg-gray-900/40">
-        <td className="px-4 py-3 text-gray-200">{user.username}</td>
-        <td className="px-4 py-3 text-gray-400">{user.email}</td>
+      <tr className="hover:bg-gray-100 dark:hover:bg-gray-900/40">
+        <td className="px-4 py-3 text-gray-800 dark:text-gray-200">{user.username}</td>
+        <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{user.email}</td>
         <td className="px-4 py-3">
           <select
             value={user.roles[0] ?? 'read-only'}
             onChange={(e) => roleMutation.mutate(e.target.value as Role)}
-            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 focus:border-indigo-500 focus:outline-none"
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
           >
             {ROLES.map((r) => (
               <option key={r} value={r}>{r}</option>
@@ -244,7 +251,7 @@ function UserRow({ user }: { user: OrgUser }) {
           <button
             type="button"
             onClick={() => setConfirmRemove(true)}
-            className="text-xs text-red-400 hover:text-red-300"
+            className="text-xs text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300"
           >
             Remove
           </button>
@@ -276,7 +283,7 @@ export function AdminPage() {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-100">Organisation Admin</h1>
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Organisation Admin</h1>
         <button
           type="button"
           onClick={() => setShowInvite(true)}
@@ -290,10 +297,10 @@ export function AdminPage() {
       {error && <ErrorBanner message="Failed to load users." />}
 
       {data && (
-        <div className="overflow-x-auto rounded-lg border border-gray-800">
+        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-800 bg-gray-900/50 text-left text-xs text-gray-400">
+              <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
                 <th className="px-4 py-3 font-medium">Username</th>
                 <th className="px-4 py-3 font-medium">Email</th>
                 <th className="px-4 py-3 font-medium">Role</th>
@@ -301,7 +308,7 @@ export function AdminPage() {
                 <th className="px-4 py-3 font-medium"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
               {data.map((u: OrgUser) => (
                 <UserRow key={u.userId} user={u} />
               ))}

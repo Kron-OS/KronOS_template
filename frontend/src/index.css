@@ -11,18 +11,23 @@ html, body, #root {
   padding: 0;
 }
 
+/* body's own background/color are set to the same values as Layout's root
+   div (Tailwind `dark:` variant, gray-50/gray-900 light <-> gray-950/gray-100
+   dark) purely as a safety net for the sliver of viewport outside Layout's
+   min-h-screen div (e.g. a momentary flash before React mounts, or any
+   future route that doesn't wrap in <Layout>) -- Layout's own themed
+   background is what's actually visible during normal use. */
 body {
-  background-color: #030712; /* gray-950 */
-  color: #f3f4f6; /* gray-100 */
+  background-color: #f9fafb; /* gray-50 */
+  color: #111827; /* gray-900 */
   font-family: system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Light mode override — activated when .dark is absent from <html> */
-html:not(.dark) body {
-  background-color: #f9fafb; /* gray-50 */
-  color: #111827; /* gray-900 */
+html.dark body {
+  background-color: #030712; /* gray-950 */
+  color: #f3f4f6; /* gray-100 */
 }
 
 #root {

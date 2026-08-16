@@ -221,14 +221,14 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
 
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 sm:items-center">
-      <div className="w-full max-w-lg rounded-t-lg border border-gray-700 bg-gray-900 p-5 sm:rounded-lg">
+      <div className="w-full max-w-lg rounded-t-lg border border-gray-300 bg-white p-5 dark:border-gray-700 dark:bg-gray-900 sm:rounded-lg">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-100">Upload Evidence</h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Upload Evidence</h2>
           <button
             type="button"
             onClick={handleClose}
             disabled={uploading}
-            className="text-lg text-gray-400 hover:text-gray-200 disabled:opacity-40"
+            className="text-lg text-gray-600 hover:text-gray-900 disabled:opacity-40 dark:text-gray-400 dark:hover:text-gray-200"
             aria-label="Close"
           >
             ×
@@ -236,11 +236,11 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
         </div>
 
         <label
-          className="mb-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-700 bg-gray-800/40 p-8 text-sm text-gray-400 hover:border-indigo-600 hover:text-gray-200"
+          className="mb-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 bg-gray-100/60 p-8 text-sm text-gray-600 hover:border-indigo-600 hover:text-gray-900 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-400 dark:hover:text-gray-200"
           htmlFor="evidence-file-input"
         >
           <span>Click to select files</span>
-          <span className="text-xs text-gray-600">
+          <span className="text-xs text-gray-500 dark:text-gray-600">
             evtx, json, jsonl, csv, log, txt, gz, zip, sqlite, dat, hve, hiv, pf, E01
           </span>
           <input
@@ -263,19 +263,19 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
           <ul className="mb-4 space-y-2">
             {files.map((f, i) => (
               <li key={i} className="text-xs">
-                <div className="mb-1 flex justify-between text-gray-300">
+                <div className="mb-1 flex justify-between text-gray-700 dark:text-gray-300">
                   <span className="max-w-xs truncate">{f.name}</span>
                   <span className="ml-2 shrink-0">
                     {f.error ? (
-                      <span className="text-red-400">{f.error}</span>
+                      <span className="text-red-600 dark:text-red-400">{f.error}</span>
                     ) : f.done ? (
-                      <span className="text-green-400">Done</span>
+                      <span className="text-green-600 dark:text-green-400">Done</span>
                     ) : (
                       <span className="text-gray-500">{f.progress}%</span>
                     )}
                   </span>
                 </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-gray-700">
+                <div className="h-1 w-full overflow-hidden rounded-full bg-gray-300 dark:bg-gray-700">
                   <div
                     className={`h-1 rounded-full transition-all ${f.error ? 'bg-red-500' : f.done ? 'bg-green-500' : 'bg-indigo-500'}`}
                     style={{ width: `${f.progress}%` }}
@@ -291,7 +291,7 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
             type="button"
             onClick={handleClose}
             disabled={uploading}
-            className="rounded px-4 py-2 text-sm text-gray-400 hover:bg-gray-800 disabled:opacity-40"
+            className="rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 disabled:opacity-40 dark:text-gray-400 dark:hover:bg-gray-800"
           >
             Cancel
           </button>

@@ -12,8 +12,8 @@ export function RbacGuard({ children, requiredRole }: RbacGuardProps) {
 
   if (!user?.roles.includes(requiredRole)) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-2 text-gray-400">
-        <p className="text-4xl font-bold text-gray-600">403</p>
+      <div className="flex h-64 flex-col items-center justify-center gap-2 text-gray-600 dark:text-gray-400">
+        <p className="text-4xl font-bold text-gray-400 dark:text-gray-600">403</p>
         <p className="text-sm">You do not have permission to view this page.</p>
       </div>
     )

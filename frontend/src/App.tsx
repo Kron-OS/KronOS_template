@@ -7,7 +7,9 @@ import {
   Navigate,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Layout } from './components/Layout'
+import { useDarkMode } from './hooks/useDarkMode'
 import { AuthGuard } from './components/AuthGuard'
 import { RbacGuard } from './components/RbacGuard'
 import { LoginPage } from './pages/LoginPage'
@@ -123,9 +125,17 @@ declare module '@tanstack/react-router' {
 }
 
 export default function App() {
+  // Applies/persists the light/dark theme class on <html> unconditionally,
+  // on every route -- see hooks/useDarkMode.ts for why this can't live
+  // solely inside Layout (real browser verification caught /login
+  // rendering light-only otherwise, since Layout never mounts there).
+  useDarkMode()
+
   return (
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </ErrorBoundary>
   )
 }

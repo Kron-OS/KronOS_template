@@ -56,16 +56,19 @@ export function DetectionDetailPage() {
 
   return (
     <div>
-      <Link to="/detections" className="mb-4 inline-block text-xs text-indigo-400 hover:underline">
+      <Link
+        to="/detections"
+        className="mb-4 inline-block text-xs text-indigo-600 hover:underline dark:text-indigo-400"
+      >
         &larr; Back to Detections
       </Link>
 
       <div className="mb-6 flex items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-bold text-gray-100">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">
             {data.ruleMatches[0]?.ruleName ?? data.ruleMatches[0]?.ruleId ?? data.detectorName}
           </h1>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
             Detected {formatDateTime(data.findingTimestamp)} by {data.detectorName}
           </p>
         </div>
@@ -77,7 +80,7 @@ export function DetectionDetailPage() {
           {data.attackTags.map((tag) => (
             <span
               key={tag}
-              className="rounded bg-gray-800 px-2 py-1 font-mono text-xs text-gray-400"
+              className="rounded bg-gray-200 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400"
             >
               {tag}
             </span>
@@ -85,22 +88,29 @@ export function DetectionDetailPage() {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-gray-800 p-4 sm:grid-cols-2">
+      <div className="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-gray-200 p-4 dark:border-gray-800 sm:grid-cols-2">
         <div>
           <p className="text-xs font-medium text-gray-500">Finding ID</p>
-          <p className="mt-0.5 font-mono text-xs text-gray-300">{data.findingId}</p>
+          <p className="mt-0.5 font-mono text-xs text-gray-700 dark:text-gray-300">{data.findingId}</p>
         </div>
         <div>
           <p className="text-xs font-medium text-gray-500">Source Index</p>
-          <p className="mt-0.5 truncate font-mono text-xs text-gray-300" title={data.sourceIndex}>
+          <p
+            className="mt-0.5 truncate font-mono text-xs text-gray-700 dark:text-gray-300"
+            title={data.sourceIndex}
+          >
             {data.sourceIndex}
           </p>
         </div>
         <div>
           <p className="text-xs font-medium text-gray-500">Case</p>
-          <p className="mt-0.5 text-xs text-gray-300">
+          <p className="mt-0.5 text-xs text-gray-700 dark:text-gray-300">
             {data.caseId ? (
-              <Link to="/cases/$caseId" params={{ caseId: data.caseId }} className="text-indigo-400 hover:underline">
+              <Link
+                to="/cases/$caseId"
+                params={{ caseId: data.caseId }}
+                className="text-indigo-600 hover:underline dark:text-indigo-400"
+              >
                 {data.caseId}
               </Link>
             ) : (
@@ -110,23 +120,26 @@ export function DetectionDetailPage() {
         </div>
         <div>
           <p className="text-xs font-medium text-gray-500">Matched Documents</p>
-          <p className="mt-0.5 text-xs text-gray-300">{data.matchedDocumentIds.length}</p>
+          <p className="mt-0.5 text-xs text-gray-700 dark:text-gray-300">{data.matchedDocumentIds.length}</p>
         </div>
       </div>
 
       <div className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold text-gray-200">Matched Rules</h2>
-        <div className="overflow-hidden rounded-lg border border-gray-800">
+        <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">Matched Rules</h2>
+        <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
           {data.ruleMatches.map((m) => (
-            <div key={m.ruleId} className="border-b border-gray-800 px-4 py-3 last:border-b-0">
-              <p className="text-sm text-gray-200">{m.ruleName ?? m.ruleId}</p>
+            <div
+              key={m.ruleId}
+              className="border-b border-gray-200 px-4 py-3 last:border-b-0 dark:border-gray-800"
+            >
+              <p className="text-sm text-gray-800 dark:text-gray-200">{m.ruleName ?? m.ruleId}</p>
               <p className="mt-0.5 font-mono text-xs text-gray-500">{m.ruleId}</p>
               {m.tags.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {m.tags.map((tag) => (
                     <span
                       key={tag}
-                      className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-400"
+                      className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-400"
                     >
                       {tag}
                     </span>
@@ -139,7 +152,7 @@ export function DetectionDetailPage() {
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-gray-200">Triage</h2>
+        <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">Triage</h2>
         {!canTriage && (
           <p className="text-xs text-gray-500">
             Your role does not permit triaging detections (org-admin, case-lead, or analyst required).

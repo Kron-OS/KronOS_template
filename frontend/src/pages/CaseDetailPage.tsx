@@ -87,10 +87,10 @@ function EvidenceTab({ caseId }: { caseId: string }) {
       {error && <ErrorBanner message="Failed to load evidence." />}
 
       {data && (
-        <div className="overflow-x-auto rounded-lg border border-gray-800">
+        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-800 bg-gray-900/50 text-left text-xs text-gray-400">
+              <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
                 <th className="px-4 py-3 font-medium">Filename</th>
                 <th className="px-4 py-3 font-medium">Size</th>
                 <th className="px-4 py-3 font-medium">SHA-256</th>
@@ -99,17 +99,17 @@ function EvidenceTab({ caseId }: { caseId: string }) {
                 <th className="px-4 py-3 font-medium sr-only">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
               {data.items.map((ev) => (
                 <tr
                   key={ev.id}
-                  className="cursor-pointer hover:bg-gray-900/40"
+                  className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900/40"
                   onClick={() => setSelectedEvidence(ev)}
                 >
-                  <td className="max-w-xs truncate px-4 py-3 font-mono text-gray-200">
+                  <td className="max-w-xs truncate px-4 py-3 font-mono text-gray-800 dark:text-gray-200">
                     {ev.filename}
                   </td>
-                  <td className="px-4 py-3 text-gray-400">{formatBytes(ev.sizeBytes)}</td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{formatBytes(ev.sizeBytes)}</td>
                   <td
                     className="px-4 py-3 font-mono text-xs text-gray-500"
                     title={ev.sha256 ?? undefined}
@@ -119,12 +119,12 @@ function EvidenceTab({ caseId }: { caseId: string }) {
                   <td className="px-4 py-3">
                     <StatusPill state={ev.state} />
                   </td>
-                  <td className="px-4 py-3 text-gray-400">{ev.uploadedBy}</td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{ev.uploadedBy}</td>
                   <td className="px-4 py-3">
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setSelectedEvidence(ev) }}
-                      className="text-xs text-indigo-400 hover:underline"
+                      className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
                     >
                       Details
                     </button>
@@ -175,9 +175,9 @@ function TimelineTab({ caseId }: { caseId: string }) {
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-800 py-16 text-sm text-gray-500">
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
         <p>Timeline analysis unavailable — no parsed evidence yet.</p>
-        <p className="text-xs text-gray-600">
+        <p className="text-xs text-gray-400 dark:text-gray-600">
           Upload and process evidence to view the forensic timeline.
         </p>
       </div>
@@ -197,7 +197,7 @@ function TimelineTab({ caseId }: { caseId: string }) {
           href={data.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs text-indigo-400 hover:underline"
+          className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
         >
           Open in new tab
         </a>
@@ -207,7 +207,7 @@ function TimelineTab({ caseId }: { caseId: string }) {
         allow="fullscreen"
         sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
         title="Timeline Analysis"
-        className="w-full rounded-lg border border-gray-800"
+        className="w-full rounded-lg border border-gray-200 dark:border-gray-800"
         style={{ height: '70vh' }}
       />
     </div>
@@ -235,30 +235,32 @@ function AuditLogTab({ caseId }: { caseId: string }) {
 
       {data && (
         <>
-          <div className="overflow-x-auto rounded-lg border border-gray-800">
+          <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800 bg-gray-900/50 text-left text-xs text-gray-400">
+                <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
                   <th className="px-4 py-3 font-medium">Event</th>
                   <th className="px-4 py-3 font-medium">User</th>
                   <th className="px-4 py-3 font-medium">Timestamp</th>
                   <th className="px-4 py-3 font-medium">Details</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-800">
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
                 {data.items.map((ev: AuditEvent) => (
-                  <tr key={ev.id} className="hover:bg-gray-900/40">
-                    <td className="px-4 py-3 font-mono text-xs text-indigo-300">{ev.eventType}</td>
-                    <td className="px-4 py-3 text-gray-400">{ev.userId}</td>
+                  <tr key={ev.id} className="hover:bg-gray-100 dark:hover:bg-gray-900/40">
+                    <td className="px-4 py-3 font-mono text-xs text-indigo-600 dark:text-indigo-300">
+                      {ev.eventType}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{ev.userId}</td>
                     <td className="px-4 py-3 text-xs text-gray-500">
                       {new Date(ev.occurredAt).toLocaleString()}
                     </td>
                     <td className="px-4 py-3">
                       <details>
-                        <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300">
+                        <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
                           view
                         </summary>
-                        <pre className="mt-1 max-w-xs overflow-auto rounded bg-gray-950 p-2 text-xs text-gray-400">
+                        <pre className="mt-1 max-w-xs overflow-auto rounded bg-gray-100 p-2 text-xs text-gray-600 dark:bg-gray-950 dark:text-gray-400">
                           {JSON.stringify(ev.details, null, 2)}
                         </pre>
                       </details>
@@ -284,7 +286,7 @@ function AuditLogTab({ caseId }: { caseId: string }) {
                 type="button"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page === 1}
-                className="rounded px-3 py-1 hover:bg-gray-800 disabled:opacity-40"
+                className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
               >
                 Previous
               </button>
@@ -292,7 +294,7 @@ function AuditLogTab({ caseId }: { caseId: string }) {
                 type="button"
                 onClick={() => setPage((p) => p + 1)}
                 disabled={page * pageSize >= data.total}
-                className="rounded px-3 py-1 hover:bg-gray-800 disabled:opacity-40"
+                className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
               >
                 Next
               </button>
@@ -335,7 +337,7 @@ function SettingsTab({ caseId }: { caseId: string }) {
 
   return (
     <div className="max-w-md">
-      <h3 className="mb-4 text-sm font-semibold text-gray-200">Retention Settings</h3>
+      <h3 className="mb-4 text-sm font-semibold text-gray-800 dark:text-gray-200">Retention Settings</h3>
       {data && (
         <form
           onSubmit={(e) => {
@@ -349,7 +351,10 @@ function SettingsTab({ caseId }: { caseId: string }) {
           className="space-y-4"
         >
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor={`retention-${caseId}`}>
+            <label
+              className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+              htmlFor={`retention-${caseId}`}
+            >
               Retention (days)
             </label>
             <input
@@ -358,7 +363,7 @@ function SettingsTab({ caseId }: { caseId: string }) {
               type="number"
               min={1}
               defaultValue={data.retentionDays}
-              className="rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:border-indigo-500 focus:outline-none"
+              className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -367,9 +372,9 @@ function SettingsTab({ caseId }: { caseId: string }) {
               name="legalHoldDefault"
               type="checkbox"
               defaultChecked={data.legalHoldDefault}
-              className="rounded border-gray-600 bg-gray-800"
+              className="rounded border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
             />
-            <label htmlFor={`legal-hold-${caseId}`} className="text-sm text-gray-300">
+            <label htmlFor={`legal-hold-${caseId}`} className="text-sm text-gray-700 dark:text-gray-300">
               Legal hold by default
             </label>
           </div>
@@ -382,7 +387,7 @@ function SettingsTab({ caseId }: { caseId: string }) {
             Save
           </button>
           {mutation.isSuccess && (
-            <p className="text-xs text-green-400">Saved.</p>
+            <p className="text-xs text-green-600 dark:text-green-400">Saved.</p>
           )}
           {mutation.isError && (
             <ErrorBanner message="Failed to save settings." />
@@ -428,17 +433,17 @@ export function CaseDetailPage() {
     <div>
       <div className="mb-6">
         <div className="flex items-start justify-between gap-2">
-          <h1 className="text-xl font-bold text-gray-100">{caseData.title}</h1>
-          <span className="rounded bg-gray-800 px-2 py-1 font-mono text-xs text-gray-400">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">{caseData.title}</h1>
+          <span className="rounded bg-gray-200 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
             {caseData.reference}
           </span>
         </div>
         {caseData.description && (
-          <p className="mt-1 text-sm text-gray-400">{caseData.description}</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{caseData.description}</p>
         )}
       </div>
 
-      <div className="mb-6 border-b border-gray-800">
+      <div className="mb-6 border-b border-gray-200 dark:border-gray-800">
         <nav className="flex gap-1">
           {tabs.map((tab) => (
             <button
@@ -447,8 +452,8 @@ export function CaseDetailPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`px-4 py-2.5 text-sm font-medium transition-colors ${
                 activeTab === tab.id
-                  ? 'border-b-2 border-indigo-500 text-indigo-400'
-                  : 'text-gray-400 hover:text-gray-200'
+                  ? 'border-b-2 border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
               }`}
             >
               {tab.label}

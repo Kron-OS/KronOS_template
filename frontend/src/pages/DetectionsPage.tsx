@@ -26,10 +26,10 @@ function DetectionRow({ d }: { d: Detection }) {
     <Link
       to="/detections/$detectionId"
       params={{ detectionId: d.id }}
-      className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-gray-800 px-4 py-3 hover:bg-gray-900/40"
+      className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-gray-200 px-4 py-3 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-900/40"
     >
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-gray-100">
+        <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
           {d.ruleMatches[0]?.ruleName ?? d.ruleMatches[0]?.ruleId ?? d.detectorName}
         </p>
         <p className="mt-0.5 truncate text-xs text-gray-500">
@@ -40,7 +40,7 @@ function DetectionRow({ d }: { d: Detection }) {
             {d.attackTags.map((tag) => (
               <span
                 key={tag}
-                className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-400"
+                className="rounded bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-400"
               >
                 {tag}
               </span>
@@ -75,7 +75,7 @@ export function DetectionsPage() {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-100">Detections</h1>
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Detections</h1>
       </div>
 
       <div className="mb-4 flex gap-1">
@@ -87,7 +87,7 @@ export function DetectionsPage() {
             className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
               filter === f.id
                 ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'
             }`}
           >
             {f.label}
@@ -105,7 +105,7 @@ export function DetectionsPage() {
 
       {data && (
         <>
-          <div className="overflow-hidden rounded-lg border border-gray-800">
+          <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
             {data.items.map((d) => (
               <DetectionRow key={d.id} d={d} />
             ))}
@@ -125,7 +125,7 @@ export function DetectionsPage() {
                   type="button"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={page === 1}
-                  className="rounded px-3 py-1 hover:bg-gray-800 disabled:opacity-40"
+                  className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
                 >
                   Previous
                 </button>
@@ -133,7 +133,7 @@ export function DetectionsPage() {
                   type="button"
                   onClick={() => setPage((p) => p + 1)}
                   disabled={page * pageSize >= data.total}
-                  className="rounded px-3 py-1 hover:bg-gray-800 disabled:opacity-40"
+                  className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
                 >
                   Next
                 </button>
