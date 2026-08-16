@@ -66,9 +66,9 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 | P1-W4 | **CLOSED (2026-08-16, commit `7a56a49`).** ~~`kronos-attest case-report`/`day-report` has no real export mechanism~~ — `GET /api/audit/export` added, verified against the real installed CLI. Surfaced a new, separate, NOT-yet-fixed bug in the process: see P1-W19 below. | IR walkthrough F4 | M |
 | P1-W5 | `StaticApiKeyProvisioning` has no real per-(org, source) provisioning route — confirmed still true (Gap Audit P1-7, unaddressed by V1–V10). Blocks step 2 of the IR scenario at the very first hop for any org without a manually-seeded key. | IR walkthrough F6, Gap Audit P1-7 | L (needs a design decision first, same as when Gap Audit originally flagged it) |
 | P1-W6 | **CLOSED (2026-08-15, commit `993ae81`).** ~~`poll_defender_alerts` can get permanently stuck~~ — `DefenderPollSource.poll()` now truncates-and-continues at the page cap (returns the valid partial batch with an advanced cursor) instead of raising, so the next scheduled cycle drains the next slice of backlog autonomously; a genuinely zero-progress capped run still fails loudly. Independently verified: 1873→1874 tests. | Scale review §2 | S |
-| P1-W7 | **Prod Redis's real combined blast radius is wider than documented anywhere** — one instance serves step-up tickets (DB0), Celery broker (DB1), Celery result backend (DB2), AND the stream-ingest backbone for all six Q/R connectors (DB3). One outage halts evidence processing, breaks privileged-action auth, and drops all new telemetry simultaneously — a wider single-outage impact than either Postgres or MinIO, neither of which was captured by V10's own (correctly-scoped) Postgres/MinIO-only research. | Scale review §3 | M (documentation + a real design decision on whether DB-role separation across ≥2 Redis instances is worth the operational cost — mirrors V10's own research-first discipline) |
+| P1-W7 | **CLOSED as research (2026-08-16, commit `137c4ac`), matching how V10 itself closed.** ~~Prod Redis's real combined blast radius is wider than documented anywhere~~ — `docs/REDIS_BLAST_RADIUS_RESEARCH.md` documents the real four-role blast radius, researches DB-role separation vs. Sentinel vs. Cluster against real vendor docs, and gives a reasoned verdict: adopt DB-role separation now (zero code changes, `src/config.py` already models each role as an independent DSN), defer Sentinel HA behind named trigger conditions, rule out Cluster entirely for the Celery broker/backend roles (Kombu has no supported Redis Cluster broker integration). Actual role-separation implementation remains open as a real follow-up item (§7 of that doc), by design — this item's own scope was research, not implementation, mirroring V10. | Scale review §3 | M (documentation + a real design decision on whether DB-role separation across ≥2 Redis instances is worth the operational cost — mirrors V10's own research-first discipline) |
 | P1-W8 | **CLOSED (2026-08-15, commit `53aab6c`).** ~~`Helm secret-creation snippet` in `README.md` has the wrong secret name~~ — fixed to `kronos-app-secrets` with correct key casing, matching `docs/deployment.md` and every chart template's real `secretRef`. | UX review §2 | S |
-| P1-W19 | **NEW (found 2026-08-16 while building W3, not yet fixed).** `kronos_attest/report.py`'s `case_report()`/`day_report()` re-verify the hash chain (`ChainVerifier.verify()`) over an *isolated, case-/day-filtered subset* of the export, re-chaining from a fixed genesis hash. Any org with more than one case (or an audit history spanning more than one day) gets a spurious `chain_valid: false` for its case/day reports, even with zero tampering, because the filtered subset's real `prev_row_hash` values point at whatever org-wide event actually preceded them — not the previous event *in the filtered list*. Confirmed live with a real, deliberately multi-case Postgres scenario (`poc/kronos_attest_export/`, full root-cause writeup in that PoC's `README.md`); pre-existing since `0a6ee04`, unrelated to the new W3 export route (which correctly always serves the full, unfiltered chain). `poc/chain_of_custody/`'s own earlier single-case demo never exposed it by coincidence (its filtered subset happened to equal the whole chain). | Found via W3 (`poc/kronos_attest_export/README.md`) | M (needs real design work on `ChainVerifier`/`AttestationReport`'s contract — verify the full chain for tamper-detection, report a case/day-scoped event count and its own leaf-hash Merkle root separately, rather than re-deriving a broken isolated chain; touches `kronos_attest/verifier.py`, `report.py`, `cli.py`, and their existing tests) |
+| P1-W19 | **CLOSED (2026-08-16, commit `e026d9f`).** `kronos_attest/report.py`'s `case_report()`/`day_report()` re-verify the hash chain (`ChainVerifier.verify()`) over an *isolated, case-/day-filtered subset* of the export, re-chaining from a fixed genesis hash. Any org with more than one case (or an audit history spanning more than one day) gets a spurious `chain_valid: false` for its case/day reports, even with zero tampering, because the filtered subset's real `prev_row_hash` values point at whatever org-wide event actually preceded them — not the previous event *in the filtered list*. Confirmed live with a real, deliberately multi-case Postgres scenario (`poc/kronos_attest_export/`, full root-cause writeup in that PoC's `README.md`); pre-existing since `0a6ee04`, unrelated to the new W3 export route (which correctly always serves the full, unfiltered chain). `poc/chain_of_custody/`'s own earlier single-case demo never exposed it by coincidence (its filtered subset happened to equal the whole chain). | Found via W3 (`poc/kronos_attest_export/README.md`) | M (needs real design work on `ChainVerifier`/`AttestationReport`'s contract — verify the full chain for tamper-detection, report a case/day-scoped event count and its own leaf-hash Merkle root separately, rather than re-deriving a broken isolated chain; touches `kronos_attest/verifier.py`, `report.py`, `cli.py`, and their existing tests) |
 
 ### P2 — hardening / polish
 
@@ -176,6 +176,8 @@ well-scoped: either raise `_MAX_PAGES_PER_POLL` with real justification,
 or add a dedicated recovery/alerting path so a stuck cycle doesn't fail
 identically forever with no visibility.
 
+**W5 STATUS (2026-08-16, commit `137c4ac`): CLOSED as research** — see P1-W7 row above and `docs/REDIS_BLAST_RADIUS_RESEARCH.md` directly.
+
 **W5 · Redis blast-radius documentation + design decision (P1-W7).**
 Mirrors V10's own research-first discipline: document the real combined
 blast radius plainly (this synthesis §1 already does the first pass), then
@@ -233,6 +235,28 @@ insufficient to catch this once. Should sequence reasonably soon given
 this affects the legal-admissibility attestation story CLAUDE.md names as
 core to the product ("A.5.28 Collection of evidence") for any real
 multi-case deployment, i.e. every real deployment.
+
+**W11 STATUS (2026-08-16, commit `e026d9f`): CLOSED, verified live.**
+`case_report()`/`day_report()` now verify the full, unfiltered chain once
+and scope `chain_valid`/`break_count` down to breaks whose `event_id`
+falls within the case/day being reported, rather than re-deriving a
+broken isolated chain — exactly the fix objective above. New
+`org_chain_fully_intact` field surfaces the org-wide picture separately.
+New regression tests (`TestCaseReportMultiCaseRegression`/
+`TestDayReportMultiDayRegression` in `tests/unit/test_attest.py`) use a
+new `_make_multi_case_chain()` helper that builds one real, contiguous,
+interleaved-case chain — the existing `_make_event()` default silently
+built isolated single-genesis links and would not have caught this bug.
+Development also surfaced and correctly preserved a real, intentional
+security property: a tamper legitimately cascades forward to every event
+chained after it (regardless of case/day), which an initial, incorrect
+test expectation caught and corrected — documented explicitly in
+`report.py`'s docstrings. Re-ran the exact real `poc/kronos_attest_export/`
+scenario that originally found this bug (real Postgres-backed org, real
+installed `kronos-attest` CLI subprocess): all 24 checks now pass,
+including the two that originally failed. Independently verified:
+1896→1899 tests (+3, `git stash -u` delta), ruff/black clean, mypy 2
+pre-existing errors in untouched `kronos_attest/tsa.py` only.
 
 ---
 
