@@ -63,11 +63,12 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 
 | # | Finding | Source | Size |
 |---|---|---|---|
-| P1-W4 | `kronos-attest case-report`/`day-report` has no real export mechanism to produce the JSON file they require — confirmed still true (Gap Audit's own P2-5, re-confirmed live). Blocks the report step of a real incident close-out. | IR walkthrough F4 | M |
+| P1-W4 | **CLOSED (2026-08-16, commit `7a56a49`).** ~~`kronos-attest case-report`/`day-report` has no real export mechanism~~ — `GET /api/audit/export` added, verified against the real installed CLI. Surfaced a new, separate, NOT-yet-fixed bug in the process: see P1-W19 below. | IR walkthrough F4 | M |
 | P1-W5 | `StaticApiKeyProvisioning` has no real per-(org, source) provisioning route — confirmed still true (Gap Audit P1-7, unaddressed by V1–V10). Blocks step 2 of the IR scenario at the very first hop for any org without a manually-seeded key. | IR walkthrough F6, Gap Audit P1-7 | L (needs a design decision first, same as when Gap Audit originally flagged it) |
 | P1-W6 | **CLOSED (2026-08-15, commit `993ae81`).** ~~`poll_defender_alerts` can get permanently stuck~~ — `DefenderPollSource.poll()` now truncates-and-continues at the page cap (returns the valid partial batch with an advanced cursor) instead of raising, so the next scheduled cycle drains the next slice of backlog autonomously; a genuinely zero-progress capped run still fails loudly. Independently verified: 1873→1874 tests. | Scale review §2 | S |
 | P1-W7 | **Prod Redis's real combined blast radius is wider than documented anywhere** — one instance serves step-up tickets (DB0), Celery broker (DB1), Celery result backend (DB2), AND the stream-ingest backbone for all six Q/R connectors (DB3). One outage halts evidence processing, breaks privileged-action auth, and drops all new telemetry simultaneously — a wider single-outage impact than either Postgres or MinIO, neither of which was captured by V10's own (correctly-scoped) Postgres/MinIO-only research. | Scale review §3 | M (documentation + a real design decision on whether DB-role separation across ≥2 Redis instances is worth the operational cost — mirrors V10's own research-first discipline) |
 | P1-W8 | **CLOSED (2026-08-15, commit `53aab6c`).** ~~`Helm secret-creation snippet` in `README.md` has the wrong secret name~~ — fixed to `kronos-app-secrets` with correct key casing, matching `docs/deployment.md` and every chart template's real `secretRef`. | UX review §2 | S |
+| P1-W19 | **NEW (found 2026-08-16 while building W3, not yet fixed).** `kronos_attest/report.py`'s `case_report()`/`day_report()` re-verify the hash chain (`ChainVerifier.verify()`) over an *isolated, case-/day-filtered subset* of the export, re-chaining from a fixed genesis hash. Any org with more than one case (or an audit history spanning more than one day) gets a spurious `chain_valid: false` for its case/day reports, even with zero tampering, because the filtered subset's real `prev_row_hash` values point at whatever org-wide event actually preceded them — not the previous event *in the filtered list*. Confirmed live with a real, deliberately multi-case Postgres scenario (`poc/kronos_attest_export/`, full root-cause writeup in that PoC's `README.md`); pre-existing since `0a6ee04`, unrelated to the new W3 export route (which correctly always serves the full, unfiltered chain). `poc/chain_of_custody/`'s own earlier single-case demo never exposed it by coincidence (its filtered subset happened to equal the whole chain). | Found via W3 (`poc/kronos_attest_export/README.md`) | M (needs real design work on `ChainVerifier`/`AttestationReport`'s contract — verify the full chain for tamper-detection, report a case/day-scoped event count and its own leaf-hash Merkle root separately, rather than re-deriving a broken isolated chain; touches `kronos_attest/verifier.py`, `report.py`, `cli.py`, and their existing tests) |
 
 ### P2 — hardening / polish
 
@@ -158,6 +159,18 @@ real — add a real `GET /api/audit/cases/{case_id}/export` (or admin CLI)
 shaping `AuditLogRepository` rows into the JSON contract `case_report()`/
 `day_report()` already expect.
 
+**W3 STATUS (2026-08-16, commit `7a56a49`): CLOSED, verified live.**
+`GET /api/audit/export` (ORG_ADMIN-gated, always a full-org export by
+design — never case-/day-scoped server-side, see the route's own
+docstring for why that would be actively wrong) streams
+`stream_by_org()`'s real events shaped exactly as
+`poc/chain_of_custody/`'s own already-proven-correct field mapping.
+Verified against a real Postgres-backed repository and the real installed
+`kronos-attest` CLI subprocess (`poc/kronos_attest_export/`) — route-level
+checks all pass. Building this verification honestly surfaced P1-W19 (a
+real, separate, pre-existing bug in `kronos_attest` itself) rather than
+hiding it — see that row above and **W11** below.
+
 **W4 · `poll_defender_alerts` stuck-backlog recovery (P1-W6).** Small,
 well-scoped: either raise `_MAX_PAGES_PER_POLL` with real justification,
 or add a dedicated recovery/alerting path so a stuck cycle doesn't fail
@@ -194,6 +207,26 @@ P2-W18).** Lowest priority in this synthesis — the generic stand-in
 scheduler is cheap but low-value (no real named connector uses it
 directly), and a real load-test harness for the six connectors is a
 genuine, separate, scoped project, not a quick fix.
+
+**W11 · Fix `kronos_attest` case/day report chain-validity bug (P1-W19,
+new 2026-08-16).** Real design work, not a quick patch: `ChainVerifier`/
+`AttestationReport`'s contract needs to separate "is the full org chain
+intact" (verify unfiltered, always) from "what does this case/day's own
+subset look like" (event count + a subset-scoped Merkle root over that
+subset's own leaf hashes — NOT a re-derived, isolated hash *chain*, which
+is the actual bug). Touches `kronos_attest/verifier.py`, `report.py`,
+`cli.py`'s JSON output contract (adding/changing fields callers may
+already depend on — check for any real external consumer before changing
+shape), and their existing tests
+(`tests/unit/test_kronos_attest.py`, `tests/unit/test_attest.py`,
+`poc/chain_of_custody/`, `poc/kronos_attest_export/`). A real regression
+test using a deliberately multi-case/multi-day scenario (mirroring
+`poc/kronos_attest_export/`'s own scenario) is required before this can be
+called fixed — the existing single-case/single-day PoCs already proved
+insufficient to catch this once. Should sequence reasonably soon given
+this affects the legal-admissibility attestation story CLAUDE.md names as
+core to the product ("A.5.28 Collection of evidence") for any real
+multi-case deployment, i.e. every real deployment.
 
 ---
 
