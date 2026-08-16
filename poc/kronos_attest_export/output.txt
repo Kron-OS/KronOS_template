@@ -1,0 +1,89 @@
+==============================================================================
+1. Real Postgres-backed audit events -- org=7d210a79-0e92-46f3-b8cc-dbac48d8a455 (2 cases), other_org=6820d93f-f22f-4503-bfd8-fd11714f146f
+==============================================================================
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.815380Z", "event_id": "00e7deec-7bec-4f83-af0f-0313da06a884", "event_type": "case.created", "seq": 1}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.819775Z", "event_id": "555d2b13-c136-4206-a048-fd6a39cb45a3", "event_type": "case.created", "seq": 2}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.823774Z", "event_id": "930759c8-d701-4996-9908-bc7959570970", "event_type": "evidence.upload_finalized", "seq": 3}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.827779Z", "event_id": "1c50be50-9ade-4a4b-a6de-159d29630288", "event_type": "evidence.upload_finalized", "seq": 4}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.831656Z", "event_id": "036b404b-1415-4ef2-945c-26f587041c40", "event_type": "ingest.completed", "seq": 5}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T03:54:45.835397Z", "event_id": "05ab3d70-b32a-4c79-b4ca-64f066b67b7d", "event_type": "case.created", "seq": 1}
+[32m[PASS][0m real chain verifies intact before export (server-side AuditLogService.verify_chain) 
+
+==============================================================================
+2. Real HTTP call to the new route -- GET /api/audit/export
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/audit/export \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T03:54:45.895053Z"}
+[32m[PASS][0m real route returns 200 status=200
+[32m[PASS][0m Content-Disposition present with expected filename prefix attachment; filename="kronos-audit-export-pocorg-2026-08-16.json"
+[32m[PASS][0m export contains exactly the 5 real org events (not the other org's) count=5
+[32m[PASS][0m no other-org event leaked into the export 
+
+Real route response saved to /home/reca/Claude/Kronos/KronOS_template/.claude/worktrees/agent-ad8430097aa20f714/poc/kronos_attest_export/export.json (5 events)
+
+==============================================================================
+3. Real kronos-attest CLI (subprocess) against the route's real output
+==============================================================================
+
+`kronos-attest merkle-root` -> exit=0
+STDOUT: 36c4ca166d2c84c77c18bd1aef93663e4c00e97b96737c0292ed854acfdf6292
+STDERR: 
+[32m[PASS][0m merkle-root ran successfully against the route's real output 
+
+`kronos-attest verify` -> exit=0
+STDOUT:
+Chain intact (5 events, root=36c4ca166d2c84c7…)
+Event 00e7deec-7bec-4f83-af0f-0313da06a884: case.created at 2026-08-16T03:54:45.811581+00:00
+
+STDERR:
+
+[32m[PASS][0m verify: chain intact + event found (real CLI, real exit code 0) 
+
+`kronos-attest day-report` -> exit=0
+{
+  "day": "2026-08-16",
+  "event_count": 5,
+  "merkle_root": "36c4ca166d2c84c77c18bd1aef93663e4c00e97b96737c0292ed854acfdf6292",
+  "chain_valid": true,
+  "break_count": 0,
+  "tsa_anchored": false,
+  "tsa_gen_time": null
+}
+
+[32m[PASS][0m day-report exit 0 
+[32m[PASS][0m day-report event_count == 5 (all 5 real events occurred today) 5
+[32m[PASS][0m day-report chain_valid is True -- THE key proof: full-org export, client-filtered by day, still chains correctly 
+
+`kronos-attest case-report` (case_a, 3 events) -> exit=0
+{
+  "case_id": "592297e5-cc73-42da-87bc-08b334186833",
+  "event_count": 3,
+  "merkle_root": "2182cd205020519f82f9a99b2d79ba58f65571cc5f581a5e4dbdb19c9e3ecb87",
+  "chain_valid": false,
+  "break_count": 2,
+  "evidence_ids": [
+    "4921bbc7-d2e5-4f1d-bf1a-16fd50e40cc0"
+  ]
+}
+
+[32m[PASS][0m case-report (case_a) exit 0 
+[32m[PASS][0m case-report (case_a) event_count == 3 3
+[31m[FAIL][0m case-report (case_a) chain_valid is True -- THE key proof this PoC exists for: a case-filtered subset of a FULL org export still verifies, because the export was never server-side case-filtered in the first place 
+
+`kronos-attest case-report` (case_b, 2 events) -> exit=0
+{
+  "case_id": "44752c94-ac6f-435c-92ae-39846413d3a4",
+  "event_count": 2,
+  "merkle_root": "cf45073d1d8ce3eacd65fff9902d9922abb5f2f004435922b1bd40f7ac6a9af0",
+  "chain_valid": false,
+  "break_count": 2,
+  "evidence_ids": [
+    "7b64519a-47c2-44f0-ba42-cfee94dacb5d"
+  ]
+}
+
+[32m[PASS][0m case-report (case_b) event_count == 2 2
+[31m[FAIL][0m case-report (case_b) chain_valid is True 
+
+==============================================================================
+2 CHECK(S) FAILED
+==============================================================================
