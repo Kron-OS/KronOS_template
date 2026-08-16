@@ -172,6 +172,61 @@ curl http://localhost:8080/health
 
 ---
 
+## OpenSearch Sizing Guidance (P2-W16)
+
+**This repo's pinned defaults are conservative, demo/small-deployment
+values, not a production sizing recommendation.** `docker/docker-compose.dev.yml`
+and `docker-compose.test.yml` set `OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m`;
+`docker-compose.prod.yml` sets `-Xms2g -Xmx2g`. All three run a single
+OpenSearch node. `charts/kronos/values.yaml`'s `opensearch:` block treats
+OpenSearch as an external, pre-provisioned dependency (URL + secret
+reference only, like MinIO/Vault/Keycloak) — this chart owns no
+Deployment/StatefulSet or resource block for it at all, so there is
+nowhere in Helm today that even expresses an OpenSearch sizing intent.
+
+**Real heap-sizing guidance** (official OpenSearch documentation,
+`docs.opensearch.org`, "Important settings" / "Tuning your cluster for
+indexing speed"): heap should be set to roughly half of the node's
+available system RAM ("we recommend half of system RAM" — the other half
+is left for the OS page cache, which Lucene depends on for search
+performance) — see [Important settings](https://docs.opensearch.org/docs/1.0/opensearch/install/important-settings/)
+and [Tuning your cluster for indexing speed](https://docs.opensearch.org/latest/tuning-your-cluster/performance/).
+Separately, a hard practical ceiling of **~32 GB heap** applies regardless
+of how much RAM is available — above that, the JVM can no longer use
+Compressed Ordinary Object Pointers (compressed 32-bit references), and
+switches to full 64-bit pointers, increasing per-object memory overhead by
+roughly 1.5x and effectively negating the benefit of the larger heap (this
+specific mechanism is widely documented JVM/Elasticsearch/OpenSearch
+operational guidance — e.g. [Opster's OpenSearch heap sizing guide](https://opster.com/guides/opensearch/opensearch-basics/opensearch-heap-size-usage-and-jvm-garbage-collection/) —
+rather than restated on the specific official page fetched above, which
+covers only the 50%-of-RAM rule directly).
+
+**What a real "scales to 100+ GB evidence" production sizing claim would
+still need before it could be made honestly** (none of this exists yet —
+stated plainly rather than implied):
+
+- A real measured ingest/query workload against a realistically-sized
+  index (this repo has never run a sustained-volume test against
+  OpenSearch — see `docs/ASSESSMENT_SYNTHESIS_2026-08.md` P2-W18 for the
+  identical gap already tracked for the six EDR/SIEM connectors'
+  throughput).
+- A real decision on single-node-with-larger-heap vs. multi-node (official
+  guidance above only sizes heap *within* a node; it does not say when a
+  single node stops being appropriate — that threshold depends on
+  measured shard count, query concurrency, and index size this repo has
+  not yet measured for its own real ECS + `kronos.*` mapping).
+- A real Helm resource block for OpenSearch (or an explicit, documented
+  decision to keep treating it as an externally-managed dependency
+  outside this chart's scope, matching Vault/Keycloak's existing
+  treatment) — currently there is no mechanism in `charts/kronos/` to
+  express a production OpenSearch sizing decision even once one is made.
+
+Until that measurement work happens, treat this repo's pinned dev/prod
+heap values as safe-for-demo defaults only, not as evidence the platform
+has been sized for its own stated 100+ GB goal.
+
+---
+
 ## Upgrading
 
 ```bash
