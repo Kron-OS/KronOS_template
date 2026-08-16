@@ -15,7 +15,9 @@ from unittest.mock import patch
 
 from src.external.dependencies import (
     configure_defender_poll_source_from_settings,
+    get_defender_poll_org_id,
     get_defender_poll_source,
+    get_defender_poll_source_id,
     get_integration_source_registry,
     reset_dependencies,
 )
@@ -39,12 +41,16 @@ def _fake_settings(
     defender_client_id: str | None = "00001111-aaaa-2222-bbbb-3333cccc4444",
     defender_client_secret: _FakeSecret | None = _DEFAULT_FAKE_SECRET,
     defender_graph_base_url: str = "https://graph.microsoft.com/v1.0",
+    defender_poll_org_id: str | None = None,
+    defender_poll_source_id: str = "ms-defender-alerts",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         defender_tenant_id=defender_tenant_id,
         defender_client_id=defender_client_id,
         defender_client_secret=defender_client_secret,
         defender_graph_base_url=defender_graph_base_url,
+        defender_poll_org_id=defender_poll_org_id,
+        defender_poll_source_id=defender_poll_source_id,
     )
 
 
@@ -58,6 +64,8 @@ class TestDefenderPollSourceWiring:
     def test_unconfigured_by_default(self) -> None:
         assert get_defender_poll_source() is None
         assert get_integration_source_registry().get("ms-defender-alerts") is None
+        assert get_defender_poll_org_id() is None
+        assert get_defender_poll_source_id() == "ms-defender-alerts"
 
     def test_settings_instantiation_failure_leaves_unconfigured(self) -> None:
         with patch("src.config.Settings", side_effect=Exception("missing required env vars")):
@@ -99,3 +107,33 @@ class TestDefenderPollSourceWiring:
         reset_dependencies()
         assert get_defender_poll_source() is None
         assert get_integration_source_registry().get("ms-defender-alerts") is None
+        assert get_defender_poll_org_id() is None
+        assert get_defender_poll_source_id() == "ms-defender-alerts"
+
+    def test_org_id_captured_even_without_full_credentials(self) -> None:
+        # Milestone W14 (GET /api/admin/connectors/status): org/source_id
+        # attribution must be readable even when the OAuth2 credential trio
+        # is unset -- a real, distinct "org configured, no creds yet"
+        # deployment state the status route needs to be honest about.
+        org_id = "b7d6a1a0-1111-4444-8888-aaaaaaaaaaaa"
+        with patch(
+            "src.config.Settings",
+            return_value=_fake_settings(
+                defender_tenant_id=None,
+                defender_poll_org_id=org_id,
+                defender_poll_source_id="custom-defender-feed",
+            ),
+        ):
+            configure_defender_poll_source_from_settings()
+
+        assert get_defender_poll_source() is None  # still unconfigured, no creds
+        assert get_defender_poll_org_id() == org_id
+        assert get_defender_poll_source_id() == "custom-defender-feed"
+
+    def test_org_id_captured_alongside_full_credentials(self) -> None:
+        org_id = "b7d6a1a0-1111-4444-8888-aaaaaaaaaaaa"
+        with patch("src.config.Settings", return_value=_fake_settings(defender_poll_org_id=org_id)):
+            configure_defender_poll_source_from_settings()
+
+        assert get_defender_poll_source() is not None
+        assert get_defender_poll_org_id() == org_id

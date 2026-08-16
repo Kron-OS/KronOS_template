@@ -1,0 +1,90 @@
+==============================================================================
+1. Real Alembic migration against the real dev-stack Postgres
+==============================================================================
+`alembic upgrade head` -> exit=0
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+
+[32m[PASS][0m real `alembic upgrade head` exits 0 against docker-postgres-1 
+
+==============================================================================
+2. Real PostgresIntegrationSourceKeyRepository + PostgresAuditLogRepository
+==============================================================================
+[32m[PASS][0m repository + audit-log wiring constructed against real engine 
+
+==============================================================================
+3a. Real HTTP: provision a real PUSH source key (W8 route, reused)
+==============================================================================
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T19:10:25.416900Z", "ticket_id": "841452a4-eea5-4e95-b5c3-073e4db38add", "operation": "integration_source_key.provision"}
+{"event": "step_up_ticket_consumed", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-16T19:10:25.471752Z", "ticket_id": "841452a4-eea5-4e95-b5c3-073e4db38add", "operation": "integration_source_key.provision"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T19:10:25.485931Z", "event_id": "dfb990a4-ddc1-4547-9d99-1f021d7c264f", "event_type": "integration_source.key_provisioned", "seq": 1}
+{"event": "HTTP Request: POST http://poc/api/admin/integration-sources/generic-webhook/provision \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.486463Z"}
+provision -> status=201
+{"sourceId":"poc-w14-wazuh-1","sourceType":"generic-webhook","apiKey":"BWfJchoR_H8S4Yh_PVCGDaCYU8ZKbQok0-xV-NN2jSU","createdAt":"2026-08-16T19:10:25.471833+00:00"}
+[32m[PASS][0m provision route returns 201 
+
+==============================================================================
+3b. Status BEFORE any push: source present but never_used
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/admin/connectors/status \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.498175Z"}
+status -> status=200
+{"items":[{"sourceId":"poc-w14-wazuh-1","sourceType":"generic-webhook","mode":"push","selfService":true,"status":"never_used","createdAt":"2026-08-16T19:10:25.471833+00:00","revokedAt":null,"lastIngestedAt":null,"lastPolledAt":null,"lastPollFailedAt":null,"lastFailureReason":null,"note":"Self-service: this org provisioned this connector's API key directly."}]}
+[32m[PASS][0m status route returns 200 
+[32m[PASS][0m exactly 1 connector entry (the provisioned push source) 
+[32m[PASS][0m entry is never_used before any push 
+[32m[PASS][0m lastIngestedAt is null before any push 
+
+==============================================================================
+3c. Real HTTP: POST /api/integrations/push/{source_type} -- creates a real
+    INTEGRATION_SOURCE_PUSH_INGESTED audit row
+==============================================================================
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-16T19:10:25.516451Z", "event_id": "6dbfecd1-6c9b-4b71-80b6-319e34d4e1cd", "event_type": "integration_source.push_ingested", "seq": 2}
+{"event": "HTTP Request: POST http://poc/api/integrations/push/generic-webhook \"HTTP/1.1 202 Accepted\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.516764Z"}
+push -> status=202
+{"results":[{"accepted":true,"duplicate":false,"messageId":"1-0"}]}
+[32m[PASS][0m push accepted (202) using the real provisioned key 
+
+==============================================================================
+3d. Status AFTER the real push: real lastIngestedAt, status=active
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/admin/connectors/status \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.523470Z"}
+status -> status=200
+{"items":[{"sourceId":"poc-w14-wazuh-1","sourceType":"generic-webhook","mode":"push","selfService":true,"status":"active","createdAt":"2026-08-16T19:10:25.471833+00:00","revokedAt":null,"lastIngestedAt":"2026-08-16T19:10:25.514552+00:00","lastPolledAt":null,"lastPollFailedAt":null,"lastFailureReason":null,"note":"Self-service: this org provisioned this connector's API key directly."}]}
+[32m[PASS][0m still exactly 1 connector entry 
+[32m[PASS][0m sourceId matches the provisioned source 
+[32m[PASS][0m sourceType matches 
+[32m[PASS][0m mode is push 
+[32m[PASS][0m selfService is True for a push source 
+[32m[PASS][0m status flips to active after a real push 
+[32m[PASS][0m lastIngestedAt is now populated (real, non-null) 
+[32m[PASS][0m revokedAt is still null (never revoked) 
+[32m[PASS][0m lastPollFailedAt is null (push failures aren't audited) 
+
+==============================================================================
+4a. Real Settings + real configure_defender_poll_source_from_settings():
+    defender_poll_org_id NOT set for this org -> Defender entry ABSENT
+==============================================================================
+{"event": "defender_poll_source_not_configured", "level": "info", "logger": "src.external.dependencies", "timestamp": "2026-08-16T19:10:25.542514Z", "defender_tenant_id_set": false}
+[32m[PASS][0m real get_defender_poll_org_id() reflects the configured (other) org 
+{"event": "HTTP Request: GET http://poc/api/admin/connectors/status \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.549637Z"}
+status (defender configured for a DIFFERENT org) -> {"items":[{"sourceId":"poc-w14-wazuh-1","sourceType":"generic-webhook","mode":"push","selfService":true,"status":"active","createdAt":"2026-08-16T19:10:25.471833+00:00","revokedAt":null,"lastIngestedAt":"2026-08-16T19:10:25.514552+00:00","lastPolledAt":null,"lastPollFailedAt":null,"lastFailureReason":null,"note":"Self-service: this org provisioned this connector's API key directly."}]}
+[32m[PASS][0m Defender entry ABSENT when defender_poll_org_id names a different org 
+
+==============================================================================
+4b. Same real DI path, now defender_poll_org_id MATCHES this org
+    -> Defender entry PRESENT, honestly labeled non-self-service
+==============================================================================
+{"event": "defender_poll_source_not_configured", "level": "info", "logger": "src.external.dependencies", "timestamp": "2026-08-16T19:10:25.550102Z", "defender_tenant_id_set": false}
+[32m[PASS][0m real get_defender_poll_org_id() now reflects THIS org 
+{"event": "HTTP Request: GET http://poc/api/admin/connectors/status \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-16T19:10:25.556103Z"}
+status (defender configured for THIS org) -> {"items":[{"sourceId":"poc-w14-wazuh-1","sourceType":"generic-webhook","mode":"push","selfService":true,"status":"active","createdAt":"2026-08-16T19:10:25.471833+00:00","revokedAt":null,"lastIngestedAt":"2026-08-16T19:10:25.514552+00:00","lastPolledAt":null,"lastPollFailedAt":null,"lastFailureReason":null,"note":"Self-service: this org provisioned this connector's API key directly."},{"sourceId":"ms-defender-alerts","sourceType":"ms-defender-alerts","mode":"poll","selfService":false,"status":"never_used","createdAt":null,"revokedAt":null,"lastIngestedAt":null,"lastPolledAt":null,"lastPollFailedAt":null,"lastFailureReason":null,"note":"Configured for this org via platform settings — not self-service; contact your KronOS operator to change it."}]}
+[32m[PASS][0m Defender entry PRESENT when defender_poll_org_id matches this org 
+[32m[PASS][0m Defender entry mode is poll 
+[32m[PASS][0m Defender entry selfService is False (honest, not self-service) 
+[32m[PASS][0m Defender entry status is never_used (no poll cycle ran) 
+[32m[PASS][0m Defender entry note communicates platform-configured, not self-service 
+[32m[PASS][0m the real push-source entry is still present alongside Defender 
+
+==============================================================================
+ALL CHECKS PASSED
+==============================================================================

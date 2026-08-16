@@ -43,6 +43,14 @@ export function Layout({ children }: LayoutProps) {
                 Admin
               </Link>
             )}
+            {user?.roles.includes('org-admin') && (
+              <Link
+                to="/admin/connectors"
+                className="text-gray-600 hover:text-gray-900 [&.active]:text-indigo-600 dark:text-gray-300 dark:hover:text-white dark:[&.active]:text-indigo-400"
+              >
+                Connectors
+              </Link>
+            )}
           </nav>
           <div className="flex items-center gap-4 text-sm">
             {user && (

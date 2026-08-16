@@ -132,6 +132,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A"]
 "src/external/routes/step_up.py" = ["N815"]
 "src/external/routes/integration_source_push.py" = ["N815"]
 "src/external/routes/admin_integration_sources.py" = ["N815"]
+"src/external/routes/admin_connector_status.py" = ["N815"]
 # FastAPI's Depends(...)/Query(...)/Body(...) default-argument pattern is
 # the framework's own dependency-injection mechanism, not a mutable-default
 # bug -- B008 ("no function calls in argument defaults") is a real check

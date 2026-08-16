@@ -16,6 +16,7 @@ import { LoginPage } from './pages/LoginPage'
 import { CasesPage } from './pages/CasesPage'
 import { CaseDetailPage } from './pages/CaseDetailPage'
 import { AdminPage } from './pages/AdminPage'
+import { ConnectorStatusPage } from './pages/ConnectorStatusPage'
 import { DetectionsPage } from './pages/DetectionsPage'
 import { DetectionDetailPage } from './pages/DetectionDetailPage'
 
@@ -106,6 +107,20 @@ const adminRoute = createRoute({
   ),
 })
 
+const connectorStatusRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/connectors',
+  component: () => (
+    <AuthGuard>
+      <RbacGuard requiredRole="org-admin">
+        <Layout>
+          <ConnectorStatusPage />
+        </Layout>
+      </RbacGuard>
+    </AuthGuard>
+  ),
+})
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   indexRoute,
@@ -114,6 +129,7 @@ const routeTree = rootRoute.addChildren([
   detectionsRoute,
   detectionDetailRoute,
   adminRoute,
+  connectorStatusRoute,
 ])
 
 const router = createRouter({ routeTree })

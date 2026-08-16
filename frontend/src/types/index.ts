@@ -121,6 +121,29 @@ export interface DashboardUrl {
   url: string
 }
 
+export type ConnectorMode = 'push' | 'poll'
+export type ConnectorStatusState = 'never_used' | 'active' | 'failing' | 'revoked'
+
+// Field names match src/external/routes/admin_connector_status.py's
+// ConnectorStatusOut DTO exactly (Milestone W14). selfService/note exist
+// specifically to keep the real PUSH (self-service) vs POLL (global,
+// platform-configured) asymmetry honest in the UI -- see that route's own
+// module docstring.
+export interface ConnectorStatus {
+  sourceId: string
+  sourceType: string
+  mode: ConnectorMode
+  selfService: boolean
+  status: ConnectorStatusState
+  createdAt: string | null
+  revokedAt: string | null
+  lastIngestedAt: string | null
+  lastPolledAt: string | null
+  lastPollFailedAt: string | null
+  lastFailureReason: string | null
+  note: string
+}
+
 export type DetectionTriageState = 'NEW' | 'INVESTIGATING' | 'TRUE_POSITIVE' | 'FALSE_POSITIVE'
 
 export interface DetectionRuleMatch {

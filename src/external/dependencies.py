@@ -281,6 +281,14 @@ _sentinel_detection_mapper: SentinelDetectionMapper | None = None
 # registration step possible for a POLL source at all).
 _defender_poll_source: DefenderPollSource | None = None
 _defender_http_client: httpx.AsyncClient | None = None
+# Captured independently of _defender_poll_source above (Milestone W14,
+# GET /api/admin/connectors/status) -- the connector-status route needs to
+# know WHICH org (if any) Defender is globally configured for even though
+# it never talks to Graph itself, so it must not depend on the OAuth2
+# client/http client also having been constructed successfully. None is the
+# honest "unset" state (mirrors Settings.defender_poll_org_id's own default).
+_defender_poll_org_id: str | None = None
+_defender_poll_source_id: str = "ms-defender-alerts"
 
 
 # ---------------------------------------------------------------------------
@@ -893,12 +901,20 @@ def configure_defender_poll_source_from_settings() -> None:
     every call -- see that class's own docstring for why that matters).
     """
     global _defender_poll_source, _defender_http_client
+    global _defender_poll_org_id, _defender_poll_source_id
     from src.config import Settings  # noqa: PLC0415
 
     try:
         s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
     except Exception:
         return  # keep both None in test/dev environments without full Settings
+
+    # Captured unconditionally -- org/source_id attribution is meaningful
+    # even if the OAuth2 credential trio below is unset (see this module
+    # global's own comment), unlike _defender_poll_source itself which
+    # genuinely cannot exist without real credentials.
+    _defender_poll_org_id = s.defender_poll_org_id
+    _defender_poll_source_id = s.defender_poll_source_id
 
     if not s.defender_tenant_id or not s.defender_client_id or s.defender_client_secret is None:
         logger.info(
@@ -931,6 +947,27 @@ def get_defender_poll_source() -> DefenderPollSource | None:
     substitute a fabricated source.
     """
     return _defender_poll_source
+
+
+def get_defender_poll_org_id() -> str | None:
+    """FastAPI dependency: the raw ``Settings.defender_poll_org_id`` string
+    (or None if unset), as last read by
+    ``configure_defender_poll_source_from_settings()`` -- the connector-status
+    route (Milestone W14) is the sole consumer. Deliberately the raw string,
+    not a pre-parsed ``uuid.UUID``: a malformed value is a real, distinct
+    state from "unset" that the caller must be able to tell apart and log,
+    mirroring ``celery_defender.py``'s own "let a malformed value be visible,
+    don't silently coerce it" treatment of this same setting.
+    """
+    return _defender_poll_org_id
+
+
+def get_defender_poll_source_id() -> str:
+    """FastAPI dependency: ``Settings.defender_poll_source_id`` (defaults to
+    ``"ms-defender-alerts"``, matching the ``Settings`` field's own default)
+    -- the ``SourceCursor``/audit ``source_id`` this org's Defender feed is
+    keyed under, for display in the connector-status route."""
+    return _defender_poll_source_id
 
 
 def get_task_queue() -> TaskQueue:
@@ -1521,6 +1558,7 @@ def reset_dependencies() -> None:
     global _cef_syslog_sink, _cef_detection_mapper
     global _sentinel_sink, _sentinel_detection_mapper
     global _defender_poll_source, _defender_http_client
+    global _defender_poll_org_id, _defender_poll_source_id
     _step_up_auth = _StepUpAuth()
     _audit_log_repository = None
     _evidence_repository = None
@@ -1565,6 +1603,8 @@ def reset_dependencies() -> None:
     _sentinel_detection_mapper = None
     _defender_poll_source = None
     _defender_http_client = None
+    _defender_poll_org_id = None
+    _defender_poll_source_id = "ms-defender-alerts"
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()
