@@ -80,8 +80,8 @@ Legend: **P0** urgent/actively-wrong-today · **P1** real functional gap ·
 | P2-W12 | Dark-mode toggle in `Layout.tsx` is real, clickable, and persisted — but only 2 CSS rules respond to it, producing a visibly broken half-themed page (worse than the feature being absent). | UX review §4 | M |
 | P2-W13 | No root React error boundary anywhere — a render exception produces a blank screen rather than a real error state. | UX review §1 | S |
 | P2-W14 | No "connector status" view in the frontend — a real, user-visible gap given six connectors now exist; a new user has no way to see whether Wazuh/Splunk/etc. are configured/healthy. | UX review §1 | M |
-| P2-W15 | `docs/ingestion-pipeline.md` is stale (describes a synchronous in-request flow the code no longer has, post the `process_intake` Celery split) — actively misleading for anyone debugging a stuck upload mid-incident. | IR walkthrough F5 | S |
-| P2-W16 | OpenSearch resource sizing (2GB heap, single-node everywhere, zero Helm resource block) doesn't obviously reconcile with the "100+ GB evidence" design goal — not urgent (no evidence of a real customer hitting this), but worth a real sizing pass before any production claim is made publicly. | Scale review §4 | M (needs real measurement, not just a values.yaml bump) |
+| P2-W15 | **CLOSED (2026-08-16, commit `6ef2aa6`).** ~~`docs/ingestion-pipeline.md` is stale~~ — rewritten to match the real current `process_intake`-split pipeline, every claim cross-checked against the actual code. | IR walkthrough F5 | S |
+| P2-W16 | **CLOSED (2026-08-16, commit `6ef2aa6`) as docs-only guidance, per its own "needs real measurement" framing.** ~~OpenSearch resource sizing doesn't obviously reconcile with the "100+ GB evidence" design goal~~ — `docs/deployment.md` now states plainly that pinned heap values are demo defaults, cites real OpenSearch heap-sizing guidance, and names exactly what real measurement work is still needed before a production sizing claim could be made honestly. The underlying measurement work itself remains undone (by design — this item's own scope was docs, not a real load test). | Scale review §4 | M (needs real measurement, not just a values.yaml bump) |
 | P2-W17 | `GenericPollSource` has zero production scheduler — same class of gap as P0-W1's Defender-specific instance, but for the generic stand-in itself (lower priority since it's a stand-in, not a named connector). | Scale review §5 | S |
 | P2-W18 | Six Q/R connectors are correctness-proven, never throughput-proven — no real load/sustained-volume test exists for any of them. Not urgent absent a real production deployment, but should be closed before any customer-facing throughput claim. | Scale review §5 | L (needs a real load-test harness, its own scoped design) |
 
@@ -201,6 +201,12 @@ impact concrete rather than theoretical.
 **W9 · Docs/sizing cleanup batch (P2-W15, P2-W16).** `docs/
 ingestion-pipeline.md` refresh + a real OpenSearch sizing pass — low
 urgency, fold together when convenient.
+
+**W9 STATUS (2026-08-16, commit `6ef2aa6`): CLOSED.** Both docs rewritten/
+added, every factual claim cross-checked against the real current code
+(not carried over from old text). The real OpenSearch load-measurement
+work itself is intentionally still open — tracked as P2-W18's own
+throughput-proof scope (W10), not duplicated here.
 
 **W10 · `GenericPollSource` scheduler + Q/R throughput proof (P2-W17,
 P2-W18).** Lowest priority in this synthesis — the generic stand-in
