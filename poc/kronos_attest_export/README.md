@@ -25,67 +25,47 @@ Requires the real dev stack's Postgres reachable at `localhost:5432`
 
 ## Result
 
-**Route-level checks: all real and passing.** The route returns 200,
-correct `Content-Disposition`, exactly the caller's 5 org events (not the
-other org's), and the real `kronos-attest merkle-root`/`verify`/`day-report`
-commands all run successfully against the route's real output with
-`chain_valid: true`.
+**All 24 checks pass, including case-report for a real multi-case org.**
+The route returns 200, correct `Content-Disposition`, exactly the caller's
+5 org events (not the other org's), and the real `kronos-attest
+merkle-root`/`verify`/`day-report`/`case-report` commands all run
+successfully against the route's real output with `chain_valid: true` for
+every scope — including both `case_a` (3 events) and `case_b` (2 events)
+of this PoC's own deliberately multi-case, interleaved scenario.
 
-**A real, pre-existing bug in `kronos_attest/report.py::case_report()` was
-found and is NOT fixed by this PoC or this route — it is a separate,
-out-of-scope finding, reported here for a future milestone:**
+**Update (2026-08-16, Milestone W11): this run originally found (and this
+PoC's own README originally documented as out-of-scope) a real,
+pre-existing bug in `kronos_attest/report.py::case_report()`/`day_report()`
+— both `chain_valid: false` for `case_a`/`case_b` on the very first run of
+this PoC, despite zero tampering. That bug is now FIXED** (see
+`kronos_attest/report.py`, `tests/unit/test_attest.py`'s
+`TestCaseReportMultiCaseRegression`/`TestDayReportMultiDayRegression`) —
+re-running this exact PoC after the fix is what proves it (this file's
+`output.txt` is the fixed, passing run).
 
-```
-`kronos-attest case-report` (case_a, 3 events) -> exit=0
-{
-  "case_id": "...", "event_count": 3, "chain_valid": false, "break_count": 2, ...
-}
-```
+**Original root cause (confirmed by direct code read, not guessed):**
+`AttestationReport.case_report()` filtered the full export down to one
+case's events, then called `ChainVerifier.verify(case_events)` in
+isolation — recomputing each event's row hash by chaining from a fixed
+genesis hash against only the filtered subset, when the real chain those
+events belong to is the org's FULL, contiguous history. A case-filtered
+subset's first event's real `prev_row_hash` almost never points at
+genesis (it points at whatever org-wide event actually preceded it), so
+re-chaining an isolated subset from genesis was close to guaranteed to
+report `chain_valid: false` for any real multi-case org, even with zero
+tampering. `day_report()` shared the identical flaw for any org whose
+history spans more than one day. `poc/chain_of_custody/`'s earlier,
+single-case scenario never exposed it by coincidence (its filtered subset
+happened to equal the org's entire chain).
 
-**Root cause (confirmed by direct code read, not guessed):**
-`AttestationReport.case_report()` (`kronos_attest/report.py`) filters the
-full export down to one case's events, then calls
-`ChainVerifier.verify(case_events)`. `ChainVerifier.verify()`
-(`kronos_attest/verifier.py`) recomputes each event's row hash by chaining
-against the *previous event in the list it was given*, starting from a
-fixed genesis hash — it has no way to know that the real previous event in
-that org's actual chain was a *different case's* event, since this org has
-two cases with interleaved audit events (the realistic, common case). The
-case-filtered subset's first event's real `prev_row_hash` points at
-whatever org-wide event genuinely preceded it in Postgres, which is never
-the genesis hash unless that event happens to be the org's very first-ever
-audit event. Re-chaining from genesis over an isolated, non-contiguous
-subset is close to guaranteed to report `chain_valid: false` for any real
-multi-case org, even when nothing was tampered with.
-
-This is why `poc/chain_of_custody/`'s own earlier run reported
-`case-report`'s `chain_valid: true` — that PoC's scenario had exactly ONE
-case in a fresh, single-case org, so the case-filtered subset happened to
-equal the org's entire chain (no interleaving to expose the bug). This
-PoC's scenario deliberately seeds TWO cases with interleaved events
-specifically to surface it.
-
-**`day_report()` shares the identical design flaw** (same
-filter-then-isolated-re-chain pattern) but this PoC's own scenario didn't
-expose it, since all seeded events happened to fall on the same real day —
-a day-filtered subset that happens to equal the whole export doesn't
-trigger the bug either. It would reproduce identically for any org whose
-audit history spans more than one day (i.e., every real deployment).
-
-**Why this PoC does not fix it:** the correct fix requires real design
-work on `ChainVerifier`/`AttestationReport`'s contract (e.g., verifying the
-FULL unfiltered chain first for tamper-detection, then reporting the
-case/day-scoped event count and a case/day-scoped Merkle root computed
-over that subset's *own* leaf hashes without re-deriving a broken isolated
-hash chain) — this touches `kronos_attest/verifier.py`,
-`kronos_attest/report.py`, `kronos_attest/cli.py`'s output contract, and
-their existing tests (`tests/unit/test_kronos_attest.py`,
-`tests/unit/test_attest.py`, `poc/chain_of_custody/`). That is a
-real, separate, scoped fix — flagged here as a new finding for the
-Milestone W tracking doc, not attempted under this item's own budget
-(mirrors this initiative's own established discipline: one real,
-well-scoped thing per W-item, not opportunistic scope creep mid-task).
-
-See `output.txt` for the full real captured run (2 real, expected
-failures on this known, now-documented, out-of-scope bug; all export-route
-checks pass).
+**The fix:** `case_report()`/`day_report()` now run `ChainVerifier.verify()`
+ONCE over the FULL, unfiltered event list (the real chain), then scope
+`chain_valid`/`break_count` down to breaks whose `event_id` falls within
+the case/day being reported — rather than re-verifying an isolated,
+non-contiguous subset as if it were its own chain. A new
+`org_chain_fully_intact` field additionally surfaces the org-wide picture
+separately, so an auditor isn't blind to tampering elsewhere in the org
+while looking at one case's own report. See `kronos_attest/report.py`'s
+own updated docstrings for the full reasoning, including the (correct,
+intentional) property that a real tamper still cascades forward to every
+event chained after it, regardless of which case/day they belong to.

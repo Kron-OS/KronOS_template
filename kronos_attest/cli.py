@@ -52,9 +52,7 @@ def verify(audit_log_path: str, event_id: str, tsa_cert_path: str | None) -> Non
 
     target = next((e for e in events if e.get("event_id") == event_id), None)
     if target:
-        click.echo(
-            f"Event {event_id}: {target.get('event_type')} at {target.get('occurred_at')}"
-        )
+        click.echo(f"Event {event_id}: {target.get('event_type')} at {target.get('occurred_at')}")
     else:
         click.echo(f"Event {event_id} not found", err=True)
 
@@ -185,6 +183,7 @@ def day_report_cmd(audit_log_path: str, day: str, tsa_cert_path: str | None) -> 
                 "merkle_root": report.merkle_root,
                 "chain_valid": report.chain_valid,
                 "break_count": report.break_count,
+                "org_chain_fully_intact": report.org_chain_fully_intact,
                 "tsa_anchored": report.tsa_anchored,
                 "tsa_gen_time": report.tsa_gen_time,
             },
@@ -214,6 +213,7 @@ def case_report_cmd(audit_log_path: str, case_id: str) -> None:
                 "merkle_root": report.merkle_root,
                 "chain_valid": report.chain_valid,
                 "break_count": report.break_count,
+                "org_chain_fully_intact": report.org_chain_fully_intact,
                 "evidence_ids": report.evidence_ids,
             },
             indent=2,
