@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import TypeVar
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.adapter.repository.case_repository import InMemoryCaseRepository
+from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEventType
+from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
 from src.domain.user import Role, TenantContext
 from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
     get_evidence_repository,
+    get_evidence_storage,
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
@@ -339,3 +346,164 @@ class TestCaseAccessScoping:
         created = client.post("/api/cases", json={"title": "Own audit log"}).json()
         resp = client.get(f"/api/cases/{created['id']}/audit")
         assert resp.status_code == 200
+
+
+@pytest.fixture
+def download_client(tmp_path):
+    """Like ``cases_client``, but also wires a real ``LocalEvidenceStorage``
+    and exposes ``evidence_repo``/``storage`` directly, for the evidence
+    download route tests below (Gap Audit X1) -- a separate fixture rather
+    than changing ``cases_client``'s own return-tuple shape, which 24
+    existing tests already unpack positionally."""
+    case_repo = InMemoryCaseRepository()
+    audit_repo = InMemoryAuditLogRepository()
+    evidence_repo = InMemoryEvidenceRepository()
+    storage = LocalEvidenceStorage(base_dir=tmp_path)
+    audit_svc = AuditLogService(audit_repo)
+
+    fixed_org = uuid.uuid4()
+    fixed_user = uuid.uuid4()
+
+    def _admin_tenant() -> TenantContext:
+        return TenantContext(
+            org_id=fixed_org,
+            org_alias="testorg",
+            user_id=fixed_user,
+            username="admin",
+            roles=frozenset({Role.ORG_ADMIN}),
+            correlation_id=str(uuid.uuid4()),
+            acr="aal2",
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_tenant_context] = _admin_tenant
+    app.dependency_overrides[get_case_repository] = lambda: case_repo
+    app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
+    app.dependency_overrides[get_evidence_repository] = lambda: evidence_repo
+    app.dependency_overrides[get_evidence_storage] = lambda: storage
+
+    return TestClient(app), case_repo, evidence_repo, storage, fixed_org, fixed_user, audit_repo
+
+
+async def _seed_promoted_evidence(
+    storage: LocalEvidenceStorage,
+    evidence_repo: InMemoryEvidenceRepository,
+    *,
+    org_id: uuid.UUID,
+    case_id: uuid.UUID,
+    content: bytes = b"real evtx bytes for download test",
+    filename: str = "security.evtx",
+) -> Evidence:
+    """Real promotion flow through LocalEvidenceStorage's own public API
+    (write to quarantine, promote to the evidence bucket) -- mirrors how a
+    real upload actually lands an object, not a shortcut that pokes the
+    storage double's private dict directly."""
+    meta = EvidenceMetadata(
+        original_filename=filename,
+        content_type="application/octet-stream",
+        size_bytes=len(content),
+        uploader_user_id=uuid.uuid4(),
+        case_id=case_id,
+        org_id=org_id,
+        org_alias="testorg",
+    )
+    evidence = Evidence(metadata=meta, state=EvidenceState.RECEIVED)
+    presigned = await storage.request_presigned_upload(evidence)
+    path = Path(presigned.url.removeprefix("file://"))
+    path.write_bytes(content)
+    evidence_key = await storage.promote_to_evidence_bucket(presigned.object_key, evidence)
+    evidence = evidence.with_keys(quarantine_key=None, evidence_key=evidence_key)
+    return await evidence_repo.save(evidence)
+
+
+_T = TypeVar("_T")
+
+
+async def _collect(items: AsyncIterator[_T]) -> list[_T]:
+    return [item async for item in items]
+
+
+class TestDownloadEvidence:
+    def test_download_returns_real_bytes_and_headers(self, download_client):
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        created = client.post("/api/cases", json={"title": "Download Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        content = b"real evtx bytes for download test"
+        evidence = asyncio.run(
+            _seed_promoted_evidence(
+                storage, evidence_repo, org_id=org_id, case_id=case_id, content=content
+            )
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/download")
+
+        assert resp.status_code == 200
+        assert resp.content == content
+        assert resp.headers["content-type"] == "application/octet-stream"
+        assert 'filename="security.evtx"' in resp.headers["content-disposition"]
+
+    def test_download_writes_real_audit_event(self, download_client):
+        client, case_repo, evidence_repo, storage, org_id, user_id, audit_repo = download_client
+        created = client.post("/api/cases", json={"title": "Audited Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence(storage, evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/download")
+        assert resp.status_code == 200
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(org_id)))
+        download_events = [e for e in events if e.event_type == AuditEventType.EVIDENCE_DOWNLOAD]
+        assert len(download_events) == 1
+        assert download_events[0].evidence_id == evidence.evidence_id
+        assert download_events[0].case_id == case_id
+        assert download_events[0].actor_user_id == user_id
+
+    def test_evidence_not_yet_promoted_returns_404(self, download_client):
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        created = client.post("/api/cases", json={"title": "Unpromoted Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        meta = EvidenceMetadata(
+            original_filename="not-ready.evtx",
+            content_type="application/octet-stream",
+            size_bytes=10,
+            uploader_user_id=uuid.uuid4(),
+            case_id=case_id,
+            org_id=org_id,
+            org_alias="testorg",
+        )
+        evidence = asyncio.run(
+            evidence_repo.save(Evidence(metadata=meta, state=EvidenceState.SCANNING))
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/download")
+        assert resp.status_code == 404
+
+    def test_nonexistent_evidence_returns_404(self, download_client):
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        created = client.post("/api/cases", json={"title": "No Evidence Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        resp = client.get(f"/api/cases/{case_id}/evidence/{uuid.uuid4()}/download")
+        assert resp.status_code == 404
+
+    def test_nonexistent_case_returns_404(self, download_client):
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        resp = client.get(f"/api/cases/{uuid.uuid4()}/evidence/{uuid.uuid4()}/download")
+        assert resp.status_code == 404
+
+    def test_another_orgs_evidence_returns_404(self, download_client):
+        """Tenant isolation: real evidence exists (a different org's), but
+        the case lookup itself already scopes by tenant.org_id, so a
+        cross-org case_id never resolves -- confirms the standing "404
+        never 403, never leak cross-org existence" invariant this file's
+        other routes already establish."""
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        other_org = uuid.uuid4()
+        other_case_id = uuid.uuid4()
+        evidence = asyncio.run(
+            _seed_promoted_evidence(storage, evidence_repo, org_id=other_org, case_id=other_case_id)
+        )
+        # Real case exists, but for a DIFFERENT org than the caller's tenant.
+        resp = client.get(f"/api/cases/{other_case_id}/evidence/{evidence.evidence_id}/download")
+        assert resp.status_code == 404

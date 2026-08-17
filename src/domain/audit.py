@@ -27,6 +27,10 @@ class AuditEventType(StrEnum):
     EVIDENCE_ERROR = "evidence.error"
     EVIDENCE_LEGAL_HOLD_SET = "evidence.legal_hold_set"
     EVIDENCE_LEGAL_HOLD_CLEARED = "evidence.legal_hold_cleared"
+    # Gap Audit X1 (docs/GAP_AUDIT_2026-08-17.md, closes COMP-11): full
+    # custody trail must include reads of WORM objects, not just writes --
+    # logged on every real download-route access attempt.
+    EVIDENCE_DOWNLOAD = "evidence.download"
 
     # Parsing
     PARSE_STARTED = "parse.started"

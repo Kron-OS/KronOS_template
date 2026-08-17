@@ -1,0 +1,61 @@
+==============================================================================
+1. Real Postgres case + real MinIO upload -- org=poc-x1-64652bc5
+==============================================================================
+[PASS] real case persisted in Postgres
+{"event": "bucket_created", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-08-17T04:02:04.818189Z", "bucket": "kronos-evidence-poc-x1-64652bc5-quarantine", "object_lock": false}
+{"event": "presigned_url_generated", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-08-17T04:02:04.819635Z", "evidence_id": "bc057097-1dbc-4f1c-b124-98b3d696012a", "bucket": "kronos-evidence-poc-x1-64652bc5-quarantine", "key": "poc-x1-64652bc5/1320a561-0e62-4bda-a91e-982ec4b08cb4/bc057097-1dbc-4f1c-b124-98b3d696012a/download-poc.json"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.832856Z", "event_id": "43d371a9-4b41-4828-8801-b0b5134b8310", "event_type": "evidence.upload_requested", "seq": 1}
+{"event": "upload_requested", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-08-17T04:02:04.832958Z", "evidence_id": "bc057097-1dbc-4f1c-b124-98b3d696012a", "org_id": "b6eb1359-6eda-4bdd-964d-ac41c116b7b0", "extra_filename": "download-poc.json"}
+{"event": "HTTP Request: PUT http://localhost:9000/kronos-evidence-poc-x1-64652bc5-quarantine/poc-x1-64652bc5/1320a561-0e62-4bda-a91e-982ec4b08cb4/bc057097-1dbc-4f1c-b124-98b3d696012a/download-poc.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260817%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260817T040204Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=91d5acbafc289f31f6c1865fb59b372da21ac0b12292ee7874285c247e94ef1a \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:04.877376Z"}
+[PASS] real PUT to real MinIO succeeds -- 200
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.899657Z", "event_id": "97dac5fe-efb0-4fbb-a963-e26458c1b59d", "event_type": "evidence.scan_started", "seq": 2}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.910069Z", "event_id": "bbd45e31-03d5-4af7-9ebe-20634e5f9f65", "event_type": "evidence.scan_completed", "seq": 3}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.923046Z", "event_id": "71a0b51d-b19a-42bc-8ace-c33754f57099", "event_type": "evidence.hash_computed", "seq": 4}
+{"event": "bucket_created", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-08-17T04:02:04.929233Z", "bucket": "kronos-evidence-poc-x1-64652bc5", "object_lock": true}
+{"event": "evidence_promoted", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-08-17T04:02:04.941274Z", "evidence_id": "bc057097-1dbc-4f1c-b124-98b3d696012a", "ev_key": "poc-x1-64652bc5/1320a561-0e62-4bda-a91e-982ec4b08cb4/bc057097-1dbc-4f1c-b124-98b3d696012a/download-poc.json"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.955233Z", "event_id": "06707003-43f8-4e26-afb7-95ce5956f7a9", "event_type": "evidence.promoted", "seq": 5}
+{"event": "evidence_received", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-08-17T04:02:04.955357Z", "evidence_id": "bc057097-1dbc-4f1c-b124-98b3d696012a", "sha256": "2a1edca17acf587fb020598c5b27cbba19886c8874bde53e4b2e1f0bf80eef8a"}
+[PASS] real evidence promoted (minio_evidence_key set) via real validate->scan->hash->promote -- state=RECEIVED
+
+==============================================================================
+2. Real HTTP (in-process ASGI) -- GET download route
+==============================================================================
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:04.991524Z", "event_id": "eb2e7e41-f8c0-46de-9a5d-3e2338e504a6", "event_type": "evidence.download", "seq": 6}
+{"event": "HTTP Request: GET http://poc/api/cases/1320a561-0e62-4bda-a91e-982ec4b08cb4/evidence/bc057097-1dbc-4f1c-b124-98b3d696012a/download \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:04.995452Z"}
+[PASS] download returns 200 -- 200
+[PASS] downloaded bytes match the real uploaded bytes exactly (byte-for-byte)
+[PASS] Content-Disposition carries the real original filename -- attachment; filename="download-poc.json"
+[PASS] Content-Type is the real uploaded content-type -- application/json
+
+==============================================================================
+3. Real Postgres: EVIDENCE_DOWNLOAD audit row
+==============================================================================
+[PASS] exactly one real EVIDENCE_DOWNLOAD audit row persisted -- 1
+[PASS] audit row's evidence_id matches
+[PASS] audit row's case_id matches
+[PASS] audit row's details carry the filename, not sensitive content -- {'original_filename': 'download-poc.json'}
+
+==============================================================================
+4. Un-finalized evidence (no minio_evidence_key yet) -> 404
+==============================================================================
+{"event": "presigned_url_generated", "level": "info", "logger": "src.adapter.storage.s3", "timestamp": "2026-08-17T04:02:05.001380Z", "evidence_id": "acb67c02-d650-4cbb-b8c5-59ccb5e8332c", "bucket": "kronos-evidence-poc-x1-64652bc5-quarantine", "key": "poc-x1-64652bc5/1320a561-0e62-4bda-a91e-982ec4b08cb4/acb67c02-d650-4cbb-b8c5-59ccb5e8332c/unfinalized.bin"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-17T04:02:05.008123Z", "event_id": "b83252ee-50d3-4684-98a5-552cb73dc8eb", "event_type": "evidence.upload_requested", "seq": 7}
+{"event": "upload_requested", "level": "info", "logger": "src.application.evidence_intake", "timestamp": "2026-08-17T04:02:05.008232Z", "evidence_id": "acb67c02-d650-4cbb-b8c5-59ccb5e8332c", "org_id": "b6eb1359-6eda-4bdd-964d-ac41c116b7b0", "extra_filename": "unfinalized.bin"}
+{"event": "HTTP Request: GET http://poc/api/cases/1320a561-0e62-4bda-a91e-982ec4b08cb4/evidence/acb67c02-d650-4cbb-b8c5-59ccb5e8332c/download \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:05.014023Z"}
+[PASS] un-finalized evidence download returns 404 (honest, real object doesn't exist yet) -- 404
+
+==============================================================================
+5. Cross-org access refused (404, never 403 -- no existence leak)
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/cases/1320a561-0e62-4bda-a91e-982ec4b08cb4/evidence/bc057097-1dbc-4f1c-b124-98b3d696012a/download \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:05.018304Z"}
+[PASS] a different org's caller gets 404 for this real case/evidence (not 403) -- 404
+
+==============================================================================
+6. Nonexistent case/evidence both 404
+==============================================================================
+{"event": "HTTP Request: GET http://poc/api/cases/92399fd1-307c-4ab3-9303-f75828e6e99e/evidence/dab2a0e2-74a1-4b3c-b448-ad6fb401d196/download \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:05.021947Z"}
+[PASS] nonexistent case -> 404 -- 404
+{"event": "HTTP Request: GET http://poc/api/cases/1320a561-0e62-4bda-a91e-982ec4b08cb4/evidence/01032cb6-bc28-4934-96fe-b0c5c5f7fbce/download \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-17T04:02:05.027259Z"}
+[PASS] nonexistent evidence -> 404 -- 404
+
+15 passed, 0 failed

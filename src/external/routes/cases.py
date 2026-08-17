@@ -7,10 +7,12 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
@@ -27,6 +29,7 @@ from src.external.dependencies import (
     get_dashboards_index_pattern_provisioner,
     get_detector_provisioner,
     get_evidence_repository,
+    get_evidence_storage,
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
@@ -297,6 +300,77 @@ async def list_case_evidence(
         total=total,
         page=page,
         pageSize=page_size,
+    )
+
+
+@router.get("/{case_id}/evidence/{evidence_id}/download")
+async def download_evidence(
+    case_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    storage: Annotated[EvidenceStorage, Depends(get_evidence_storage)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> StreamingResponse:
+    """Stream the real original evidence bytes for download (Gap Audit X1,
+    docs/GAP_AUDIT_2026-08-17.md) -- previously no route exposed this at
+    all; `EvidenceStorage.stream_object()` was only ever called internally
+    (parsing/hashing/scanning).
+
+    Read access, not a mutation -- gated identically to
+    `list_case_evidence` above (any authenticated org member with real
+    case access, all four roles including READ_ONLY, no role restriction
+    beyond that). 404 (never 403) for a case/evidence id that doesn't
+    exist or doesn't belong to the caller's org, matching this file's own
+    "never leak cross-org existence via 403" convention.
+
+    Streams real bytes straight through from MinIO -- never mints a
+    presigned URL for this. A presigned URL could be used later or shared
+    without the backend ever knowing; streaming through the backend keeps
+    the audit event synchronous with the actual access, which is the
+    whole point of logging it (CLAUDE.md SS A.2).
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None or evidence.metadata.case_id != case_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    if evidence.minio_evidence_key is None:
+        # Not yet promoted to the evidence (WORM) bucket -- e.g. still
+        # UPLOADING/SCANNING/HASHING, or ERROR before promotion. There is
+        # genuinely no object to stream yet; this is an honest 404; the
+        # promoted key is what stream_object() needs, not the quarantine
+        # key (which may already be deleted by the time this is called).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evidence file is not yet available for download",
+        )
+
+    # Logged on real access-attempt (this call reaching here with a real,
+    # promoted object to stream), not decoupled from the streaming
+    # response's own eventual completion, which the server can't always
+    # observe anyway for a client that disconnects mid-download.
+    await audit_log.log(
+        AuditEventType.EVIDENCE_DOWNLOAD,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={"original_filename": evidence.metadata.original_filename},
+    )
+
+    filename = evidence.metadata.original_filename.replace('"', "")
+    byte_stream = await storage.stream_object(evidence.minio_evidence_key, bucket="evidence")
+    return StreamingResponse(
+        byte_stream,
+        media_type=evidence.metadata.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
