@@ -28,3 +28,9 @@ id_rsa*
 /kronos-dev-root-ca.crt
 
 scripts/dev_autoresume/.state/
+
+# Vendored Bitnami chart tarballs from `helm dependency build` -- fetched,
+# regenerable dependency artifacts, not source (standard Helm practice is
+# to commit Chart.lock, which pins the exact resolved version, but not the
+# tarballs themselves).
+charts/kronos/charts/*.tgz

@@ -49,6 +49,11 @@ networkPolicies:
   enabled: false
 
 postgresql:
+  # Dev doesn't need replication (docs/POSTGRES_MINIO_HA_RESEARCH.md §1.5
+  # scope: prod-topology concern only) -- explicitly override the base
+  # values.yaml's `architecture: replication` back to standalone so dev
+  # doesn't stand up a second Postgres pod it has no use for.
+  architecture: standalone
   auth:
     password: kronos_dev_password
 

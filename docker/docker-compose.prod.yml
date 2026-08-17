@@ -30,15 +30,38 @@ services:
       - ./certs:/certs:ro
     command: server --config /etc/kes/config.yaml
 
+  # Streaming replication (Gap Audit V10/X2a --
+  # docs/POSTGRES_MINIO_HA_RESEARCH.md §1.5 verdict: "adopt the replication
+  # half now, defer automatic failover"). Real topology verified end-to-end
+  # in poc/postgres_replication/ (real primary + real replica, real data
+  # replicated, real pg_stat_replication sync_state=sync captured) before
+  # this file was touched, per CLAUDE.md §F. No application code change --
+  # the backend/Keycloak still connect to this `postgres` service (the
+  # primary) only; `postgres-replica` is a passive standby.
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: kronos
       POSTGRES_USER: kronos
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
-    secrets: [db_password]
+    # wal_level/max_wal_senders/max_replication_slots are context=postmaster
+    # (restart-required) GUCs, so they're baked in at cold boot.
+    # synchronous_standby_names is deliberately NOT set here -- real,
+    # reproduced finding (poc/postgres_replication/README.md "real finding
+    # #2"): setting it from cold boot deadlocks this image's own
+    # /docker-entrypoint-initdb.d database-creation bootstrap, since that's
+    # a normal client transaction that would need a synchronous ack from a
+    # standby that cannot exist yet. `postgres-replication-init` below
+    # flips this on (reload-safe, no restart) once the replica is healthy.
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+    secrets: [db_password, replication_password]
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres/primary-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # -h 127.0.0.1 forces a TCP check so dependents don't start during the
       # first-time initdb bootstrap (socket-only) before :5432 is listening.
@@ -49,6 +72,49 @@ services:
       timeout: 3s
       retries: 10
       start_period: 90s
+
+  # Real Postgres 16 streaming replica (postgres:16-alpine, same pinned tag
+  # as the primary), bootstrapped via `pg_basebackup -R` per
+  # docker/postgres/replica-entrypoint.sh -- verified end-to-end against
+  # this exact image in poc/postgres_replication/. Passive: the app never
+  # connects here directly (see CLAUDE.md §F / this item's own report for
+  # why no read-query routing was added).
+  postgres-replica:
+    image: postgres:16-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres
+      REPL_USER: replicator
+      REPLICA_APPLICATION_NAME: kronos_prod_replica
+    entrypoint: ["/bin/sh", "/replica-entrypoint.sh"]
+    secrets: [replication_password]
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+      - ./postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  # One-shot job (restart:"no", same pattern as `keycloak-init` below) that
+  # flips the primary into synchronous replication mode once the replica is
+  # confirmed healthy. See docker/postgres/replication-init.sh for the full
+  # real-finding writeup of why this can't be a `command:` flag on
+  # `postgres` at cold boot.
+  postgres-replication-init:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+      postgres-replica: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "/replication-init.sh"]
+    secrets: [db_password]
+    volumes:
+      - ./postgres/replication-init.sh:/replication-init.sh:ro
 
   redis:
     image: redis:7-alpine
@@ -469,9 +535,14 @@ services:
 secrets:
   db_password:
     external: true
+  # Streaming replication (Gap Audit V10/X2a) -- dedicated password for the
+  # `replicator` role, mirrors db_password's own external-secret pattern.
+  replication_password:
+    external: true
 
 volumes:
   postgres_data:
+  postgres_replica_data:
   redis_data:
   minio_data:
   opensearch_data:

@@ -93,10 +93,17 @@ helm install vault hashicorp/vault \
 kubectl create namespace kronos
 
 # Database credentials
+# replication-password is required because charts/kronos/values.yaml sets
+# postgresql.architecture=replication (Gap Audit V10/X2a streaming
+# replication) -- the Bitnami chart's default
+# auth.secretKeys.replicationPasswordKey is "replication-password" and it
+# must exist in this secret for the read replica to authenticate to the
+# primary.
 kubectl create secret generic kronos-postgres-secret \
   --namespace kronos \
   --from-literal=postgres-password=CHANGE_ME \
-  --from-literal=password=CHANGE_ME
+  --from-literal=password=CHANGE_ME \
+  --from-literal=replication-password=CHANGE_ME
 
 # Redis password
 kubectl create secret generic kronos-redis-secret \
@@ -144,6 +151,30 @@ make helm-install-dev
 # Production
 make helm-install-prod
 ```
+
+**Postgres streaming replication cold-start note** (Gap Audit V10/X2a):
+production values now set `postgresql.architecture: replication` +
+`postgresql.readReplicas.replicaCount: 1` +
+`postgresql.replication.numSynchronousReplicas: 1`. Real, empirically
+confirmed risk (tested directly against the pinned `bitnami/postgresql`
+image via `docker run`, not assumed -- see
+`poc/postgres_replication/README.md` "real finding #2"): if
+`numSynchronousReplicas: 1` is already active on a **fresh, first-ever**
+install, any real write (Alembic migrations, Keycloak schema setup, the
+first audit-log row) blocks indefinitely until the read-replica pod has
+finished its own bootstrap and started streaming -- `synchronous_commit`
+transactions wait for a synchronous standby ack that cannot exist yet.
+For a first install, prefer either:
+- installing once with `--set postgresql.replication.numSynchronousReplicas=0`,
+  confirming `kubectl exec` into the primary pod shows
+  `pg_stat_replication.state = streaming` for the replica, then
+  `helm upgrade` back to the real `numSynchronousReplicas: 1` in
+  `values.yaml` (`synchronous_standby_names` has `context=sighup` --
+  reload-safe, no pod restart); or
+- accepting a one-time delay on first migration/schema-setup jobs until
+  the replica pod reports Ready.
+Subsequent `helm upgrade`s of an already-running cluster are unaffected --
+the replica already exists and is already streaming by then.
 
 ### Verify the installation
 
