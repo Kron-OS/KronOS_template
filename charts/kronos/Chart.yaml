@@ -17,7 +17,25 @@ dependencies:
     version: ">=15.0.0"
     repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
+  # Redis DB-role separation (Milestone X2b / W5's own §6.1 verdict): the same
+  # Bitnami `redis` chart dependency, deployed TWICE via Helm's `alias:`
+  # mechanism (https://helm.sh/docs/topics/charts/#alias-and-condition-fields-for-dependencies,
+  # confirmed against the live docs during this pass) -- one release per
+  # DB-role pairing, matching docker-compose.prod.yml's real split of the
+  # same four DB roles. `alias:` makes the aliased name BOTH the
+  # values-override key (`redis-auth-streams:`/`redis-celery:` below) AND
+  # the name used in that dependency's own resource naming
+  # (`common.names.fullname`), so each gets its own
+  # Deployment/StatefulSet/Service/PVC under the release -- confirmed via a
+  # real `helm dependency build` + `helm template` run, see
+  # poc/redis_role_separation/README.md.
   - name: redis
+    alias: redis-auth-streams
     version: ">=18.0.0"
     repository: "https://charts.bitnami.com/bitnami"
-    condition: redis.enabled
+    condition: redis-auth-streams.enabled
+  - name: redis
+    alias: redis-celery
+    version: ">=18.0.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis-celery.enabled

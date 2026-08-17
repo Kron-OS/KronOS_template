@@ -1,0 +1,90 @@
+=== Starting throwaway two-instance Redis topology (kronos-poc-redis-role-sep) ===
+ Network kronos-poc-redis-role-sep_default Creating 
+ Network kronos-poc-redis-role-sep_default Created 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Creating 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Creating 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Created 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Created 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Starting 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Starting 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Started 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Started 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Waiting 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Waiting 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Healthy 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Healthy 
+
+=== docker compose ps ===
+NAME                                             IMAGE            COMMAND                  SERVICE              CREATED         STATUS                   PORTS
+kronos-poc-redis-role-sep-redis-auth-streams-1   redis:7-alpine   "docker-entrypoint.s…"   redis-auth-streams   4 seconds ago   Up 3 seconds (healthy)   0.0.0.0:16379->6379/tcp, [::]:16379->6379/tcp
+kronos-poc-redis-role-sep-redis-celery-1         redis:7-alpine   "docker-entrypoint.s…"   redis-celery         4 seconds ago   Up 3 seconds (healthy)   0.0.0.0:16380->6379/tcp, [::]:16380->6379/tcp
+
+=== redis-cli version / server info sanity ===
+redis_version:7.4.9
+run_id:803ed2869821734a67a30a1cdafb204087db4c07
+
+=== [raw redis-cli] Step 1: write a real key to redis-auth-streams DB0 ===
+OK
+auth-streams-db0-value
+
+=== [raw redis-cli] Step 2: confirm that key is ABSENT on redis-celery (any DB) ===
+-- redis-celery DB0 --
+
+-- redis-celery DB1 --
+
+-- redis-celery DB2 --
+
+-- redis-celery DB3 --
+
+
+=== [raw redis-cli] Step 3: write a real key to redis-celery DB1 (broker-shaped) ===
+OK
+celery-db1-value
+
+=== [raw redis-cli] Step 4: confirm that key is ABSENT on redis-auth-streams (any DB) ===
+-- redis-auth-streams DB0 --
+
+-- redis-auth-streams DB1 --
+
+-- redis-auth-streams DB2 --
+
+-- redis-auth-streams DB3 --
+
+
+=== [raw redis-cli] Step 5: write to redis-auth-streams DB3 (stream-ingest shaped), confirm absent on redis-celery DB3 ===
+1786957400050-0
+-- redis-auth-streams DB3 XLEN --
+1
+-- redis-celery DB3 XLEN for the same key (expect 0 / key missing) --
+0
+
+=== [raw redis-cli] Step 6: confirm DB0 (redis-auth-streams) vs DB1 (redis-celery) are ALSO different processes, not just different DBs of one instance ===
+run_id:803ed2869821734a67a30a1cdafb204087db4c07
+run_id:9701018eee08f4afb711fa207fd3a8d50031be3f
+(different run_id values above = genuinely separate Redis processes, not DB-index isolation within one shared process)
+
+=== [real app code] RedisTicketStore + RedisStreamIngestAdapter against the split topology ===
+== Milestone X2b real app-wiring + cross-instance isolation PoC ==
+[INFO] put step-up ticket 332b54e5-f9a5-41dd-99d1-996e14060865 on redis-auth-streams DB0
+[PASS] real RedisTicketStore round-trips a ticket on redis-auth-streams DB0
+[INFO] put a second step-up ticket 9722c300-1c74-47ef-b5f7-805f8617dce1 on redis-auth-streams DB0
+[PASS] step-up ticket written to redis-auth-streams is INVISIBLE from redis-celery (cross-instance isolation, real redis-py client)
+[INFO] produced stream message 1786957400457-0 on redis-auth-streams DB3
+[PASS] real RedisStreamIngestAdapter.produce()+list_active_streams() round-trip on redis-auth-streams DB3
+[PASS] stream produced on redis-auth-streams DB3 is INVISIBLE from redis-celery DB3 (cross-instance isolation, real redis-py client)
+[PASS] real key written to redis-celery DB1 (broker-shaped) is readable there
+[PASS] Celery-broker-shaped key written to redis-celery DB1 is INVISIBLE from redis-auth-streams (cross-instance isolation, real redis-py client)
+== All real app-wiring + cross-instance isolation checks passed ==
+
+=== PoC complete: all checks passed ===
+=== Tearing down PoC containers/network (kronos-poc-redis-role-sep) ===
+ Container kronos-poc-redis-role-sep-redis-celery-1 Stopping 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Stopping 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Stopped 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Removing 
+ Container kronos-poc-redis-role-sep-redis-celery-1 Removed 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Stopped 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Removing 
+ Container kronos-poc-redis-role-sep-redis-auth-streams-1 Removed 
+ Network kronos-poc-redis-role-sep_default Removing 
+ Network kronos-poc-redis-role-sep_default Removed 

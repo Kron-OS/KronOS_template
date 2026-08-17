@@ -50,11 +50,61 @@ services:
       retries: 10
       start_period: 90s
 
-  redis:
+  # Redis DB-role separation (Milestone X2b, executing docs/
+  # REDIS_BLAST_RADIUS_RESEARCH.md W5 §6.1's already-decided "adopt now"
+  # verdict). The single four-role `redis:` instance below is replaced by
+  # two independent single-instance deployments, matching the research's
+  # own suggested split and charts/kronos/values.yaml's redis-auth-streams/
+  # redis-celery aliases:
+  #   - redis-auth-streams: DB0 (step-up tickets, RedisTicketStore) + DB3
+  #     (stream-ingest, RedisStreamIngestAdapter) -- the two customer/
+  #     telemetry-facing roles.
+  #   - redis-celery: DB1 (Celery broker) + DB2 (Celery result backend) --
+  #     the internal task-plumbing roles.
+  # Zero src/ changes: src/config.py already models redis_url/
+  # celery_broker_url/celery_result_backend/stream_redis_db as independent
+  # DSNs (W5 §3.1) -- only the hostnames below and each consumer's
+  # REDIS_URL/CELERY_BROKER_URL/CELERY_RESULT_BACKEND env vars change. This
+  # also resolves W5's R4 finding: a large DB3 stream backlog no longer
+  # shares one instance's memory ceiling with DB0/DB1's write-availability-
+  # sensitive workloads.
+  #
+  # Two SEPARATE passwords (REDIS_AUTH_STREAMS_PASSWORD/REDIS_CELERY_PASSWORD),
+  # not one REDIS_PASSWORD reused across both -- the whole point of this
+  # split is blast-radius/credential isolation between the customer-facing
+  # and internal-plumbing role groups; reusing one password would silently
+  # reintroduce the shared-fate dependency this milestone removes.
+  #
+  # Real healthcheck added (was entirely absent on the single `redis:`
+  # service this replaces) -- discovered while doing this work that
+  # kronos-backend's own `depends_on: redis: { condition: service_healthy }`
+  # below was ALREADY a hard, pre-existing failure with zero healthcheck
+  # defined (verified live: `docker compose up` fails immediately with
+  # "dependency failed to start: container ... has no healthcheck
+  # configured", not a cosmetic gap) -- fixed here as a direct, unavoidable
+  # byproduct of writing these two service blocks correctly, not a
+  # speculative unrelated change.
+  redis-auth-streams:
     image: redis:7-alpine
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --appendonly yes
+    command: redis-server --requirepass ${REDIS_AUTH_STREAMS_PASSWORD:-changeme} --appendonly yes
     volumes:
-      - redis_data:/data
+      - redis_auth_streams_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_AUTH_STREAMS_PASSWORD:-changeme} --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-celery:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_CELERY_PASSWORD:-changeme} --appendonly yes
+    volumes:
+      - redis_celery_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_CELERY_PASSWORD:-changeme} --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -265,7 +315,11 @@ services:
     #   - tusd must use a separate put-only service account, not the backend's.
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # DB0 (step-up tickets) + DB3 (stream-ingest, via stream_redis_db's
+      # Settings default of 3 layered on this same host/port/password) --
+      # points at the redis-auth-streams instance (Milestone X2b role
+      # split, see that service's own comment above).
+      REDIS_URL: redis://:${REDIS_AUTH_STREAMS_PASSWORD}@redis-auth-streams:6379/0
       # Real, separate gap found while reconciling clamav's own
       # CLAMD_CONF_StreamMaxLength/MaxFileSize/MaxScanSize below with this
       # value (see clamav service comment + poc/clamav/README_large_file_fix.md):
@@ -335,8 +389,10 @@ services:
       TSA_URL: http://tsa:318
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      # DB1/DB2 -- points at the redis-celery instance (Milestone X2b role
+      # split; see that service's own comment above).
+      CELERY_BROKER_URL: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/2
       # Shared step-up ticket store — required because this service runs 2
       # replicas (audit M-4). The app bootstrap passes
       # build_step_up_ticket_store(settings) into create_app().
@@ -369,7 +425,11 @@ services:
       DEFENDER_CLIENT_SECRET: ${DEFENDER_CLIENT_SECRET:-}
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      # Needs BOTH: REDIS_URL/step-up ticket store lives on redis-auth-streams,
+      # but this service also enqueues Celery tasks (task_queue.enqueue_dispatch())
+      # via CELERY_BROKER_URL on redis-celery -- same split as celery-worker below.
+      redis-auth-streams: { condition: service_healthy }
+      redis-celery: { condition: service_healthy }
       db-migrate: { condition: service_completed_successfully }
     deploy:
       replicas: 2
@@ -386,7 +446,11 @@ services:
     # fields as the backend must be present or the worker crashes on boot.
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # DB0 -- this worker genuinely connects here (wire_dependencies_sync()
+      # calls build_step_up_ticket_store(settings) too, not just kronos-backend),
+      # confirmed by reading src/external/celery_app.py -> startup.py; points
+      # at the redis-auth-streams instance (Milestone X2b role split).
+      REDIS_URL: redis://:${REDIS_AUTH_STREAMS_PASSWORD}@redis-auth-streams:6379/0
       # Real, reproduced finding (poc/evidence_intake_async/): this was
       # missing here even though kronos-backend has it -- process_intake
       # (validate/scan/hash/promote) now runs in THIS worker, not the
@@ -430,8 +494,9 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      # DB1/DB2 -- points at the redis-celery instance (Milestone X2b role split).
+      CELERY_BROKER_URL: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/2
       # SIEM/SOAR outbound sink connectors (roadmap Milestones R2-R4, wired
       # 2026-08-09 Milestone S -- see kronos-backend's identical block
       # above for the full comment). NOT including DEFENDER_* here on
@@ -455,8 +520,14 @@ services:
     # create_tables() itself, see src/external/startup.py) can rely on the
     # schema existing. Converted to map form with explicit conditions
     # (matching kronos-backend's own depends_on above) for all three.
+    # redis-auth-streams/redis-celery upgraded from the old single `redis`
+    # dependency's `service_started` to `service_healthy` (Milestone X2b) --
+    # now that both real services define a real healthcheck (previously
+    # entirely absent, see redis-auth-streams's own service-block comment),
+    # matching kronos-backend's own stronger condition for the same reason.
     depends_on:
-      redis: { condition: service_started }
+      redis-auth-streams: { condition: service_healthy }
+      redis-celery: { condition: service_healthy }
       postgres: { condition: service_healthy }
       db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
@@ -472,7 +543,8 @@ secrets:
 
 volumes:
   postgres_data:
-  redis_data:
+  redis_auth_streams_data:
+  redis_celery_data:
   minio_data:
   opensearch_data:
   clamav_db:

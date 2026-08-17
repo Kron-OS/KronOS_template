@@ -52,6 +52,12 @@ postgresql:
   auth:
     password: kronos_dev_password
 
-redis:
+# Split to match values.yaml's redis-auth-streams/redis-celery aliases
+# (Milestone X2b). Dev uses inline `auth.password` (no existingSecret) same
+# as postgresql.auth.password above -- fine for a throwaway dev install.
+redis-auth-streams:
+  auth:
+    password: kronos_dev_password
+redis-celery:
   auth:
     password: kronos_dev_password

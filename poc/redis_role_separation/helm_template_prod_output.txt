@@ -1,0 +1,3337 @@
+---
+# Source: kronos/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kronos
+  labels:
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/managed-by: Helm
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Source: kronos/charts/postgresql/templates/primary/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: kronos-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+    app.kubernetes.io/component: primary
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+    - ports:
+        - port: 5432
+---
+# Source: kronos/charts/redis-auth-streams/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: kronos-redis-auth-streams
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-auth-streams
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+    # Allow inbound connections
+    - ports:
+        - port: 6379
+---
+# Source: kronos/charts/redis-celery/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: kronos-redis-celery
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-celery
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+    # Allow inbound connections
+    - ports:
+        - port: 6379
+---
+# Source: kronos/templates/networkpolicies/app-to-data.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kronos-app-to-data
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: data
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/zone: app
+      ports:
+        - protocol: TCP
+          port: 5432   # PostgreSQL
+        - protocol: TCP
+          port: 6379   # Redis
+        - protocol: TCP
+          port: 9000   # MinIO API
+        - protocol: TCP
+          port: 9200   # OpenSearch
+        - protocol: TCP
+          port: 8200   # Vault
+        - protocol: TCP
+          port: 7373   # KES
+        - protocol: TCP
+          port: 8080   # Keycloak
+        - protocol: TCP
+          port: 318    # TSA
+        - protocol: TCP
+          port: 3310   # ClamAV clamd (CLAMD_HOST/PORT, roadmap I3)
+---
+# Source: kronos/templates/networkpolicies/deny-app-egress.yaml
+# Default-deny egress from App zone; only allow to Data zone and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kronos-deny-app-internet-egress
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: app
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution — scoped to kube-dns only (INFRA-009). The
+    # previous rule had no `to:` selector at all, letting App-zone pods
+    # resolve DNS against any destination on port 53/UDP+TCP, a potential
+    # exfiltration/tunneling channel. kube-system + k8s-app: kube-dns is the
+    # standard label convention for CoreDNS/kube-dns on EKS/GKE/AKS/kubeadm;
+    # adjust the namespaceSelector/podSelector if your CNI/cluster uses a
+    # different DNS provider or labeling convention.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow traffic to Data zone only
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/zone: data
+    # Allow traffic to Keycloak (auth zone — same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: keycloak
+---
+# Source: kronos/templates/networkpolicies/dmz-to-app.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kronos-dmz-to-app
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/zone: dmz
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Source: kronos/templates/networkpolicies/parser-egress.yaml
+# INFRA-008: fast/plaso parser pods previously shared the `zone: app` label
+# with the backend/celery-index/celery-beat workloads, which meant they
+# inherited deny-app-egress.yaml's "App zone -> entire Data zone" allowance
+# (Postgres, Redis, OpenSearch, Vault, KES, Keycloak) even though parsers
+# only ever need to read/write evidence objects in MinIO. Per
+# Project_Specifications.md §5.4, parser sandboxes should have minimal
+# network reachability as defense-in-depth on top of the sandbox itself
+# running with network=none internally.
+#
+# celery/deployment-fast.yaml and celery/deployment-plaso.yaml now label
+# their pods `app.kubernetes.io/zone: app-parser` instead, so they no longer
+# match deny-app-egress.yaml's `zone: app` selector, and this policy becomes
+# their only source of egress: DNS (see the kube-dns note in
+# deny-app-egress.yaml for the INFRA-009 convention) plus MinIO.
+#
+# NOTE: MinIO is not deployed by this chart (see values.yaml `minio.endpoint`,
+# an external/pre-existing service) so there is no chart-controlled label to
+# select it precisely. `app.kubernetes.io/name: minio` matches the selector
+# labels the official/Bitnami MinIO charts use — verify this against
+# whatever manifest actually deploys MinIO in your cluster and adjust if it
+# differs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kronos-parser-egress
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/zone: app-parser
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution — scoped to kube-dns only, not "anywhere" (INFRA-009).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # MinIO only — parser pods stream evidence in/out and do nothing else.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Source: kronos/charts/postgresql/templates/primary/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+    app.kubernetes.io/component: primary
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+---
+# Source: kronos/charts/redis-auth-streams/templates/master/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-redis-auth-streams-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-auth-streams
+      app.kubernetes.io/component: master
+---
+# Source: kronos/charts/redis-auth-streams/templates/replicas/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-redis-auth-streams-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-auth-streams
+      app.kubernetes.io/component: replica
+---
+# Source: kronos/charts/redis-celery/templates/master/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-redis-celery-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-celery
+      app.kubernetes.io/component: master
+---
+# Source: kronos/charts/redis-celery/templates/replicas/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-redis-celery-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-celery
+      app.kubernetes.io/component: replica
+---
+# Source: kronos/templates/backend/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kronos-backend
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-backend
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/component: backend
+---
+# Source: kronos/charts/postgresql/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kronos-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+automountServiceAccountToken: false
+---
+# Source: kronos/charts/redis-auth-streams/templates/master/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: false
+metadata:
+  name: kronos-redis-auth-streams-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+---
+# Source: kronos/charts/redis-auth-streams/templates/replicas/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: false
+metadata:
+  name: kronos-redis-auth-streams-replica
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+---
+# Source: kronos/charts/redis-celery/templates/master/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: false
+metadata:
+  name: kronos-redis-celery-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+---
+# Source: kronos/charts/redis-celery/templates/replicas/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: false
+metadata:
+  name: kronos-redis-celery-replica
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+---
+# Source: kronos/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kronos
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+---
+# Source: kronos/charts/redis-auth-streams/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-auth-streams-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable ReJSON y Redisearch
+    loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
+    loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: kronos/charts/redis-auth-streams/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-auth-streams-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    timeout=$1
+    run_redis_command() {
+        local args=("-p" "$REDIS_PORT")
+        timeout -s 15 $timeout redis-cli "${args[@]}" "$@"
+    }
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(run_redis_command ping)
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: kronos/charts/redis-auth-streams/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-auth-streams-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/users.acl ]];then
+        cp /opt/bitnami/redis/mounted-etc/users.acl /opt/bitnami/redis/etc/users.acl
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+  start-replica.sh: |
+    #!/bin/bash
+
+    get_port() {
+        hostname="$1"
+        type="$2"
+
+        port_var=$(echo "${hostname^^}_SERVICE_PORT_$type" | sed "s/-/_/g")
+        port=${!port_var}
+
+        if [ -z "$port" ]; then
+            case $type in
+                "SENTINEL")
+                    echo 26379
+                    ;;
+                "REDIS")
+                    echo 6379
+                    ;;
+            esac
+        else
+            echo $port
+        fi
+    }
+
+    get_full_hostname() {
+        hostname="$1"
+        full_hostname="${hostname}.${HEADLESS_SERVICE}"
+        echo "${full_hostname}"
+    }
+
+    REDISPORT=$(get_port "$HOSTNAME" "REDIS")
+    HEADLESS_SERVICE="kronos-redis-auth-streams-headless.default.svc.cluster.local"
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/replica.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/replica.conf /opt/bitnami/redis/etc/replica.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/users.acl ]];then
+        cp /opt/bitnami/redis/mounted-etc/users.acl /opt/bitnami/redis/etc/users.acl
+    fi
+
+    echo "" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-port $REDISPORT" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-ip $(get_full_hostname "$HOSTNAME")" >> /opt/bitnami/redis/etc/replica.conf
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--replicaof" "${REDIS_MASTER_HOST}" "${REDIS_MASTER_PORT_NUMBER}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_MASTER_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/replica.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: kronos/charts/redis-celery/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-celery-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable ReJSON y Redisearch
+    loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
+    loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: kronos/charts/redis-celery/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-celery-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    timeout=$1
+    run_redis_command() {
+        local args=("-p" "$REDIS_PORT")
+        timeout -s 15 $timeout redis-cli "${args[@]}" "$@"
+    }
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(run_redis_command ping)
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: kronos/charts/redis-celery/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-redis-celery-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/users.acl ]];then
+        cp /opt/bitnami/redis/mounted-etc/users.acl /opt/bitnami/redis/etc/users.acl
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+  start-replica.sh: |
+    #!/bin/bash
+
+    get_port() {
+        hostname="$1"
+        type="$2"
+
+        port_var=$(echo "${hostname^^}_SERVICE_PORT_$type" | sed "s/-/_/g")
+        port=${!port_var}
+
+        if [ -z "$port" ]; then
+            case $type in
+                "SENTINEL")
+                    echo 26379
+                    ;;
+                "REDIS")
+                    echo 6379
+                    ;;
+            esac
+        else
+            echo $port
+        fi
+    }
+
+    get_full_hostname() {
+        hostname="$1"
+        full_hostname="${hostname}.${HEADLESS_SERVICE}"
+        echo "${full_hostname}"
+    }
+
+    REDISPORT=$(get_port "$HOSTNAME" "REDIS")
+    HEADLESS_SERVICE="kronos-redis-celery-headless.default.svc.cluster.local"
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/replica.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/replica.conf /opt/bitnami/redis/etc/replica.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/users.acl ]];then
+        cp /opt/bitnami/redis/mounted-etc/users.acl /opt/bitnami/redis/etc/users.acl
+    fi
+
+    echo "" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-port $REDISPORT" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-ip $(get_full_hostname "$HOSTNAME")" >> /opt/bitnami/redis/etc/replica.conf
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--replicaof" "${REDIS_MASTER_HOST}" "${REDIS_MASTER_PORT_NUMBER}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_MASTER_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/replica.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: kronos/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-config
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  opensearch-url: "https://opensearch:9200"
+  opensearch-dashboards-url: "https://dashboards.kronos.example.com"
+  keycloak-url: "https://auth.kronos.example.com"
+  keycloak-realm: "kronos"
+  minio-endpoint: "minio:9000"
+  vault-addr: "https://vault:8200"
+  clamd-host: "clamav"
+---
+# Source: kronos/templates/nginx/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kronos-nginx-config
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  # Real bug found and fixed: the nginx Deployment (../nginx/deployment.yaml)
+  # mounts a ConfigMap volume named "{fullname}-nginx-config" at
+  # /etc/nginx/conf.d, but no template in this chart ever created that
+  # ConfigMap -- confirmed via a real `helm template` render (only one
+  # ConfigMap existed in the whole rendered chart, ../configmap.yaml, an
+  # unrelated one). Every real deployment of this chart would leave the
+  # nginx pods permanently stuck in ContainerCreating (FailedMount), with
+  # no ingress traffic ever reaching the cluster. ../files/nginx.conf.template
+  # is a Helm-`tpl`-rendered copy of the real docker/nginx/nginx.conf.template
+  # (kept in sync manually, same pattern already used for
+  # scripts/provision_keycloak_org.sh / ../files/provision_keycloak_org.sh).
+  default.conf: |-
+    upstream backend {
+        # Must match the backend service/DNS name. In docker-compose the service is
+        # "kronos-backend"; on Kubernetes set this to the backend Service name.
+        server kronos-backend:8000;
+        keepalive 32;
+    }
+    
+    # Rate limiting zones — applied per IP address
+    limit_req_zone $binary_remote_addr zone=api:10m    rate=30r/s;
+    limit_req_zone $binary_remote_addr zone=upload:10m rate=5r/s;
+    limit_req_zone $binary_remote_addr zone=auth:10m   rate=10r/s;
+    
+    # Body size defaults (override per-location as needed)
+    client_max_body_size 10m;
+    
+    server {
+        listen 80;
+        server_name _;
+    
+        # -----------------------------------------------------------------------
+        # Security headers — applied globally, overridden where needed
+        # -----------------------------------------------------------------------
+        # UNLIKE docker/nginx/nginx.conf.template (the docker-compose copy this
+        # file is derived from), this file is rendered by Helm's `tpl` function
+        # at chart-install time (see ../templates/nginx/configmap.yaml) — NOT by
+        # nginx's own envsubst entry-point script. That distinction matters: a
+        # real run of the docker-compose copy confirmed nginx's envsubst crashes
+        # the container outright (nginx: [emerg] unknown "..." variable) if any
+        # of these origins is left completely unset (poc/nginx/README.md) --
+        # Helm's `default ""` below avoids that failure mode entirely by
+        # resolving to a real empty string at render time, never leaving a
+        # dangling placeholder for nginx to choke on.
+        add_header Content-Security-Policy
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src 'self' https://auth.kronos.example.com https://dashboards.kronos.example.com; frame-ancestors 'self'; connect-src 'self' https://auth.kronos.example.com  ; object-src 'none'"
+            always;
+        add_header X-Content-Type-Options        "nosniff"                            always;
+        add_header X-Frame-Options               "SAMEORIGIN"                         always;
+        add_header Referrer-Policy               "strict-origin-when-cross-origin"    always;
+        add_header Permissions-Policy            "camera=(), microphone=(), geolocation=(), payment=()" always;
+        # HSTS — 2-year max-age with preload (only effective over HTTPS; harmless on HTTP)
+        add_header Strict-Transport-Security     "max-age=63072000; includeSubDomains; preload" always;
+    
+        # Gzip
+        gzip            on;
+        gzip_comp_level 5;
+        gzip_min_length 256;
+        gzip_types      text/plain text/css application/json application/javascript
+                        text/xml application/xml image/svg+xml;
+    
+        # -----------------------------------------------------------------------
+        # Frontend SPA — serve pre-built static assets
+        # -----------------------------------------------------------------------
+        location / {
+            root /usr/share/nginx/html;
+            try_files $uri $uri/ /index.html;
+    
+            # Immutable assets (Vite fingerprints filenames with content hash)
+            location ~* \.(js|css|woff2|png|jpg|svg|ico)$ {
+                expires 1y;
+                add_header Cache-Control "public, immutable";
+            }
+        }
+    
+        # Silent SSO iframe — keycloak-js uses this for session check; must be frameable
+        # by the Keycloak origin.  We set a CSP frame-ancestors directive instead of
+        # X-Frame-Options because "ALLOWALL" is not a valid RFC value and is ignored
+        # by Chrome 89+.  X-Frame-Options is intentionally omitted here; the global
+        # SAMEORIGIN header from the outer server block is not inherited for named
+        # locations, so only the explicit CSP below applies.
+        location = /silent-check-sso.html {
+            root /usr/share/nginx/html;
+            add_header Content-Security-Policy "frame-ancestors 'self'" always;
+        }
+    
+        # -----------------------------------------------------------------------
+        # Auth proxy — token refresh via HttpOnly cookie
+        # -----------------------------------------------------------------------
+        location /auth/ {
+            limit_req zone=auth burst=20 nodelay;
+            proxy_pass         http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_set_header   Connection        "";
+        }
+    
+        # -----------------------------------------------------------------------
+        # Backend API
+        # -----------------------------------------------------------------------
+        location /api/ {
+            limit_req zone=api burst=60 nodelay;
+    
+            proxy_pass         http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_set_header   Connection        "";
+            proxy_read_timeout 60s;
+    
+            # Evidence upload — tighter rate limit, no body-size cap (streaming)
+            location /api/evidence/upload/ {
+                limit_req         zone=upload burst=10 nodelay;
+                proxy_pass        http://backend;
+                proxy_read_timeout 300s;
+                client_max_body_size 0;
+            }
+        }
+    
+        # -----------------------------------------------------------------------
+        # SSE endpoint — must NOT buffer (breaks server-sent events)
+        # -----------------------------------------------------------------------
+        location /api/sse/ {
+            limit_req zone=api burst=10 nodelay;
+            proxy_pass         http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   Connection        "";
+            proxy_buffering    off;
+            proxy_cache        off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            chunked_transfer_encoding on;
+        }
+    
+        # -----------------------------------------------------------------------
+        # Health checks — no auth, no rate limit, no access log
+        # -----------------------------------------------------------------------
+        # Full-stack check (nginx + backend both reachable) -- for external
+        # uptime monitoring against the public nginx origin.
+        location = /healthz {
+            proxy_pass  http://backend/healthz;
+            access_log  off;
+        }
+    
+        # nginx-only check -- deliberately does NOT proxy anywhere. Used as
+        # THIS pod's own Kubernetes liveness/readiness probe target
+        # (../templates/nginx/deployment.yaml): probing /healthz instead would
+        # make nginx's own pod get killed by a transient backend blip even
+        # though nginx itself is perfectly healthy.
+        location = /nginx-health {
+            access_log  off;
+            return 200  "ok\n";
+        }
+    }
+    
+    # -----------------------------------------------------------------------
+    # Production HTTPS server — uncomment and adjust for production deployment.
+    # Requires TLS certificates from step-ca (or cert-manager on Kubernetes).
+    # -----------------------------------------------------------------------
+    # server {
+    #     listen 443 ssl;
+    #     server_name kronos.example.com;
+    #
+    #     ssl_certificate     /etc/kronos/tls/cert.pem;
+    #     ssl_certificate_key /etc/kronos/tls/key.pem;
+    #     ssl_trusted_certificate /etc/kronos/tls/ca.pem;
+    #
+    #     ssl_protocols       TLSv1.3;
+    #     ssl_ciphers         TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
+    #     ssl_prefer_server_ciphers off;
+    #     ssl_session_cache   shared:SSL:10m;
+    #     ssl_session_timeout 1d;
+    #     ssl_session_tickets off;
+    #
+    #     # OCSP stapling
+    #     ssl_stapling        on;
+    #     ssl_stapling_verify on;
+    #     resolver            1.1.1.1 8.8.8.8 valid=300s;
+    #
+    #     # All other location blocks identical to HTTP server above
+    #     # (copy-paste and keep in sync, or use include)
+    # }
+    #
+    # # Redirect all HTTP to HTTPS
+    # server {
+    #     listen 80;
+    #     server_name kronos.example.com;
+    #     return 301 https://$host$request_uri;
+    # }
+---
+# Source: kronos/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: kronos/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: kronos/charts/redis-auth-streams/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-auth-streams-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-auth-streams
+---
+# Source: kronos/charts/redis-auth-streams/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-auth-streams-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/component: master
+---
+# Source: kronos/charts/redis-auth-streams/templates/replicas/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-auth-streams-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/component: replica
+---
+# Source: kronos/charts/redis-celery/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-celery-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-celery
+---
+# Source: kronos/charts/redis-celery/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-celery-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/component: master
+---
+# Source: kronos/charts/redis-celery/templates/replicas/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-redis-celery-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/component: replica
+---
+# Source: kronos/templates/backend/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-backend
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kronos-backend
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/component: backend
+---
+# Source: kronos/templates/nginx/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronos-nginx
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: nginx
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: kronos-nginx
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/component: nginx
+---
+# Source: kronos/templates/backend/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-backend
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-backend
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-backend
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/zone: app
+      annotations:
+        
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "kronos-backend"
+        vault.hashicorp.com/agent-inject-secret-database: "secret/kronos/database"
+        vault.hashicorp.com/agent-inject-secret-minio: "secret/kronos/minio"
+        vault.hashicorp.com/agent-inject-secret-keycloak: "secret/kronos/keycloak"
+        vault.hashicorp.com/agent-inject-template-database: |
+          {{- with secret "secret/kronos/database" -}}
+          DATABASE_URL={{ .Data.data.url }}
+          {{- end }}
+        checksum/config: 7075bc01d47f2e848a62e61fd59e51a4dfd0eb2f1ef84e00fc848e9a2fb42d37
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: OPENSEARCH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: opensearch-url
+            - name: OPENSEARCH_SECURITY_ENABLED
+              # Was entirely missing from this shared helper before (roadmap I3) --
+              # every backend/celery Deployment silently ran with
+              # src/config.py's opensearch_security_enabled default (False), which
+              # skips ensure_generic_tenant_role() even against a real
+              # security-enabled cluster. See values.yaml opensearch.securityEnabled
+              # for the full account.
+              value: "true"
+            - name: CLAMD_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: clamd-host
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              # Must stay <= whatever clamav.host/port above is actually configured
+              # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+              # maxUploadBytes for the full root-cause account.
+              value: "5.36870912e+09"
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              value: "kronos-backend"
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: minio-endpoint
+            - name: MINIO_USE_TLS
+              value: "true"
+            - name: STEP_UP_TICKET_STORE
+              # Shared (Redis) step-up ticket store is required because the backend runs
+              # multiple replicas (audit M-4).
+              value: "redis"
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          # /healthz (src/external/fastapi_app.py) is deliberately
+          # dependency-free -- no DB/OpenSearch check -- so a transient
+          # downstream outage never causes Kubernetes to kill and restart
+          # an otherwise-healthy backend process.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: kronos/templates/celery/deployment-beat.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-celery-beat
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: celery-beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-celery-beat
+      app.kubernetes.io/instance: kronos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-celery-beat
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: celery-beat
+        app.kubernetes.io/zone: app
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-beat
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - celery
+            - -A
+            - src.external.celery_app
+            - beat
+            - --loglevel=info
+            - --schedule=/tmp/celerybeat-schedule
+          env:
+            - name: OPENSEARCH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: opensearch-url
+            - name: OPENSEARCH_SECURITY_ENABLED
+              # Was entirely missing from this shared helper before (roadmap I3) --
+              # every backend/celery Deployment silently ran with
+              # src/config.py's opensearch_security_enabled default (False), which
+              # skips ensure_generic_tenant_role() even against a real
+              # security-enabled cluster. See values.yaml opensearch.securityEnabled
+              # for the full account.
+              value: "true"
+            - name: CLAMD_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: clamd-host
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              # Must stay <= whatever clamav.host/port above is actually configured
+              # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+              # maxUploadBytes for the full root-cause account.
+              value: "5.36870912e+09"
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              value: "kronos-backend"
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: minio-endpoint
+            - name: MINIO_USE_TLS
+              value: "true"
+            - name: STEP_UP_TICKET_STORE
+              # Shared (Redis) step-up ticket store is required because the backend runs
+              # multiple replicas (audit M-4).
+              value: "redis"
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          resources:
+            limits:
+              cpu: 200m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: schedule
+              mountPath: /tmp
+      volumes:
+        - name: schedule
+          emptyDir: {}
+---
+# Source: kronos/templates/celery/deployment-fast.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-celery-fast
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: celery-fast
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-celery-fast
+      app.kubernetes.io/instance: kronos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-celery-fast
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: celery-fast
+        # Distinct zone from the rest of the App tier (INFRA-008): parser
+        # pods must not inherit deny-app-egress.yaml's broad "app -> entire
+        # Data zone" allowance. See networkpolicies/parser-egress.yaml for
+        # the dedicated MinIO-only policy that selects this label instead.
+        app.kubernetes.io/zone: app-parser
+      annotations:
+        
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "kronos-backend"
+        vault.hashicorp.com/agent-inject-secret-database: "secret/kronos/database"
+        vault.hashicorp.com/agent-inject-secret-minio: "secret/kronos/minio"
+        vault.hashicorp.com/agent-inject-secret-keycloak: "secret/kronos/keycloak"
+        vault.hashicorp.com/agent-inject-template-database: |
+          {{- with secret "secret/kronos/database" -}}
+          DATABASE_URL={{ .Data.data.url }}
+          {{- end }}
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-fast
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - celery
+            - -A
+            - src.external.celery_app
+            - worker
+            - -Q
+            - "q.parse.fast"
+            - -c
+            - "4"
+            - --loglevel=info
+          env:
+            - name: OPENSEARCH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: opensearch-url
+            - name: OPENSEARCH_SECURITY_ENABLED
+              # Was entirely missing from this shared helper before (roadmap I3) --
+              # every backend/celery Deployment silently ran with
+              # src/config.py's opensearch_security_enabled default (False), which
+              # skips ensure_generic_tenant_role() even against a real
+              # security-enabled cluster. See values.yaml opensearch.securityEnabled
+              # for the full account.
+              value: "true"
+            - name: CLAMD_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: clamd-host
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              # Must stay <= whatever clamav.host/port above is actually configured
+              # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+              # maxUploadBytes for the full root-cause account.
+              value: "5.36870912e+09"
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              value: "kronos-backend"
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: minio-endpoint
+            - name: MINIO_USE_TLS
+              value: "true"
+            - name: STEP_UP_TICKET_STORE
+              # Shared (Redis) step-up ticket store is required because the backend runs
+              # multiple replicas (audit M-4).
+              value: "redis"
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: kronos/templates/celery/deployment-index.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-celery-index
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: celery-index
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-celery-index
+      app.kubernetes.io/instance: kronos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-celery-index
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: celery-index
+        app.kubernetes.io/zone: app
+      annotations:
+        
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "kronos-backend"
+        vault.hashicorp.com/agent-inject-secret-database: "secret/kronos/database"
+        vault.hashicorp.com/agent-inject-secret-minio: "secret/kronos/minio"
+        vault.hashicorp.com/agent-inject-secret-keycloak: "secret/kronos/keycloak"
+        vault.hashicorp.com/agent-inject-template-database: |
+          {{- with secret "secret/kronos/database" -}}
+          DATABASE_URL={{ .Data.data.url }}
+          {{- end }}
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-index
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - celery
+            - -A
+            - src.external.celery_app
+            - worker
+            - -Q
+            - "q.index,q.intake"
+            - -c
+            - "8"
+            - --loglevel=info
+          env:
+            - name: OPENSEARCH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: opensearch-url
+            - name: OPENSEARCH_SECURITY_ENABLED
+              # Was entirely missing from this shared helper before (roadmap I3) --
+              # every backend/celery Deployment silently ran with
+              # src/config.py's opensearch_security_enabled default (False), which
+              # skips ensure_generic_tenant_role() even against a real
+              # security-enabled cluster. See values.yaml opensearch.securityEnabled
+              # for the full account.
+              value: "true"
+            - name: CLAMD_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: clamd-host
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              # Must stay <= whatever clamav.host/port above is actually configured
+              # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+              # maxUploadBytes for the full root-cause account.
+              value: "5.36870912e+09"
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              value: "kronos-backend"
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: minio-endpoint
+            - name: MINIO_USE_TLS
+              value: "true"
+            - name: STEP_UP_TICKET_STORE
+              # Shared (Redis) step-up ticket store is required because the backend runs
+              # multiple replicas (audit M-4).
+              value: "redis"
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: kronos/templates/celery/deployment-plaso.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-celery-plaso
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: celery-plaso
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-celery-plaso
+      app.kubernetes.io/instance: kronos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-celery-plaso
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: celery-plaso
+        # Distinct zone from the rest of the App tier (INFRA-008): parser
+        # pods must not inherit deny-app-egress.yaml's broad "app -> entire
+        # Data zone" allowance. See networkpolicies/parser-egress.yaml for
+        # the dedicated MinIO-only policy that selects this label instead.
+        app.kubernetes.io/zone: app-parser
+      annotations:
+        
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "kronos-backend"
+        vault.hashicorp.com/agent-inject-secret-database: "secret/kronos/database"
+        vault.hashicorp.com/agent-inject-secret-minio: "secret/kronos/minio"
+        vault.hashicorp.com/agent-inject-secret-keycloak: "secret/kronos/keycloak"
+        vault.hashicorp.com/agent-inject-template-database: |
+          {{- with secret "secret/kronos/database" -}}
+          DATABASE_URL={{ .Data.data.url }}
+          {{- end }}
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      runtimeClassName: firecracker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-plaso
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - celery
+            - -A
+            - src.external.celery_app
+            - worker
+            - -Q
+            - "q.parse.plaso"
+            - -c
+            - "1"
+            - --loglevel=info
+          env:
+            - name: OPENSEARCH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: opensearch-url
+            - name: OPENSEARCH_SECURITY_ENABLED
+              # Was entirely missing from this shared helper before (roadmap I3) --
+              # every backend/celery Deployment silently ran with
+              # src/config.py's opensearch_security_enabled default (False), which
+              # skips ensure_generic_tenant_role() even against a real
+              # security-enabled cluster. See values.yaml opensearch.securityEnabled
+              # for the full account.
+              value: "true"
+            - name: CLAMD_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: clamd-host
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              # Must stay <= whatever clamav.host/port above is actually configured
+              # with (StreamMaxLength/MaxFileSize/MaxScanSize) -- see values.yaml
+              # maxUploadBytes for the full root-cause account.
+              value: "5.36870912e+09"
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              value: "kronos-backend"
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kronos-config
+                  key: minio-endpoint
+            - name: MINIO_USE_TLS
+              value: "true"
+            - name: STEP_UP_TICKET_STORE
+              # Shared (Redis) step-up ticket store is required because the backend runs
+              # multiple replicas (audit M-4).
+              value: "redis"
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          resources:
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmpfs-scratch
+              mountPath: /tmp
+      volumes:
+        - name: tmpfs-scratch
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+---
+# Source: kronos/templates/nginx/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronos-nginx
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronos-nginx
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/component: nginx
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos-nginx
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: nginx
+        app.kubernetes.io/zone: dmz
+    spec:
+      automountServiceAccountToken: false
+      # PSS "restricted" (namespace.yaml) requires runAsNonRoot: true on every
+      # pod in this namespace; nginx previously ran as root with no hardening
+      # at all (INFRA-006). 101:101 is the "nginx" system user/group baked
+      # into the official nginx:alpine image referenced by .Values.nginx.image
+      # below — same non-root convention the backend deployment uses with its
+      # own uid (see backend/deployment.yaml).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: "nginx:alpine"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          # /nginx-health (files/nginx.conf.template) checks nginx itself
+          # only -- deliberately NOT /healthz, which proxies to the
+          # backend and would get this pod killed by a transient backend
+          # blip even though nginx itself is fine.
+          livenessProbe:
+            httpGet:
+              path: /nginx-health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /nginx-health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # Binding container port 80/443 as a non-root user requires this
+              # capability — dropping it too would force a listen-port change.
+              add: ["NET_BIND_SERVICE"]
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: var-cache-nginx
+              mountPath: /var/cache/nginx
+            - name: var-run
+              mountPath: /var/run
+            - name: var-log-nginx
+              mountPath: /var/log/nginx
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: kronos-nginx-config
+        - name: tmp
+          emptyDir: {}
+        - name: var-cache-nginx
+          emptyDir: {}
+        - name: var-run
+          emptyDir: {}
+        - name: var-log-nginx
+          emptyDir: {}
+---
+# Source: kronos/templates/backend/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kronos-backend
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kronos-backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: kronos/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kronos-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 18.6.0
+    helm.sh/chart: postgresql-18.8.9
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: kronos-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: kronos-postgresql
+      labels:
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/version: 18.6.0
+        helm.sh/chart: postgresql-18.8.9
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: kronos-postgresql
+      
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: kronos
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: registry-1.docker.io/bitnami/postgresql:latest
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: OPENSSL_FIPS
+              value: "yes"
+            - name: OPENSSL_FIPS_PROVIDER_PATH
+              value: "/etc/ssl/provider_fips.cnf"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "kronos"
+            - name: POSTGRES_PASSWORD_FILE
+              value: /opt/bitnami/postgresql/secrets/password
+            - name: POSTGRES_POSTGRES_PASSWORD_FILE
+              value: /opt/bitnami/postgresql/secrets/postgres-password
+            - name: POSTGRES_DATABASE
+              value: "kronos"
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  exec pg_isready -U "kronos" -d "dbname=kronos" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  exec pg_isready -U "kronos" -d "dbname=kronos" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+            - name: empty-dir
+              mountPath: /opt/bitnami/postgresql/conf
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /opt/bitnami/postgresql/tmp
+              subPath: app-tmp-dir
+            - name: postgresql-password
+              mountPath: /opt/bitnami/postgresql/secrets/
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: empty-dir
+          emptyDir: {}
+        - name: postgresql-password
+          secret:
+            secretName: kronos-postgres-secret
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "50Gi"
+---
+# Source: kronos/charts/redis-auth-streams/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kronos-redis-auth-streams-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-auth-streams
+      app.kubernetes.io/component: master
+  serviceName: kronos-redis-auth-streams-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis-auth-streams
+        app.kubernetes.io/version: 8.10.0
+        helm.sh/chart: redis-auth-streams-28.0.5
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 62ff2843192643ad74a96fbad607a0b92db3dc81d3a369deaa3fb9aebbd24ddc
+        checksum/health: a2fc61ae99390643dac0673ed97203805136d4460b2319e7beff10546c1e1140
+        checksum/scripts: 74b69131c9579438de714a31438ff049a5c5edb55570410e8882442c22649ad0
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      serviceAccountName: kronos-redis-auth-streams-master
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: kronos
+                    app.kubernetes.io/name: redis-auth-streams
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: registry-1.docker.io/bitnami/redis:latest
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: OPENSSL_FIPS
+              value: "yes"
+            - name: REDIS_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_liveness_local.sh 5"
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_readiness_local.sh 1"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-password
+              mountPath: /opt/bitnami/redis/secrets/
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: empty-dir
+              mountPath: /opt/bitnami/redis/etc/
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: kronos-redis-auth-streams-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: kronos-redis-auth-streams-health
+            defaultMode: 0755
+        - name: redis-password
+          
+          secret:
+            secretName: kronos-redis-auth-streams-secret
+            items:
+            - key: redis-password
+              path: redis-password
+        - name: config
+          configMap:
+            name: kronos-redis-auth-streams-configuration
+        - name: empty-dir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: kronos
+          app.kubernetes.io/name: redis-auth-streams
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: kronos/charts/redis-auth-streams/templates/replicas/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kronos-redis-auth-streams-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-auth-streams
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-auth-streams-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-auth-streams
+      app.kubernetes.io/component: replica
+  serviceName: kronos-redis-auth-streams-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis-auth-streams
+        app.kubernetes.io/version: 8.10.0
+        helm.sh/chart: redis-auth-streams-28.0.5
+        app.kubernetes.io/component: replica
+      annotations:
+        checksum/configmap: 62ff2843192643ad74a96fbad607a0b92db3dc81d3a369deaa3fb9aebbd24ddc
+        checksum/health: a2fc61ae99390643dac0673ed97203805136d4460b2319e7beff10546c1e1140
+        checksum/scripts: 74b69131c9579438de714a31438ff049a5c5edb55570410e8882442c22649ad0
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      serviceAccountName: kronos-redis-auth-streams-replica
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: kronos
+                    app.kubernetes.io/name: redis-auth-streams
+                    app.kubernetes.io/component: replica
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: registry-1.docker.io/bitnami/redis:latest
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - /opt/bitnami/scripts/start-scripts/start-replica.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: replica
+            - name: REDIS_MASTER_HOST
+              value: kronos-redis-auth-streams-master-0.kronos-redis-auth-streams-headless.default.svc.cluster.local
+            - name: REDIS_MASTER_PORT_NUMBER
+              value: "6379"
+            - name: OPENSSL_FIPS
+              value: "yes"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_MASTER_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          startupProbe:
+            failureThreshold: 22
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: redis
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_liveness_local_and_master.sh 5"
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_readiness_local_and_master.sh 1"
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 2Gi
+              memory: 192Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-password
+              mountPath: /opt/bitnami/redis/secrets/
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: empty-dir
+              mountPath: /opt/bitnami/redis/etc
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: kronos-redis-auth-streams-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: kronos-redis-auth-streams-health
+            defaultMode: 0755
+        - name: redis-password
+          
+          secret:
+            secretName: kronos-redis-auth-streams-secret
+            items:
+            - key: redis-password
+              path: redis-password
+        - name: config
+          configMap:
+            name: kronos-redis-auth-streams-configuration
+        - name: empty-dir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: kronos
+          app.kubernetes.io/name: redis-auth-streams
+          app.kubernetes.io/component: replica
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: kronos/charts/redis-celery/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kronos-redis-celery-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-celery
+      app.kubernetes.io/component: master
+  serviceName: kronos-redis-celery-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis-celery
+        app.kubernetes.io/version: 8.10.0
+        helm.sh/chart: redis-celery-28.0.5
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 62ff2843192643ad74a96fbad607a0b92db3dc81d3a369deaa3fb9aebbd24ddc
+        checksum/health: a2fc61ae99390643dac0673ed97203805136d4460b2319e7beff10546c1e1140
+        checksum/scripts: 5e6342d30c400a47251e4e1904ab44acda3a1191ea37f413095049b3a8540660
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      serviceAccountName: kronos-redis-celery-master
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: kronos
+                    app.kubernetes.io/name: redis-celery
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: registry-1.docker.io/bitnami/redis:latest
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: OPENSSL_FIPS
+              value: "yes"
+            - name: REDIS_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_liveness_local.sh 5"
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_readiness_local.sh 1"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-password
+              mountPath: /opt/bitnami/redis/secrets/
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: empty-dir
+              mountPath: /opt/bitnami/redis/etc/
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: kronos-redis-celery-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: kronos-redis-celery-health
+            defaultMode: 0755
+        - name: redis-password
+          
+          secret:
+            secretName: kronos-redis-celery-secret
+            items:
+            - key: redis-password
+              path: redis-password
+        - name: config
+          configMap:
+            name: kronos-redis-celery-configuration
+        - name: empty-dir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: kronos
+          app.kubernetes.io/name: redis-celery
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: kronos/charts/redis-celery/templates/replicas/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kronos-redis-celery-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis-celery
+    app.kubernetes.io/version: 8.10.0
+    helm.sh/chart: redis-celery-28.0.5
+    app.kubernetes.io/component: replica
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kronos
+      app.kubernetes.io/name: redis-celery
+      app.kubernetes.io/component: replica
+  serviceName: kronos-redis-celery-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis-celery
+        app.kubernetes.io/version: 8.10.0
+        helm.sh/chart: redis-celery-28.0.5
+        app.kubernetes.io/component: replica
+      annotations:
+        checksum/configmap: 62ff2843192643ad74a96fbad607a0b92db3dc81d3a369deaa3fb9aebbd24ddc
+        checksum/health: a2fc61ae99390643dac0673ed97203805136d4460b2319e7beff10546c1e1140
+        checksum/scripts: 5e6342d30c400a47251e4e1904ab44acda3a1191ea37f413095049b3a8540660
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      serviceAccountName: kronos-redis-celery-replica
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: kronos
+                    app.kubernetes.io/name: redis-celery
+                    app.kubernetes.io/component: replica
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: registry-1.docker.io/bitnami/redis:latest
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - /opt/bitnami/scripts/start-scripts/start-replica.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: replica
+            - name: REDIS_MASTER_HOST
+              value: kronos-redis-celery-master-0.kronos-redis-celery-headless.default.svc.cluster.local
+            - name: REDIS_MASTER_PORT_NUMBER
+              value: "6379"
+            - name: OPENSSL_FIPS
+              value: "yes"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_MASTER_PASSWORD_FILE
+              value: "/opt/bitnami/redis/secrets/redis-password"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          startupProbe:
+            failureThreshold: 22
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: redis
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_liveness_local_and_master.sh 5"
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - "/health/ping_readiness_local_and_master.sh 1"
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 2Gi
+              memory: 192Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-password
+              mountPath: /opt/bitnami/redis/secrets/
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: empty-dir
+              mountPath: /opt/bitnami/redis/etc
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: kronos-redis-celery-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: kronos-redis-celery-health
+            defaultMode: 0755
+        - name: redis-password
+          
+          secret:
+            secretName: kronos-redis-celery-secret
+            items:
+            - key: redis-password
+              path: redis-password
+        - name: config
+          configMap:
+            name: kronos-redis-celery-configuration
+        - name: empty-dir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: kronos
+          app.kubernetes.io/name: redis-celery
+          app.kubernetes.io/component: replica
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: kronos/templates/nginx/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kronos
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    cert-manager.io/cluster-issuer: "step-ca-issuer"
+    cert-manager.io/issuer-kind: "ClusterIssuer"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+spec:
+  ingressClassName: "nginx"
+  tls:
+    - hosts:
+        - "kronos.example.com"
+      secretName: kronos-tls
+  rules:
+    - host: "kronos.example.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kronos-nginx
+                port:
+                  name: http
+---
+# Source: kronos/templates/backend/migrate-job.yaml
+# Pre-install/pre-upgrade hook that runs `alembic upgrade head` against the
+# real Postgres schema before the backend Deployment (and Celery workers) is
+# ever created (install) or updated (upgrade). This is the Helm/Kubernetes
+# equivalent of docker-compose.{dev,test,prod}.yml's own `db-migrate`
+# one-shot service (see docker-compose.dev.yml and docs/DATABASE_MIGRATIONS.md)
+# -- Milestone V4 (Gap Audit P1-12) replaced the old create_tables()-at-boot
+# path used by wire_dependencies_async()/wire_dependencies_sync() with a
+# real Alembic-managed schema, but that change only ever touched the Compose
+# files, not this chart. Helm has no `depends_on: service_completed_successfully`
+# construct, so a hook Job blocking the whole install/upgrade is the closest
+# equivalent. Without this, a fresh install reports every pod Ready
+# (src/external/fastapi_app.py's /healthz is deliberately DB-independent --
+# do NOT add a DB check there, see its own comment: a transient downstream
+# outage must never cause Kubernetes to kill an otherwise-healthy backend)
+# against an empty schema, with zero error signal from Kubernetes -- every
+# DB-touching request just 500s.
+#
+# Uses the same backend image: alembic.ini/migrations/ are baked into it
+# (see docker/Dockerfile's own "Alembic (Gap Audit P1-12 / Milestone V4)"
+# comment), no separate image/Dockerfile needed, same as db-migrate's own
+# `image: kronos-backend:dev` in docker-compose.dev.yml. Loads DATABASE_URL
+# from the exact same kronos-app-secrets secret the backend Deployment
+# itself uses (charts/kronos/templates/backend/deployment.yaml) -- no new
+# secret name or env var invented.
+#
+# hook-weight "0": lower than keycloak.provisionOrg / opensearch.securityInit's
+# post-install hook-weight "5" above -- though those run in a different hook
+# phase entirely (post-install/post-upgrade, after every resource including
+# the backend Deployment already exists), so this weight mostly matters
+# relative to any other pre-install/pre-upgrade hook added later.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kronos-db-migrate
+  namespace: kronos
+  labels:
+    helm.sh/chart: kronos-0.1.0
+    app.kubernetes.io/name: kronos
+    app.kubernetes.io/instance: kronos
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: db-migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronos
+        app.kubernetes.io/instance: kronos
+        app.kubernetes.io/component: db-migrate
+        app.kubernetes.io/zone: app
+    spec:
+      serviceAccountName: kronos
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-migrate
+          image: "ghcr.io/kron-os/kronos-backend:0.1.0"
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - secretRef:
+                name: kronos-app-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

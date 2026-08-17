@@ -98,10 +98,22 @@ kubectl create secret generic kronos-postgres-secret \
   --from-literal=postgres-password=CHANGE_ME \
   --from-literal=password=CHANGE_ME
 
-# Redis password
-kubectl create secret generic kronos-redis-secret \
+# Redis passwords -- TWO secrets, not one, since Milestone X2b split the
+# single Bitnami redis dependency into two aliased instances
+# (charts/kronos/Chart.yaml/values.yaml: redis-auth-streams for DB0 step-up
+# + DB3 stream-ingest, redis-celery for DB1 broker + DB2 result backend --
+# see docs/REDIS_BLAST_RADIUS_RESEARCH.md W5 §6.1 for the reasoning). Two
+# separate secrets by design: the point of the split is blast-radius/
+# credential isolation between the customer-facing and internal-plumbing
+# role groups, so reusing one password across both instances would silently
+# reintroduce the shared-fate dependency this split removes.
+kubectl create secret generic kronos-redis-auth-streams-secret \
   --namespace kronos \
-  --from-literal=redis-password=CHANGE_ME
+  --from-literal=redis-password=CHANGE_ME_AUTH_STREAMS
+
+kubectl create secret generic kronos-redis-celery-secret \
+  --namespace kronos \
+  --from-literal=redis-password=CHANGE_ME_CELERY
 
 # Keycloak client secret
 kubectl create secret generic kronos-keycloak-secret \
@@ -120,19 +132,29 @@ kubectl create secret generic kronos-opensearch-secret \
   --from-literal=username=admin \
   --from-literal=password=CHANGE_ME
 
-# Combined app secrets (injected via envFrom)
+# Combined app secrets (injected via envFrom). REDIS_URL now points at the
+# redis-auth-streams instance (DB0 -- stream-ingest's DB3 reuses this same
+# host/port/password via src/config.py's stream_redis_db=3 default, no
+# separate env var); CELERY_BROKER_URL/CELERY_RESULT_BACKEND now point at
+# the separate redis-celery instance (DB1/DB2). Real hostnames confirmed via
+# `helm template kronos charts/kronos/ --values charts/kronos/values.yaml`
+# (Bitnami redis chart's common.names.fullname resolves aliased dependency
+# "redis-auth-streams"/"redis-celery" to "<release>-redis-auth-streams"/
+# "<release>-redis-celery", "-master" suffixed for the primary Service) --
+# substitute <release> for whatever `helm install <release>` name is used
+# (this repo's Makefile/helm-install-prod target installs as "kronos").
 kubectl create secret generic kronos-app-secrets \
   --namespace kronos \
   --from-literal=DATABASE_URL="postgresql+asyncpg://kronos:CHANGE_ME@postgres:5432/kronos" \
-  --from-literal=REDIS_URL="redis://:CHANGE_ME@redis:6379/0" \
+  --from-literal=REDIS_URL="redis://:CHANGE_ME_AUTH_STREAMS@kronos-redis-auth-streams-master:6379/0" \
   --from-literal=MINIO_ACCESS_KEY="CHANGE_ME" \
   --from-literal=MINIO_SECRET_KEY="CHANGE_ME" \
   --from-literal=OPENSEARCH_USERNAME="admin" \
   --from-literal=OPENSEARCH_PASSWORD="CHANGE_ME" \
   --from-literal=KEYCLOAK_CLIENT_SECRET="CHANGE_ME" \
   --from-literal=VAULT_TOKEN="CHANGE_ME" \
-  --from-literal=CELERY_BROKER_URL="redis://:CHANGE_ME@redis:6379/1" \
-  --from-literal=CELERY_RESULT_BACKEND="redis://:CHANGE_ME@redis:6379/2"
+  --from-literal=CELERY_BROKER_URL="redis://:CHANGE_ME_CELERY@kronos-redis-celery-master:6379/1" \
+  --from-literal=CELERY_RESULT_BACKEND="redis://:CHANGE_ME_CELERY@kronos-redis-celery-master:6379/2"
 ```
 
 ### Install with Helm

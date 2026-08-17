@@ -1,0 +1,31 @@
+# Throwaway PoC topology for Milestone X2b (Redis DB-role separation).
+# Mirrors docker-compose.prod.yml's real redis-auth-streams/redis-celery
+# split exactly (same image, same --appendonly yes, same --requirepass
+# pattern) but on host-published ports so this PoC's own scripts can reach
+# both instances directly without exec-ing into the containers. Run with
+# `-p kronos-poc-redis-role-sep` (see run_poc.sh) so every container/
+# network name is prefixed kronos-poc-*, per CLAUDE.md. Does NOT touch
+# docker-redis-1 (the existing dev stack's own Redis) or any other
+# pre-existing container.
+services:
+  redis-auth-streams:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_AUTH_STREAMS_PASSWORD:-poc_auth_streams_pw} --appendonly yes
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_AUTH_STREAMS_PASSWORD:-poc_auth_streams_pw} --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis-celery:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_CELERY_PASSWORD:-poc_celery_pw} --appendonly yes
+    ports:
+      - "16380:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_CELERY_PASSWORD:-poc_celery_pw} --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 10

@@ -252,11 +252,56 @@ postgresql:
         cpu: "1000m"
         memory: "2Gi"
 
-redis:
+# Redis DB-role separation (Milestone X2b, executing docs/
+# REDIS_BLAST_RADIUS_RESEARCH.md W5 §6.1's already-decided "adopt now"
+# verdict). The single `redis:` block below (one Bitnami subchart instance,
+# all four DB roles multiplexed onto it -- DB0 step-up, DB1 Celery broker,
+# DB2 Celery result backend, DB3 stream-ingest) is replaced by TWO aliased
+# instances of the same dependency (Chart.yaml), matching the brief's own
+# suggested pairing and docker-compose.prod.yml's real split:
+#   - redis-auth-streams: DB0 (step-up tickets) + DB3 (stream-ingest) --
+#     the two customer/telemetry-facing roles.
+#   - redis-celery: DB1 (Celery broker) + DB2 (Celery result backend) --
+#     the internal task-plumbing roles.
+# This also resolves W5's R4 finding (a large DB3 stream backlog no longer
+# shares one instance's memory ceiling with DB0/DB1's write-availability-
+# sensitive workloads). Zero src/ changes needed -- src/config.py already
+# models redis_url/celery_broker_url/celery_result_backend/stream_redis_db
+# as independent DSNs (W5 §3.1); only the two hostnames + kronos-app-secrets
+# values need to change (see docs/deployment.md's secret-creation snippet).
+#
+# Two SEPARATE existingSecrets (not one REDIS_PASSWORD reused) chosen
+# deliberately: the whole point of this split is blast-radius/credential
+# isolation between the customer-facing and internal-plumbing role groups,
+# so a leaked/rotated auth+streams password should not also be a live
+# Celery broker/backend credential, and vice versa -- reusing one secret
+# across both instances would silently reintroduce a shared-fate dependency
+# this milestone exists to remove. Same per-instance persistence/resource
+# sizing as the original single instance (no capacity remodeling attempted
+# here -- that would need real load data, out of this item's scope per W5
+# §5.1, which only asked for role separation, not capacity re-tuning).
+redis-auth-streams:
   enabled: true
   auth:
     enabled: true
-    existingSecret: kronos-redis-secret
+    existingSecret: kronos-redis-auth-streams-secret
+    existingSecretPasswordKey: redis-password
+  master:
+    persistence:
+      size: 8Gi
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+redis-celery:
+  enabled: true
+  auth:
+    enabled: true
+    existingSecret: kronos-redis-celery-secret
     existingSecretPasswordKey: redis-password
   master:
     persistence:
