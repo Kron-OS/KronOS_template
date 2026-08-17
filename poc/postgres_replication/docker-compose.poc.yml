@@ -1,0 +1,114 @@
+# Throwaway PoC topology -- CLAUDE.md §F.3. Own network/containers, distinct
+# kronos-poc-* names, never touches docker-postgres-1 or the real dev stack.
+# Mirrors docker-compose.prod.yml's `postgres:16-alpine` image pin exactly.
+
+name: kronos-poc-pgrepl
+
+services:
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pg-primary
+    environment:
+      POSTGRES_DB: kronos
+      POSTGRES_USER: kronos
+      POSTGRES_PASSWORD: kronos_poc_pw
+    # Real Postgres 16 streaming-replication GUCs
+    # (postgresql.org/docs/16/runtime-config-replication.html /
+    # runtime-config-wal.html, fetched live for this PoC): wal_level must be
+    # >= replica for any replication connection to be accepted at all
+    # (context=postmaster, restart-required, so it must be baked in at cold
+    # boot); max_wal_senders/max_replication_slots size the replica's
+    # WAL-sender slot.
+    #
+    # synchronous_standby_names is deliberately NOT set here at cold boot --
+    # real, captured finding from this PoC's first run: the official
+    # postgres:16-alpine entrypoint creates the app database (POSTGRES_DB)
+    # via a completely normal client transaction (CREATE DATABASE) during
+    # /docker-entrypoint-initdb.d bootstrap, *before* any replica can
+    # possibly exist. With synchronous_standby_names naming a standby that
+    # has never connected, synchronous_commit=on (Postgres 16's own
+    # documented default -- confirmed via `SELECT name,context FROM
+    # pg_settings` against this exact pinned image: synchronous_commit
+    # default is "on") makes that CREATE DATABASE block forever waiting for
+    # an ack that can never arrive -- the primary never finishes bootstrap,
+    # never starts listening for real connections, so the replica can never
+    # connect either. A real deadlock, reproduced and confirmed against the
+    # real pinned image before this comment was written (see
+    # poc/postgres_replication/output.txt "DEADLOCK REPRODUCTION" section).
+    #
+    # Real fix, matching how a competent operator actually sequences this:
+    # boot async, let the replica bootstrap and start streaming, THEN flip
+    # the primary into synchronous mode. synchronous_standby_names has
+    # context=sighup (empirically confirmed: `SELECT name,context FROM
+    # pg_settings WHERE name='synchronous_standby_names'` against this exact
+    # image returns `sighup`) -- reloadable via `pg_reload_conf()`, no
+    # restart required. The `postgres-replication-init` service below does
+    # exactly that, once, after the replica is confirmed healthy.
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+    volumes:
+      - ./primary-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks: [pgrepl]
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pg-replica
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres-primary
+      REPL_USER: replicator
+      REPL_PASSWORD: kronos_poc_repl_pw
+      REPLICA_APPLICATION_NAME: kronos_poc_replica
+    entrypoint: ["/bin/sh", "/replica-entrypoint.sh"]
+    volumes:
+      - ./replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    networks: [pgrepl]
+
+  # One-shot bootstrap-ordering fix, real pattern already used elsewhere in
+  # this repo for the same class of problem (docker-compose.prod.yml's own
+  # `keycloak-init` service). Runs once, after the replica is confirmed
+  # streaming, and flips the primary into synchronous mode -- see the long
+  # comment on postgres-primary.command above for why this can't happen at
+  # cold boot.
+  postgres-replication-init:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pg-replication-init
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: kronos_poc_pw
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -h postgres-primary -U kronos -d kronos -c \
+          "ALTER SYSTEM SET synchronous_standby_names = 'kronos_poc_replica';"
+        psql -h postgres-primary -U kronos -d kronos -c "SELECT pg_reload_conf();"
+        echo "[postgres-replication-init] primary is now in synchronous replication mode"
+    networks: [pgrepl]
+    restart: "no"
+
+networks:
+  pgrepl:
+    name: kronos-poc-pgrepl-net

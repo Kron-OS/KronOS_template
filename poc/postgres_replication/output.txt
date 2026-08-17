@@ -1,0 +1,338 @@
+=====================================================================
+PART 1 of 2: DEADLOCK REPRODUCTION (first real run, before the fix)
+=====================================================================
+This is the real, captured failure from the FIRST version of this PoC's
+docker-compose.poc.yml, which baked `synchronous_standby_names=kronos_poc_replica`
++ `synchronous_commit=on` directly into postgres-primary's startup `command:`.
+Kept here as evidence per CLAUDE.md §F ("captured actual output... not
+assumed") because it directly justifies the postgres-replication-init
+one-shot-job design used in the final, working topology in PART 2.
+
+$ bash run_poc.sh
+=== Starting real primary + real replica ===
+ Network kronos-poc-pgrepl-net Creating
+ Network kronos-poc-pgrepl-net Created
+ Container kronos-poc-pg-primary Creating
+ Container kronos-poc-pg-primary Created
+ Container kronos-poc-pg-replica Creating
+ Container kronos-poc-pg-replica Created
+ Container kronos-poc-pg-primary Starting
+ Container kronos-poc-pg-primary Started
+ Container kronos-poc-pg-primary Waiting
+ Container kronos-poc-pg-primary Error dependency postgres-primary failed to start
+dependency failed to start: container kronos-poc-pg-primary is unhealthy
+
+$ docker logs kronos-poc-pg-primary
+[...initdb output omitted...]
+waiting for server to start....2026-08-17 08:59:27.349 UTC [41] LOG:  starting PostgreSQL 16.15 on x86_64-pc-linux-musl...
+2026-08-17 08:59:27.350 UTC [41] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-08-17 08:59:27.355 UTC [44] LOG:  database system was shut down at 2026-08-17 08:59:26 UTC
+2026-08-17 08:59:27.360 UTC [41] LOG:  database system is ready to accept connections
+ done
+server started
+[HANGS HERE -- no further log lines ever appear]
+
+$ docker exec kronos-poc-pg-primary ps aux
+PID   USER     TIME  COMMAND
+    1 postgres  0:00 bash /usr/local/bin/docker-entrypoint.sh postgres -c wal_level=replica ...
+   41 postgres  0:00 /usr/local/bin/postgres -D /var/lib/postgresql/data ... -c listen_addresses= -p 5432
+   ...
+   51 postgres  0:00 psql -v ON_ERROR_STOP=1 --username kronos --no-password --no-psqlrc --dbname postgres --set db=kronos
+   52 postgres  0:00 postgres: kronos postgres [local] CREATE DATABASE waiting for 0/1925D58
+
+$ docker exec kronos-poc-pg-primary pg_isready -U kronos -h 127.0.0.1
+127.0.0.1:5432 - no response
+(exit code 2 -- the temp bootstrap server only listens on the Unix socket by
+design; the REAL server, which would listen on TCP, never starts because
+entrypoint is still blocked inside /docker-entrypoint-initdb.d bootstrap)
+
+DIAGNOSIS: the postgres:16-alpine entrypoint creates the POSTGRES_DB database
+("kronos") via a completely normal client transaction (`CREATE DATABASE`)
+during its own bootstrap, before any replica can possibly exist yet. With
+`synchronous_standby_names=kronos_poc_replica` and `synchronous_commit=on`
+(Postgres 16's own default -- see PART 2 pg_settings query below) already
+active at that point, CREATE DATABASE blocks forever waiting for a
+synchronous ack from a standby that has never connected and, because the
+primary is still stuck in bootstrap, never can. The primary bootstrap
+process itself deadlocks. This is a real, general PostgreSQL fresh-cluster
+bootstrap-ordering hazard, not a bug specific to this PoC's scripting --
+confirmed against the exact pinned postgres:16-alpine image used by this
+repo's docker-compose.prod.yml.
+
+Real fix applied (see docker-compose.poc.yml comments + PART 2 below): boot
+the primary WITHOUT synchronous_standby_names, let the replica bootstrap and
+begin async streaming, then flip the primary into synchronous mode via
+`ALTER SYSTEM SET synchronous_standby_names = '...'; SELECT pg_reload_conf();`
+in a one-shot init job (real precedent already in this repo:
+docker-compose.prod.yml's own `keycloak-init` service uses the same
+one-shot-job pattern for a different bootstrap-ordering problem). Confirmed
+empirically (real `pg_settings` query against this exact pinned image, not
+assumed from memory) that this is reload-safe, no restart required:
+
+$ docker exec pg-context-check psql -U postgres -tAc \
+    "SELECT name, context FROM pg_settings WHERE name = 'synchronous_standby_names';"
+synchronous_standby_names|sighup
+$ docker exec pg-context-check psql -U postgres -tAc \
+    "SELECT name, context FROM pg_settings WHERE name = 'synchronous_commit';"
+synchronous_commit|user
+$ docker exec pg-context-check psql -U postgres -tAc \
+    "SELECT name, context FROM pg_settings WHERE name = 'wal_level';"
+wal_level|postmaster
+
+(kronos-poc-pg-primary torn down with `docker compose down -v` before
+re-running with the fix; no leftover containers/networks/volumes.)
+
+=====================================================================
+PART 2 of 2: SUCCESSFUL RUN (after the fix) -- full real transcript
+=====================================================================
+$ bash run_poc.sh   (full stdout+stderr, unedited)
+
+=== docker compose version ===
+Docker Compose version v5.3.1
+
+=== Starting real primary + real replica + replication-init ===
+ Network kronos-poc-pgrepl-net Creating
+ Network kronos-poc-pgrepl-net Created
+ Container kronos-poc-pg-primary Creating
+ Container kronos-poc-pg-primary Created
+ Container kronos-poc-pg-replica Creating
+ Container kronos-poc-pg-replica Created
+ Container kronos-poc-pg-primary Starting
+ Container kronos-poc-pg-primary Started
+ Container kronos-poc-pg-primary Waiting
+ Container kronos-poc-pg-primary Healthy
+ Container kronos-poc-pg-replica Starting
+ Container kronos-poc-pg-replica Started
+
+=== Waiting for primary healthcheck ===
+  primary health: healthy
+
+=== Waiting for replica healthcheck (pg_basebackup + streaming start) ===
+  replica health: starting (2s)
+  replica health: starting (4s)
+  replica health: starting (6s)
+  replica health: healthy (8s)
+
+=== Replica container logs (bootstrap evidence: pg_basebackup + standby.signal) ===
+[replica-entrypoint] $PGDATA is empty -- bootstrapping via pg_basebackup from postgres-primary
+waiting for checkpoint
+30693/30693 kB (100%), 0/1 tablespace
+30693/30693 kB (100%), 1/1 tablespace
+[replica-entrypoint] pg_basebackup complete -- standby.signal + primary_conninfo written to postgresql.auto.conf
+
+PostgreSQL Database directory appears to contain a database; Skipping initialization
+
+2026-08-17 09:03:51.750 UTC [1] LOG:  starting PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-08-17 09:03:51.750 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-08-17 09:03:51.750 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-08-17 09:03:51.752 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-08-17 09:03:51.756 UTC [35] LOG:  database system was interrupted; last known up at 2026-08-17 09:03:51 UTC
+2026-08-17 09:03:51.897 UTC [35] LOG:  entering standby mode
+2026-08-17 09:03:51.898 UTC [35] LOG:  starting backup recovery with redo LSN 0/2000028, checkpoint LSN 0/2000060, on timeline ID 1
+2026-08-17 09:03:51.901 UTC [35] LOG:  redo starts at 0/2000028
+2026-08-17 09:03:51.902 UTC [35] LOG:  completed backup recovery with redo LSN 0/2000028 and end LSN 0/2000100
+2026-08-17 09:03:51.902 UTC [35] LOG:  consistent recovery state reached at 0/2000100
+2026-08-17 09:03:51.902 UTC [1] LOG:  database system is ready to accept read-only connections
+2026-08-17 09:03:51.915 UTC [36] LOG:  started streaming WAL from primary at 0/3000000 on timeline 1
+
+=== Confirm standby.signal + primary_conninfo really exist on the replica ===
+-rw-------    1 postgres root             0 Aug 17 09:03 /var/lib/postgresql/data/standby.signal
+primary_conninfo = 'user=replicator password=kronos_poc_repl_pw channel_binding=prefer host=''postgres-primary'' port=5432 application_name=kronos_poc_replica sslmode=prefer sslcompression=0 sslcertmode=allow sslsni=1 ssl_min_protocol_version=TLSv1.2 gssencmode=prefer krbsrvname=postgres gssdelegation=0 target_session_attrs=any load_balance_hosts=disable'
+
+=== pg_is_in_recovery() on the replica (must be true) ===
+t
+
+=== pg_stat_replication on the PRIMARY (async, pre-sync-flip) ===
+  application_name  | client_addr |   state   | sync_state | sync_priority
+--------------------+-------------+-----------+------------+---------------
+ kronos_poc_replica | 172.25.2.3  | streaming | async      |             0
+(1 row)
+
+
+=== Running postgres-replication-init (flips primary to synchronous mode -- see
+    docker-compose.poc.yml comments for why this can't happen at cold boot) ===
+ Container kronos-poc-pg-replica Running
+ Container kronos-poc-pg-primary Running
+ Container kronos-poc-pg-replication-init Creating
+ Container kronos-poc-pg-replication-init Created
+Attaching to kronos-poc-pg-replication-init
+ Container kronos-poc-pg-primary Waiting
+ Container kronos-poc-pg-primary Healthy
+ Container kronos-poc-pg-replica Waiting
+ Container kronos-poc-pg-primary Waiting
+ Container kronos-poc-pg-replica Healthy
+ Container kronos-poc-pg-primary Healthy
+ Container kronos-poc-pg-replication-init Starting
+ Container kronos-poc-pg-replication-init Started
+kronos-poc-pg-replication-init  | ALTER SYSTEM
+kronos-poc-pg-replication-init  |  pg_reload_conf
+kronos-poc-pg-replication-init  | ----------------
+kronos-poc-pg-replication-init  |  t
+kronos-poc-pg-replication-init  | (1 row)
+kronos-poc-pg-replication-init  |
+kronos-poc-pg-replication-init  | [postgres-replication-init] primary is now in synchronous replication mode
+kronos-poc-pg-replication-init exited with code 0
+ALTER SYSTEM
+ pg_reload_conf
+----------------
+ t
+(1 row)
+
+[postgres-replication-init] primary is now in synchronous replication mode
+
+=== pg_stat_replication on the PRIMARY (after sync flip -- expect sync_state=sync) ===
+  application_name  | client_addr |   state   | sync_state | sync_priority | write_lsn | flush_lsn | replay_lsn
+--------------------+-------------+-----------+------------+---------------+-----------+-----------+------------
+ kronos_poc_replica | 172.25.2.3  | streaming | sync       |             1 | 0/3000000 | 0/3000000 | 0/3000000
+(1 row)
+
+
+=== Write real data to the PRIMARY (now under synchronous replication) ===
+CREATE TABLE
+INSERT 0 3
+
+=== Waiting a moment for streaming to catch up ===
+
+=== Query the REPLICA directly -- does the real data appear? ===
+ id |          note           |          written_at
+----+-------------------------+-------------------------------
+  1 | kronos-poc-real-write-1 | 2026-08-17 09:04:01.026488+00
+  2 | kronos-poc-real-write-2 | 2026-08-17 09:04:01.026488+00
+  3 | kronos-poc-real-write-3 | 2026-08-17 09:04:01.026488+00
+(3 rows)
+
+
+=== Row count comparison (must match) ===
+primary count=3 replica count=3
+PASS: replica has the same 3 real rows written to the primary
+
+=== pg_last_wal_receive_lsn() / pg_last_wal_replay_lsn() / pg_is_in_recovery() on the REPLICA ===
+ pg_last_wal_receive_lsn | pg_last_wal_replay_lsn | pg_is_in_recovery
+-------------------------+------------------------+-------------------
+ 0/3028078               | 0/3028078              | t
+(1 row)
+
+
+=== Confirm the write was truly synchronous (sync_state=sync on primary) ===
+sync_state=sync
+PASS: replica is a real synchronous standby
+
+=== Attempt a write directly against the REPLICA (must be rejected -- read-only standby) ===
+ERROR:  cannot execute INSERT in a read-only transaction
+  (rejected as expected -- see error above)
+
+=== PoC complete: real streaming replication, sync-state confirmed, real data confirmed on replica ===
+
+=== Tearing down PoC stack ===
+ Container kronos-poc-pg-replication-init Stopping
+ Container kronos-poc-pg-replication-init Stopped
+ Container kronos-poc-pg-replication-init Removing
+ Container kronos-poc-pg-replication-init Removed
+ Container kronos-poc-pg-replica Stopping
+ Container kronos-poc-pg-replica Stopped
+ Container kronos-poc-pg-replica Removing
+ Container kronos-poc-pg-replica Removed
+ Container kronos-poc-pg-primary Stopping
+ Container kronos-poc-pg-primary Stopped
+ Container kronos-poc-pg-primary Removing
+ Container kronos-poc-pg-primary Removed
+ Network kronos-poc-pgrepl-net Removing
+ Network kronos-poc-pgrepl-net Removed
+
+=== Post-teardown verification (real, run separately) ===
+$ docker ps -a --format '{{.Names}}' | grep -i kronos-poc
+(no output -- clean)
+$ docker network ls --format '{{.Name}}' | grep -i kronos-poc
+(no output -- clean)
+
+=====================================================================
+PART 3 of 3: REAL VALIDATION AGAINST THE ACTUAL COMMITTED
+docker-compose.prod.yml + docker/postgres/* FILES (not just this PoC's
+own standalone copy)
+=====================================================================
+After committing the real docker/docker-compose.prod.yml postgres /
+postgres-replica / postgres-replication-init services and
+docker/postgres/{primary-init/*,replica-entrypoint.sh,replication-init.sh},
+those exact files were validated as real running containers too --
+`docker compose config` was used to resolve the real, unmodified prod
+compose file (only the `secrets:` top-level `external: true` -> `file:`
+was swapped, since plain non-swarm `docker compose` can't resolve Swarm
+external secrets -- no service/volume/command definitions were touched),
+then run as `kronos-poc-prodrepl-*` containers on their own network.
+
+$ docker compose -f test.yml up -d postgres postgres-replica
+ Network kronos-poc-prodrepl-net Creating
+ Network kronos-poc-prodrepl-net Created
+ Volume kronos-poc-prodrepl-postgres-replica-data Creating
+ Volume kronos-poc-prodrepl-postgres-replica-data Created
+ Volume kronos-poc-prodrepl-postgres-data Creating
+ Volume kronos-poc-prodrepl-postgres-data Created
+ Container kronos-poc-prodrepl-postgres Created
+ Container kronos-poc-prodrepl-postgres-replica Created
+ Container kronos-poc-prodrepl-postgres Started
+ Container kronos-poc-prodrepl-postgres Healthy
+ Container kronos-poc-prodrepl-postgres-replica Started
+
+$ docker logs kronos-poc-prodrepl-postgres-replica
+[replica-entrypoint] $PGDATA is empty -- bootstrapping via pg_basebackup from postgres
+waiting for checkpoint
+30693/30693 kB (100%), 0/1 tablespace
+30693/30693 kB (100%), 1/1 tablespace
+[replica-entrypoint] pg_basebackup complete -- standby.signal + primary_conninfo written to postgresql.auto.conf
+...
+2026-08-17 09:11:40.513 UTC [1] LOG:  database system is ready to accept read-only connections
+2026-08-17 09:11:40.529 UTC [37] LOG:  started streaming WAL from primary at 0/3000000 on timeline 1
+
+$ docker compose -f test.yml up postgres-replication-init
+kronos-poc-prodrepl-postgres-replication-init  | ALTER SYSTEM
+kronos-poc-prodrepl-postgres-replication-init  |  pg_reload_conf
+kronos-poc-prodrepl-postgres-replication-init  | ----------------
+kronos-poc-prodrepl-postgres-replication-init  |  t
+kronos-poc-prodrepl-postgres-replication-init  | (1 row)
+kronos-poc-prodrepl-postgres-replication-init  | [postgres-replication-init] primary is now in synchronous replication mode (sync_standby=kronos_prod_replica)
+kronos-poc-prodrepl-postgres-replication-init exited with code 0
+
+$ docker exec kronos-poc-prodrepl-postgres psql -U kronos -d kronos -c \
+    "SELECT application_name, state, sync_state, sync_priority FROM pg_stat_replication;"
+  application_name   |   state   | sync_state | sync_priority
+---------------------+-----------+------------+---------------
+ kronos_prod_replica | streaming | sync       |             1
+(1 row)
+
+$ docker exec kronos-poc-prodrepl-postgres psql -U kronos -d kronos -c \
+    "CREATE TABLE prod_repl_check(id serial primary key, note text); INSERT INTO prod_repl_check(note) VALUES ('prod-compose-real-write-1'),('prod-compose-real-write-2');"
+CREATE TABLE
+INSERT 0 2
+
+$ docker exec kronos-poc-prodrepl-postgres-replica psql -U kronos -d kronos -c "SELECT * FROM prod_repl_check ORDER BY id;"
+ id |           note
+----+---------------------------
+  1 | prod-compose-real-write-1
+  2 | prod-compose-real-write-2
+(2 rows)
+
+$ docker exec kronos-poc-prodrepl-postgres-replica psql -U kronos -d kronos -c \
+    "SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn();"
+ pg_is_in_recovery | pg_last_wal_replay_lsn
+--------------------+------------------------
+ t                 | 0/3027A50
+(1 row)
+
+$ docker compose -f test.yml down -v
+ Container kronos-poc-prodrepl-postgres-replication-init Removed
+ Container kronos-poc-prodrepl-postgres-replica Removed
+ Container kronos-poc-prodrepl-postgres Removed
+ Volume kronos-poc-prodrepl-postgres-data Removed
+ Volume kronos-poc-prodrepl-postgres-replica-data Removed
+ Network kronos-poc-prodrepl-net Removed
+
+$ docker ps -a --format '{{.Names}}' | grep -i kronos-poc
+(no output -- clean)
+$ docker network ls --format '{{.Name}}' | grep -i kronos-poc
+(no output -- clean)
+
+RESULT: the real, committed docker-compose.prod.yml + docker/postgres/*
+files work exactly as designed -- async streaming replica bootstrap,
+sync-mode flip via the one-shot init job, real data written to the
+primary appearing on the replica, all confirmed against the actual
+production files, not a hand-maintained separate copy.

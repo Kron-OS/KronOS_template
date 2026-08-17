@@ -29,12 +29,10 @@ id_rsa*
 
 scripts/dev_autoresume/.state/
 
-# Helm dependency-build output (charts/kronos/Chart.yaml's postgresql/
-# redis-auth-streams/redis-celery Bitnami dependencies) -- regenerable via
-# `helm dependency build charts/kronos/`, not checked in (same convention
-# already implicit before Milestone X2b: this repo never committed a
-# Chart.lock/charts/ dir even for the pre-existing single postgresql/redis
-# dependencies; `make helm-lint`/`helm-template` already required running
-# `helm dependency build` first, this was not introduced by this change).
-charts/kronos/charts/
-charts/kronos/Chart.lock
+# Vendored Bitnami chart tarballs from `helm dependency build` -- fetched,
+# regenerable dependency artifacts, not source. `Chart.lock` IS committed
+# (standard Helm practice: it pins the exact resolved postgresql/
+# redis-auth-streams/redis-celery versions so `helm dependency build`
+# reproduces the same versions everywhere) -- only the tarballs themselves
+# are ignored.
+charts/kronos/charts/*.tgz

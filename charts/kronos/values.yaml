@@ -234,6 +234,13 @@ networkPolicies:
 
 postgresql:
   enabled: true
+  # Streaming replication (Gap Audit V10 / X2a): 1 primary + 1 synchronous
+  # read replica, per docs/POSTGRES_MINIO_HA_RESEARCH.md §1.5 verdict --
+  # "adopt the replication half now, defer automatic failover". Real
+  # topology verified against the resolved bitnami/postgresql chart
+  # 18.8.9 (see poc/postgres_replication/README.md); no application code
+  # change required -- the app still connects to the primary service only.
+  architecture: replication
   auth:
     database: kronos
     username: kronos
@@ -241,7 +248,48 @@ postgresql:
     secretKeys:
       adminPasswordKey: postgres-password
       userPasswordKey: password
+      replicationPasswordKey: replication-password
+  replication:
+    # remote_apply/on both require a live sync standby to acknowledge before
+    # commit returns; "on" is the documented minimum for "no committed
+    # transaction is lost unless both primary and standby suffer storage
+    # corruption" (V10 §1.2) without remote_apply's larger commit-latency
+    # cost.
+    #
+    # COLD-START CAVEAT (real, empirically confirmed against the pinned
+    # bitnami/postgresql image via `docker run`, not assumed -- see
+    # poc/postgres_replication/README.md "real finding #2" and
+    # docs/deployment.md's "Postgres streaming replication cold-start
+    # note"): with numSynchronousReplicas=1 already active on a FRESH
+    # install, any real write (Alembic migrations, Keycloak schema setup)
+    # blocks indefinitely until the read-replica pod finishes its own
+    # bootstrap and starts streaming. For a first install, either set
+    # numSynchronousReplicas=0 initially and `helm upgrade` to 1 once the
+    # replica is confirmed streaming (synchronous_standby_names has
+    # context=sighup -- reload-safe, no restart), or accept a one-time
+    # delay on first migration/schema-setup jobs. Subsequent upgrades of an
+    # already-running cluster are unaffected.
+    synchronousCommit: "on"
+    numSynchronousReplicas: 1
+    # Shared application_name both the primary and the read replica are
+    # configured with (confirmed via `helm template`: both
+    # primary/statefulset.yaml and read/statefulset.yaml render
+    # POSTGRES_CLUSTER_APP_NAME from this same value) -- this is what
+    # synchronous_standby_names actually matches against, not "the
+    # primary's own name".
+    applicationName: kronos_replica
   primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  readReplicas:
+    replicaCount: 1
     persistence:
       size: 50Gi
     resources:
