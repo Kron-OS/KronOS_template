@@ -1,0 +1,65 @@
+=== STEP 1: confirm the drift is real, before writing any code ===
+$ docker exec docker-postgres-1 psql -U kronos -d kronos -tAc \
+    "SELECT column_name FROM information_schema.columns \
+     WHERE table_name='evidence' AND column_name='quota_held';"
+(no rows -- column genuinely absent)
+
+$ docker exec docker-postgres-1 psql -U kronos -d kronos -tAc \
+    "SELECT version_num FROM alembic_version;"
+913567ca653a
+(stamped at head despite the missing column)
+
+=== STEP 2: migration chain resolves correctly ===
+$ alembic history
+913567ca653a -> 5a0779975c5a (head), repair pre-existing evidence.quota_held column drift
+56c861716f8f -> 913567ca653a, add integration_source_keys table
+<base> -> 56c861716f8f, baseline schema
+
+=== STEP 3: run the real migration against the real drifted container ===
+$ DATABASE_URL="postgresql+asyncpg://kronos:kronos_dev_password@localhost:5432/kronos" alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 913567ca653a -> 5a0779975c5a, repair pre-existing evidence.quota_held column drift
+
+=== STEP 4: confirm the real fix on the real container ===
+$ docker exec docker-postgres-1 psql -U kronos -d kronos -tAc \
+    "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns \
+     WHERE table_name='evidence' AND column_name='quota_held';"
+quota_held|boolean|NO|false
+
+$ docker exec docker-postgres-1 psql -U kronos -d kronos -tAc "SELECT version_num FROM alembic_version;"
+5a0779975c5a
+
+=== STEP 5: confirm the migration is a safe no-op on a genuinely fresh install ===
+$ docker run -d --name kronos-poc-y1-fresh-pg -e POSTGRES_USER=kronos \
+    -e POSTGRES_PASSWORD=throwaway -e POSTGRES_DB=kronos -p 15433:5432 postgres:16-alpine
+$ docker exec kronos-poc-y1-fresh-pg pg_isready -U kronos
+/var/run/postgresql:5432 - accepting connections
+
+$ DATABASE_URL="postgresql+asyncpg://kronos:throwaway@localhost:15433/kronos" alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 56c861716f8f, baseline schema
+INFO  [alembic.runtime.migration] Running upgrade 56c861716f8f -> 913567ca653a, add integration_source_keys table
+INFO  [alembic.runtime.migration] Running upgrade 913567ca653a -> 5a0779975c5a, repair pre-existing evidence.quota_held column drift
+(no error -- ADD COLUMN IF NOT EXISTS correctly no-ops since baseline already created the column)
+
+$ docker exec kronos-poc-y1-fresh-pg psql -U kronos -d kronos -tAc \
+    "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns \
+     WHERE table_name='evidence' AND column_name='quota_held';"
+quota_held|boolean|NO|false
+
+$ docker rm -f kronos-poc-y1-fresh-pg
+(torn down, confirmed clean via docker ps -a)
+
+=== STEP 6: full backend test suite, before and after (no src/ change expected) ===
+1954 passed, 2 skipped, 18 warnings in 28.02s   (before)
+1954 passed, 2 skipped, 18 warnings in <similar>  (after -- re-run post-migration, identical count)
+
+=== STEP 7: lint/type-check the new migration file ===
+$ ruff check migrations/versions/20260817_2053_5a0779975c5a_repair_evidence_quota_held_drift.py
+All checks passed!
+$ black --check migrations/versions/20260817_2053_5a0779975c5a_repair_evidence_quota_held_drift.py
+All done! (1 file would be left unchanged.)
+$ mypy migrations/versions/20260817_2053_5a0779975c5a_repair_evidence_quota_held_drift.py
+Success: no issues found in 1 source file
