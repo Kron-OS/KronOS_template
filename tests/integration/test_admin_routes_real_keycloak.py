@@ -48,7 +48,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 
 from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
 from src.application.audit_log import AuditLogService
@@ -554,10 +554,13 @@ async def test_remove_user_cannot_remove_a_cross_org_member(
 
     with pytest.raises(HTTPException) as exc_info:
         await remove_user(org_b_member, tenant_a, audit_svc)
-    # Whatever the real observed status is -- captured for real in
-    # poc/admin_routes_real_keycloak/output.txt -- it must not be a 2xx
-    # success, and the org-B user must remain a real member of org B.
-    assert exc_info.value.status_code >= 400
+    # Real observed status -- captured for real in
+    # poc/admin_routes_real_keycloak/output.txt's standalone probe -- is a
+    # genuine Keycloak 404 (the DELETE target doesn't exist under org A).
+    # Previously fell through to a misleading 503 (Gap Audit V5's own
+    # finding, closed by Milestone Z's _to_http_error() fix); now asserted
+    # precisely rather than the old, looser ">= 400".
+    assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     assert _is_member(admin_api, org_b_id, org_b_member) is True, (
         "cross-org remove_user call must never actually remove the target " "from its real org"

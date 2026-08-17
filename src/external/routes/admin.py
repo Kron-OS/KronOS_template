@@ -408,8 +408,14 @@ def _to_http_error(exc: StorageError) -> HTTPException:
     can correct their input. 409 (email already registered to an account
     outside the caller's org — see ``_find_user_by_email``) surfaces as a
     plain 409 with a message that does not confirm which org the email
-    belongs to (AUTH-011). Anything else means the Admin API is down or
-    misbehaving, which is a 503.
+    belongs to (AUTH-011). 404 (the target user/org-membership genuinely
+    doesn't exist -- e.g. a cross-org ``remove_user``/``update_user_role``
+    call, which Keycloak itself rejects as "not found" rather than the
+    route pre-checking membership) surfaces as a plain 404, not a
+    misleading 503 -- confirmed real, not assumed, via
+    ``poc/admin_routes_real_keycloak/output.txt``'s standalone probe (Gap
+    Audit V5's own finding, closed here). Anything else means the Admin
+    API is down or misbehaving, which is a 503.
     """
     status_code = exc.context.get("status")
     if status_code == 400:
@@ -423,6 +429,11 @@ def _to_http_error(exc: StorageError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=message or "This email is already registered to a different account",
+        )
+    if status_code == 404:
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organization",
         )
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 

@@ -151,6 +151,21 @@ def test_to_http_error_maps_other_failures_to_503() -> None:
     assert http_exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
+def test_to_http_error_maps_not_found_to_404_not_503() -> None:
+    # Gap Audit V5's own real finding (Milestone Z): a cross-org
+    # remove_user/update_user_role call surfaces as a real Keycloak 404
+    # (confirmed via poc/admin_routes_real_keycloak/output.txt's standalone
+    # probe), which previously fell through to a misleading 503 -- the
+    # underlying tenant-isolation guarantee held either way (the target was
+    # never actually removed/re-roled), only the surfaced status was wrong.
+    exc = StorageError(
+        "Keycloak Admin API request failed",
+        context={"status": 404, "body": {"error": "Could not find member"}},
+    )
+    http_exc = _to_http_error(exc)
+    assert http_exc.status_code == status.HTTP_404_NOT_FOUND
+
+
 def test_to_http_error_maps_conflict_to_409_without_confirming_other_org() -> None:
     # AUTH-011: the message must not confirm which org the email belongs to.
     exc = StorageError(
