@@ -1,0 +1,22 @@
+Playwright chromium launching (real Chromium, headless)
+
+=== real login: https://kronos.local/cases -> Keycloak's real hosted form -> back ===
+[PASS] unauthenticated visit redirects to real /login
+[PASS] redirected to Keycloak's real auth endpoint
+[PASS] landed back authenticated on /cases
+
+=== decode the real, freshly minted access token ===
+real decoded access-token claims: sub=10000000-0000-4000-8000-000000000003 preferred_username='case-lead' email='caselead@kronos.dev' email_verified=True roles=['case-lead'] organization={'kronos-dev': {'id': '7a2d50db-f1bf-496e-8aff-16435cef14b1'}}
+[PASS] preferred_username is now populated (was None before Y2's fix) -- 'case-lead'
+[PASS] email is now populated (was None before Y2's fix) -- 'caselead@kronos.dev'
+[PASS] existing organization claim still present (regression check)
+[PASS] existing roles claim still present (regression check)
+
+=== confirm the frontend header now renders the real username ===
+real header content: 'KronOS\nCases\nDetections\ncase-lead/ kronos-dev\n◑\nSign out'
+[PASS] header shows the real username 'case-lead' (was empty before Y2's fix, see X3's own screenshot)
+[PASS] real sign-out returns to /login
+
+======================================================================
+9 passed, 0 failed
+======================================================================

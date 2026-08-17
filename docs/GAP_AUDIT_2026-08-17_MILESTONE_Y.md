@@ -92,8 +92,7 @@ the fix, this closes that deferral).
 
 ## Y2 — Keycloak realm's `profile`/`email` client scopes are referenced but never defined; `preferred_username`/`email` never appear in any token
 
-**STATUS (2026-08-17): investigation complete, fix in progress —
-dispatched as a scoped subagent, see this doc's own update once landed.**
+**STATUS (2026-08-17, commit TBD): CLOSED, verified live.**
 
 **Real, confirmed finding, surfaced incidentally by Milestone X3's own
 real browser-login PoC** (`poc/keycloak_browser_login/output.txt`): the
@@ -136,16 +135,56 @@ requested `scope: 'openid profile email organization'` explicitly, it
 would make no difference while `profile`/`email` don't exist as real
 scope objects in the realm.
 
-**Fix (in progress):** add real, version-correct `profile` and `email`
-client scope definitions (matching Keycloak 26.2's own built-in
-defaults, protocol mappers included) to `docker/keycloak/kronos-realm.json`'s
-`clientScopes` array, mirroring exactly how `acr` was already explicitly
-re-added for the same reason. Verified against a real, fresh, throwaway
-Keycloak 26.2 instance's own default realm (not hand-written from memory)
-per CLAUDE.md §F, then confirmed end-to-end with a real token mint
-against the real dev Keycloak showing `preferred_username`/`email`
-correctly populated, reusing `poc/keycloak_browser_login/`'s established
-real-login pattern.
+**Fix:** added real, version-correct `profile` and `email` client scope
+definitions (matching Keycloak 26.2's own built-in defaults, protocol
+mappers included — **exported directly from a real, fresh, throwaway
+Keycloak 26.2 instance's own default realm via the real Admin REST API,
+not hand-written from memory**, per CLAUDE.md §F) to
+`docker/keycloak/kronos-realm.json`'s `clientScopes` array, mirroring
+exactly how `acr` was already explicitly re-added for the same reason.
+
+**Real bug caught by this same verification process, before it was ever
+committed:** an initial version of the added scope descriptions exceeded
+Keycloak's `CLIENT_SCOPE.DESCRIPTION` column's `VARCHAR(255)` limit — the
+real dev Keycloak crashed on boot (`Value too long for column
+"DESCRIPTION CHARACTER VARYING(255)"`), caught immediately by actually
+restarting the real container and reading its real logs, not assumed to
+work. Fixed by shortening the descriptions.
+
+**Real regression caught and root-caused before declaring success (not a
+regression from this fix):** the first verification runs showed the
+previously-working `organization` claim now `None`. Rather than assume
+this fix caused it, isolated it directly — `git stash`ed the
+`kronos-realm.json` change, restarted Keycloak with the *original*
+(unfixed) file, and confirmed `organization: None` persisted even
+*without* this fix. Root cause: `docker-compose.dev.yml`'s `keycloak-init`
+one-shot job provisions the `kronos-dev` Organization and its membership
+via real Admin API calls at `docker compose up` time; that state lives in
+Keycloak's `dev-mem` storage and is wiped by restarting the container in
+isolation (which this fix's own realm-config change required), not by the
+static realm import. Restored by re-running `docker compose -f
+docker/docker-compose.dev.yml up keycloak-init dashboards-tenant-init`
+after restoring the fix.
+
+**Verified end-to-end (`poc/keycloak_profile_email_scope_fix/`):** a real
+Chromium browser (Playwright, reusing `poc/keycloak_browser_login/`'s
+proven real-login pattern, no mocked routes) logs in as the real
+`case-lead` user and decodes a real, freshly minted access token — 9/9
+checks pass: `preferred_username='case-lead'`, `email='caselead@kronos.dev'`,
+`email_verified=True`, `organization`/`roles` still correctly present (no
+regression), and the frontend header now genuinely renders
+`case-lead / kronos-dev` (previously just `/ kronos-dev`, per X3's own
+screenshot). Full backend test suite before/after: 1954 passed, 2 skipped
+both times (true no-op delta — only `docker/keycloak/kronos-realm.json`
+and `poc/` touched, no `src/` change).
+
+**Side effect worth noting, not a bug:** restarting `docker-keycloak-1` to
+pick up this fix generated a fresh, random `org_id` for the `kronos-dev`
+Organization (Organizations aren't stable across a `dev-mem` restart).
+Pre-existing case/evidence data in the shared dev Postgres tagged with the
+previous `org_id` is now tenant-orphaned — correct multi-tenancy isolation
+working as designed, not a leak, but worth knowing if the case list looks
+emptier after this change.
 
 **Priority: P2** — real bug, user-visible (empty username in the header),
 but cosmetic, not a security or data-integrity issue; well-scoped once the
