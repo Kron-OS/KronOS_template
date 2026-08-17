@@ -1,0 +1,35 @@
+Playwright chromium launching (real Chromium, headless)
+
+=== STEP 1: navigate to https://kronos.local/cases (expect redirect to /login, unauthenticated) ===
+landed on: https://kronos.local/login
+[PASS] unauthenticated visit redirects to real /login page
+
+=== STEP 2: click 'Sign in with SSO' -> real redirect to Keycloak ===
+redirected to real Keycloak URL: https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fcases&state=729a0097-7653-470a-b166-8b47d156dbbb&response_mode=fragment&response_type=code&scope=openid+organization&nonce=79cbc4a4-a761-422a-ae31-68c4d5ac24c0&code_challenge=4rGqYJRsnAAr1Hqq4Mr7gSG-ktMVNEs440KUJC2uW74&code_challenge_method=S256
+[PASS] redirected to Keycloak's real /realms/kronos/.../auth endpoint
+[PASS] real PKCE code_challenge present in the auth request
+
+=== STEP 3: type real credentials into Keycloak's real form (#username, #password), submit via #kc-login ===
+
+=== STEP 4: follow real redirect chain back to the frontend ===
+final URL after real login: https://kronos.local/cases
+[PASS] landed back on the real frontend's /cases route, authenticated
+[PASS] no forced TOTP/step-up screen for a normal aal1 login
+
+=== STEP 5: confirm real authenticated dashboard content ===
+real header content: 'KronOS\nCases\nDetections\n/ kronos-dev\n◑\nSign out'
+[PASS] header shows a real org alias (tenant context resolved from a real token)
+case-card-like elements found in main content: 71
+[PASS] session persists navigating to /detections (no re-login prompt)
+
+=== STEP 6: inspect the real access token's decoded claims ===
+real decoded access-token claims: sub=10000000-0000-4000-8000-000000000003 preferred_username=None email=None roles=['case-lead'] acr=aal1 organization={'kronos-dev': {'id': '482072f5-8086-4815-be03-879cc2eaecb5'}} iss=https://kronos.local:8443/realms/kronos
+[PASS] real access token minted by real Keycloak, carries real claims
+[PASS] token issuer is the real kronos-local Keycloak realm
+
+=== STEP 7: real sign-out ===
+[PASS] real sign-out returns to the real /login page
+
+======================================================================
+10 passed, 0 failed
+======================================================================
