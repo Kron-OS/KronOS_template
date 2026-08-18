@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -322,3 +323,186 @@ class TestDayReportMultiDayRegression:
         ), "a real, untampered later day must not report chain_valid: false"
         assert report_day2.break_count == 0
         assert report_day2.org_chain_fully_intact is True
+
+
+# ---------------------------------------------------------------------------
+# CLI: --audit-log / --database-url / --org-id mutual exclusion (Gap Audit
+# AA1 / P2-5) -- shared by verify/day-report/case-report via
+# ``_live_or_offline_options``/``_resolve_events`` in kronos_attest/cli.py.
+#
+# Per CLAUDE.md SS B.5 ("mock only external dependencies, not domain
+# objects"), the tests here either need no I/O at all (pure Click option
+# parsing + validation, exercised via CliRunner), or mock only the one
+# external dependency -- the live Postgres fetch itself
+# (``kronos_attest.cli._fetch_live_events``) -- never the domain objects
+# (ChainVerifier/AttestationReport) it feeds. The real end-to-end run
+# against a real Postgres is a separate, required verification step done in
+# poc/kronos_attest_live_mode/ (CLAUDE.md SS F), not a substitute for it.
+# ---------------------------------------------------------------------------
+
+
+class TestCLILiveModeValidation:
+    def test_verify_neither_source_given(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(cli, ["verify", "--event-id", "e1"])
+        assert result.exit_code == 2
+        assert "Provide either --audit-log" in result.output
+
+    def test_verify_both_audit_log_and_org_id_given(self, tmp_path: Any) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        audit_log = tmp_path / "audit.json"
+        audit_log.write_text(json.dumps(_make_chain(1)))
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "verify",
+                "--audit-log",
+                str(audit_log),
+                "--org-id",
+                str(uuid.uuid4()),
+                "--event-id",
+                "e1",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "not both" in result.output
+
+    def test_day_report_org_id_without_database_url(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli, ["day-report", "--org-id", str(uuid.uuid4()), "--day", "2026-06-25"]
+        )
+        assert result.exit_code == 2
+        assert "--org-id given without --database-url" in result.output
+
+    def test_case_report_database_url_without_org_id(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--case-id",
+                "c1",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "--database-url given without --org-id" in result.output
+
+    def test_verify_invalid_org_id_uuid(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "verify",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                "not-a-uuid",
+                "--event-id",
+                "e1",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "--org-id must be a valid UUID" in result.output
+
+    def test_audit_log_explicit_flag_wins_over_ambient_database_url_env(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """An ambient DATABASE_URL left set in a dev shell (this repo's own
+        poc/ scripts export it) must not turn a plain --audit-log
+        invocation into a spurious 'both given' error -- --org-id (which
+        has no env fallback) is the only thing that selects live mode."""
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ambient:ambient@localhost/ambient")
+        audit_log = tmp_path / "audit.json"
+        events = _make_chain(1)
+        audit_log.write_text(json.dumps(events))
+
+        result = CliRunner().invoke(
+            cli,
+            ["verify", "--audit-log", str(audit_log), "--event-id", events[0]["event_id"]],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Chain intact" in result.output
+
+
+class TestCLILiveModeFetch:
+    """Live mode's happy path with the Postgres fetch itself mocked out."""
+
+    def test_day_report_uses_live_fetch(self, monkeypatch: Any) -> None:
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(3, day="2026-06-25")
+
+        async def fake_fetch(database_url: str, org_id: uuid.UUID) -> list[dict[str, Any]]:
+            assert database_url == "postgresql+asyncpg://x:x@localhost/x"
+            assert isinstance(org_id, uuid.UUID)
+            return events
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events", fake_fetch)
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "day-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--day",
+                "2026-06-25",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["event_count"] == 3
+        assert data["chain_valid"] is True
+
+    def test_case_report_reads_database_url_from_env_var(self, monkeypatch: Any) -> None:
+        """DATABASE_URL env var fallback matches migrations/env.py's own
+        convention -- setting it plus --org-id (no --audit-log, no
+        explicit --database-url flag) must select live mode."""
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(2, day="2026-06-25")
+
+        async def fake_fetch(database_url: str, org_id: uuid.UUID) -> list[dict[str, Any]]:
+            assert database_url == "postgresql+asyncpg://env:env@localhost/env"
+            return events
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events", fake_fetch)
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://env:env@localhost/env")
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            ["case-report", "--org-id", str(uuid.uuid4()), "--case-id", events[0]["case_id"]],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["case_id"] == events[0]["case_id"]
+        assert data["event_count"] == 1

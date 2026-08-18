@@ -1,0 +1,126 @@
+Wrote real offline export: 33 events -> /home/reca/Claude/Kronos/KronOS_template/.claude/worktrees/agent-a4850c209f5e95207/poc/kronos_attest_live_mode/export.json
+[PASS] offline export has real events for the chosen org -- 33
+
+======================================================================
+DAY-REPORT: offline (--audit-log) vs. live (--database-url/--org-id)
+======================================================================
+
+-- offline day-report (exit=0) --
+{
+  "day": "2026-08-08",
+  "event_count": 33,
+  "merkle_root": "5c040335529999022592ed66f972807f8d280fb6c94f30ec1b30736776e35575",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "tsa_anchored": false,
+  "tsa_gen_time": null
+}
+
+-- live day-report (exit=0) --
+{
+  "day": "2026-08-08",
+  "event_count": 33,
+  "merkle_root": "5c040335529999022592ed66f972807f8d280fb6c94f30ec1b30736776e35575",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "tsa_anchored": false,
+  "tsa_gen_time": null
+}
+
+[PASS] offline day-report exited 0
+[PASS] live day-report exited 0
+[PASS] day-report[event_count] identical offline vs. live -- offline=33 live=33
+[PASS] day-report[merkle_root] identical offline vs. live -- offline='5c040335529999022592ed66f972807f8d280fb6c94f30ec1b30736776e35575' live='5c040335529999022592ed66f972807f8d280fb6c94f30ec1b30736776e35575'
+[PASS] day-report[chain_valid] identical offline vs. live -- offline=True live=True
+[PASS] day-report[break_count] identical offline vs. live -- offline=0 live=0
+[PASS] day-report[org_chain_fully_intact] identical offline vs. live -- offline=True live=True
+
+======================================================================
+CASE-REPORT: offline (--audit-log) vs. live (--database-url/--org-id)
+======================================================================
+
+-- offline case-report (exit=0) --
+{
+  "case_id": "906ad0c9-0f59-44d9-bbf9-23c26fb34e7c",
+  "event_count": 2,
+  "merkle_root": "54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "9ae2095f-4516-440b-b96d-deb36560a154"
+  ]
+}
+
+-- live case-report (exit=0) --
+{
+  "case_id": "906ad0c9-0f59-44d9-bbf9-23c26fb34e7c",
+  "event_count": 2,
+  "merkle_root": "54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "9ae2095f-4516-440b-b96d-deb36560a154"
+  ]
+}
+
+[PASS] offline case-report exited 0
+[PASS] live case-report exited 0
+[PASS] case-report[event_count] identical offline vs. live -- offline=2 live=2
+[PASS] case-report[merkle_root] identical offline vs. live -- offline='54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309' live='54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309'
+[PASS] case-report[chain_valid] identical offline vs. live -- offline=True live=True
+[PASS] case-report[break_count] identical offline vs. live -- offline=0 live=0
+[PASS] case-report[org_chain_fully_intact] identical offline vs. live -- offline=True live=True
+[PASS] case-report[evidence_ids] identical offline vs. live -- offline=['9ae2095f-4516-440b-b96d-deb36560a154'] live=['9ae2095f-4516-440b-b96d-deb36560a154']
+
+======================================================================
+VERIFY: offline (--audit-log) vs. live (--database-url/--org-id)
+======================================================================
+
+-- offline verify (exit=0) --
+Chain intact (33 events, root=5c04033552999902…)
+Event 9d48a399-7e0d-4fd6-bed3-dd3ef29797f7: batch.sealed at 2026-08-08T04:14:28.902608+00:00
+
+-- live verify (exit=0) --
+Chain intact (33 events, root=5c04033552999902…)
+Event 9d48a399-7e0d-4fd6-bed3-dd3ef29797f7: batch.sealed at 2026-08-08T04:14:28.902608+00:00
+
+[PASS] offline verify exited 0 (chain intact + event found)
+[PASS] live verify exited 0 (chain intact + event found)
+[PASS] offline and live verify report the same merkle root prefix
+
+======================================================================
+CLI OPTION VALIDATION: real invocations (not just unit-mocked)
+======================================================================
+
+-- verify with both --audit-log and --org-id (exit=2) --
+Usage: python -m kronos_attest.cli verify [OPTIONS]
+Try 'python -m kronos_attest.cli verify --help' for help.
+
+Error: Provide either --audit-log OR --database-url/--org-id, not both.
+
+[PASS] real CLI rejects --audit-log + --org-id together
+[PASS] error message names the conflict
+
+-- day-report with neither source (exit=2) --
+Usage: python -m kronos_attest.cli day-report [OPTIONS]
+Try 'python -m kronos_attest.cli day-report --help' for help.
+
+Error: Provide either --audit-log <path>, or both --database-url and --org-id.
+
+[PASS] real CLI rejects neither source given
+
+-- case-report with --org-id but no --database-url (exit=2) --
+Usage: python -m kronos_attest.cli case-report [OPTIONS]
+Try 'python -m kronos_attest.cli case-report --help' for help.
+
+Error: --org-id given without --database-url -- both are required together for live mode (--database-url may also come from the DATABASE_URL env var).
+
+[PASS] real CLI rejects --org-id without --database-url
+
+======================================================================
+23 passed, 0 failed
+======================================================================

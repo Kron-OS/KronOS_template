@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import uuid
 from typing import Any
 
 import click
@@ -17,14 +19,129 @@ def cli() -> None:
     """KronOS forensic attestation CLI — offline audit log verification."""
 
 
+def _live_or_offline_options(f: Any) -> Any:
+    """Shared ``--audit-log`` / ``--database-url`` / ``--org-id`` options.
+
+    Exactly one source of events is allowed: a static JSON export
+    (``--audit-log``), or a live read from the real Postgres source of
+    truth (``--database-url`` + ``--org-id`` together). See
+    ``_resolve_events`` for the mutual-exclusion validation — kept there
+    (not in Click's own callback machinery) so the three commands sharing
+    this decorator get identical, testable error messages.
+    """
+    f = click.option(
+        "--org-id",
+        "org_id",
+        default=None,
+        help="Org UUID to stream live from Postgres (required together with "
+        "--database-url; mutually exclusive with --audit-log).",
+    )(f)
+    f = click.option(
+        "--database-url",
+        "database_url",
+        default=None,
+        envvar="DATABASE_URL",
+        help="Live Postgres DSN, e.g. postgresql+asyncpg://kronos:...@localhost:5432/kronos "
+        "-- reads the DATABASE_URL environment variable if not given explicitly "
+        "(same convention as migrations/env.py). Mutually exclusive with --audit-log.",
+    )(f)
+    f = click.option(
+        "--audit-log",
+        "audit_log_path",
+        default=None,
+        type=click.Path(exists=True),
+        help="JSON audit log export file (list of event objects). Mutually "
+        "exclusive with --database-url/--org-id.",
+    )(f)
+    return f
+
+
+def _resolve_events(
+    audit_log_path: str | None,
+    database_url: str | None,
+    org_id: str | None,
+) -> list[dict[str, Any]]:
+    """Resolve the event list from exactly one of offline export or live Postgres.
+
+    Enforces: exactly one of ``--audit-log`` or (``--database-url`` +
+    ``--org-id``) must be given. Raises ``click.UsageError`` (Click's own
+    "bad invocation" exception -- caught by the group and printed as a
+    normal usage error, exit code 2) for every invalid combination.
+
+    ``--org-id`` has no environment-variable fallback (unlike
+    ``--database-url``, which reads ``DATABASE_URL`` -- see
+    ``_live_or_offline_options``), so it is treated as the sole explicit
+    trigger for "live mode was requested". This matters because an ambient
+    ``DATABASE_URL`` left set in a developer's shell (common in this repo's
+    own PoC workflow, e.g. ``DATABASE_URL=... python poc/.../run_poc.py``)
+    must NOT silently turn a plain ``--audit-log`` invocation into a
+    "both given" error -- an explicit ``--audit-log`` always wins over an
+    ambient env var the user never meant to invoke here.
+    """
+    if audit_log_path is not None and org_id is not None:
+        raise click.UsageError("Provide either --audit-log OR --database-url/--org-id, not both.")
+
+    if audit_log_path is not None:
+        # org_id is None here (checked above); an ambient DATABASE_URL env
+        # var is deliberately ignored in this branch -- see docstring.
+        return _load(audit_log_path)
+
+    # No --audit-log: live mode is the only remaining option, so both
+    # --org-id and --database-url (flag or DATABASE_URL env var) are
+    # required together.
+    if org_id is None and database_url is None:
+        raise click.UsageError(
+            "Provide either --audit-log <path>, or both --database-url and --org-id."
+        )
+    if org_id is None:
+        raise click.UsageError(
+            "--database-url given without --org-id -- both are required together for live mode."
+        )
+    if database_url is None:
+        raise click.UsageError(
+            "--org-id given without --database-url -- both are required together for live "
+            "mode (--database-url may also come from the DATABASE_URL env var)."
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError as exc:
+        raise click.UsageError(f"--org-id must be a valid UUID: {exc}") from exc
+
+    return asyncio.run(_fetch_live_events(database_url, org_uuid))
+
+
+async def _fetch_live_events(database_url: str, org_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Stream an org's full, unfiltered audit chain from the real Postgres source of truth.
+
+    Uses the exact same repository method (``stream_by_org``) and field
+    mapping (``_to_export_dict``) as ``GET /api/audit/export`` -- reusing
+    ``_to_export_dict`` rather than re-deriving it is deliberate (see that
+    function's own docstring: "any drift here would silently break chain
+    verification for every export"). This keeps live mode and offline
+    export mode producing byte-identical event dicts for the same data.
+
+    Follows CLAUDE.md SS A.5 resource-lifecycle discipline: the engine is
+    disposed in a ``finally`` block so no connection is ever leaked, even
+    if streaming raises partway through.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+
+    from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
+        PostgresAuditLogRepository,
+    )
+    from src.external.routes.audit import _to_export_dict  # noqa: PLC0415
+
+    engine = create_async_engine(database_url)
+    try:
+        repo = PostgresAuditLogRepository(engine)
+        return [_to_export_dict(ev) async for ev in repo.stream_by_org(org_id)]
+    finally:
+        await engine.dispose()
+
+
 @cli.command()
-@click.option(
-    "--audit-log",
-    "audit_log_path",
-    required=True,
-    type=click.Path(exists=True),
-    help="JSON audit log export file (list of event objects)",
-)
+@_live_or_offline_options
 @click.option("--event-id", required=True, help="UUID of the event to verify")
 @click.option(
     "--tsa-cert",
@@ -34,13 +151,21 @@ def cli() -> None:
     help="TSA CA certificate chain — if given, also verifies any daily "
     "Merkle anchor's RFC 3161 signature found in the log (AUDIT-07/08).",
 )
-def verify(audit_log_path: str, event_id: str, tsa_cert_path: str | None) -> None:
+def verify(
+    audit_log_path: str | None,
+    database_url: str | None,
+    org_id: str | None,
+    event_id: str,
+    tsa_cert_path: str | None,
+) -> None:
     """Verify hash chain integrity and locate a specific event.
+
+    Reads events from exactly one of --audit-log or --database-url/--org-id.
 
     Exits with code 0 on success (chain intact + event found, and TSA
     anchors valid if --tsa-cert was given), code 1 otherwise.
     """
-    events = _load(audit_log_path)
+    events = _resolve_events(audit_log_path, database_url, org_id)
     result = ChainVerifier().verify(events)
 
     if result.valid:
@@ -155,13 +280,7 @@ def merkle_proof_cmd(audit_log_path: str, event_id: str) -> None:
 
 
 @cli.command(name="day-report")
-@click.option(
-    "--audit-log",
-    "audit_log_path",
-    required=True,
-    type=click.Path(exists=True),
-    help="JSON audit log export file",
-)
+@_live_or_offline_options
 @click.option("--day", required=True, help="ISO date (YYYY-MM-DD) to report on")
 @click.option(
     "--tsa-cert",
@@ -171,9 +290,18 @@ def merkle_proof_cmd(audit_log_path: str, event_id: str) -> None:
     help="TSA CA certificate chain — required for tsa_anchored to reflect a "
     "real verified signature rather than 'no cert supplied, assumed false'.",
 )
-def day_report_cmd(audit_log_path: str, day: str, tsa_cert_path: str | None) -> None:
-    """Generate an attestation report for a single day."""
-    events = _load(audit_log_path)
+def day_report_cmd(
+    audit_log_path: str | None,
+    database_url: str | None,
+    org_id: str | None,
+    day: str,
+    tsa_cert_path: str | None,
+) -> None:
+    """Generate an attestation report for a single day.
+
+    Reads events from exactly one of --audit-log or --database-url/--org-id.
+    """
+    events = _resolve_events(audit_log_path, database_url, org_id)
     report = AttestationReport().day_report(events, day, tsa_cert_path)
     click.echo(
         json.dumps(
@@ -193,17 +321,19 @@ def day_report_cmd(audit_log_path: str, day: str, tsa_cert_path: str | None) -> 
 
 
 @cli.command(name="case-report")
-@click.option(
-    "--audit-log",
-    "audit_log_path",
-    required=True,
-    type=click.Path(exists=True),
-    help="JSON audit log export file",
-)
+@_live_or_offline_options
 @click.option("--case-id", required=True, help="Case UUID to report on")
-def case_report_cmd(audit_log_path: str, case_id: str) -> None:
-    """Generate an attestation report for a single case."""
-    events = _load(audit_log_path)
+def case_report_cmd(
+    audit_log_path: str | None,
+    database_url: str | None,
+    org_id: str | None,
+    case_id: str,
+) -> None:
+    """Generate an attestation report for a single case.
+
+    Reads events from exactly one of --audit-log or --database-url/--org-id.
+    """
+    events = _resolve_events(audit_log_path, database_url, org_id)
     report = AttestationReport().case_report(events, case_id)
     click.echo(
         json.dumps(
