@@ -46,6 +46,16 @@ class StepUpAuth:
     def __init__(self, store: TicketStore | None = None) -> None:
         self._store = store or InMemoryTicketStore()
 
+    @property
+    def ticket_store(self) -> TicketStore:
+        """The underlying ``TicketStore`` this instance issues/consumes
+        tickets through -- exposed so other application-layer collaborators
+        (e.g. ``StepUpApprovalGate``, roadmap M7/H2/EE1) can consume a
+        ticket minted via the real ``POST /api/step-up/ticket`` route
+        without a second, drifting ``TicketStore`` instance being built for
+        the same real concept."""
+        return self._store
+
     def assert_acr(self, tenant: TenantContext, required_acr: str = _AAL2) -> None:
         """Raise HTTP 401 (RFC 9470) if the tenant's ACR does not meet *required_acr*."""
         if _acr_level(tenant.acr) < _acr_level(required_acr):

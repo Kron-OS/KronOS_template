@@ -14,7 +14,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.adapter.repository.detection import DetectionRepository
 from src.application.detection_triage import DetectionTriageService
@@ -109,6 +109,26 @@ class PlaybookExecutionResultOut(BaseModel):
     succeeded: bool
     haltedEarly: bool
     stepResults: list[PlaybookStepResultOut]
+
+
+class RevokeKeycloakSessionIn(BaseModel):
+    """Request body for POST /detections/{id}/contain/revoke-session.
+
+    ``approvalTicketId``/``approvalResourceId`` are a real, already-issued
+    step-up ticket (RFC 9470) the caller obtained from the existing
+    ``POST /api/step-up/ticket`` route (``operation="revoke_keycloak_session"``,
+    ``resource_id=sessionId``) *before* calling this route -- this route
+    never mints or pre-validates the ticket itself, ``StepUpApprovalGate.
+    authorize()`` (consulted inside ``ContainmentAction.execute()``) is the
+    single place that happens, exactly mirroring how every other gated
+    field in this codebase is validated once, by the collaborator that
+    owns the concern, not re-checked at the route boundary too.
+    """
+
+    userId: uuid.UUID
+    sessionId: str = Field(min_length=1)
+    approvalTicketId: uuid.UUID | None = None
+    approvalResourceId: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +292,119 @@ async def sync_detection_to_siem(
                 step_id="sync-to-siem",
                 action_name=action_name,
                 params={"detection_id": str(detection_id)},
+            ),
+        ),
+    )
+    result = await execution_service.execute(playbook, tenant)
+    return PlaybookExecutionResultOut(
+        executionId=result.execution_id,
+        playbookName=result.playbook_name,
+        succeeded=result.succeeded,
+        haltedEarly=result.halted_early,
+        stepResults=[
+            PlaybookStepResultOut(
+                stepId=r.step_id,
+                actionName=r.action_name,
+                outcome=r.outcome.value,
+                output=r.output,
+                error=r.error,
+            )
+            for r in result.step_results
+        ],
+    )
+
+
+@router.post("/{detection_id}/contain/revoke-session", response_model=PlaybookExecutionResultOut)
+async def revoke_session_for_detection(
+    detection_id: uuid.UUID,
+    body: RevokeKeycloakSessionIn,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    registry: Annotated[PlaybookActionRegistry, Depends(get_playbook_action_registry)],
+    execution_service: Annotated[PlaybookExecutionService, Depends(get_playbook_execution_service)],
+) -> PlaybookExecutionResultOut:
+    """Fire ``RevokeKeycloakSessionAction`` for one Detection via a real,
+    audited ``PlaybookExecutionService.execute()`` call (roadmap Milestone
+    M7/H2/EE1) -- the same ``PlaybookExecutionService`` reach-through
+    ``sync_detection_to_siem`` above already proved out for a non-destructive
+    action, applied here to H2's one genuinely real, destructive containment
+    adapter (``RevokeKeycloakSessionAction``, gated by ``ApprovalGate``).
+
+    **Role gate: ``ORG_ADMIN``/``CASE_LEAD`` only, deliberately narrower than
+    ``sync_detection_to_siem``'s ``ORG_ADMIN``/``CASE_LEAD``/``ANALYST``.**
+    Pushing a Detection to a SIEM is a read-mostly, reversible integration
+    action; revoking a real, live user session is a genuinely destructive
+    containment action with a real user-facing impact (the target is
+    logged out immediately) -- the §1 permission matrix's own pattern of
+    gating destructive/administrative actions stricter than analytical
+    ones (mirrors ``triage_detection``'s ``ANALYST``-inclusive gate vs.
+    e.g. legal-hold/case-membership routes elsewhere in this codebase that
+    exclude ``ANALYST``) is applied here for the same reason: an analyst
+    should be able to investigate and recommend containment, but the
+    approval-gated ``ContainmentAction`` itself (this route's own real,
+    destructive side effect) requires case-lead-or-above judgment to even
+    attempt -- the ``ApprovalGate`` inside ``ContainmentAction.execute()``
+    is a SECOND, independent gate on top of this role check, not a
+    replacement for it.
+
+    ``detection_id`` provides audit context only (included in the step's
+    own ``params``, so the real ``CONTAINMENT_ACTION_ATTEMPTED``/``_DENIED``/
+    ``_FAILED``/``_EXECUTED`` audit rows record which Detection this
+    containment action was performed in response to) -- unlike
+    ``SyncDetectionToSiemAction``, ``RevokeKeycloakSessionAction`` does not
+    look the Detection up itself (it operates on a Keycloak ``user_id``/
+    ``session_id`` pair, independently tenant-checked against the real
+    Keycloak Admin API, never against Detection data), so an unknown or
+    cross-org ``detection_id`` here does not itself block the call --
+    tenant isolation for the real destructive side effect is enforced by
+    ``RevokeKeycloakSessionAction._perform()``'s own real ``is_org_member``/
+    session-ownership checks, not by this route.
+
+    404 when no ``RevokeKeycloakSessionAction`` is registered (mirrors this
+    file's own "404, not a fabricated success" idiom) -- happens when no
+    ``KeycloakAdminClient`` is configured in this deployment (an honest
+    "containment via session revocation not configured" state).
+
+    ``approvalTicketId``/``approvalResourceId`` are passed through
+    unchanged into the playbook step's ``params`` -- this route never
+    pre-validates the ticket itself; ``StepUpApprovalGate.authorize()``
+    (consulted inside ``ContainmentAction.execute()``, BEFORE the real
+    Keycloak call) is the single place that happens. Omitting them is a
+    valid, real request shape too (an org relying on
+    ``StaticPolicyApprovalGate`` instead needs no ticket at all) -- the
+    gate's own denial (an honest, audited outcome, not an HTTP error) is
+    what a missing/invalid ticket produces when ``StepUpApprovalGate`` IS
+    the configured gate for this deployment.
+
+    Otherwise always returns 200, mirroring ``sync_detection_to_siem``'s own
+    "the real outcome lives in the audited response body, not a second,
+    competing HTTP status" idiom -- denied/failed/executed are all real,
+    audited, non-exceptional outcomes of a well-formed request.
+    """
+    action = registry.get_action("revoke_keycloak_session")
+    if action is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Containment via Keycloak session revocation is not configured "
+            "in this deployment",
+        )
+
+    params: dict[str, str] = {
+        "detection_id": str(detection_id),
+        "user_id": str(body.userId),
+        "session_id": body.sessionId,
+    }
+    if body.approvalTicketId is not None:
+        params["approval_ticket_id"] = str(body.approvalTicketId)
+    if body.approvalResourceId is not None:
+        params["approval_resource_id"] = body.approvalResourceId
+
+    playbook = Playbook(
+        name="ad-hoc-contain-revoke-keycloak-session",
+        steps=(
+            PlaybookStep(
+                step_id="revoke-session",
+                action_name="revoke_keycloak_session",
+                params=params,
             ),
         ),
     )

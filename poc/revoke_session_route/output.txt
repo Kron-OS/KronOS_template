@@ -1,0 +1,88 @@
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.322101Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations?first=0&max=1000 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.328339Z"}
+[2026-08-18T23:12:34.328932+00:00] real kronos-dev org id resolved via Admin API: 7a2d50db-f1bf-496e-8aff-16435cef14b1
+[2026-08-18T23:12:34.328943+00:00] === DI wiring: configure_keycloak_admin_client_from_settings() -> real client ===
+[2026-08-18T23:12:34.351205+00:00] PASS: get_keycloak_admin_client() returns a real HttpxKeycloakAdminClient after configure_keycloak_admin_client_from_settings()
+[2026-08-18T23:12:34.428044+00:00] PASS: the REAL get_playbook_action_registry() (unmodified DI function) registers a real RevokeKeycloakSessionAction once a real KeycloakAdminClient is configured
+[2026-08-18T23:12:34.429114+00:00] === Scenario (a): real ticket (POST /api/step-up/ticket) then real revoke ===
+{"event": "HTTP Request: GET https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fpoc-ee1-callback&response_type=code&scope=openid&code_challenge=QVq0UsRDjxUSav6QmXB0Me_yIZIPKWyv4Jf8NL82ZkQ&code_challenge_method=S256&state=poc-ee1-scenario-a \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.480842Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/login-actions/authenticate?session_code=lsx3-j9k6si7l0QF9_aTFywMkz6-ynLTJ3UCQ4V6s2U&execution=36848ad1-61b9-47ac-8792-8592f2320419&client_id=kronos-frontend&tab_id=jqMNrQg7iDY&client_data=eyJydSI6Imh0dHBzOi8va3Jvbm9zLmxvY2FsL3BvYy1lZTEtY2FsbGJhY2siLCJydCI6ImNvZGUiLCJzdCI6InBvYy1lZTEtc2NlbmFyaW8tYSJ9 \"HTTP/1.1 302 Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.522403Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.533066Z"}
+[2026-08-18T23:12:34.533380+00:00] real analyst login (a) succeeded, sid=4e02b159-40af-41b6-8eee-423f62ebc413
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.538556Z"}
+[2026-08-18T23:12:34.539067+00:00] PASS: (a) real session appears in a fresh, independent Admin API sessions list before any route call
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-18T23:12:34.601604Z", "ticket_id": "2fe979fe-1a1b-451c-92fa-362f88e22e81", "operation": "revoke_keycloak_session"}
+{"event": "HTTP Request: POST https://poc-ee1/api/step-up/ticket \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.601902Z"}
+[2026-08-18T23:12:34.601995+00:00] PASS: (a) real POST /api/step-up/ticket returns 201 with a real ticketId
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.612825Z", "event_id": "d515a8df-9e3a-499b-ba36-d97132126dfb", "event_type": "playbook.execution_started", "seq": 16}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.616045Z", "event_id": "2014a6c3-882c-43b2-a5cd-ed57ea31bfab", "event_type": "containment.action_attempted", "seq": 17}
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.627919Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations/7a2d50db-f1bf-496e-8aff-16435cef14b1/members/10000000-0000-4000-8000-000000000002 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.631707Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.643834Z"}
+{"event": "HTTP Request: DELETE http://localhost:8080/admin/realms/kronos/sessions/4e02b159-40af-41b6-8eee-423f62ebc413 \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.657104Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.661435Z", "event_id": "46c34aaa-ce02-4dee-b3c6-446971436c03", "event_type": "containment.action_executed", "seq": 18}
+{"event": "containment_action_executed", "level": "info", "logger": "src.application.containment_action", "timestamp": "2026-08-18T23:12:34.661539Z", "action_name": "revoke_keycloak_session", "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.664942Z", "event_id": "96c4fe1a-ccb3-4d52-8d5d-e6486ab8ea8c", "event_type": "playbook.step_executed", "seq": 19}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.668032Z", "event_id": "542363dc-4c54-4dd5-93f0-3ced4a82a24d", "event_type": "playbook.execution_completed", "seq": 20}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-18T23:12:34.668134Z", "execution_id": "e8ff412f-7ae5-4beb-ae69-d84ddc6711d1", "playbook_id": "f9b926d2-ea86-4994-a021-a142be206d39", "halted_early": false, "succeeded": true}
+{"event": "HTTP Request: POST https://poc-ee1/api/detections/42665cf1-ffd6-4804-b1e4-28900058d18e/contain/revoke-session \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.668417Z"}
+[2026-08-18T23:12:34.668508+00:00] PASS: (a) real revoke route returns 200
+[2026-08-18T23:12:34.668531+00:00] PASS: (a) real revoke succeeded=true
+[2026-08-18T23:12:34.668538+00:00] PASS: (a) real revoke output confirms revocation
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.672846Z"}
+[2026-08-18T23:12:34.673335+00:00] PASS: (a) real session is GONE after the real revoke (independent fresh Admin API re-check)
+[2026-08-18T23:12:34.673344+00:00] === Scenario (b): NO ticket -- denied, session confirmed still alive ===
+{"event": "HTTP Request: GET https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fpoc-ee1-callback&response_type=code&scope=openid&code_challenge=9yq2ivSDcoLdeEALcAmefUsyMQKmOYBg-QUva2kvl2A&code_challenge_method=S256&state=poc-ee1-scenario-b \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.719902Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/login-actions/authenticate?session_code=-SwGRYgRljqn6Ahl12AVHtjgNjOi8BCBsc-pBAlt55o&execution=36848ad1-61b9-47ac-8792-8592f2320419&client_id=kronos-frontend&tab_id=weW46Tvv2Ow&client_data=eyJydSI6Imh0dHBzOi8va3Jvbm9zLmxvY2FsL3BvYy1lZTEtY2FsbGJhY2siLCJydCI6ImNvZGUiLCJzdCI6InBvYy1lZTEtc2NlbmFyaW8tYiJ9 \"HTTP/1.1 302 Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.754078Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.762947Z"}
+[2026-08-18T23:12:34.763258+00:00] real analyst login (b) succeeded, sid=5ce9252e-a777-43da-8c78-b80306fd1f82
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.768725Z", "event_id": "3783f825-b5ee-4ba1-b5cb-55aa222af693", "event_type": "playbook.execution_started", "seq": 21}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.771504Z", "event_id": "5bba1471-f0cb-4f80-94a9-893bff5c4be6", "event_type": "containment.action_attempted", "seq": 22}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.775072Z", "event_id": "c9bd75f6-8e93-4f99-8f85-e139f04a4a85", "event_type": "containment.action_denied", "seq": 23}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.777815Z", "event_id": "2c10b91e-fd5a-48ae-ac4a-3cdb690986c0", "event_type": "playbook.step_failed", "seq": 24}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.780442Z", "event_id": "487a3eed-4298-45d1-9ee3-912e27bc6578", "event_type": "playbook.execution_completed", "seq": 25}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-18T23:12:34.780532Z", "execution_id": "456950e2-7b44-4f40-a608-1f6336d91af0", "playbook_id": "642d075e-a6eb-4c99-be6c-6deae96f8b66", "halted_early": true, "succeeded": false}
+{"event": "HTTP Request: POST https://poc-ee1/api/detections/42665cf1-ffd6-4804-b1e4-28900058d18e/contain/revoke-session \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.780825Z"}
+[2026-08-18T23:12:34.780914+00:00] PASS: (b) real route returns 200 (audited denial, not a raised HTTP error)
+[2026-08-18T23:12:34.780936+00:00] PASS: (b) real revoke succeeded=false
+[2026-08-18T23:12:34.780941+00:00] PASS: (b) real error names the denial
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.785209Z"}
+[2026-08-18T23:12:34.785680+00:00] PASS: (b) real session STILL ALIVE after the denied attempt (independent fresh Admin API re-check)
+[2026-08-18T23:12:34.788631+00:00] PASS: (b) real CONTAINMENT_ACTION_ATTEMPTED + _DENIED rows exist; no _EXECUTED row
+[2026-08-18T23:12:34.788641+00:00] === Scenario (c): cross-tenant -- rejected even WITH a valid ticket ===
+{"event": "HTTP Request: POST http://localhost:8080/admin/realms/kronos/organizations \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.794829Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations?first=0&max=1000 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.800185Z"}
+{"event": "HTTP Request: POST http://localhost:8080/admin/realms/kronos/users \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.834330Z"}
+{"event": "HTTP Request: POST http://localhost:8080/admin/realms/kronos/organizations/c167de06-6ea9-43cd-b924-985fecfb0cfc/members \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.841286Z"}
+[2026-08-18T23:12:34.841783+00:00] real second org created: alias=kronos-poc-ee1-org-228302b6 id=c167de06-6ea9-43cd-b924-985fecfb0cfc user=7f4ac045-08c8-4ce1-9280-4e6917fdd82b
+{"event": "HTTP Request: GET https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fpoc-ee1-callback&response_type=code&scope=openid&code_challenge=WxH81RrrwPXzxwOyUsQFyRptayOfgeAMRkUu7y_ZM9g&code_challenge_method=S256&state=poc-ee1-scenario-c \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.882505Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/login-actions/authenticate?session_code=m9lOGJjs7RWghMYC1VULpR3yMpleD3yBwTHnSOeVB6Y&execution=36848ad1-61b9-47ac-8792-8592f2320419&client_id=kronos-frontend&tab_id=a46GvWwjpUY&client_data=eyJydSI6Imh0dHBzOi8va3Jvbm9zLmxvY2FsL3BvYy1lZTEtY2FsbGJhY2siLCJydCI6ImNvZGUiLCJzdCI6InBvYy1lZTEtc2NlbmFyaW8tYyJ9 \"HTTP/1.1 302 Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.920084Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.931202Z"}
+[2026-08-18T23:12:34.931496+00:00] real login for the second org's user succeeded, sid=2ff8cbb5-6ef1-4344-83de-2d6847a5eff2
+{"event": "step_up_ticket_issued", "level": "info", "logger": "src.external.middleware.step_up_auth", "timestamp": "2026-08-18T23:12:34.932762Z", "ticket_id": "278b056a-b4a7-422d-8d9c-bb2106af4e86", "operation": "revoke_keycloak_session"}
+{"event": "HTTP Request: POST https://poc-ee1/api/step-up/ticket \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.932979Z"}
+[2026-08-18T23:12:34.933057+00:00] PASS: (c) real step-up ticket minted for the cross-org attempt (a VALID ticket)
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.938095Z", "event_id": "5fe5f7c7-ac4d-4414-bda0-2e552b31ab91", "event_type": "playbook.execution_started", "seq": 26}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.941375Z", "event_id": "7edda27f-31b8-443f-a708-4f1063a5ec7d", "event_type": "containment.action_attempted", "seq": 27}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations/7a2d50db-f1bf-496e-8aff-16435cef14b1/members/7f4ac045-08c8-4ce1-9280-4e6917fdd82b \"HTTP/1.1 404 Not Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.953163Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.957454Z", "event_id": "783ddbc9-a54a-457e-957b-6cd387a108c0", "event_type": "containment.action_failed", "seq": 28}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.960782Z", "event_id": "fade8c2d-f489-47b7-b66e-66e9c02fe9fe", "event_type": "playbook.step_failed", "seq": 29}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-18T23:12:34.963925Z", "event_id": "4469f551-f917-4132-ada8-efcf7911ea57", "event_type": "playbook.execution_completed", "seq": 30}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-18T23:12:34.964014Z", "execution_id": "bdd05ac8-8d6b-4fe7-acf4-8728ce106ccf", "playbook_id": "82d2bdeb-b8e1-4b2a-8805-e8994d06f98f", "halted_early": true, "succeeded": false}
+{"event": "HTTP Request: POST https://poc-ee1/api/detections/42665cf1-ffd6-4804-b1e4-28900058d18e/contain/revoke-session \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.964264Z"}
+[2026-08-18T23:12:34.964349+00:00] PASS: (c) real route returns 200
+[2026-08-18T23:12:34.964370+00:00] PASS: (c) real revoke succeeded=false despite a VALID ticket
+[2026-08-18T23:12:34.964375+00:00] PASS: (c) real error names the org-membership rejection
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/7f4ac045-08c8-4ce1-9280-4e6917fdd82b/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.968842Z"}
+[2026-08-18T23:12:34.969307+00:00] PASS: (c) the second org's real session is STILL ALIVE (independent fresh Admin API re-check)
+[2026-08-18T23:12:34.971593+00:00] PASS: (c) real CONTAINMENT_ACTION_FAILED row exists for the cross-org attempt (never _EXECUTED)
+[2026-08-18T23:12:34.971605+00:00] === Cleanup: removing the temporary second org/user ===
+{"event": "HTTP Request: DELETE http://localhost:8080/admin/realms/kronos/organizations/c167de06-6ea9-43cd-b924-985fecfb0cfc \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:34.982568Z"}
+{"event": "HTTP Request: DELETE http://localhost:8080/admin/realms/kronos/users/7f4ac045-08c8-4ce1-9280-4e6917fdd82b \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:35.008938Z"}
+[2026-08-18T23:12:35.009377+00:00] cleanup complete
+[2026-08-18T23:12:35.009384+00:00] === Scenario (d): role-gating -- ANALYST-only tenant gets a real 403 ===
+{"event": "HTTP Request: POST https://poc-ee1/api/detections/42665cf1-ffd6-4804-b1e4-28900058d18e/contain/revoke-session \"HTTP/1.1 403 Forbidden\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:35.010862Z"}
+[2026-08-18T23:12:35.010951+00:00] PASS: (d) an ANALYST-only tenant gets a real 403 (never silently allowed through)
+{"event": "HTTP Request: POST https://poc-ee1/api/detections/42665cf1-ffd6-4804-b1e4-28900058d18e/contain/revoke-session \"HTTP/1.1 403 Forbidden\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-18T23:12:35.012215Z"}
+[2026-08-18T23:12:35.012308+00:00] PASS: (d) a READ_ONLY tenant also gets a real 403
+[2026-08-18T23:12:35.016004+00:00] PoC PASSED -- 21/21 checks passed against the real HTTP route, real Keycloak 26.2.5, and real Postgres 16.

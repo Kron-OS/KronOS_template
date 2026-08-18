@@ -86,6 +86,7 @@ async def wire_dependencies_async() -> None:
         configure_clamav_from_settings,
         configure_defender_poll_source_from_settings,
         configure_dependencies,
+        configure_keycloak_admin_client_from_settings,
         configure_sentinel_sink_from_settings,
         configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
@@ -384,6 +385,7 @@ async def wire_dependencies_async() -> None:
     configure_cef_syslog_sink_from_settings()
     configure_sentinel_sink_from_settings()
     configure_defender_poll_source_from_settings()
+    configure_keycloak_admin_client_from_settings()
 
     logger.info("startup: dependencies wired (async)")
 
@@ -424,6 +426,7 @@ def wire_dependencies_sync() -> None:
         configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
         configure_dependencies,
+        configure_keycloak_admin_client_from_settings,
         configure_sentinel_sink_from_settings,
         configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
@@ -504,5 +507,10 @@ def wire_dependencies_sync() -> None:
     configure_splunk_hec_sink_from_settings()
     configure_cef_syslog_sink_from_settings()
     configure_sentinel_sink_from_settings()
+    # HttpxKeycloakAdminClient constructs its own httpx.AsyncClient fresh,
+    # per-call, inside _admin_request() (mirrors SplunkHecSink/SentinelHttpSink
+    # above) -- safe to wire here too, unlike DefenderPollSource's own
+    # process-lifetime client (see this function's own docstring above).
+    configure_keycloak_admin_client_from_settings()
 
     logger.info("startup: dependencies wired (sync/celery)")

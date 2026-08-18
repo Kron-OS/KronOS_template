@@ -9,16 +9,25 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.adapter.keycloak.admin_client import (
+    KeycloakAdminClient,
+    KeycloakOrganization,
+    KeycloakSession,
+)
 from src.adapter.repository.detection import InMemoryDetectionRepository
+from src.application.approval_gate import StaticPolicyApprovalGate, StepUpApprovalGate
 from src.application.audit_log import AuditLogService
+from src.application.containment_actions import RevokeKeycloakSessionAction
 from src.application.detection_triage import DetectionTriageService
 from src.application.playbook import PlaybookAction, PlaybookActionRegistry
 from src.application.playbook_execution import PlaybookExecutionService
+from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState
 from src.domain.user import Role, TenantContext
 from src.exceptions import PlaybookError
@@ -29,6 +38,7 @@ from src.external.dependencies import (
     get_playbook_execution_service,
 )
 from src.external.fastapi_app import create_app
+from src.external.middleware.step_up_store import InMemoryTicketStore
 from src.external.middleware.tenant_context import get_tenant_context
 from tests.conftest import InMemoryAuditLogRepository
 
@@ -438,3 +448,333 @@ class TestSyncDetectionToSiem:
         assert resp.json()["stepResults"][0]["actionName"] == "sync_detection_to_siem_sentinel"
         assert len(sentinel_action.calls) == 1
         assert len(splunk_action.calls) == 0
+
+
+class _FakeKeycloakAdminClientForRoute(KeycloakAdminClient):
+    """Small typed fake -- the ONE external dependency these route tests
+    mock (mirrors ``_FakeKeycloakAdminClient`` in
+    ``tests/unit/application/test_containment_actions.py``, CLAUDE.md SS
+    B.5). ``RevokeKeycloakSessionAction``, ``ContainmentAction``,
+    ``StepUpApprovalGate``/``StaticPolicyApprovalGate``, and
+    ``PlaybookExecutionService`` are all real, unmodified ``src/`` code,
+    reached through the real HTTP route below -- not reimplemented or
+    faked at the route boundary the way ``_FakeSyncToSiemAction`` above
+    fakes a whole ``PlaybookAction``."""
+
+    def __init__(
+        self,
+        *,
+        org_members: set[uuid.UUID] | None = None,
+        sessions_by_user: dict[uuid.UUID, tuple[KeycloakSession, ...]] | None = None,
+    ) -> None:
+        self.org_members = org_members or set()
+        self.sessions_by_user = sessions_by_user or {}
+        self.revoked_session_ids: list[str] = []
+
+    async def list_user_sessions(self, user_id: uuid.UUID) -> tuple[KeycloakSession, ...]:
+        return self.sessions_by_user.get(user_id, ())
+
+    async def revoke_session(self, session_id: str) -> None:
+        self.revoked_session_ids.append(session_id)
+
+    async def is_org_member(self, org_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        return user_id in self.org_members
+
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        return None
+
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        return ()
+
+
+def _build_revoke_session_client(
+    detection_repo: InMemoryDetectionRepository,
+    tenant: TenantContext,
+    *,
+    admin: KeycloakAdminClient | None,
+    approval_gate: StepUpApprovalGate | StaticPolicyApprovalGate,
+) -> tuple[TestClient, InMemoryAuditLogRepository]:
+    audit_repo = InMemoryAuditLogRepository()
+    audit_svc = AuditLogService(audit_repo)
+    triage_service = DetectionTriageService(detection_repo, audit_svc)
+
+    registry = PlaybookActionRegistry()
+    if admin is not None:
+        registry.register(RevokeKeycloakSessionAction(admin, approval_gate, audit_svc))
+
+    app = create_app()
+    app.dependency_overrides[get_tenant_context] = lambda: tenant
+    app.dependency_overrides[get_detection_repository] = lambda: detection_repo
+    app.dependency_overrides[get_detection_triage_service] = lambda: triage_service
+    app.dependency_overrides[get_playbook_action_registry] = lambda: registry
+    app.dependency_overrides[get_playbook_execution_service] = lambda: PlaybookExecutionService(
+        registry, audit_svc
+    )
+    return TestClient(app), audit_repo
+
+
+class TestRevokeSessionForDetection:
+    """POST /api/detections/{id}/contain/revoke-session (roadmap M7/H2/EE1).
+
+    Wires the real, previously-unreachable ``RevokeKeycloakSessionAction``
+    (H2's own "one real, deeply-verified adapter", shipped with zero HTTP
+    route per that item's own explicitly-flagged scope note) into the real
+    HTTP surface for the first time. Mocks only the external
+    ``KeycloakAdminClient`` (CLAUDE.md SS B.5) -- the gate, audit, and
+    route response-shaping logic exercised here is all real, unmodified
+    ``src/`` code, the same bar ``test_containment_actions.py`` already
+    holds this action's own unit tests to.
+    """
+
+    def test_org_admin_with_valid_ticket_revokes_for_real(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (KeycloakSession("sess-1", str(target_user), "victim", "10.0.0.5", 0),)
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        ticket_store = InMemoryTicketStore()
+        ticket_id = uuid.uuid4()
+        ticket_store.put(ticket_id, tenant.user_id, "revoke_keycloak_session", "sess-1")
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=StepUpApprovalGate(ticket_store)
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={
+                "userId": str(target_user),
+                "sessionId": "sess-1",
+                "approvalTicketId": str(ticket_id),
+                "approvalResourceId": "sess-1",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["succeeded"] is True
+        assert body["haltedEarly"] is False
+        assert body["stepResults"][0]["actionName"] == "revoke_keycloak_session"
+        assert body["stepResults"][0]["output"] == {
+            "user_id": str(target_user),
+            "session_id": "sess-1",
+            "revoked": True,
+        }
+        assert admin.revoked_session_ids == ["sess-1"]  # the real (fake-backed) revoke ran
+
+    def test_case_lead_role_is_permitted(self, detection_repo: InMemoryDetectionRepository) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (KeycloakSession("sess-1", str(target_user), "v", "1.2.3.4", 0),)
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.CASE_LEAD)
+        policy_gate = StaticPolicyApprovalGate(frozenset({(ORG_A, "revoke_keycloak_session")}))
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=policy_gate
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(target_user), "sessionId": "sess-1"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["succeeded"] is True
+        assert admin.revoked_session_ids == ["sess-1"]
+
+    def test_analyst_role_forbidden(self, detection_repo: InMemoryDetectionRepository) -> None:
+        """Deliberately narrower than sync-to-siem's ANALYST-inclusive
+        gate -- this is a genuinely destructive containment action."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        admin = _FakeKeycloakAdminClientForRoute()
+        tenant = _fixed_tenant(ORG_A, Role.ANALYST)
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo,
+            tenant,
+            admin=admin,
+            approval_gate=StaticPolicyApprovalGate(frozenset()),
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(uuid.uuid4()), "sessionId": "sess-1"},
+        )
+
+        assert resp.status_code == 403
+        assert admin.revoked_session_ids == []
+
+    def test_read_only_role_forbidden(self, detection_repo: InMemoryDetectionRepository) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        admin = _FakeKeycloakAdminClientForRoute()
+        tenant = _fixed_tenant(ORG_A, Role.READ_ONLY)
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo,
+            tenant,
+            admin=admin,
+            approval_gate=StaticPolicyApprovalGate(frozenset()),
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(uuid.uuid4()), "sessionId": "sess-1"},
+        )
+
+        assert resp.status_code == 403
+
+    def test_missing_ticket_is_denied_not_executed(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (KeycloakSession("sess-1", str(target_user), "v", "1.2.3.4", 0),)
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo,
+            tenant,
+            admin=admin,
+            approval_gate=StepUpApprovalGate(InMemoryTicketStore()),
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(target_user), "sessionId": "sess-1"},  # no ticket supplied
+        )
+
+        assert resp.status_code == 200  # audited denial, not a raised HTTP error
+        body = resp.json()
+        assert body["succeeded"] is False
+        assert body["haltedEarly"] is True
+        assert "denied" in body["stepResults"][0]["error"].lower()
+        assert admin.revoked_session_ids == []  # the real destructive call never ran
+
+    def test_cross_org_target_user_rejected_even_with_valid_ticket(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Roadmap invariant #3: a valid step-up ticket does not bypass
+        RevokeKeycloakSessionAction's own real, independent org-membership
+        check."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        other_org_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members=set(),  # NOT a member of ORG_A
+            sessions_by_user={
+                other_org_user: (
+                    KeycloakSession("sess-cross-org", str(other_org_user), "o", "1.2.3.4", 0),
+                )
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        ticket_store = InMemoryTicketStore()
+        ticket_id = uuid.uuid4()
+        ticket_store.put(ticket_id, tenant.user_id, "revoke_keycloak_session", "sess-cross-org")
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=StepUpApprovalGate(ticket_store)
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={
+                "userId": str(other_org_user),
+                "sessionId": "sess-cross-org",
+                "approvalTicketId": str(ticket_id),
+                "approvalResourceId": "sess-cross-org",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["succeeded"] is False
+        assert "organization" in body["stepResults"][0]["error"].lower()
+        assert admin.revoked_session_ids == []
+
+    def test_unconfigured_action_returns_404(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Mirrors sync-to-siem's own "honestly unconfigured" 404 -- no
+        RevokeKeycloakSessionAction registered (no real KeycloakAdminClient
+        in this deployment)."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo,
+            tenant,
+            admin=None,
+            approval_gate=StaticPolicyApprovalGate(frozenset()),
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(uuid.uuid4()), "sessionId": "sess-1"},
+        )
+
+        assert resp.status_code == 404
+
+    def test_missing_required_field_returns_422(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        admin = _FakeKeycloakAdminClientForRoute()
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo,
+            tenant,
+            admin=admin,
+            approval_gate=StaticPolicyApprovalGate(frozenset()),
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"sessionId": "sess-1"},  # missing userId
+        )
+
+        assert resp.status_code == 422
+
+    def test_real_containment_audit_rows_are_recorded(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Confirms the route reaches the real ContainmentAction audit
+        sequence (CONTAINMENT_ACTION_ATTEMPTED/_EXECUTED) -- the audit
+        trail this route's own docstring claims is the real source of
+        truth, not just a 200 status code."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (KeycloakSession("sess-1", str(target_user), "v", "1.2.3.4", 0),)
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        policy_gate = StaticPolicyApprovalGate(frozenset({(ORG_A, "revoke_keycloak_session")}))
+        client, audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=policy_gate
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={"userId": str(target_user), "sessionId": "sess-1"},
+        )
+        assert resp.status_code == 200
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(ORG_A)))
+        types = [e.event_type for e in events]
+        assert AuditEventType.CONTAINMENT_ACTION_ATTEMPTED in types
+        assert AuditEventType.CONTAINMENT_ACTION_EXECUTED in types
+
+
+async def _collect(async_iter: AsyncIterator[AuditEvent]) -> list[AuditEvent]:
+    return [item async for item in async_iter]

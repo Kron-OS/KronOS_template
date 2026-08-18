@@ -16,6 +16,7 @@ from fastapi import Depends
 from src.adapter.integration_sink.sentinel_sink import SentinelHttpSink
 from src.adapter.integration_sink.splunk_hec_sink import SplunkHecSink
 from src.adapter.integration_sink.syslog_sink import SyslogIntegrationSink, SyslogTransportProtocol
+from src.adapter.keycloak.admin_client import HttpxKeycloakAdminClient, KeycloakAdminClient
 from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.opensearch.correlation_client import CorrelationClient
 from src.adapter.opensearch.correlation_rule_provisioner import CorrelationRuleProvisioner
@@ -63,11 +64,13 @@ from src.adapter.repository.yara_rule_pack import (
 )
 from src.adapter.storage.sealed_batch_storage import SealedBatchStorage
 from src.adapter.storage.storage import EvidenceStorage
+from src.application.approval_gate import ApprovalGate, StepUpApprovalGate
 from src.application.artifact_ingest import ArtifactIngestService
 from src.application.audit_log import AuditLogService
 from src.application.batch_sealing import BatchSealingService
 from src.application.cef_detection_mapper import CefDetectionMapper
 from src.application.collector_ingest import CollectorIngestService
+from src.application.containment_actions import RevokeKeycloakSessionAction
 from src.application.correlation_sync import CorrelationSyncService
 from src.application.cost_gate import RuleCostGate
 from src.application.detection_sink_push import DetectionSinkPushService
@@ -240,6 +243,17 @@ _ioc_feed_repository: IOCFeedRepository = InMemoryIOCFeedRepository()
 # integration, so it always has a real (if in-memory-backed in tests)
 # implementation and StorageQuotaGate is always constructed from it.
 _org_quota_repository: OrgQuotaRepository = InMemoryOrgQuotaRepository()
+# Real Keycloak Admin REST API client (roadmap M7/H2/EE1) -- same "None
+# means not configured, an honest disabled state" shape as
+# _splunk_hec_sink below. Unlike the SIEM sinks, keycloak_url/
+# keycloak_client_secret are REQUIRED Settings fields (no default) since
+# this platform's own JWT auth already depends on them (CLAUDE.md "Key
+# Decisions: Keycloak 26+ Organizations for multi-tenancy") -- a real
+# deployment that can boot at all already has these, so None here is only
+# ever hit in a DI container built without full Settings (unit tests that
+# never call configure_keycloak_admin_client_from_settings()), never a
+# real deployment silently missing containment.
+_keycloak_admin_client: KeycloakAdminClient | None = None
 # Splunk HEC sink (roadmap R2) -- same "None means not configured, an
 # honest disabled state" shape as _timestamp_service above. Both default to
 # None until configure_splunk_hec_sink_from_settings() finds a real
@@ -675,6 +689,48 @@ def configure_clamav_from_settings() -> None:
         return  # keep NoOpScanner in dev/test
 
     _scanner = ClamAVScanner(host=s.clamd_host, port=s.clamd_port)
+
+
+def configure_keycloak_admin_client_from_settings() -> None:
+    """Wire a real ``HttpxKeycloakAdminClient`` from ``keycloak_url``/
+    ``keycloak_realm``/``keycloak_client_id``/``keycloak_client_secret`` in
+    Settings (roadmap M7/H2/EE1 -- closes the H2 GATE's own explicitly-
+    flagged gap: "``HttpxKeycloakAdminClient`` [is] not yet wired into
+    ``dependencies.py``/``startup.py``").
+
+    Call at application startup after ``configure_dependencies()``, mirroring
+    ``configure_clamav_from_settings()``'s/``configure_splunk_hec_sink_from_
+    settings()``'s own "falls back silently if Settings can't be
+    instantiated" shape for unit tests -- the exact same construction this
+    codebase already trusts for containment (``_build_keycloak_admin_client``,
+    ``src/external/celery_streaming.py``), reused here rather than a second,
+    parallel construction path for the same real client.
+    """
+    global _keycloak_admin_client
+    from src.config import Settings  # noqa: PLC0415
+
+    try:
+        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
+    except Exception:
+        return  # keep None in test/dev environments without full Settings
+
+    _keycloak_admin_client = HttpxKeycloakAdminClient(
+        s.keycloak_url,
+        s.keycloak_realm,
+        s.keycloak_client_id,
+        s.keycloak_client_secret.get_secret_value(),
+    )
+
+
+def get_keycloak_admin_client() -> KeycloakAdminClient | None:
+    """Return the configured ``KeycloakAdminClient``, or None if unconfigured.
+
+    None is only reached in a DI container built without full Settings
+    (e.g. plain unit tests) -- callers (``get_revoke_keycloak_session_action``)
+    must treat it as "containment via Keycloak session revocation disabled",
+    never substitute a fabricated client.
+    """
+    return _keycloak_admin_client
 
 
 def configure_splunk_hec_sink_from_settings() -> None:
@@ -1193,6 +1249,25 @@ def get_detection_triage_service(
     return DetectionTriageService(detection_repository=detection_repository, audit_log=audit_log)
 
 
+def get_revoke_keycloak_session_action(
+    admin_client: Annotated[KeycloakAdminClient | None, Depends(get_keycloak_admin_client)],
+    approval_gate: Annotated[ApprovalGate, Depends(get_containment_approval_gate)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> RevokeKeycloakSessionAction | None:
+    """FastAPI dependency for ``RevokeKeycloakSessionAction`` (roadmap M7/
+    H2/EE1 -- closes the H2 GATE's own explicitly-flagged wiring gap).
+
+    None (honestly disabled, mirrors ``get_detection_sync_service``'s own
+    "None means not configured" contract) when no ``KeycloakAdminClient``
+    is configured -- callers (``get_playbook_action_registry``) must skip
+    registering this action rather than registering one pointed at a
+    fabricated backend.
+    """
+    if admin_client is None:
+        return None
+    return RevokeKeycloakSessionAction(admin_client, approval_gate, audit_log)
+
+
 def get_playbook_action_registry(
     detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
     triage_service: Annotated[DetectionTriageService, Depends(get_detection_triage_service)],
@@ -1227,10 +1302,21 @@ def get_playbook_action_registry(
     settings are provided, see each getter's own docstring) -- an
     unconfigured deployment ends up with zero SyncDetectionToSiemAction
     registrations, never a fabricated one pointed at nothing.
+
+    ``revoke_keycloak_session`` (roadmap M7/H2/EE1) is registered the same
+    "honestly absent until configured" way, via
+    ``get_revoke_keycloak_session_action()`` -- None whenever
+    ``get_keycloak_admin_client()`` has no real Keycloak client configured.
     """
     registry = PlaybookActionRegistry()
     registry.register(TransitionDetectionTriageAction(triage_service))
     registry.register(LogNotificationAction())
+
+    revoke_session_action = get_revoke_keycloak_session_action(
+        get_keycloak_admin_client(), get_containment_approval_gate(get_step_up_auth()), audit_log
+    )
+    if revoke_session_action is not None:
+        registry.register(revoke_session_action)
 
     splunk_sink = get_splunk_hec_sink()
     splunk_mapper = get_splunk_detection_mapper()
@@ -1379,6 +1465,25 @@ _step_up_auth = _StepUpAuth()
 def get_step_up_auth() -> _StepUpAuth:
     """Return the shared StepUpAuth instance."""
     return _step_up_auth
+
+
+def get_containment_approval_gate(
+    step_up_auth: Annotated[_StepUpAuth, Depends(get_step_up_auth)],
+) -> ApprovalGate:
+    """FastAPI dependency for the ``ApprovalGate`` a ``ContainmentAction``
+    consults (roadmap M7/H2/EE1 -- closes the H2 GATE's own explicitly-
+    flagged gap: "``ApprovalGate`` [is] not yet wired into
+    ``dependencies.py``/``startup.py``").
+
+    Reuses the exact ``TicketStore`` singleton ``get_step_up_auth()``
+    already manages (``step_up_auth.ticket_store``) rather than building a
+    second one -- a ticket minted via the real, already-existing
+    ``POST /api/step-up/ticket`` route is issued through this same
+    ``StepUpAuth`` instance's ``issue_ticket()``, so it must be consumed
+    through the identical underlying store for the whole human-approval
+    loop to actually close.
+    """
+    return StepUpApprovalGate(step_up_auth.ticket_store)
 
 
 def configure_step_up_auth(store: TicketStore) -> None:
@@ -1559,7 +1664,9 @@ def reset_dependencies() -> None:
     global _sentinel_sink, _sentinel_detection_mapper
     global _defender_poll_source, _defender_http_client
     global _defender_poll_org_id, _defender_poll_source_id
+    global _keycloak_admin_client
     _step_up_auth = _StepUpAuth()
+    _keycloak_admin_client = None
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
