@@ -2313,10 +2313,16 @@ stray leftover PoC-only Keycloak user and an empty
 incomplete attempt at this exact item that died before writing any real
 code — reported, not silently absorbed.
 
-**Explicitly flagged gaps, not this item's scope:** no HTTP route or
+**Explicitly flagged gaps, not this item's scope:** ~~no HTTP route or
 scheduled/Detection-triggered trigger wiring this pass (mirrors H1's own
 precedent) — `ContainmentAction`/`ApprovalGate`/`HttpxKeycloakAdminClient`
-are not yet wired into `dependencies.py`/`startup.py`; "block IP" and
+are not yet wired into `dependencies.py`/`startup.py`~~ **EE1 CLOSED
+(2026-08-19, commit `af2cce7`):** `RevokeKeycloakSessionAction` is now
+wired into `dependencies.py`/`startup.py` and reachable via
+`POST /api/detections/{detection_id}/contain/revoke-session`
+(`ORG_ADMIN`/`CASE_LEAD` only), verified with 21/21 real checks against
+live Keycloak/Postgres through the actual new route — see
+`docs/GAP_AUDIT_2026-08-19_MILESTONE_EE.md`. "block IP" and
 "isolate host" remain real, reported gaps needing an actual owned
 enforcement point (a dedicated nftables/security-group API, an EDR/
 osquery integration) that doesn't exist in this dev stack yet, not a
