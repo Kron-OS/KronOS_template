@@ -1,0 +1,128 @@
+==============================================================================
+PART 1 -- real, pre-existing org/case (read-only): verified + not_yet_hashed
+==============================================================================
+$ kronos-attest case-report ... --case-id c6284b59-fe95-4b72-8a75-3a3abcc062d2 --verify-evidence-hashes
+{
+  "case_id": "c6284b59-fe95-4b72-8a75-3a3abcc062d2",
+  "event_count": 4,
+  "merkle_root": "550f0e220706df3fe21073390e51c24cd51250baffbc6c25f80f00595669c8a7",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "b384dc58-5213-48b5-a3a8-67c1a1a0fa13",
+    "d29734a3-bbff-4d26-bc73-03396b334912",
+    "e2d863a9-7043-4186-b9be-1213c87b2d6d"
+  ],
+  "evidence_integrity": {
+    "b384dc58-5213-48b5-a3a8-67c1a1a0fa13": {
+      "status": "not_yet_hashed"
+    },
+    "d29734a3-bbff-4d26-bc73-03396b334912": {
+      "status": "verified",
+      "expected_sha256": "fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a",
+      "computed_sha256": "fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a"
+    },
+    "e2d863a9-7043-4186-b9be-1213c87b2d6d": {
+      "status": "verified",
+      "expected_sha256": "fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a",
+      "computed_sha256": "fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a"
+    }
+  }
+}
+
+[PASS] case-report --verify-evidence-hashes returned evidence_integrity -- ['b384dc58-5213-48b5-a3a8-67c1a1a0fa13', 'd29734a3-bbff-4d26-bc73-03396b334912', 'e2d863a9-7043-4186-b9be-1213c87b2d6d']
+[PASS] real pre-existing promoted evidence e2d863a9... verified -- {'status': 'verified', 'expected_sha256': 'fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a', 'computed_sha256': 'fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a'}
+[PASS]   expected_sha256 == computed_sha256 for e2d863a9... -- fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a
+[PASS] real pre-existing promoted evidence d29734a3... verified -- {'status': 'verified', 'expected_sha256': 'fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a', 'computed_sha256': 'fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a'}
+[PASS]   expected_sha256 == computed_sha256 for d29734a3... -- fa14d98246b9e59ac8f375ee6149519a91f44ec2e5948eb578059fb8bb94d16a
+[PASS] real pre-existing un-promoted evidence b384dc58... -> not_yet_hashed -- {'status': 'not_yet_hashed'}
+
+==============================================================================
+PART 2 -- fresh throwaway org/case/evidence: real MISMATCH detection
+==============================================================================
+[PASS] fresh throwaway case persisted in real Postgres
+[PASS] real PUT of original bytes to real MinIO succeeds -- 200
+[PASS] real evidence promoted (sha256 + minio_evidence_key set) via real validate->scan->hash->promote -- state=RECEIVED sha256=02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e
+
+--- 2a. Real CLI: verified (unmodified real MinIO bytes) ---
+$ kronos-attest case-report ... --case-id f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8 --verify-evidence-hashes
+{
+  "case_id": "f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8",
+  "event_count": 1,
+  "merkle_root": "10e10be38c62b8bf334a20416a459e5e779962b348bc0c1dc10aeb211406a4b2",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d"
+  ],
+  "evidence_integrity": {
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d": {
+      "status": "verified",
+      "expected_sha256": "02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e",
+      "computed_sha256": "02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e"
+    }
+  }
+}
+
+[PASS] fresh evidence verified BEFORE corruption -- {'status': 'verified', 'expected_sha256': '02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e', 'computed_sha256': '02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e'}
+
+--- 2b. Deliberately corrupt the real MinIO object bytes ---
+[PASS] corrupted content really differs from the original bytes
+real PutObject (corruption) -> bucket=kronos-evidence-kronos-poc-bb1-5a2fa9aa key=kronos-poc-bb1-5a2fa9aa/f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8/942c5dea-9190-4b8c-88d5-cbff6caab94d/bb1-poc.json
+
+--- 2c. Real CLI: MISMATCH detected against the real corrupted bytes ---
+$ kronos-attest case-report ... --case-id f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8 --verify-evidence-hashes
+{
+  "case_id": "f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8",
+  "event_count": 1,
+  "merkle_root": "10e10be38c62b8bf334a20416a459e5e779962b348bc0c1dc10aeb211406a4b2",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d"
+  ],
+  "evidence_integrity": {
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d": {
+      "status": "MISMATCH",
+      "expected_sha256": "02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e",
+      "computed_sha256": "99eb62d8ecc56833fe7e113974d1b030b5c691a5f10a3e43b1456a674a4d7c57"
+    }
+  }
+}
+
+[PASS] MISMATCH detected on the real corrupted object -- {'status': 'MISMATCH', 'expected_sha256': '02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e', 'computed_sha256': '99eb62d8ecc56833fe7e113974d1b030b5c691a5f10a3e43b1456a674a4d7c57'}
+[PASS] expected_sha256 (Postgres) != computed_sha256 (real re-hashed MinIO bytes) -- expected=02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e computed=99eb62d8ecc56833fe7e113974d1b030b5c691a5f10a3e43b1456a674a4d7c57
+[PASS] computed_sha256 matches a real local hash of the corrupted content
+
+--- 2d. Restore original bytes (new version; old locked versions survive by WORM design) ---
+$ kronos-attest case-report ... --case-id f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8 --verify-evidence-hashes
+{
+  "case_id": "f1adeb2f-69cf-4089-8b4a-c1fee1fb29c8",
+  "event_count": 1,
+  "merkle_root": "10e10be38c62b8bf334a20416a459e5e779962b348bc0c1dc10aeb211406a4b2",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d"
+  ],
+  "evidence_integrity": {
+    "942c5dea-9190-4b8c-88d5-cbff6caab94d": {
+      "status": "verified",
+      "expected_sha256": "02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e",
+      "computed_sha256": "02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e"
+    }
+  }
+}
+
+[PASS] verified again after restoring the original bytes -- {'status': 'verified', 'expected_sha256': '02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e', 'computed_sha256': '02fe138660df21bf4f043c5710613953f20df86a428217f2638c8f206034434e'}
+
+--- 2e. Cleanup: remove throwaway Postgres rows (audit_log left intact, append-only by design) ---
+[PASS] throwaway evidence row deleted from Postgres
+[PASS] throwaway case row deleted from Postgres
+Note: MinIO object versions for this throwaway bucket (kronos-evidence-kronos-poc-bb1-5a2fa9aa) cannot be purged before their WORM retention date -- that is the Object Lock guarantee working as intended, matching poc/evidence_download/'s own prior finding. The bucket's CURRENT version is the restored, correct content.
+
+17 passed, 0 failed

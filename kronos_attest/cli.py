@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import uuid
@@ -12,6 +13,15 @@ import click
 
 from kronos_attest.report import AttestationReport
 from kronos_attest.verifier import ChainVerifier, merkle_proof
+
+# Matches src/config.py's Settings.minio_quarantine_bucket_prefix /
+# minio_evidence_bucket_prefix defaults. Only the evidence-bucket prefix is
+# ever actually exercised by --verify-evidence-hashes (it always passes
+# bucket="evidence" to stream_object) -- S3EvidenceStorage derives the real
+# per-org bucket name from the object key's own "<org_alias>/..." prefix
+# (S3EvidenceStorage._bucket_for), so no org-specific configuration is
+# needed here, just the deployment-wide prefix.
+_DEFAULT_MINIO_BUCKET_PREFIX = "kronos-evidence"
 
 
 @click.group()
@@ -136,6 +146,108 @@ async def _fetch_live_events(database_url: str, org_id: uuid.UUID) -> list[dict[
     try:
         repo = PostgresAuditLogRepository(engine)
         return [_to_export_dict(ev) async for ev in repo.stream_by_org(org_id)]
+    finally:
+        await engine.dispose()
+
+
+async def _fetch_live_events_and_evidence_integrity(
+    database_url: str,
+    org_id: uuid.UUID,
+    case_id: str,
+    minio_endpoint: str,
+    minio_access_key: str,
+    minio_secret_key: str,
+    minio_use_tls: bool,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Live-Postgres event fetch PLUS real MinIO evidence-hash re-verification.
+
+    Used only by ``case-report --verify-evidence-hashes``. Shares a single
+    ``AsyncEngine`` across both the org's audit-chain fetch (identical
+    ``PostgresAuditLogRepository.stream_by_org()``/``_to_export_dict()``
+    pairing as ``_fetch_live_events`` -- see its own docstring) and the
+    per-evidence ``PostgresEvidenceRepository.get_by_id()`` lookups below,
+    rather than opening a second connection pool for what is, either way, a
+    one-shot CLI report -- disposed once in the ``finally`` block per
+    CLAUDE.md SS A.5.
+
+    For each ``evidence_id`` the resulting ``CaseReport`` actually
+    references:
+      - not yet hashed/promoted (``sha256``/``minio_evidence_key`` still
+        ``None`` -- a legitimate real state, e.g. evidence mid-pipeline or
+        failed intake) -> ``{"status": "not_yet_hashed"}``.
+      - hashed/promoted -> stream the real object bytes from MinIO
+        (``S3EvidenceStorage.stream_object``, never buffered whole into
+        memory -- CLAUDE.md SS A.5) and recompute a real running SHA-256,
+        comparing against the stored ``Evidence.sha256``:
+        ``"verified"`` or ``"MISMATCH"`` (a real, serious tamper-detection
+        finding if it were ever to happen).
+      - the object itself is missing from MinIO despite Postgres recording
+        it as hashed -> ``"object_not_found_in_minio"`` (also a real,
+        actionable finding, not silently swallowed -- CLAUDE.md SS B.2).
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+
+    from src.adapter.repository.postgres_audit_log import (  # noqa: PLC0415
+        PostgresAuditLogRepository,
+    )
+    from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
+        PostgresEvidenceRepository,
+    )
+    from src.adapter.storage.s3 import S3EvidenceStorage  # noqa: PLC0415
+    from src.exceptions import StorageError  # noqa: PLC0415
+    from src.external.routes.audit import _to_export_dict  # noqa: PLC0415
+
+    engine = create_async_engine(database_url)
+    try:
+        audit_repo = PostgresAuditLogRepository(engine)
+        events = [_to_export_dict(ev) async for ev in audit_repo.stream_by_org(org_id)]
+
+        # Pure, dependency-free computation (kronos_attest/report.py) --
+        # only used here to learn which evidence_ids this case references;
+        # the caller recomputes the full CaseReport itself afterward.
+        evidence_ids = AttestationReport().case_report(events, case_id).evidence_ids
+
+        evidence_repo = PostgresEvidenceRepository(engine)
+        storage = S3EvidenceStorage(
+            endpoint_url=minio_endpoint,
+            access_key=minio_access_key,
+            secret_key=minio_secret_key,
+            quarantine_bucket_prefix=_DEFAULT_MINIO_BUCKET_PREFIX,
+            evidence_bucket_prefix=_DEFAULT_MINIO_BUCKET_PREFIX,
+            use_tls=minio_use_tls,
+        )
+
+        evidence_integrity: dict[str, dict[str, Any]] = {}
+        for evidence_id_str in evidence_ids:
+            evidence = await evidence_repo.get_by_id(uuid.UUID(evidence_id_str), org_id)
+            if evidence is None:
+                evidence_integrity[evidence_id_str] = {"status": "evidence_row_not_found"}
+                continue
+            if evidence.sha256 is None or evidence.minio_evidence_key is None:
+                evidence_integrity[evidence_id_str] = {"status": "not_yet_hashed"}
+                continue
+
+            hasher = hashlib.sha256()
+            try:
+                chunks = await storage.stream_object(evidence.minio_evidence_key, bucket="evidence")
+                async for chunk in chunks:
+                    hasher.update(chunk)
+            except StorageError as exc:
+                evidence_integrity[evidence_id_str] = {
+                    "status": "object_not_found_in_minio",
+                    "expected_sha256": evidence.sha256,
+                    "error": str(exc),
+                }
+                continue
+
+            computed_sha256 = hasher.hexdigest()
+            evidence_integrity[evidence_id_str] = {
+                "status": "verified" if computed_sha256 == evidence.sha256 else "MISMATCH",
+                "expected_sha256": evidence.sha256,
+                "computed_sha256": computed_sha256,
+            }
+
+        return events, evidence_integrity
     finally:
         await engine.dispose()
 
@@ -323,32 +435,134 @@ def day_report_cmd(
 @cli.command(name="case-report")
 @_live_or_offline_options
 @click.option("--case-id", required=True, help="Case UUID to report on")
+@click.option(
+    "--verify-evidence-hashes",
+    "verify_evidence_hashes",
+    is_flag=True,
+    default=False,
+    help="Re-hash each referenced evidence file's real bytes in MinIO and compare "
+    "against Evidence.sha256 in Postgres -- real tamper detection, not just chain "
+    "verification. Requires live Postgres mode (--database-url/--org-id, mutually "
+    "exclusive with --audit-log) plus --minio-endpoint/--minio-access-key/"
+    "--minio-secret-key.",
+)
+@click.option(
+    "--minio-endpoint",
+    "minio_endpoint",
+    default=None,
+    envvar="MINIO_ENDPOINT",
+    help="MinIO endpoint for --verify-evidence-hashes, e.g. http://localhost:9000 -- "
+    "reads the MINIO_ENDPOINT environment variable if not given explicitly.",
+)
+@click.option(
+    "--minio-access-key",
+    "minio_access_key",
+    default=None,
+    envvar="MINIO_ACCESS_KEY",
+    help="MinIO access key for --verify-evidence-hashes -- reads MINIO_ACCESS_KEY "
+    "if not given explicitly.",
+)
+@click.option(
+    "--minio-secret-key",
+    "minio_secret_key",
+    default=None,
+    envvar="MINIO_SECRET_KEY",
+    help="MinIO secret key for --verify-evidence-hashes -- reads MINIO_SECRET_KEY "
+    "if not given explicitly.",
+)
+@click.option(
+    "--minio-use-tls",
+    "minio_use_tls",
+    type=click.BOOL,
+    default=True,
+    envvar="MINIO_USE_TLS",
+    help="Whether the MinIO endpoint uses TLS (default true) -- reads MINIO_USE_TLS "
+    "if not given explicitly.",
+)
 def case_report_cmd(
     audit_log_path: str | None,
     database_url: str | None,
     org_id: str | None,
     case_id: str,
+    verify_evidence_hashes: bool,
+    minio_endpoint: str | None,
+    minio_access_key: str | None,
+    minio_secret_key: str | None,
+    minio_use_tls: bool,
 ) -> None:
     """Generate an attestation report for a single case.
 
     Reads events from exactly one of --audit-log or --database-url/--org-id.
+    --verify-evidence-hashes additionally re-hashes each referenced evidence
+    file's real bytes in MinIO against Postgres's stored Evidence.sha256 --
+    see that option's own help text for its live-mode/MinIO requirements.
     """
-    events = _resolve_events(audit_log_path, database_url, org_id)
-    report = AttestationReport().case_report(events, case_id)
-    click.echo(
-        json.dumps(
-            {
-                "case_id": report.case_id,
-                "event_count": report.event_count,
-                "merkle_root": report.merkle_root,
-                "chain_valid": report.chain_valid,
-                "break_count": report.break_count,
-                "org_chain_fully_intact": report.org_chain_fully_intact,
-                "evidence_ids": report.evidence_ids,
-            },
-            indent=2,
+    if verify_evidence_hashes and audit_log_path is not None:
+        raise click.UsageError(
+            "--verify-evidence-hashes requires live Postgres mode (--database-url/"
+            "--org-id): evidence.sha256/minio_evidence_key are looked up from "
+            "Postgres directly and are not part of --audit-log's export shape "
+            "(see src/external/routes/audit.py::_to_export_dict)."
         )
-    )
+    if verify_evidence_hashes and not (minio_endpoint and minio_access_key and minio_secret_key):
+        raise click.UsageError(
+            "--verify-evidence-hashes requires --minio-endpoint/--minio-access-key/"
+            "--minio-secret-key (or the matching MINIO_ENDPOINT/MINIO_ACCESS_KEY/"
+            "MINIO_SECRET_KEY environment variables) to connect to MinIO."
+        )
+
+    evidence_integrity: dict[str, dict[str, Any]] | None = None
+    if verify_evidence_hashes:
+        # audit_log_path is None here (checked above). Live mode's usual
+        # org-id/database-url mutual-requirement rules still apply -- kept
+        # here (rather than delegated to _resolve_events) so this path can
+        # share one AsyncEngine across the event fetch AND the evidence
+        # lookups below (see _fetch_live_events_and_evidence_integrity).
+        if org_id is None or database_url is None:
+            raise click.UsageError(
+                "--verify-evidence-hashes requires both --database-url and --org-id "
+                "(--database-url may also come from the DATABASE_URL environment "
+                "variable)."
+            )
+        try:
+            org_uuid = uuid.UUID(org_id)
+        except ValueError as exc:
+            raise click.UsageError(f"--org-id must be a valid UUID: {exc}") from exc
+
+        # Narrows str | None -> str for mypy; already enforced by the
+        # UsageError checks above (both branches only reach here once all
+        # three are truthy).
+        assert minio_endpoint is not None
+        assert minio_access_key is not None
+        assert minio_secret_key is not None
+
+        events, evidence_integrity = asyncio.run(
+            _fetch_live_events_and_evidence_integrity(
+                database_url,
+                org_uuid,
+                case_id,
+                minio_endpoint,
+                minio_access_key,
+                minio_secret_key,
+                minio_use_tls,
+            )
+        )
+    else:
+        events = _resolve_events(audit_log_path, database_url, org_id)
+
+    report = AttestationReport().case_report(events, case_id)
+    output: dict[str, Any] = {
+        "case_id": report.case_id,
+        "event_count": report.event_count,
+        "merkle_root": report.merkle_root,
+        "chain_valid": report.chain_valid,
+        "break_count": report.break_count,
+        "org_chain_fully_intact": report.org_chain_fully_intact,
+        "evidence_ids": report.evidence_ids,
+    }
+    if evidence_integrity is not None:
+        output["evidence_integrity"] = evidence_integrity
+    click.echo(json.dumps(output, indent=2))
 
 
 def _load(path: str) -> list[dict[str, Any]]:

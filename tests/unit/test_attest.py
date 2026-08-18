@@ -505,4 +505,268 @@ class TestCLILiveModeFetch:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["case_id"] == events[0]["case_id"]
+
+
+# ---------------------------------------------------------------------------
+# case-report --verify-evidence-hashes (BB1 -- live MinIO evidence-hash
+# re-verification, follow-on to AA1's live-Postgres mode).
+#
+# Same mocking discipline as TestCLILiveModeValidation/TestCLILiveModeFetch
+# above: pure Click validation needs no I/O at all, and the happy path mocks
+# only the one external-dependency boundary function
+# (``kronos_attest.cli._fetch_live_events_and_evidence_integrity``), never
+# the domain objects (AttestationReport/ChainVerifier) it feeds. The real
+# end-to-end run against real Postgres + real MinIO (including a genuine
+# corrupted-object MISMATCH) is the separate, required verification step in
+# poc/kronos_attest_evidence_hash_check/ (CLAUDE.md SS F).
+# ---------------------------------------------------------------------------
+
+
+class TestCLIVerifyEvidenceHashesValidation:
+    def test_rejects_verify_evidence_hashes_with_audit_log(self, tmp_path: Any) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        audit_log = tmp_path / "audit.json"
+        audit_log.write_text(json.dumps(_make_chain(1)))
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "case-report",
+                "--audit-log",
+                str(audit_log),
+                "--case-id",
+                "c1",
+                "--verify-evidence-hashes",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "--verify-evidence-hashes requires live Postgres mode" in result.output
+
+    def test_rejects_verify_evidence_hashes_without_minio_creds(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--case-id",
+                "c1",
+                "--verify-evidence-hashes",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "requires --minio-endpoint/--minio-access-key/--minio-secret-key" in result.output
+
+    def test_rejects_verify_evidence_hashes_without_org_id(self) -> None:
+        """--verify-evidence-hashes alone (no --org-id/--database-url at all)
+        must fail with a clear live-mode-required message, not a confusing
+        MinIO-creds message or a silent offline fallback."""
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "case-report",
+                "--case-id",
+                "c1",
+                "--verify-evidence-hashes",
+                "--minio-endpoint",
+                "http://localhost:9000",
+                "--minio-access-key",
+                "ak",
+                "--minio-secret-key",
+                "sk",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "requires both --database-url and --org-id" in result.output
+
+    def test_rejects_verify_evidence_hashes_invalid_org_id(self) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                "not-a-uuid",
+                "--case-id",
+                "c1",
+                "--verify-evidence-hashes",
+                "--minio-endpoint",
+                "http://localhost:9000",
+                "--minio-access-key",
+                "ak",
+                "--minio-secret-key",
+                "sk",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "--org-id must be a valid UUID" in result.output
+
+
+class TestCLIVerifyEvidenceHashesFetch:
+    def test_verify_evidence_hashes_happy_path(self, monkeypatch: Any) -> None:
+        """The CLI plumbs --minio-* options through to the combined live
+        fetch+evidence-check helper and surfaces its result under the new
+        top-level "evidence_integrity" JSON key -- the actual re-hashing
+        against real MinIO is exercised for real in
+        poc/kronos_attest_evidence_hash_check/, not here."""
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        case_id = str(uuid.uuid4())
+        evidence_id_verified = str(uuid.uuid4())
+        evidence_id_mismatch = str(uuid.uuid4())
+        evidence_id_pending = str(uuid.uuid4())
+        events = [
+            _make_event(0, case_id=case_id, evidence_id=evidence_id_verified),
+        ]
+
+        expected_integrity = {
+            evidence_id_verified: {
+                "status": "verified",
+                "expected_sha256": "a" * 64,
+                "computed_sha256": "a" * 64,
+            },
+            evidence_id_mismatch: {
+                "status": "MISMATCH",
+                "expected_sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+            },
+            evidence_id_pending: {"status": "not_yet_hashed"},
+        }
+
+        captured: dict[str, Any] = {}
+
+        async def fake_fetch(
+            database_url: str,
+            org_id: uuid.UUID,
+            case_id_arg: str,
+            minio_endpoint: str,
+            minio_access_key: str,
+            minio_secret_key: str,
+            minio_use_tls: bool,
+        ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+            captured["database_url"] = database_url
+            captured["org_id"] = org_id
+            captured["case_id"] = case_id_arg
+            captured["minio_endpoint"] = minio_endpoint
+            captured["minio_access_key"] = minio_access_key
+            captured["minio_secret_key"] = minio_secret_key
+            captured["minio_use_tls"] = minio_use_tls
+            return events, expected_integrity
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events_and_evidence_integrity", fake_fetch)
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--case-id",
+                case_id,
+                "--verify-evidence-hashes",
+                "--minio-endpoint",
+                "http://localhost:9000",
+                "--minio-access-key",
+                "ak",
+                "--minio-secret-key",
+                "sk",
+                "--minio-use-tls",
+                "false",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["case_id"] == case_id
+        assert data["evidence_integrity"] == expected_integrity
+        assert captured["minio_endpoint"] == "http://localhost:9000"
+        assert captured["minio_use_tls"] is False
+
+    def test_verify_evidence_hashes_reads_minio_creds_from_env(self, monkeypatch: Any) -> None:
+        """MINIO_ENDPOINT/MINIO_ACCESS_KEY/MINIO_SECRET_KEY env fallback
+        mirrors --database-url's own DATABASE_URL convention."""
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        case_id = str(uuid.uuid4())
+        events = [_make_event(0, case_id=case_id)]
+
+        async def fake_fetch(
+            database_url: str,
+            org_id: uuid.UUID,
+            case_id_arg: str,
+            minio_endpoint: str,
+            minio_access_key: str,
+            minio_secret_key: str,
+            minio_use_tls: bool,
+        ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+            assert minio_endpoint == "http://env-minio:9000"
+            assert minio_access_key == "env-ak"
+            assert minio_secret_key == "env-sk"
+            return events, {}
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events_and_evidence_integrity", fake_fetch)
+        monkeypatch.setenv("MINIO_ENDPOINT", "http://env-minio:9000")
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "env-ak")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "env-sk")
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--case-id",
+                case_id,
+                "--verify-evidence-hashes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["evidence_integrity"] == {}
+
+    def test_case_report_offline_mode_has_no_evidence_integrity_key(self, tmp_path: Any) -> None:
+        """Regression guard: the new key must never appear unless
+        --verify-evidence-hashes was actually given -- offline mode's output
+        shape must stay byte-identical to before this change."""
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        case_id = str(uuid.uuid4())
+        events = _make_chain(1)
+        events[0]["case_id"] = case_id
+        audit_log = tmp_path / "audit.json"
+        audit_log.write_text(json.dumps(events))
+
+        result = CliRunner().invoke(
+            cli, ["case-report", "--audit-log", str(audit_log), "--case-id", case_id]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "evidence_integrity" not in data
         assert data["event_count"] == 1
