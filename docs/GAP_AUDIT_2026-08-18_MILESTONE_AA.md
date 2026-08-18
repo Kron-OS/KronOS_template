@@ -69,7 +69,8 @@ regressions), 2 skipped both times. `ruff`/`black`/`mypy` clean.
   real evidence file bytes in MinIO against `Evidence.sha256` stored in
   Postgres) — a real, valuable, separately-scoped future item (needs its
   own design pass on how a standalone CLI authenticates to MinIO; not
-  attempted here).
+  attempted here). **CLOSED 2026-08-18 as Milestone BB's own BB1 — see
+  `docs/GAP_AUDIT_2026-08-18_MILESTONE_BB.md`.**
 - **"Live TSA re-querying"** — not a real gap: RFC 3161 timestamp token
   verification (`kronos_attest/tsa.py`) is already fully real,
   cryptographic, self-contained verification of the token embedded in
