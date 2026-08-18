@@ -1,0 +1,36 @@
+=== 1: env-var mode (DATABASE_URL set), no CLI secret flags -- no warning ===
+{
+  "case_id": "906ad0c9-0f59-44d9-bbf9-23c26fb34e7c",
+  "event_count": 2,
+  "merkle_root": "54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "9ae2095f-4516-440b-b96d-deb36560a154"
+  ]
+}
+
+=== 2: --database-url given as a literal CLI flag -- warning fires on stderr ===
+WARNING: --database-url was passed as a literal command-line argument -- it is now visible to other users on this host via `ps`/`/proc/<pid>/cmdline` and is likely recorded in your shell history. Prefer the matching environment variable instead.
+{
+  "case_id": "906ad0c9-0f59-44d9-bbf9-23c26fb34e7c",
+  "event_count": 2,
+  "merkle_root": "54cb26e13b97bea8dd4d323a2c6f93b996d589df40d36e336caef37ece22d309",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": [
+    "9ae2095f-4516-440b-b96d-deb36560a154"
+  ]
+}
+
+=== 3: unit test summary ===
+TOTAL                                                        10194   9633     6%
+FAIL Required test coverage of 80% not reached. Total coverage: 5.50%
+41 passed in 1.43s
+
+=== 4: full backend suite summary ===
+TOTAL                                                        10220   1001    90%
+Required test coverage of 80% reached. Total coverage: 90.21%
+1975 passed, 2 skipped, 18 warnings in 28.22s

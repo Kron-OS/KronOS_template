@@ -23,6 +23,47 @@ from kronos_attest.verifier import ChainVerifier, merkle_proof
 # needed here, just the deployment-wide prefix.
 _DEFAULT_MINIO_BUCKET_PREFIX = "kronos-evidence"
 
+# Options that carry real credential material (a DB password embedded in
+# the DSN, or a MinIO secret/access key) -- warned about below whenever
+# supplied as a literal CLI argument rather than via the matching
+# environment variable. Milestone CC finding: AA1/BB1 (this same CLI)
+# added --database-url/--minio-secret-key/--minio-access-key as plain
+# click.option() string values with an envvar fallback already documented
+# as the *preferred* path in their own --help text, but nothing actually
+# warned a user who took the --help text's flag name literally that doing
+# so leaks the credential into `ps aux`/`/proc/<pid>/cmdline` (visible to
+# any other user on a shared host) and typically into shell history files
+# -- a real, self-found gap in this initiative's own recently-added code,
+# not a hypothetical.
+_SECRET_OPTIONS = {
+    "database_url": "--database-url",
+    "minio_secret_key": "--minio-secret-key",
+    "minio_access_key": "--minio-access-key",
+}
+
+
+def _warn_if_secrets_from_cli(ctx: click.Context) -> None:
+    """Warn on stderr for every secret-bearing option supplied on the command line.
+
+    Uses ``ctx.get_parameter_source()`` to distinguish "value came from an
+    explicit CLI argument" (``ParameterSource.COMMANDLINE``) from "value
+    came from its environment variable" (``ParameterSource.ENVIRONMENT``,
+    the documented, preferred path for every option in ``_SECRET_OPTIONS``)
+    or "value came from a default" (not applicable here -- these options
+    default to ``None``). Only warns, never blocks -- CLI-supplied secrets
+    remain supported for real scripting use cases where an env var isn't
+    practical, but the risk is no longer silent.
+    """
+    for param_name, flag_name in _SECRET_OPTIONS.items():
+        if ctx.get_parameter_source(param_name) == click.core.ParameterSource.COMMANDLINE:
+            click.echo(
+                f"WARNING: {flag_name} was passed as a literal command-line argument -- "
+                f"it is now visible to other users on this host via `ps`/`/proc/<pid>/"
+                f"cmdline` and is likely recorded in your shell history. Prefer the "
+                f"matching environment variable instead.",
+                err=True,
+            )
+
 
 @click.group()
 def cli() -> None:
@@ -253,6 +294,7 @@ async def _fetch_live_events_and_evidence_integrity(
 
 
 @cli.command()
+@click.pass_context
 @_live_or_offline_options
 @click.option("--event-id", required=True, help="UUID of the event to verify")
 @click.option(
@@ -264,6 +306,7 @@ async def _fetch_live_events_and_evidence_integrity(
     "Merkle anchor's RFC 3161 signature found in the log (AUDIT-07/08).",
 )
 def verify(
+    ctx: click.Context,
     audit_log_path: str | None,
     database_url: str | None,
     org_id: str | None,
@@ -277,6 +320,7 @@ def verify(
     Exits with code 0 on success (chain intact + event found, and TSA
     anchors valid if --tsa-cert was given), code 1 otherwise.
     """
+    _warn_if_secrets_from_cli(ctx)
     events = _resolve_events(audit_log_path, database_url, org_id)
     result = ChainVerifier().verify(events)
 
@@ -392,6 +436,7 @@ def merkle_proof_cmd(audit_log_path: str, event_id: str) -> None:
 
 
 @cli.command(name="day-report")
+@click.pass_context
 @_live_or_offline_options
 @click.option("--day", required=True, help="ISO date (YYYY-MM-DD) to report on")
 @click.option(
@@ -403,6 +448,7 @@ def merkle_proof_cmd(audit_log_path: str, event_id: str) -> None:
     "real verified signature rather than 'no cert supplied, assumed false'.",
 )
 def day_report_cmd(
+    ctx: click.Context,
     audit_log_path: str | None,
     database_url: str | None,
     org_id: str | None,
@@ -413,6 +459,7 @@ def day_report_cmd(
 
     Reads events from exactly one of --audit-log or --database-url/--org-id.
     """
+    _warn_if_secrets_from_cli(ctx)
     events = _resolve_events(audit_log_path, database_url, org_id)
     report = AttestationReport().day_report(events, day, tsa_cert_path)
     click.echo(
@@ -433,6 +480,7 @@ def day_report_cmd(
 
 
 @cli.command(name="case-report")
+@click.pass_context
 @_live_or_offline_options
 @click.option("--case-id", required=True, help="Case UUID to report on")
 @click.option(
@@ -480,6 +528,7 @@ def day_report_cmd(
     "if not given explicitly.",
 )
 def case_report_cmd(
+    ctx: click.Context,
     audit_log_path: str | None,
     database_url: str | None,
     org_id: str | None,
@@ -497,6 +546,7 @@ def case_report_cmd(
     file's real bytes in MinIO against Postgres's stored Evidence.sha256 --
     see that option's own help text for its live-mode/MinIO requirements.
     """
+    _warn_if_secrets_from_cli(ctx)
     if verify_evidence_hashes and audit_log_path is not None:
         raise click.UsageError(
             "--verify-evidence-hashes requires live Postgres mode (--database-url/"

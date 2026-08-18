@@ -477,7 +477,7 @@ class TestCLILiveModeFetch:
             ],
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert data["event_count"] == 3
         assert data["chain_valid"] is True
 
@@ -503,7 +503,7 @@ class TestCLILiveModeFetch:
             ["case-report", "--org-id", str(uuid.uuid4()), "--case-id", events[0]["case_id"]],
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert data["case_id"] == events[0]["case_id"]
 
 
@@ -697,7 +697,7 @@ class TestCLIVerifyEvidenceHashesFetch:
             ],
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert data["case_id"] == case_id
         assert data["evidence_integrity"] == expected_integrity
         assert captured["minio_endpoint"] == "http://localhost:9000"
@@ -746,7 +746,7 @@ class TestCLIVerifyEvidenceHashesFetch:
             ],
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert data["evidence_integrity"] == {}
 
     def test_case_report_offline_mode_has_no_evidence_integrity_key(self, tmp_path: Any) -> None:
@@ -767,6 +767,163 @@ class TestCLIVerifyEvidenceHashesFetch:
             cli, ["case-report", "--audit-log", str(audit_log), "--case-id", case_id]
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.stdout)
         assert "evidence_integrity" not in data
         assert data["event_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Milestone CC finding: --database-url/--minio-secret-key/--minio-access-key
+# are real credential-bearing values. Passing them as a literal CLI
+# argument (rather than the documented, preferred env-var fallback) leaks
+# them into `ps`/`/proc/<pid>/cmdline` and typically shell history. Warn
+# loudly on stderr whenever this happens -- never block (CLI-supplied
+# secrets remain supported for real scripting use cases), but the risk
+# must never be silent.
+# ---------------------------------------------------------------------------
+
+
+class TestCLISecretOptionWarnings:
+    def test_warns_when_database_url_given_as_cli_flag(self, monkeypatch: Any) -> None:
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(1, day="2026-06-25")
+
+        async def fake_fetch(database_url: str, org_id: uuid.UUID) -> list[dict[str, Any]]:
+            return events
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events", fake_fetch)
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "day-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--day",
+                "2026-06-25",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "--database-url was passed as a literal command-line argument" in result.stderr
+
+    def test_no_warning_when_database_url_from_env_var(self, monkeypatch: Any) -> None:
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(1, day="2026-06-25")
+
+        async def fake_fetch(database_url: str, org_id: uuid.UUID) -> list[dict[str, Any]]:
+            return events
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events", fake_fetch)
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://env:env@localhost/env")
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            ["day-report", "--org-id", str(uuid.uuid4()), "--day", "2026-06-25"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "was passed as a literal command-line argument" not in result.stderr
+
+    def test_no_warning_in_offline_audit_log_mode(self, tmp_path: Any) -> None:
+        from click.testing import CliRunner
+
+        from kronos_attest.cli import cli
+
+        audit_log = tmp_path / "audit.json"
+        audit_log.write_text(json.dumps(_make_chain(1, day="2026-06-25")))
+
+        result = CliRunner().invoke(
+            cli, ["day-report", "--audit-log", str(audit_log), "--day", "2026-06-25"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "was passed as a literal command-line argument" not in result.stderr
+
+    def test_warns_for_minio_secret_and_access_key_cli_flags(self, monkeypatch: Any) -> None:
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(1, day="2026-06-25")
+        case_id = events[0]["case_id"]
+
+        async def fake_fetch(
+            database_url: str,
+            org_id: uuid.UUID,
+            case_id_arg: str,
+            minio_endpoint: str,
+            minio_access_key: str,
+            minio_secret_key: str,
+            minio_use_tls: bool,
+        ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+            return events, {}
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events_and_evidence_integrity", fake_fetch)
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "case-report",
+                "--database-url",
+                "postgresql+asyncpg://x:x@localhost/x",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--case-id",
+                case_id,
+                "--verify-evidence-hashes",
+                "--minio-endpoint",
+                "http://localhost:9000",
+                "--minio-access-key",
+                "ak",
+                "--minio-secret-key",
+                "sk",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "--minio-secret-key was passed as a literal command-line argument" in result.stderr
+        assert "--minio-access-key was passed as a literal command-line argument" in result.stderr
+
+    def test_no_warning_when_minio_creds_from_env_vars(self, monkeypatch: Any) -> None:
+        from click.testing import CliRunner
+
+        import kronos_attest.cli as cli_module
+
+        events = _make_chain(1, day="2026-06-25")
+        case_id = events[0]["case_id"]
+
+        async def fake_fetch(
+            database_url: str,
+            org_id: uuid.UUID,
+            case_id_arg: str,
+            minio_endpoint: str,
+            minio_access_key: str,
+            minio_secret_key: str,
+            minio_use_tls: bool,
+        ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+            return events, {}
+
+        monkeypatch.setattr(cli_module, "_fetch_live_events_and_evidence_integrity", fake_fetch)
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
+        monkeypatch.setenv("MINIO_ENDPOINT", "http://localhost:9000")
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "ak")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "sk")
+
+        result = CliRunner().invoke(
+            cli_module.cli,
+            [
+                "case-report",
+                "--org-id",
+                str(uuid.uuid4()),
+                "--case-id",
+                case_id,
+                "--verify-evidence-hashes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "was passed as a literal command-line argument" not in result.stderr
