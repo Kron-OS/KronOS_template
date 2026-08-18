@@ -10,6 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.adapter.opensearch.dashboards_client import (
+    DashboardsIndexPatternProvisioner,
+    case_index_pattern_id,
+)
+from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
@@ -18,11 +23,6 @@ from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
-from src.adapter.opensearch.dashboards_client import (
-    DashboardsIndexPatternProvisioner,
-    case_index_pattern_id,
-)
-from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
@@ -38,6 +38,7 @@ from src.external.middleware.rbac import (
     assert_case_lead_or_admin,
     requires_role,
 )
+from src.external.routes._http_helpers import sanitize_content_disposition_filename
 from src.external.routes.evidence import EvidenceOut, to_evidence_out
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
@@ -365,7 +366,7 @@ async def download_evidence(
         details={"original_filename": evidence.metadata.original_filename},
     )
 
-    filename = evidence.metadata.original_filename.replace('"', "")
+    filename = sanitize_content_disposition_filename(evidence.metadata.original_filename)
     byte_stream = await storage.stream_object(evidence.minio_evidence_key, bucket="evidence")
     return StreamingResponse(
         byte_stream,

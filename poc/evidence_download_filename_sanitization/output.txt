@@ -1,0 +1,61 @@
+======================================================================
+PART 1: pre-fix behavior (.replace(quote-only)) -- real uvicorn server
+======================================================================
+$ REPRO_USE_FIX=0 uvicorn repro_server:app (real server, real HTTP request)
+
+--- real curl -v response (client side) ---
+* Host localhost:18127 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+*   Trying [::1]:18127...
+* connect to ::1 port 18127 from ::1 port 34332 failed: Connection refused
+*   Trying 127.0.0.1:18127...
+* Established connection to localhost (127.0.0.1 port 18127) from 127.0.0.1 port 52700 
+* using HTTP/1.x
+> GET /download HTTP/1.1
+> Host: localhost:18127
+> User-Agent: curl/8.18.0
+> Accept: */*
+> 
+* Request completely sent off
+* Empty reply from server
+* shutting down connection #0
+
+--- real server-side exception (from uvicorn's own stderr) ---
+h11._util.LocalProtocolError: Illegal header value b'attachment; filename="evil\r\nSet-Cookie: x=1\r\n.evtx"'
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+
+======================================================================
+PART 2: post-fix behavior (sanitize_content_disposition_filename) -- real uvicorn server
+======================================================================
+$ REPRO_USE_FIX=1 uvicorn repro_server:app (real server, real HTTP request)
+
+--- real curl -D response (client side) ---
+HTTP/1.1 200 OK
+date: Tue, 18 Aug 2026 18:58:51 GMT
+server: uvicorn
+content-disposition: attachment; filename="evilSet-Cookie: x=1.evtx"
+content-type: application/octet-stream
+Transfer-Encoding: chunked
+
+
+--- real server-side log (clean) ---
+(no errors -- clean)
+
+======================================================================
+PART 3: unit test suite (real regression coverage)
+======================================================================
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_download_returns_real_bytes_and_headers PASSED [ 14%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_download_writes_real_audit_event PASSED [ 28%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_evidence_not_yet_promoted_returns_404 PASSED [ 42%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_nonexistent_evidence_returns_404 PASSED [ 57%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_nonexistent_case_returns_404 PASSED [ 71%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_filename_with_crlf_does_not_break_download PASSED [ 85%]
+tests/unit/test_cases_routes.py::TestDownloadEvidence::test_another_orgs_evidence_returns_404 PASSED [100%]
+
+------------------------------------------------------------------------------------------
+TOTAL                                                        10225   1001    90%
+Required test coverage of 80% reached. Total coverage: 90.21%
+1976 passed, 2 skipped, 18 warnings in 28.18s

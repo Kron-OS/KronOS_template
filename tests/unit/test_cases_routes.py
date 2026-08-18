@@ -492,6 +492,43 @@ class TestDownloadEvidence:
         resp = client.get(f"/api/cases/{uuid.uuid4()}/evidence/{uuid.uuid4()}/download")
         assert resp.status_code == 404
 
+    def test_filename_with_crlf_does_not_break_download(self, download_client):
+        """Gap Audit Milestone DD: Evidence.metadata.original_filename is
+        only length-bounded at intake (UploadRequestIn.filename), never
+        content-restricted -- a DFIR platform must accept evidence from a
+        compromised host with an adversarial/malformed filename. Before the
+        fix, a filename containing a raw CRLF reached the
+        Content-Disposition header unsanitized (only the double quote was
+        escaped) and crashed the real ASGI server's own HTTP/1.1 header
+        serializer (h11.LocalProtocolError: Illegal header value, confirmed
+        live against a real running uvicorn server) -- a real 500 for every
+        subsequent download attempt by anyone in the org, not just the
+        uploader. This is not exploitable as header injection (h11 defends
+        against that at the protocol level), but was a real, live
+        availability bug triggerable by any authenticated user with
+        ordinary upload permission."""
+        client, case_repo, evidence_repo, storage, org_id, _user_id, _audit_repo = download_client
+        created = client.post("/api/cases", json={"title": "Crafted Filename Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence(
+                storage,
+                evidence_repo,
+                org_id=org_id,
+                case_id=case_id,
+                filename='evil\r\nSet-Cookie: x=1\r\n".evtx',
+            )
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/download")
+
+        assert resp.status_code == 200
+        disposition = resp.headers["content-disposition"]
+        assert "\r" not in disposition
+        assert "\n" not in disposition
+        assert disposition == 'attachment; filename="evilSet-Cookie: x=1.evtx"'
+        assert "Set-Cookie" not in resp.headers
+
     def test_another_orgs_evidence_returns_404(self, download_client):
         """Tenant isolation: real evidence exists (a different org's), but
         the case lookup itself already scopes by tenant.org_id, so a

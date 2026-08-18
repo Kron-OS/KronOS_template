@@ -21,6 +21,7 @@ from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
 from src.external.dependencies import get_audit_log_service, get_tenant_context
 from src.external.middleware.rbac import requires_role
+from src.external.routes._http_helpers import sanitize_content_disposition_filename
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
@@ -258,7 +259,9 @@ async def export_org_audit_log(
     client-supplied org, matching every other route in this module.
     """
     export_date = datetime.now(UTC).date().isoformat()
-    filename = f"kronos-audit-export-{tenant.org_alias}-{export_date}.json"
+    filename = sanitize_content_disposition_filename(
+        f"kronos-audit-export-{tenant.org_alias}-{export_date}.json"
+    )
     return StreamingResponse(
         _export_event_stream(audit_svc, tenant.org_id),
         media_type="application/json",
