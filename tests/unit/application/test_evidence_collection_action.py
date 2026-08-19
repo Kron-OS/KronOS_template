@@ -94,7 +94,7 @@ class TestCollectForensicArtifactAction:
         detection = await detection_repo.save(_make_detection(tenant, case_id))
         artifact_path = _artifact_file(tmp_path)
 
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
         output = await action.execute(
             {
                 "detection_id": str(detection.detection_id),
@@ -131,7 +131,7 @@ class TestCollectForensicArtifactAction:
         detection = await detection_repo.save(_make_detection(tenant, real_case_id))
         artifact_path = _artifact_file(tmp_path)
 
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
         output = await action.execute(
             {
                 "detection_id": str(detection.detection_id),
@@ -151,7 +151,7 @@ class TestCollectForensicArtifactAction:
     ) -> None:
         tenant = make_tenant_context()
         artifact_path = _artifact_file(tmp_path)
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         with pytest.raises(PlaybookError):
             await action.execute(
@@ -167,7 +167,7 @@ class TestCollectForensicArtifactAction:
         other_tenant = make_tenant_context()
         detection = await detection_repo.save(_make_detection(owner_tenant, uuid.uuid4()))
         artifact_path = _artifact_file(tmp_path)
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         with pytest.raises(PlaybookError):
             await action.execute(
@@ -182,7 +182,7 @@ class TestCollectForensicArtifactAction:
         tenant = make_tenant_context()
         detection = await detection_repo.save(_make_detection(tenant, case_id=None))
         artifact_path = _artifact_file(tmp_path)
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         with pytest.raises(PlaybookError, match="no associated case_id"):
             await action.execute(
@@ -196,7 +196,7 @@ class TestCollectForensicArtifactAction:
     ) -> None:
         tenant = make_tenant_context()
         detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         with pytest.raises(PlaybookError, match="does not exist"):
             await action.execute(
@@ -208,9 +208,11 @@ class TestCollectForensicArtifactAction:
             )
 
     @pytest.mark.asyncio
-    async def test_malformed_params_raise_playbook_error(self, detection_repo, intake) -> None:
+    async def test_malformed_params_raise_playbook_error(
+        self, tmp_path, detection_repo, intake
+    ) -> None:
         tenant = make_tenant_context()
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         with pytest.raises(PlaybookError):
             await action.execute({"artifact_path": "/tmp/whatever"}, tenant)
@@ -224,7 +226,7 @@ class TestCollectForensicArtifactAction:
         tenant = make_tenant_context()
         detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
         artifact_path = _artifact_file(tmp_path)
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         output = await action.execute(
             {"detection_id": str(detection.detection_id), "artifact_path": str(artifact_path)},
@@ -244,7 +246,7 @@ class TestCollectForensicArtifactAction:
         detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
         before = await detection_repo.get_by_id(detection.detection_id, tenant.org_id)
         artifact_path = _artifact_file(tmp_path)
-        action = CollectForensicArtifactAction(detection_repo, intake)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=tmp_path)
 
         await action.execute(
             {"detection_id": str(detection.detection_id), "artifact_path": str(artifact_path)},
@@ -253,3 +255,98 @@ class TestCollectForensicArtifactAction:
 
         after = await detection_repo.get_by_id(detection.detection_id, tenant.org_id)
         assert after == before
+
+    @pytest.mark.asyncio
+    async def test_artifact_path_outside_staging_dir_is_rejected(
+        self, tmp_path, detection_repo, intake
+    ) -> None:
+        """Gap Audit Milestone FF: a real, previously-unrestricted local
+        file-read -- artifact_path naming a file OUTSIDE staging_dir must
+        be rejected, never read, regardless of whether the file exists."""
+        tenant = make_tenant_context()
+        detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        outside_secret = tmp_path / "outside" / "secret.txt"
+        outside_secret.parent.mkdir()
+        outside_secret.write_bytes(b"not evidence, a real backend secret")
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=staging_dir)
+
+        with pytest.raises(PlaybookError, match="staging directory"):
+            await action.execute(
+                {
+                    "detection_id": str(detection.detection_id),
+                    "artifact_path": str(outside_secret),
+                },
+                tenant,
+            )
+
+    @pytest.mark.asyncio
+    async def test_dotdot_traversal_out_of_staging_dir_is_rejected(
+        self, tmp_path, detection_repo, intake
+    ) -> None:
+        tenant = make_tenant_context()
+        detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        outside_secret = tmp_path / "secret.txt"
+        outside_secret.write_bytes(b"not evidence")
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=staging_dir)
+
+        traversal_path = staging_dir / ".." / "secret.txt"
+        with pytest.raises(PlaybookError, match="staging directory"):
+            await action.execute(
+                {
+                    "detection_id": str(detection.detection_id),
+                    "artifact_path": str(traversal_path),
+                },
+                tenant,
+            )
+
+    @pytest.mark.asyncio
+    async def test_symlink_escaping_staging_dir_is_rejected(
+        self, tmp_path, detection_repo, intake
+    ) -> None:
+        """A symlink planted INSIDE staging_dir but pointing OUTSIDE it must
+        also be rejected -- resolve() follows the symlink to its real
+        target before the containment check, so a literal in-bounds path
+        string cannot be used to smuggle an out-of-bounds real file."""
+        tenant = make_tenant_context()
+        detection = await detection_repo.save(_make_detection(tenant, uuid.uuid4()))
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        outside_secret = tmp_path / "secret.txt"
+        outside_secret.write_bytes(b"not evidence, reached via a symlink")
+        symlink_path = staging_dir / "innocuous.vmem"
+        symlink_path.symlink_to(outside_secret)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=staging_dir)
+
+        with pytest.raises(PlaybookError, match="staging directory"):
+            await action.execute(
+                {
+                    "detection_id": str(detection.detection_id),
+                    "artifact_path": str(symlink_path),
+                },
+                tenant,
+            )
+
+    @pytest.mark.asyncio
+    async def test_artifact_inside_staging_dir_still_succeeds(
+        self, tmp_path, detection_repo, intake
+    ) -> None:
+        """Regression guard: the containment check must not be so strict it
+        breaks the real, legitimate in-bounds case."""
+        tenant = make_tenant_context()
+        case_id = uuid.uuid4()
+        detection = await detection_repo.save(_make_detection(tenant, case_id))
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        artifact_path = _artifact_file(staging_dir)
+        action = CollectForensicArtifactAction(detection_repo, intake, staging_dir=staging_dir)
+
+        output = await action.execute(
+            {"detection_id": str(detection.detection_id), "artifact_path": str(artifact_path)},
+            tenant,
+        )
+
+        assert output["evidence_state"] == EvidenceState.RECEIVED.value

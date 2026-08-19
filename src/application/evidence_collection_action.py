@@ -36,6 +36,29 @@ by construction, since this method never reads either key from ``params``.
 action only ever CREATES a new ``Evidence`` row via the unmodified
 ``EvidenceIntakeService`` -- it never writes to the triggering ``Detection``
 or to any existing ``Evidence`` row.
+
+**Security note, binding on any future wiring of this action (Gap Audit
+Milestone FF, found by direct review, not exploited -- this action has
+zero real callers today, confirmed by grep, matching H3's own honest
+"no automatic trigger wiring this pass" scope note).** ``artifact_path``
+is a caller-supplied string naming a file on the BACKEND'S OWN local
+filesystem, read verbatim (``Path(...).read_bytes()``). Before this fix,
+nothing constrained it -- if this action were ever wired to any
+caller-reachable trigger the same way Milestone EE's own EE1 item wired
+up H2's `RevokeKeycloakSessionAction`, an attacker (or a buggy playbook
+step) could name an arbitrary path on the container's filesystem
+(``/app/.env``, a mounted secret, an SSH key) and have it ingested as
+"evidence" -- and, once ingested, downloadable by any case-reader via
+`GET /api/cases/{id}/evidence/{id}/download`, a real local-file-disclosure
+chain. ``staging_dir`` (below, a REQUIRED constructor argument, no
+default -- deliberately, so nobody can construct this action without
+consciously deciding what's allowed) now confines ``artifact_path`` to a
+single, pre-configured directory tree: resolved to its real, symlink-free
+absolute path and checked with ``Path.is_relative_to()`` against
+``staging_dir``'s own resolved path, rejecting anything outside it
+(including ``..`` traversal and symlink escapes, since ``resolve()``
+follows symlinks to their real target before the containment check) with
+a real, loud ``PlaybookError``, never a silent skip.
 """
 
 from __future__ import annotations
@@ -85,11 +108,17 @@ class CollectForensicArtifactAction(PlaybookAction):
         self,
         detection_repository: DetectionRepository,
         evidence_intake: EvidenceIntakeService,
+        staging_dir: str | Path,
         hash_service: HashService | None = None,
         verify: bool | str = True,
     ) -> None:
         self._detections = detection_repository
         self._intake = evidence_intake
+        # No default -- see this module's own "Security note" docstring.
+        # Resolved once at construction (not per-call) so a relative path
+        # passed here is anchored to the process's cwd exactly once,
+        # matching Path.resolve()'s own documented behavior.
+        self._staging_dir = Path(staging_dir).resolve()
         self._hasher = hash_service or HashService()
         # Mirrors HttpxKeycloakAdminClient's own injectable `verify` (roadmap
         # H2) -- production presigned URLs are real MinIO/S3 TLS certs
@@ -138,7 +167,27 @@ class CollectForensicArtifactAction(PlaybookAction):
                 context={"detection_id": str(detection_id)},
             )
 
-        if not artifact_path.is_file():
+        # Containment check FIRST, before any filesystem stat/read on the
+        # caller-supplied path -- resolving and rejecting an out-of-bounds
+        # path before ever touching it avoids even a minor file-existence
+        # oracle (a different error for "outside staging_dir" vs. "inside
+        # but missing" would let a caller binary-search real paths on the
+        # host). resolve() follows symlinks to their real target, so a
+        # symlink planted inside staging_dir pointing outside it is also
+        # caught, not just literal ".." segments.
+        resolved_artifact_path = artifact_path.resolve()
+        if not resolved_artifact_path.is_relative_to(self._staging_dir):
+            raise PlaybookError(
+                "collect_forensic_artifact: artifact_path must resolve to a location "
+                "inside this deployment's configured staging directory -- see this "
+                "module's own 'Security note' docstring",
+                context={
+                    "artifact_path": str(artifact_path),
+                    "staging_dir": str(self._staging_dir),
+                },
+            )
+
+        if not resolved_artifact_path.is_file():
             raise PlaybookError(
                 "collect_forensic_artifact: artifact_path does not exist or is not a "
                 "regular file -- this platform has no live remote collector, so the "
@@ -154,9 +203,13 @@ class CollectForensicArtifactAction(PlaybookAction):
         # (this pass's own verified sample is a small log bundle -- see
         # poc/detection_triggered_collection/README.md); not built
         # speculatively here.
-        data = await asyncio.to_thread(artifact_path.read_bytes)
+        # Read via the already-validated, resolved path (not the original
+        # caller-supplied one) -- avoids any TOCTOU gap between the
+        # containment check above and the actual read reaching a different
+        # real file than what was validated.
+        data = await asyncio.to_thread(resolved_artifact_path.read_bytes)
         sha256 = (await self._hasher.compute_from_bytes(data)).sha256
-        filename = f"collected-{artifact_label}-{artifact_path.name}"
+        filename = f"collected-{artifact_label}-{resolved_artifact_path.name}"
 
         evidence, presigned = await self._intake.request_upload(
             filename=filename,

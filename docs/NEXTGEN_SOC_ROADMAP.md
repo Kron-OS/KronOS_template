@@ -2407,6 +2407,23 @@ memory dump would want a chunked read/PUT, flagged in the action's own
 docstring); this run's real MinIO bucket/Postgres rows deliberately left
 in place as inspectable proof, matching C4/C5's own precedent.
 
+**FF1 CLOSED (2026-08-19, Gap Audit Milestone FF):** a real security gap
+was found (not exploited -- this action still has zero live callers) by
+direct review, applying the same "what happens if a future pass wires
+this up the same way EE1 wired H2" lens that found it: `artifact_path`
+was an entirely unrestricted caller-supplied local filesystem path
+(`Path(...).read_bytes()`, no containment check). If ever wired to any
+caller-reachable trigger, this would have been a real local-file-disclosure
+vulnerability (any file the backend process can read -- `.env`, a mounted
+secret, an SSH key -- ingestable as "evidence" and then downloadable via
+`GET /api/cases/{id}/evidence/{id}/download`). Fixed with a new, REQUIRED
+`staging_dir` constructor argument (no default, forcing every future
+construction site to consciously choose it) confining `artifact_path` to
+a single directory tree via `Path.resolve()` + `is_relative_to()`,
+defeating `..` traversal and symlink escapes alike (`resolve()` follows a
+symlink to its real target before the containment check). See
+`docs/GAP_AUDIT_2026-08-19_MILESTONE_FF.md`.
+
 Verification (independently re-run by the orchestrator, not trusted from
 the subagent's self-report): 9/9 new unit tests passed; `mypy src/` at the
 pre-existing 29-error baseline confirmed via `git stash -u` both before
