@@ -114,21 +114,27 @@ class PlaybookExecutionResultOut(BaseModel):
 class RevokeKeycloakSessionIn(BaseModel):
     """Request body for POST /detections/{id}/contain/revoke-session.
 
-    ``approvalTicketId``/``approvalResourceId`` are a real, already-issued
-    step-up ticket (RFC 9470) the caller obtained from the existing
-    ``POST /api/step-up/ticket`` route (``operation="revoke_keycloak_session"``,
-    ``resource_id=sessionId``) *before* calling this route -- this route
-    never mints or pre-validates the ticket itself, ``StepUpApprovalGate.
-    authorize()`` (consulted inside ``ContainmentAction.execute()``) is the
-    single place that happens, exactly mirroring how every other gated
-    field in this codebase is validated once, by the collaborator that
-    owns the concern, not re-checked at the route boundary too.
+    ``approvalTicketId`` is a real, already-issued step-up ticket (RFC 9470)
+    the caller obtained from the existing ``POST /api/step-up/ticket`` route
+    (``operation="revoke_keycloak_session"``, ``resource_id=sessionId``)
+    *before* calling this route -- this route never mints or pre-validates
+    the ticket itself, ``StepUpApprovalGate.authorize()`` (consulted inside
+    ``ContainmentAction.execute()``) is the single place that happens.
+
+    There is deliberately no separate ``approvalResourceId`` field (Gap
+    Audit Milestone JJ removed one that existed here before): the resource
+    a ticket is checked against is always ``sessionId`` itself, derived
+    server-side by ``RevokeKeycloakSessionAction._resource_id()``, never a
+    second, independently-supplied value -- a caller-chosen
+    ``approvalResourceId`` that only had to match the ticket, with no
+    binding to the actual ``sessionId`` being revoked, let a ticket minted
+    "for" one session authorize revoking a completely different one (a
+    real, reproduced finding, `poc/stepup_ticket_resource_mismatch/`).
     """
 
     userId: uuid.UUID
     sessionId: str = Field(min_length=1)
     approvalTicketId: uuid.UUID | None = None
-    approvalResourceId: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -364,12 +370,14 @@ async def revoke_session_for_detection(
     ``KeycloakAdminClient`` is configured in this deployment (an honest
     "containment via session revocation not configured" state).
 
-    ``approvalTicketId``/``approvalResourceId`` are passed through
-    unchanged into the playbook step's ``params`` -- this route never
-    pre-validates the ticket itself; ``StepUpApprovalGate.authorize()``
-    (consulted inside ``ContainmentAction.execute()``, BEFORE the real
-    Keycloak call) is the single place that happens. Omitting them is a
-    valid, real request shape too (an org relying on
+    ``approvalTicketId`` is passed through unchanged into the playbook
+    step's ``params`` -- this route never pre-validates the ticket itself;
+    ``StepUpApprovalGate.authorize()`` (consulted inside
+    ``ContainmentAction.execute()``, BEFORE the real Keycloak call) is the
+    single place that happens, checked against ``sessionId`` itself (never
+    a separate caller-supplied resource field -- see
+    ``RevokeKeycloakSessionIn``'s own docstring, Gap Audit Milestone JJ).
+    Omitting it is a valid, real request shape too (an org relying on
     ``StaticPolicyApprovalGate`` instead needs no ticket at all) -- the
     gate's own denial (an honest, audited outcome, not an HTTP error) is
     what a missing/invalid ticket produces when ``StepUpApprovalGate`` IS
@@ -395,8 +403,6 @@ async def revoke_session_for_detection(
     }
     if body.approvalTicketId is not None:
         params["approval_ticket_id"] = str(body.approvalTicketId)
-    if body.approvalResourceId is not None:
-        params["approval_resource_id"] = body.approvalResourceId
 
     playbook = Playbook(
         name="ad-hoc-contain-revoke-keycloak-session",

@@ -353,7 +353,6 @@ async def main() -> None:
                     "userId": str(ANALYST_USER_ID),
                     "sessionId": session_a,
                     "approvalTicketId": ticket_id_a,
-                    "approvalResourceId": session_a,
                 },
             )
             check("(a) real revoke route returns 200", revoke_resp_a.status_code == 200)
@@ -452,7 +451,6 @@ async def main() -> None:
                     "userId": str(other_user_id),
                     "sessionId": session_c,
                     "approvalTicketId": ticket_id_c,
-                    "approvalResourceId": session_c,
                 },
             )
             check("(c) real route returns 200", revoke_resp_c.status_code == 200)

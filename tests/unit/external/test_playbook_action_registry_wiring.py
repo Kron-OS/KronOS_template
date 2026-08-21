@@ -210,7 +210,8 @@ class TestRevokeKeycloakSessionActionWiring:
         decision = asyncio.run(
             gate.authorize(
                 "revoke_keycloak_session",
-                {"approval_ticket_id": str(ticket_id), "approval_resource_id": "sess-1"},
+                "sess-1",
+                {"approval_ticket_id": str(ticket_id)},
                 tenant,
             )
         )

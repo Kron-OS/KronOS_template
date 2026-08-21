@@ -38,6 +38,9 @@ class _FakeDestructiveAction(ContainmentAction):
     def action_name(self) -> str:
         return "fake_destructive_action"
 
+    def _resource_id(self, params: dict[str, Any]) -> str:
+        return str(params.get("target", "unspecified"))
+
     async def _perform(self, params: dict[str, Any], tenant: TenantContext) -> dict[str, Any]:
         if params.get("force_backend_failure"):
             raise RuntimeError("real, deliberate backend failure for this test")

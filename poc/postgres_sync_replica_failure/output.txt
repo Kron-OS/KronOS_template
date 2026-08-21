@@ -1,0 +1,127 @@
+=== PART 0: bring up primary + replica, flip to synchronous mode ===
+ Network kronos-poc-pgsyncfail-net Creating 
+ Network kronos-poc-pgsyncfail-net Created 
+ Container kronos-poc-pgsf-primary Creating 
+ Container kronos-poc-pgsf-primary Created 
+ Container kronos-poc-pgsf-primary Starting 
+ Container kronos-poc-pgsf-primary Started 
+waiting for primary healthy...
+primary health: healthy
+ Container kronos-poc-pgsf-primary Running 
+ Container kronos-poc-pgsf-replica Creating 
+ Container kronos-poc-pgsf-replica Created 
+ Container kronos-poc-pgsf-primary Waiting 
+ Container kronos-poc-pgsf-primary Healthy 
+ Container kronos-poc-pgsf-replica Starting 
+ Container kronos-poc-pgsf-replica Started 
+waiting for replica healthy...
+replica health: healthy
+ Container kronos-poc-pgsf-replica Running 
+ Container kronos-poc-pgsf-primary Running 
+ Container kronos-poc-pgsf-replication-init Creating 
+ Container kronos-poc-pgsf-replication-init Created 
+Attaching to kronos-poc-pgsf-replication-init
+ Container kronos-poc-pgsf-primary Waiting 
+ Container kronos-poc-pgsf-primary Healthy 
+ Container kronos-poc-pgsf-primary Waiting 
+ Container kronos-poc-pgsf-replica Waiting 
+ Container kronos-poc-pgsf-primary Healthy 
+ Container kronos-poc-pgsf-replica Healthy 
+ Container kronos-poc-pgsf-replication-init Starting 
+ Container kronos-poc-pgsf-replication-init Started 
+kronos-poc-pgsf-replication-init  | ALTER SYSTEM
+kronos-poc-pgsf-replication-init  |  pg_reload_conf 
+kronos-poc-pgsf-replication-init  | ----------------
+kronos-poc-pgsf-replication-init  |  t
+kronos-poc-pgsf-replication-init  | (1 row)
+kronos-poc-pgsf-replication-init  | 
+kronos-poc-pgsf-replication-init  | [postgres-replication-init] primary is now in synchronous replication mode
+[Kkronos-poc-pgsf-replication-init exited with code 0
+
+=== confirm sync_state=sync on primary ===
+   application_name    |   state   | sync_state | sync_priority 
+-----------------------+-----------+------------+---------------
+ kronos_poc_sf_replica | streaming | sync       |             1
+(1 row)
+
+
+=== PART 1: baseline write latency, replica healthy ===
+CREATE TABLE
+INSERT 0 1
+baseline INSERT wall time: .243381225 seconds
+
+=== PART 2: kill the synchronous standby (our own container) ===
+kronos-poc-pgsf-replica
+replica stopped. Confirm primary sees it as gone:
+ application_name | state | sync_state 
+------------------+-------+------------
+(0 rows)
+
+(empty result set above = primary has zero WAL receivers connected -- the named sync standby is gone)
+
+=== PART 3: attempt a real write against the primary with the sync standby DEAD, bounded by a 12s client-side timeout ===
+(current effective synchronous_standby_names + synchronous_commit, for the record:)
+ synchronous_standby_names 
+---------------------------
+ kronos_poc_sf_replica
+(1 row)
+
+ synchronous_commit 
+--------------------
+ on
+(1 row)
+
+INSERT attempt exit code: 124 (124 = timed out / did not return within 12s)
+INSERT attempt wall time before timeout/return: 12.041531621 seconds
+
+=== confirm the row is NOT visible yet from a separate, concurrent read connection (proves COMMIT itself is what's blocked, not just this client) ===
+ count 
+-------
+     0
+(1 row)
+
+
+=== PART 4: does the ORIGINAL blocked backend eventually complete once we bring the replica back? ===
+(re-issuing the same insert in the background, then restarting the replica, then waiting)
+backgrounded INSERT still running after 2s (expected -- still blocked waiting for sync ack): yes
+ Container kronos-poc-pgsf-primary Running 
+ Container kronos-poc-pgsf-primary Waiting 
+ Container kronos-poc-pgsf-primary Healthy 
+ Container kronos-poc-pgsf-replica Starting 
+ Container kronos-poc-pgsf-replica Started 
+restarting replica container (same volume, should reconnect as streaming replica)...
+replica health after restart: healthy
+backgrounded INSERT (started while replica was dead) finished with rc=0 once replica reconnected:
+INSERT 0 1
+
+=== final replication state ===
+   application_name    |   state   | sync_state 
+-----------------------+-----------+------------
+ kronos_poc_sf_replica | streaming | sync
+(1 row)
+
+ id |          v          
+----+---------------------
+  1 | baseline-row
+  2 | after-replica-death
+  3 | recovery-test-row
+(3 rows)
+
+
+=== DONE ===
+
+=== TEARDOWN ===
+ Container kronos-poc-pgsf-replication-init Stopping 
+ Container kronos-poc-pgsf-replication-init Stopped 
+ Container kronos-poc-pgsf-replication-init Removing 
+ Container kronos-poc-pgsf-replication-init Removed 
+ Container kronos-poc-pgsf-replica Stopping 
+ Container kronos-poc-pgsf-replica Stopped 
+ Container kronos-poc-pgsf-replica Removing 
+ Container kronos-poc-pgsf-replica Removed 
+ Container kronos-poc-pgsf-primary Stopping 
+ Container kronos-poc-pgsf-primary Stopped 
+ Container kronos-poc-pgsf-primary Removing 
+ Container kronos-poc-pgsf-primary Removed 
+ Network kronos-poc-pgsyncfail-net Removing 
+ Network kronos-poc-pgsyncfail-net Removed 

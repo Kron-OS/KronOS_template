@@ -33,8 +33,11 @@ class RevokeKeycloakSessionAction(ContainmentAction):
     ``session_id`` (str, the real Keycloak session id -- e.g. from a
     Detection's own enrichment data identifying the session an attacker's
     credentials are actively using), plus whatever ``ApprovalGate``-specific
-    keys the injected gate requires (e.g. ``approval_ticket_id``/
-    ``approval_resource_id`` for ``StepUpApprovalGate``).
+    keys the injected gate requires (e.g. ``approval_ticket_id`` for
+    ``StepUpApprovalGate`` -- the resource being approved is ``session_id``
+    itself, derived server-side by ``_resource_id()`` below, never a
+    separate caller-supplied field; see that method's own docstring and
+    ``ApprovalGate.authorize()``'s for the real attack this closes).
 
     Tenant isolation (roadmap invariant #3): the target user's org
     membership is checked against *tenant*'s own ``org_id`` via a REAL,
@@ -59,6 +62,19 @@ class RevokeKeycloakSessionAction(ContainmentAction):
     @property
     def action_name(self) -> str:
         return "revoke_keycloak_session"
+
+    def _resource_id(self, params: dict[str, Any]) -> str:
+        """The real resource being approved is the session itself --
+        derived here, independently of ``_perform()``, so the
+        ``ApprovalGate`` is consulted against the REAL target before any
+        Keycloak call is ever made (Gap Audit Milestone JJ)."""
+        session_id = params.get("session_id")
+        if not session_id or not isinstance(session_id, str):
+            raise ValidationError(
+                "revoke_keycloak_session requires a non-empty session_id",
+                context={"params": params},
+            )
+        return session_id
 
     async def _perform(self, params: dict[str, Any], tenant: TenantContext) -> dict[str, Any]:
         try:

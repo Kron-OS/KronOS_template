@@ -48,6 +48,26 @@ class ContainmentAction(PlaybookAction):
         self._audit = audit_log
 
     @abstractmethod
+    def _resource_id(self, params: dict[str, Any]) -> str:
+        """Derive the REAL identifier of the resource this action will
+        operate on, from *params* -- e.g. the actual Keycloak
+        ``session_id`` being revoked, for ``RevokeKeycloakSessionAction``.
+
+        This is what ``ApprovalGate.authorize()`` actually scopes its
+        decision against (Gap Audit Milestone JJ). Never derive this from
+        a separate, caller-supplied "which resource does my ticket cover"
+        field -- a real, reproduced attack (`poc/stepup_ticket_resource_mismatch/`)
+        showed that a caller-supplied field only had to match the ticket,
+        with no binding to the actual target of the destructive action,
+        letting a ticket minted "for" resource A authorize acting on a
+        completely different resource B. Raise the same exception
+        ``_perform()`` would for malformed/missing params (e.g.
+        ``ValidationError``) -- this runs BEFORE the gate is consulted, so
+        params must already be validated here, not deferred to
+        ``_perform()``.
+        """
+
+    @abstractmethod
     async def _perform(self, params: dict[str, Any], tenant: TenantContext) -> dict[str, Any]:
         """The real, destructive side effect against the real backend.
 
@@ -64,7 +84,24 @@ class ContainmentAction(PlaybookAction):
             details={"action_name": self.action_name, "params": params},
         )
 
-        decision = await self._gate.authorize(self.action_name, params, tenant)
+        try:
+            resource_id = self._resource_id(params)
+        except Exception as exc:  # noqa: BLE001 -- audited below, then re-raised unchanged
+            await self._audit.log(
+                AuditEventType.CONTAINMENT_ACTION_FAILED,
+                org_id=tenant.org_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                details={
+                    "action_name": self.action_name,
+                    "params": params,
+                    "error": str(exc),
+                    "step": "resource_id_derivation",
+                },
+            )
+            raise
+
+        decision = await self._gate.authorize(self.action_name, resource_id, params, tenant)
         if not decision.authorized:
             await self._audit.log(
                 AuditEventType.CONTAINMENT_ACTION_DENIED,

@@ -1,0 +1,82 @@
+# Throwaway PoC topology -- CLAUDE.md §F.3. Own network/containers, distinct
+# kronos-poc-* names, never touches docker-postgres-1, docker-kronos-backend-1,
+# or any other real dev-stack container. Mirrors
+# poc/postgres_replication/docker-compose.poc.yml exactly (same image pin,
+# same GUCs, same sync-mode-flip sequencing) -- this PoC's only difference is
+# what it does AFTER reaching steady-state sync replication: kill the
+# synchronous standby and observe primary write behavior, which
+# poc/postgres_replication/ deliberately did not exercise (its own scope was
+# "does replication work," not "what happens when the sync replica dies").
+
+name: kronos-poc-pgsyncfail
+
+services:
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pgsf-primary
+    environment:
+      POSTGRES_DB: kronos
+      POSTGRES_USER: kronos
+      POSTGRES_PASSWORD: kronos_poc_pw
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+    volumes:
+      - ./primary-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks: [pgsyncfail]
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pgsf-replica
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres-primary
+      REPL_USER: replicator
+      REPL_PASSWORD: kronos_poc_repl_pw
+      REPLICA_APPLICATION_NAME: kronos_poc_sf_replica
+    entrypoint: ["/bin/sh", "/replica-entrypoint.sh"]
+    volumes:
+      - ./replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kronos -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    networks: [pgsyncfail]
+
+  postgres-replication-init:
+    image: postgres:16-alpine
+    container_name: kronos-poc-pgsf-replication-init
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: kronos_poc_pw
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -h postgres-primary -U kronos -d kronos -c \
+          "ALTER SYSTEM SET synchronous_standby_names = 'kronos_poc_sf_replica';"
+        psql -h postgres-primary -U kronos -d kronos -c "SELECT pg_reload_conf();"
+        echo "[postgres-replication-init] primary is now in synchronous replication mode"
+    networks: [pgsyncfail]
+    restart: "no"
+
+networks:
+  pgsyncfail:
+    name: kronos-poc-pgsyncfail-net

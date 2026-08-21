@@ -551,7 +551,6 @@ class TestRevokeSessionForDetection:
                 "userId": str(target_user),
                 "sessionId": "sess-1",
                 "approvalTicketId": str(ticket_id),
-                "approvalResourceId": "sess-1",
             },
         )
 
@@ -661,6 +660,76 @@ class TestRevokeSessionForDetection:
         assert "denied" in body["stepResults"][0]["error"].lower()
         assert admin.revoked_session_ids == []  # the real destructive call never ran
 
+    def test_ticket_for_one_session_cannot_revoke_a_different_real_session(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Gap Audit Milestone JJ regression test, exercised at the real HTTP
+        route layer (not just the gate unit level -- see
+        test_approval_gate.py's own
+        test_ticket_cannot_be_replayed_against_a_different_real_resource).
+
+        Before this fix, RevokeKeycloakSessionIn accepted a separate,
+        caller-supplied ``approvalResourceId`` field that the route passed
+        straight through to ``ApprovalGate.authorize()`` with no check that
+        it actually matched ``sessionId``. A caller holding a valid ticket
+        minted for session X could revoke a completely different session Y
+        by setting ``approvalResourceId`` to X while ``sessionId`` named Y.
+        That field no longer exists on the request model at all -- the real
+        target (``sessionId``) is what the ticket is checked against,
+        server-side, every time."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (
+                    KeycloakSession("sess-X", str(target_user), "victim", "10.0.0.5", 0),
+                    KeycloakSession("sess-Y", str(target_user), "victim", "10.0.0.6", 0),
+                )
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        ticket_store = InMemoryTicketStore()
+        ticket_id = uuid.uuid4()
+        # Ticket is minted for sess-X only.
+        ticket_store.put(ticket_id, tenant.user_id, "revoke_keycloak_session", "sess-X")
+        client, _audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=StepUpApprovalGate(ticket_store)
+        )
+
+        # Attack: real target is sess-Y, but the only valid ticket held is
+        # for sess-X.
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={
+                "userId": str(target_user),
+                "sessionId": "sess-Y",
+                "approvalTicketId": str(ticket_id),
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["succeeded"] is False
+        assert "denied" in body["stepResults"][0]["error"].lower()
+        assert admin.revoked_session_ids == []  # sess-Y was never revoked
+
+        # The ticket must remain unconsumed by the denied mismatch attempt --
+        # a legitimate follow-up request against its real resource (sess-X)
+        # must still succeed.
+        retry = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={
+                "userId": str(target_user),
+                "sessionId": "sess-X",
+                "approvalTicketId": str(ticket_id),
+            },
+        )
+        assert retry.status_code == 200
+        retry_body = retry.json()
+        assert retry_body["succeeded"] is True
+        assert admin.revoked_session_ids == ["sess-X"]
+
     def test_cross_org_target_user_rejected_even_with_valid_ticket(
         self, detection_repo: InMemoryDetectionRepository
     ) -> None:
@@ -691,7 +760,6 @@ class TestRevokeSessionForDetection:
                 "userId": str(other_org_user),
                 "sessionId": "sess-cross-org",
                 "approvalTicketId": str(ticket_id),
-                "approvalResourceId": "sess-cross-org",
             },
         )
 

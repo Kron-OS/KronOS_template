@@ -44,9 +44,23 @@ class ApprovalGate(ABC):
 
     @abstractmethod
     async def authorize(
-        self, action_name: str, params: dict[str, Any], tenant: TenantContext
+        self, action_name: str, resource_id: str, params: dict[str, Any], tenant: TenantContext
     ) -> ApprovalDecision:
-        """Decide whether *tenant* may run *action_name* with *params* right now.
+        """Decide whether *tenant* may run *action_name* against *resource_id* right now.
+
+        *resource_id* is the REAL identifier of the resource the action is
+        about to operate on -- computed server-side by the calling
+        ``ContainmentAction`` itself (its own ``_resource_id(params)``,
+        e.g. the actual ``session_id`` being revoked), never a
+        caller-supplied ``params`` field trusted at face value (Gap Audit
+        Milestone JJ: a caller-supplied ``approval_resource_id`` that only
+        had to *match the ticket*, with no binding to the actual target of
+        the destructive action, let a ticket minted "for" one resource
+        authorize acting on a completely different one -- confirmed via a
+        real repro against live Keycloak, `poc/stepup_ticket_resource_mismatch/`).
+        *params* is still passed through for gates that need other
+        step-specific data, but resource scoping must never be decided
+        from it.
 
         Never raises for an ordinary "not authorized" outcome -- that is a
         normal, expected ``ApprovalDecision(authorized=False, ...)``, not an
@@ -65,13 +79,19 @@ class StepUpApprovalGate(ApprovalGate):
     rather than inventing a second approval-ticket concept: an analyst who
     already holds an aal2 session obtains a ticket scoped to
     ``(operation=action_name, resource_id=<caller-chosen>)`` through that
-    real route, then whoever constructs the playbook step embeds the
-    resulting ticket id and resource id in the step's own ``params`` (the
-    human-approval step happens out of band, before the gated step is
-    ever executed). Consuming a ticket is one-shot
-    (``TicketStore.consume``'s own atomic guarantee) -- a second attempt to
-    run the same step with the same ticket is correctly denied, not
-    silently re-authorized.
+    real route (the caller's own declared intent -- "I want to approve
+    revoking session Y" -- at MINT time), then whoever constructs the
+    playbook step embeds the resulting ticket id in the step's own
+    ``params`` (the human-approval step happens out of band, before the
+    gated step is ever executed). At CONSUME time, *resource_id* is no
+    longer read from a second, independently-supplied ``params`` field
+    (Gap Audit Milestone JJ fix -- see ``ApprovalGate.authorize()``'s own
+    docstring for the real attack this closes): it is the caller
+    ``ContainmentAction``'s own server-computed real target identifier,
+    so a ticket only authorizes acting on the exact resource it was
+    minted for. Consuming a ticket is one-shot (``TicketStore.consume``'s
+    own atomic guarantee) -- a second attempt to run the same step with
+    the same ticket is correctly denied, not silently re-authorized.
     """
 
     _POLICY_NAME = "step_up_mfa"
@@ -80,15 +100,14 @@ class StepUpApprovalGate(ApprovalGate):
         self._tickets = ticket_store
 
     async def authorize(
-        self, action_name: str, params: dict[str, Any], tenant: TenantContext
+        self, action_name: str, resource_id: str, params: dict[str, Any], tenant: TenantContext
     ) -> ApprovalDecision:
         ticket_id_raw = params.get("approval_ticket_id")
-        resource_id = params.get("approval_resource_id")
-        if not ticket_id_raw or not resource_id:
+        if not ticket_id_raw:
             return ApprovalDecision(
                 authorized=False,
                 policy_name=self._POLICY_NAME,
-                reason="no approval_ticket_id/approval_resource_id supplied in step params",
+                reason="no approval_ticket_id supplied in step params",
             )
         try:
             ticket_id = uuid.UUID(str(ticket_id_raw))
@@ -99,7 +118,7 @@ class StepUpApprovalGate(ApprovalGate):
                 reason="approval_ticket_id is not a valid UUID",
             )
 
-        result = self._tickets.consume(ticket_id, tenant.user_id, action_name, str(resource_id))
+        result = self._tickets.consume(ticket_id, tenant.user_id, action_name, resource_id)
         if result is ConsumeResult.CONSUMED:
             return ApprovalDecision(
                 authorized=True,
@@ -132,8 +151,12 @@ class StaticPolicyApprovalGate(ApprovalGate):
         self._allowed = allowed
 
     async def authorize(
-        self, action_name: str, params: dict[str, Any], tenant: TenantContext
+        self, action_name: str, resource_id: str, params: dict[str, Any], tenant: TenantContext
     ) -> ApprovalDecision:
+        # resource_id unused: this gate authorizes at the (org, action_name)
+        # level only, by design (its own class docstring) -- accepted for
+        # interface parity with ApprovalGate.authorize(), not read.
+        del resource_id
         if (tenant.org_id, action_name) in self._allowed:
             return ApprovalDecision(
                 authorized=True,

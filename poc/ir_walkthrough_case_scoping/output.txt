@@ -1,0 +1,84 @@
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:30.890260Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations?first=0&max=1000 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:30.894018Z"}
+[2026-08-21T10:24:30.894252+00:00] real kronos-dev org id resolved via Admin API: 7a2d50db-f1bf-496e-8aff-16435cef14b1
+[2026-08-21T10:24:30.991941+00:00] real local webhook receiver listening on 127.0.0.1:35189
+[2026-08-21T10:24:30.992957+00:00] === Step 1: real case creation via POST /api/cases ===
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.037841Z", "event_id": "26ea177f-a8aa-4ab6-aac6-c1c62fc3b2db", "event_type": "case.created", "seq": 14}
+{"event": "HTTP Request: POST https://poc-ir/api/cases \"HTTP/1.1 201 Created\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.038177Z"}
+[2026-08-21T10:24:31.038280+00:00] PASS: case creation returns 201
+[2026-08-21T10:24:31.038311+00:00] real case created: 2ccc7151-45b4-4e3a-b195-76f9d342b740
+[2026-08-21T10:24:31.038316+00:00] === Step 2: a Detection fires, tied to the real case above ===
+[2026-08-21T10:24:31.042357+00:00] PASS: detection saved with the real case_id attached
+[2026-08-21T10:24:31.042368+00:00] === Step 3: analyst lists/filters/gets the detection ===
+{"event": "HTTP Request: GET https://poc-ir/api/detections?caseId=2ccc7151-45b4-4e3a-b195-76f9d342b740 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.074734Z"}
+[2026-08-21T10:24:31.074886+00:00] PASS: list detections (caseId filter) returns 200
+[2026-08-21T10:24:31.074932+00:00] PASS: the real detection appears in the case-filtered list
+{"event": "HTTP Request: GET https://poc-ir/api/detections/ccfc42d3-11ae-4ce5-a9cb-bebf12309c94 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.078896Z"}
+[2026-08-21T10:24:31.079005+00:00] PASS: get detection returns 200
+[2026-08-21T10:24:31.079030+00:00] PASS: get detection shows triageState=NEW
+[2026-08-21T10:24:31.079034+00:00] === Step 4: analyst triages NEW -> INVESTIGATING -> TRUE_POSITIVE ===
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.089454Z", "event_id": "b6de6fd2-d29b-435a-8d14-c5b6283a0292", "event_type": "detection.triage_transitioned", "seq": 15}
+{"event": "detection_triage_transitioned", "level": "info", "logger": "src.application.detection_triage", "timestamp": "2026-08-21T10:24:31.089574Z", "detection_id": "ccfc42d3-11ae-4ce5-a9cb-bebf12309c94", "from_state": "NEW", "to_state": "INVESTIGATING"}
+{"event": "HTTP Request: POST https://poc-ir/api/detections/ccfc42d3-11ae-4ce5-a9cb-bebf12309c94/triage \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.089896Z"}
+[2026-08-21T10:24:31.090022+00:00] PASS: triage NEW->INVESTIGATING succeeds
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.099251Z", "event_id": "8c50c4cf-b490-40d2-b899-a026a42c1597", "event_type": "detection.triage_transitioned", "seq": 16}
+{"event": "detection_triage_transitioned", "level": "info", "logger": "src.application.detection_triage", "timestamp": "2026-08-21T10:24:31.099355Z", "detection_id": "ccfc42d3-11ae-4ce5-a9cb-bebf12309c94", "from_state": "INVESTIGATING", "to_state": "TRUE_POSITIVE"}
+{"event": "HTTP Request: POST https://poc-ir/api/detections/ccfc42d3-11ae-4ce5-a9cb-bebf12309c94/triage \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.099678Z"}
+[2026-08-21T10:24:31.099845+00:00] PASS: triage INVESTIGATING->TRUE_POSITIVE succeeds
+[2026-08-21T10:24:31.099852+00:00] === Step 5: real containment -- revoke the analyst's real live Keycloak session ===
+{"event": "HTTP Request: GET https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fpoc-ir-callback&response_type=code&scope=openid&code_challenge=Jjn_qcbOKvOGXOgJ1e1rGWf8zkah8EsYVrkv6tICrAc&code_challenge_method=S256&state=poc-ir-walkthrough \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.148532Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/login-actions/authenticate?session_code=SQJZ6ejFs4oStQuKIYj5IzFRDN8i6JPrw55Fj1j_J8w&execution=36848ad1-61b9-47ac-8792-8592f2320419&client_id=kronos-frontend&tab_id=Y-b44J_cQkA&client_data=eyJydSI6Imh0dHBzOi8va3Jvbm9zLmxvY2FsL3BvYy1pci1jYWxsYmFjayIsInJ0IjoiY29kZSIsInN0IjoicG9jLWlyLXdhbGt0aHJvdWdoIn0 \"HTTP/1.1 302 Found\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.197581Z"}
+{"event": "HTTP Request: POST https://kronos.local:8443/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.208890Z"}
+[2026-08-21T10:24:31.209264+00:00] real analyst login succeeded, sid=269a4ca3-0803-4ece-8f06-f81bf87e3a37
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.220800Z"}
+[2026-08-21T10:24:31.221048+00:00] PASS: real session visible via Admin API before revoke
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.226598Z", "event_id": "18a06849-41b4-43f7-9a2e-e1ac6fc5cecf", "event_type": "playbook.execution_started", "seq": 17}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.229571Z", "event_id": "f16ddc83-f1af-4017-99cf-1ce73fdf32ae", "event_type": "containment.action_attempted", "seq": 18}
+{"event": "HTTP Request: POST http://localhost:8080/realms/kronos/protocol/openid-connect/token \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.241598Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/organizations/7a2d50db-f1bf-496e-8aff-16435cef14b1/members/10000000-0000-4000-8000-000000000002 \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.245202Z"}
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.257499Z"}
+{"event": "HTTP Request: DELETE http://localhost:8080/admin/realms/kronos/sessions/269a4ca3-0803-4ece-8f06-f81bf87e3a37 \"HTTP/1.1 204 No Content\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.270388Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.274468Z", "event_id": "0202a55b-9e9c-4bdd-961d-f2f610a7415d", "event_type": "containment.action_executed", "seq": 19}
+{"event": "containment_action_executed", "level": "info", "logger": "src.application.containment_action", "timestamp": "2026-08-21T10:24:31.274573Z", "action_name": "revoke_keycloak_session", "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.277949Z", "event_id": "b629c68b-ab06-4eaa-ae05-0d6a319e4178", "event_type": "playbook.step_executed", "seq": 20}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.281177Z", "event_id": "a9ea5dbe-076b-4117-b83f-9d8ea839eb89", "event_type": "playbook.execution_completed", "seq": 21}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-21T10:24:31.281289Z", "execution_id": "46a9e892-33a7-4c92-933c-c4dc996e645e", "playbook_id": "0da77813-2a15-4243-8719-f21a75c3af93", "halted_early": false, "succeeded": true}
+{"event": "HTTP Request: POST https://poc-ir/api/detections/ccfc42d3-11ae-4ce5-a9cb-bebf12309c94/contain/revoke-session \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.281582Z"}
+[2026-08-21T10:24:31.281676+00:00] PASS: revoke-session route returns 200
+[2026-08-21T10:24:31.281708+00:00] PASS: real containment action succeeded=true
+{"event": "HTTP Request: GET http://localhost:8080/admin/realms/kronos/users/10000000-0000-4000-8000-000000000002/sessions \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.292069Z"}
+[2026-08-21T10:24:31.292309+00:00] PASS: real session is GONE after containment (independent Admin API re-check)
+[2026-08-21T10:24:31.292317+00:00] === Step 6: real SIEM sync via the real local webhook receiver ===
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.297903Z", "event_id": "9c62b951-aaed-4fd9-ba86-448eb1c23489", "event_type": "playbook.execution_started", "seq": 22}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.302609Z", "event_id": "c37d38da-bd7c-4875-8973-966ab6a079e0", "event_type": "sink.push_attempted", "seq": 23}
+{"event": "HTTP Request: POST http://127.0.0.1:35189/services/collector \"HTTP/1.0 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.311720Z"}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.315601Z", "event_id": "c53d5221-f1c9-4b39-bdc3-3177dc018680", "event_type": "sink.push_executed", "seq": 24}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.318875Z", "event_id": "f7713484-61f3-4669-af42-0c18952c1eab", "event_type": "playbook.step_executed", "seq": 25}
+{"event": "audit_event_logged", "level": "info", "logger": "src.application.audit_log", "timestamp": "2026-08-21T10:24:31.322119Z", "event_id": "0982a386-0463-4e84-a3b2-63106a9f2178", "event_type": "playbook.execution_completed", "seq": 26}
+{"event": "playbook_execution_completed", "level": "info", "logger": "src.application.playbook_execution", "timestamp": "2026-08-21T10:24:31.322221Z", "execution_id": "cef5b33e-e6a9-4c75-86e2-1d316b55ebba", "playbook_id": "44ae3998-9d24-4003-a696-0e4dfeb0d99e", "halted_early": false, "succeeded": true}
+{"event": "HTTP Request: POST https://poc-ir/api/detections/ccfc42d3-11ae-4ce5-a9cb-bebf12309c94/sync-to-siem/test_webhook \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.322488Z"}
+[2026-08-21T10:24:31.322578+00:00] PASS: sync-to-siem route returns 200
+[2026-08-21T10:24:31.322602+00:00] PASS: real SIEM push succeeded=true
+[2026-08-21T10:24:31.322607+00:00] PASS: the real local webhook actually received the push
+[2026-08-21T10:24:31.811851+00:00] === Step 7: auditor exports audit log, runs real kronos-attest case-report ===
+{"event": "HTTP Request: GET https://poc-ir/api/audit/export \"HTTP/1.1 200 OK\"", "level": "info", "logger": "httpx", "timestamp": "2026-08-21T10:24:31.840273Z"}
+[2026-08-21T10:24:31.840396+00:00] PASS: audit export route returns 200
+[2026-08-21T10:24:31.840522+00:00] real org audit export contains 26 total events
+[2026-08-21T10:24:31.929968+00:00] kronos-attest case-report stdout:
+{
+  "case_id": "2ccc7151-45b4-4e3a-b195-76f9d342b740",
+  "event_count": 3,
+  "merkle_root": "98750027bc9efb7b61b6535c53ee8c029e10fed48f00706ccb268145fcc3a97f",
+  "chain_valid": true,
+  "break_count": 0,
+  "org_chain_fully_intact": true,
+  "evidence_ids": []
+}
+
+[2026-08-21T10:24:31.929985+00:00] PASS: kronos-attest case-report exits 0
+[2026-08-21T10:24:31.930004+00:00] === Step 8: THE FINDING -- does case-report see the containment/SIEM audit trail? ===
+[2026-08-21T10:24:31.930043+00:00] PASS: real CONTAINMENT_ACTION_*/SINK_PUSH_* rows for this detection DO exist in the full org export
+[2026-08-21T10:24:31.930049+00:00] PASS: ...but NONE of them carry this (or any) case_id in the exported event (ContainmentAction.execute()/DetectionSinkPushService.push() never pass case_id= to AuditLogService.log())
+[2026-08-21T10:24:31.930074+00:00] PASS: THE GAP: every one of this detection's own real containment/SIEM-sync audit rows is invisible to `kronos-attest case-report --case-id 2ccc7151-45b4-4e3a-b195-76f9d342b740` (event_count=3), even though the underlying Detection is genuinely, correctly tied to this exact case
+[2026-08-21T10:24:31.930082+00:00] PASS: CONTRAST: DetectionTriageService's own audit rows DO correctly carry this case_id (proves the omission above is specific to Containment/SinkPush, not a platform-wide audit-export bug)
+[2026-08-21T10:24:31.933432+00:00] PoC PASSED -- 21/21 checks passed.
