@@ -71,6 +71,18 @@ class DetectionSinkPushService:
         division of labor: this service does not itself look Detections
         up by id/org).
         """
+        # Gap Audit Milestone LL: a per-batch case_id, so these audit rows
+        # are visible to case-scoped views (kronos-attest case-report,
+        # GET /api/cases/{case_id}/audit) exactly like
+        # DetectionTriageService.transition() already is. Only set when a
+        # batch is unambiguously all-one-case (today's only real caller,
+        # SyncDetectionToSiemAction, always pushes a single Detection, so
+        # this is always unambiguous in practice) -- a batch straddling
+        # multiple cases gets an honest ``None`` rather than a guessed value.
+        case_by_detection_id = {
+            str(detection.detection_id): detection.case_id for detection in detections
+        }
+
         mapped_events = [self._mapper.map(detection) for detection in detections]
         batches = list(
             chunk_events(
@@ -83,11 +95,14 @@ class DetectionSinkPushService:
         acks: list[SinkAck] = []
         for batch_index, batch in enumerate(batches):
             detection_ids = [event.source_detection_id for event in batch]
+            batch_case_ids = {case_by_detection_id[did] for did in detection_ids}
+            case_id = batch_case_ids.pop() if len(batch_case_ids) == 1 else None
             await self._audit.log(
                 AuditEventType.SINK_PUSH_ATTEMPTED,
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 actor_username=tenant.username,
+                case_id=case_id,
                 details={
                     "batch_index": batch_index,
                     "batch_count": len(batches),
@@ -103,6 +118,7 @@ class DetectionSinkPushService:
                     org_id=tenant.org_id,
                     actor_user_id=tenant.user_id,
                     actor_username=tenant.username,
+                    case_id=case_id,
                     details={
                         "batch_index": batch_index,
                         "batch_count": len(batches),
@@ -118,6 +134,7 @@ class DetectionSinkPushService:
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 actor_username=tenant.username,
+                case_id=case_id,
                 details={
                     "batch_index": batch_index,
                     "batch_count": len(batches),

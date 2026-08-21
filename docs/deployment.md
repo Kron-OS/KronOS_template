@@ -198,6 +198,24 @@ For a first install, prefer either:
 Subsequent `helm upgrade`s of an already-running cluster are unaffected --
 the replica already exists and is already streaming by then.
 
+**Steady-state version of the same risk** (Gap Audit Milestone LL, second
+multi-scenario assessment's scale/reliability review,
+`poc/postgres_sync_replica_failure/`): the cold-start case above is not
+the only way a synchronous standby can be unavailable -- if the replica
+becomes unreachable *after* a successful install (network partition,
+replica pod crash, an overloaded/slow replica), the exact same
+"blocks indefinitely, no timeout" behavior recurs, indefinitely, until the
+standby reconnects -- confirmed via a real PoC (12-second-bounded INSERT
+timing out while the sync standby was down; resolved the instant it
+reconnected). This is the documented, correct behavior of
+`synchronous_commit=on` with a named standby, not a bug -- but it means
+"the replica died" degrades **write availability platform-wide** (evidence
+intake, audit rows, detection triage), not just replication redundancy.
+See `docs/POSTGRES_MINIO_HA_RESEARCH.md` §1.6 for the full writeup and the
+real, project-owner-level decision this raises (accept as-is / add a
+monitored fallback policy / add replication-lag alerting) -- not decided
+here, flagged for a deliberate choice rather than an incident discovery.
+
 ### Verify the installation
 
 ```bash

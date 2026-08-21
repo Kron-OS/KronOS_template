@@ -249,6 +249,64 @@ operational burden independent of raw resource cost.
   it is a real, separate migration-discipline issue (`CONCURRENTLY`,
   batched backfills), unaffected by replica count.
 
+### §1.6 Known limitation, confirmed real (Gap Audit Milestone LL): a dead sync standby blocks ALL primary writes indefinitely
+
+This section was missing from the original §1.5 verdict and its own
+adoption (`docker-compose.prod.yml`'s `synchronous_standby_names` naming
+exactly one replica, `synchronous_commit=on`) — the table in §1.2 states
+the *durability* tradeoff of `synchronous_commit=on` correctly, but does
+not spell out its *availability* consequence, which a second multi-scenario
+assessment's scale/reliability review found and reproduced directly:
+**with exactly one named synchronous standby and no configured timeout,
+a primary whose sole sync standby is unreachable does not degrade — it
+blocks every write transaction indefinitely.** Confirmed via a real PoC
+(`poc/postgres_sync_replica_failure/`): a 12-second-bounded `INSERT`
+against the real primary timed out (exit 124) while the sync standby was
+down; a concurrent read confirmed the row was never committed; both
+blocked inserts completed immediately once the standby reconnected. This
+is exactly what PostgreSQL 16's own docs describe as `synchronous_commit
+=on`'s behavior when no standby can acknowledge — it is not a bug in this
+repo's configuration, it is the documented, correct behavior of the
+adopted mode, simply not previously written down here or in
+`docs/deployment.md`/`charts/kronos/values.yaml`.
+
+**Why this matters operationally, beyond the abstract tradeoff already in
+§1.2's table:** F1/F2 (single-node hardware failure / single-AZ outage)
+were adopted against on the premise that a human-executed promotion
+"recovers with zero committed data loss, just non-zero downtime" (§1.5).
+That framing is accurate for the *standby* dying. It is incomplete for the
+*network path to the standby* degrading (not dying outright) — e.g. a
+transient partition, a slow/overloaded standby, or a misconfigured
+security group — during which the primary is fully up but **every write
+anywhere in the system blocks**, including evidence intake, chain-of-
+custody audit rows, and detection triage, with no operator-visible signal
+beyond "requests are hanging," not "the database is down." A monitoring
+setup that only alerts on primary-down would miss this failure mode
+entirely.
+
+**This is a real, project-owner-level decision this initiative cannot
+make unilaterally (established precedent: V9's log-type prioritization,
+the prod OpenSearch demo-cert decision) — options, not a recommendation:**
+
+1. Accept the current behavior as-is (this deployment's compliance value
+   proposition is explicitly built on zero data loss over uninterrupted
+   availability — CLAUDE.md §A.2 — so "block until safe" may be the
+   *correct* choice, not an oversight to fix).
+2. Add a statement timeout / `synchronous_commit` fallback policy (e.g.
+   monitor `pg_stat_replication` and have an operator or automation
+   demote to `synchronous_commit=local` temporarily during a confirmed
+   standby outage) — trades the durability guarantee for availability
+   during an incident, which needs an explicit, written runbook and
+   alerting, not a silent default.
+3. At minimum, add alerting on `pg_stat_replication` showing the sync
+   standby unreachable/lagging, so an operator knows *why* writes are
+   hanging within seconds rather than discovering it via a support
+   ticket about a hung upload.
+
+No code or config change is made here — this section exists so the
+tradeoff is written down and the decision is made deliberately, not
+discovered live during an incident.
+
 ---
 
 ## §2 MinIO

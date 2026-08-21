@@ -269,6 +269,18 @@ postgresql:
     # context=sighup -- reload-safe, no restart), or accept a one-time
     # delay on first migration/schema-setup jobs. Subsequent upgrades of an
     # already-running cluster are unaffected.
+    #
+    # STEADY-STATE VERSION OF THE SAME RISK (Gap Audit Milestone LL, real
+    # PoC: poc/postgres_sync_replica_failure/): this isn't only a
+    # cold-start caveat -- if the replica becomes unreachable AFTER a
+    # successful install (network partition, replica crash/overload), the
+    # same "blocks indefinitely, no timeout" behavior recurs for as long
+    # as the standby is unreachable, degrading write availability
+    # platform-wide (not just replication redundancy). See
+    # docs/POSTGRES_MINIO_HA_RESEARCH.md §1.6 for the full writeup and the
+    # real, undecided project-owner question this raises (accept as-is /
+    # add a monitored synchronous_commit fallback / add replication-lag
+    # alerting).
     synchronousCommit: "on"
     numSynchronousReplicas: 1
     # Shared application_name both the primary and the read replica are

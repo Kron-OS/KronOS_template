@@ -27,6 +27,7 @@ court-facing audit trail must not conflate.
 from __future__ import annotations
 
 import logging
+import uuid
 from abc import abstractmethod
 from typing import Any
 
@@ -38,6 +39,23 @@ from src.domain.user import TenantContext
 from src.exceptions import ContainmentActionDeniedError
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_case_id(params: dict[str, Any]) -> uuid.UUID | None:
+    """Best-effort case_id for audit-trail scoping only (Gap Audit
+    Milestone LL) -- never gates the action itself (mirrors how
+    ``detection_id`` is already "audit context only" elsewhere in this
+    call chain). A missing or malformed value just means these audit rows
+    won't be case-scoped, same as today; it never blocks the real
+    destructive action.
+    """
+    raw = params.get("case_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
 
 
 class ContainmentAction(PlaybookAction):
@@ -76,11 +94,13 @@ class ContainmentAction(PlaybookAction):
         """
 
     async def execute(self, params: dict[str, Any], tenant: TenantContext) -> dict[str, Any]:
+        case_id = _optional_case_id(params)
         await self._audit.log(
             AuditEventType.CONTAINMENT_ACTION_ATTEMPTED,
             org_id=tenant.org_id,
             actor_user_id=tenant.user_id,
             actor_username=tenant.username,
+            case_id=case_id,
             details={"action_name": self.action_name, "params": params},
         )
 
@@ -92,6 +112,7 @@ class ContainmentAction(PlaybookAction):
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 actor_username=tenant.username,
+                case_id=case_id,
                 details={
                     "action_name": self.action_name,
                     "params": params,
@@ -108,6 +129,7 @@ class ContainmentAction(PlaybookAction):
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 actor_username=tenant.username,
+                case_id=case_id,
                 details={
                     "action_name": self.action_name,
                     "params": params,
@@ -128,6 +150,7 @@ class ContainmentAction(PlaybookAction):
                 org_id=tenant.org_id,
                 actor_user_id=tenant.user_id,
                 actor_username=tenant.username,
+                case_id=case_id,
                 details={"action_name": self.action_name, "params": params, "error": str(exc)},
             )
             raise
@@ -137,6 +160,7 @@ class ContainmentAction(PlaybookAction):
             org_id=tenant.org_id,
             actor_user_id=tenant.user_id,
             actor_username=tenant.username,
+            case_id=case_id,
             details={
                 "action_name": self.action_name,
                 "params": params,

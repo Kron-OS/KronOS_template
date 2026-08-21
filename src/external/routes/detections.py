@@ -327,6 +327,7 @@ async def revoke_session_for_detection(
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     registry: Annotated[PlaybookActionRegistry, Depends(get_playbook_action_registry)],
     execution_service: Annotated[PlaybookExecutionService, Depends(get_playbook_execution_service)],
+    detection_repo: Annotated[DetectionRepository, Depends(get_detection_repository)],
 ) -> PlaybookExecutionResultOut:
     """Fire ``RevokeKeycloakSessionAction`` for one Detection via a real,
     audited ``PlaybookExecutionService.execute()`` call (roadmap Milestone
@@ -403,6 +404,15 @@ async def revoke_session_for_detection(
     }
     if body.approvalTicketId is not None:
         params["approval_ticket_id"] = str(body.approvalTicketId)
+
+    # Gap Audit Milestone LL: case_id is audit-context only here, exactly
+    # like detection_id above -- an unknown/cross-org detection_id does not
+    # block the real containment action (RevokeKeycloakSessionAction's own
+    # tenant isolation is Keycloak-side, not Detection-side), it just means
+    # the resulting CONTAINMENT_ACTION_* audit rows won't be case-scoped.
+    detection = await detection_repo.get_by_id(detection_id, tenant.org_id)
+    if detection is not None:
+        params["case_id"] = str(detection.case_id)
 
     playbook = Playbook(
         name="ad-hoc-contain-revoke-keycloak-session",

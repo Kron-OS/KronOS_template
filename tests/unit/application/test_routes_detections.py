@@ -566,6 +566,60 @@ class TestRevokeSessionForDetection:
         }
         assert admin.revoked_session_ids == ["sess-1"]  # the real (fake-backed) revoke ran
 
+    def test_audit_rows_are_case_scoped_via_a_real_detection_lookup(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Gap Audit Milestone LL: the route looks the real Detection up by
+        detection_id (audit context only, same as detection_id itself --
+        an unknown/cross-org id never blocks the real containment action)
+        and threads its case_id through to ContainmentAction.execute() so
+        these rows are visible to kronos-attest case-report /
+        GET /api/cases/{id}/audit, mirroring
+        DetectionTriageService.transition()'s own real pattern."""
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, case_id=CASE_A)))
+        target_user = uuid.uuid4()
+        admin = _FakeKeycloakAdminClientForRoute(
+            org_members={target_user},
+            sessions_by_user={
+                target_user: (KeycloakSession("sess-1", str(target_user), "victim", "10.0.0.5", 0),)
+            },
+        )
+        tenant = _fixed_tenant(ORG_A, Role.ORG_ADMIN)
+        ticket_store = InMemoryTicketStore()
+        ticket_id = uuid.uuid4()
+        ticket_store.put(ticket_id, tenant.user_id, "revoke_keycloak_session", "sess-1")
+        client, audit_repo = _build_revoke_session_client(
+            detection_repo, tenant, admin=admin, approval_gate=StepUpApprovalGate(ticket_store)
+        )
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/contain/revoke-session",
+            json={
+                "userId": str(target_user),
+                "sessionId": "sess-1",
+                "approvalTicketId": str(ticket_id),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["succeeded"] is True
+
+        async def _collect() -> list[AuditEvent]:
+            return [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+
+        events = asyncio.run(_collect())
+        containment_events = [
+            e
+            for e in events
+            if e.event_type
+            in (
+                AuditEventType.CONTAINMENT_ACTION_ATTEMPTED,
+                AuditEventType.CONTAINMENT_ACTION_EXECUTED,
+            )
+        ]
+        assert len(containment_events) == 2
+        assert all(e.case_id == CASE_A for e in containment_events)
+
     def test_case_lead_role_is_permitted(self, detection_repo: InMemoryDetectionRepository) -> None:
         detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
         target_user = uuid.uuid4()

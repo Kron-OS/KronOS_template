@@ -144,6 +144,38 @@ class TestDetectionSinkPushServiceSuccess:
         assert executed[0].row_hash is not None
 
     @pytest.mark.asyncio
+    async def test_audit_rows_are_case_scoped_for_a_single_detection_batch(self) -> None:
+        """Gap Audit Milestone LL: case_id must be populated so these rows
+        are visible to kronos-attest case-report / GET /api/cases/{id}/audit,
+        mirroring DetectionTriageService.transition()'s own real pattern."""
+        sink = _FakeIntegrationSink()
+        service, audit_repo = _make_service(sink)
+        tenant = make_tenant_context()
+        detection = _make_detection(tenant.org_id)
+
+        await service.push([detection], tenant)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        assert len(events) == 2  # ATTEMPTED, EXECUTED
+        assert all(e.case_id == detection.case_id for e in events)
+
+    @pytest.mark.asyncio
+    async def test_case_id_is_none_for_a_batch_spanning_multiple_cases(self) -> None:
+        """A batch is never assumed to share one case just because it's one
+        batch -- an honest None beats a guessed/first-wins value when the
+        real detections in it actually belong to different cases."""
+        sink = _FakeIntegrationSink()
+        service, audit_repo = _make_service(sink)
+        tenant = make_tenant_context()
+        detections = [_make_detection(tenant.org_id), _make_detection(tenant.org_id)]
+        assert detections[0].case_id != detections[1].case_id  # real, independent case_ids
+
+        await service.push(detections, tenant)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        assert all(e.case_id is None for e in events)
+
+    @pytest.mark.asyncio
     async def test_empty_detections_produces_zero_batches_no_audit(self) -> None:
         sink = _FakeIntegrationSink()
         service, audit_repo = _make_service(sink)

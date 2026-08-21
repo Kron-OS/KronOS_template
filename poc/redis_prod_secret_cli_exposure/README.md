@@ -1,3 +1,11 @@
+**STATUS: FIXED (Gap Audit Milestone LL).** Both services now read their
+password from a real Docker secret file via a new entrypoint script
+(`docker/redis/redis-secret-entrypoint.sh`), mirroring
+`docker/postgres/replica-entrypoint.sh`'s own established pattern. See
+"Fix verification" at the end of this document for the real, captured
+run against the pinned `redis:7-alpine` image that replaced the original
+finding's own repro below (kept for the record).
+
 # PoC: Redis passwords in `docker-compose.prod.yml` leak via `docker inspect` (Milestone X2b)
 
 **Objective.** Adversarial red-team review of new attack surface landed since
@@ -127,3 +135,69 @@ capture (`docker rm -f kronos-poc-redis-secret-exposure`) — no PoC
 container was left running. Nothing in the shared dev stack
 (`docker-redis-1`, etc.) was touched; this used a standalone, separately
 named container.
+
+## Fix verification (Gap Audit Milestone LL)
+
+Real, captured runs against the pinned `redis:7-alpine` image, using the
+actual `docker/redis/redis-secret-entrypoint.sh` file that now ships in
+both `redis-auth-streams`/`redis-celery`:
+
+```
+$ mkdir -p /tmp/kronos-poc-redis-secret-fix2
+$ echo -n "FinalVerifyPW456" > /tmp/kronos-poc-redis-secret-fix2/redis_auth_streams_password
+$ docker run -d --name kronos-poc-redis-secret-fix2 \
+    -v /tmp/kronos-poc-redis-secret-fix2/redis_auth_streams_password:/run/secrets/redis_auth_streams_password:ro \
+    -v $(pwd)/docker/redis/redis-secret-entrypoint.sh:/redis-secret-entrypoint.sh:ro \
+    -e REDIS_PASSWORD_FILE=/run/secrets/redis_auth_streams_password \
+    --entrypoint /bin/sh \
+    --health-cmd 'redis-cli -a "$(cat /run/secrets/redis_auth_streams_password)" --no-auth-warning ping | grep -q PONG' \
+    --health-interval 2s --health-retries 5 --health-timeout 3s \
+    redis:7-alpine /redis-secret-entrypoint.sh
+
+$ docker inspect kronos-poc-redis-secret-fix2 --format '{{.State.Health.Status}}'
+healthy
+
+$ docker inspect kronos-poc-redis-secret-fix2 --format '{{json .Config.Entrypoint}}{{println}}{{json .Config.Cmd}}'
+["/bin/sh"]
+["/redis-secret-entrypoint.sh"]
+
+$ docker exec kronos-poc-redis-secret-fix2 redis-cli ping
+NOAUTH Authentication required.
+
+$ docker exec kronos-poc-redis-secret-fix2 redis-cli -a FinalVerifyPW456 --no-auth-warning ping
+PONG
+```
+
+**The plaintext password no longer appears anywhere in `Config.Cmd` or
+`Config.Entrypoint`** — only the script's own path does — while the real
+Redis instance still genuinely requires and accepts the real password
+read from the secret file. A separate, minimal run (before settling on
+the final script-file form) also confirmed the same result for an inline
+`sh -c 'redis-server --requirepass "$(cat ...)" ...'` shape, plus checked
+`docker top`/`/proc/1/cmdline` from inside the running container: both
+show only `redis-server *:6379` (Redis's own post-startup title rewrite),
+never the resolved password — consistent with the original finding's own
+observation that this self-masking is real but does not help with
+`docker inspect`'s static `Config.Cmd`, which is what this fix actually
+addresses.
+
+Both throwaway containers and their temp secret files were removed
+immediately after capture (`docker rm -f`); nothing in the shared dev
+stack was touched.
+
+## Related, NOT fixed here (separate, pre-existing, broader finding)
+
+While verifying this fix, `docker-compose.prod.yml`'s `kronos-backend`/
+`celery-worker`/`celery-beat` services were found to bake the SAME
+resolved Redis (and Postgres) passwords into their own `environment:`
+block via connection-string interpolation (e.g. `REDIS_URL:
+redis://:${REDIS_AUTH_STREAMS_PASSWORD}@redis-auth-streams:6379/0`,
+`DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres
+:5432/kronos`) — `docker inspect`'s `Config.Env` is exactly as visible to
+the same low-privilege introspection principals as `Config.Cmd` is. This
+is a real, adjacent exposure surface, but it predates this fix (confirmed:
+Postgres's own client-side `DATABASE_URL` already has it, unrelated to
+the Redis-specific finding this PoC was scoped to) and is broader in
+scope (every client service, both databases, not just these two Redis
+server processes) — flagged honestly here as a candidate for its own,
+separate future milestone rather than silently expanded into this one.

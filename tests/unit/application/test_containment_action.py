@@ -9,6 +9,7 @@ that already has zero external dependency itself.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -93,6 +94,42 @@ class TestContainmentActionApproved:
         executed = next(e for e in events if e.event_type == AuditEventType.CONTAINMENT_ACTION_EXECUTED)
         assert executed.details["output"] == {"performed": True}
         assert executed.details["policy_name"] == "static_policy_allowlist"
+
+    @pytest.mark.asyncio
+    async def test_audit_rows_are_case_scoped_when_params_carry_a_real_case_id(
+        self, audit_log: AuditLogService, audit_repo: InMemoryAuditLogRepository
+    ) -> None:
+        """Gap Audit Milestone LL: case_id is derived from params (set by
+        the calling route, e.g. revoke_session_for_detection's own real
+        Detection lookup) so these audit rows are visible to
+        kronos-attest case-report / GET /api/cases/{id}/audit, mirroring
+        DetectionTriageService.transition()'s own real pattern."""
+        tenant = make_tenant_context()
+        case_id = uuid.uuid4()
+        gate = StaticPolicyApprovalGate(frozenset({(tenant.org_id, "fake_destructive_action")}))
+        action = _FakeDestructiveAction(gate, audit_log, [])
+
+        await action.execute({"target": "x", "case_id": str(case_id)}, tenant)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        assert len(events) == 2  # ATTEMPTED, EXECUTED
+        assert all(e.case_id == case_id for e in events)
+
+    @pytest.mark.asyncio
+    async def test_case_id_is_none_when_params_have_no_case_id(
+        self, audit_log: AuditLogService, audit_repo: InMemoryAuditLogRepository
+    ) -> None:
+        """Mirrors detection_id's own "audit context only" convention --
+        a missing case_id never blocks the real action, it just means these
+        rows aren't case-scoped."""
+        tenant = make_tenant_context()
+        gate = StaticPolicyApprovalGate(frozenset({(tenant.org_id, "fake_destructive_action")}))
+        action = _FakeDestructiveAction(gate, audit_log, [])
+
+        await action.execute({"target": "x"}, tenant)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        assert all(e.case_id is None for e in events)
 
 
 class TestContainmentActionDenied:
