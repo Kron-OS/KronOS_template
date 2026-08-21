@@ -1,0 +1,16 @@
+=== LOGIN as case-lead ===
+PASS: landed on /cases after real Keycloak login
+=== CREATE a new case ===
+PASS: real POST /api/cases returns 201
+=== UPLOAD real evidence ===
+PASS: real Upload submit button became enabled after file selection
+PASS: real POST /api/evidence/upload/finalize/{id} returns 202 Accepted (async pipeline dispatch, CLAUDE.md SS E.1)
+=== Wait for the autonomous pipeline to reach a downloadable state ===
+PASS: evidence row reached a real, post-hashing state
+=== Open the drawer and click Download ===
+PASS: Download button is visible in the real drawer
+PASS: browser actually saved a real downloaded file
+PASS: suggested filename matches the real uploaded filename
+PASS: downloaded file's SHA-256 matches the real uploaded sample byte-for-byte
+
+9/9 checks passed

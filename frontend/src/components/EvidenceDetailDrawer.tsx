@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Evidence } from '../types'
-import { retryIntake, retryParse } from '../api/evidence'
+import { downloadEvidence, retryIntake, retryParse } from '../api/evidence'
 import { ErrorCatalogueChip } from './ErrorCatalogue'
 import { Spinner } from './Spinner'
 import { StatusPill } from './StatusPill'
+
+// Mirrors the backend's own "not yet promoted" check
+// (src/external/routes/cases.py::download_evidence -- 404s when
+// evidence.minio_evidence_key is None): the object is only ever promoted
+// to the real evidence bucket once hashing has completed.
+const DOWNLOAD_NOT_YET_AVAILABLE_STATES: ReadonlySet<Evidence['state']> = new Set([
+  'UPLOADING',
+  'SCANNING',
+  'HASHING',
+])
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -43,6 +53,13 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
       if (evidence) {
         void queryClient.invalidateQueries({ queryKey: ['evidence', evidence.caseId] })
       }
+    },
+  })
+
+  const downloadMutation = useMutation({
+    mutationFn: () => {
+      if (!evidence) return Promise.resolve()
+      return downloadEvidence(evidence.caseId, evidence.id, evidence.filename)
     },
   })
 
@@ -91,7 +108,30 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <FieldRow label="Filename" value={evidence.filename} />
           <FieldRow label="Size" value={formatBytes(evidence.sizeBytes)} />
-          <FieldRow label="Status" value={<StatusPill state={evidence.state} />} />
+          <FieldRow
+            label="Status"
+            value={
+              <div className="flex items-center gap-2">
+                <StatusPill state={evidence.state} />
+                {!DOWNLOAD_NOT_YET_AVAILABLE_STATES.has(evidence.state) && (
+                  <button
+                    type="button"
+                    onClick={() => downloadMutation.mutate()}
+                    disabled={downloadMutation.isPending}
+                    className="flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-gray-200 disabled:opacity-60 dark:text-indigo-400 dark:hover:bg-gray-800"
+                  >
+                    {downloadMutation.isPending && <Spinner size="sm" />}
+                    Download
+                  </button>
+                )}
+              </div>
+            }
+          />
+          {downloadMutation.isError && (
+            <p className="pb-2 text-xs text-red-600 dark:text-red-400">
+              Download failed — the original file may not be available yet.
+            </p>
+          )}
           <FieldRow label="Uploaded by" value={evidence.uploadedBy} />
           <FieldRow
             label="Uploaded at"

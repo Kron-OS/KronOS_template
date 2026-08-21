@@ -84,3 +84,31 @@ export async function retryParse(evidenceId: string): Promise<Evidence> {
   const res = await apiClient.post<Evidence>(`/api/evidence/${evidenceId}/retry-parse`)
   return res.data
 }
+
+export function filenameFromContentDisposition(headerValue: string | undefined, fallback: string): string {
+  if (!headerValue) return fallback
+  const match = /filename="?([^";]+)"?/i.exec(headerValue)
+  return match ? match[1] : fallback
+}
+
+export async function downloadEvidence(
+  caseId: string,
+  evidenceId: string,
+  fallbackFilename: string,
+): Promise<void> {
+  const res = await apiClient.get<Blob>(`/api/cases/${caseId}/evidence/${evidenceId}/download`, {
+    responseType: 'blob',
+  })
+  const filename = filenameFromContentDisposition(
+    res.headers['content-disposition'] as string | undefined,
+    fallbackFilename,
+  )
+  const url = URL.createObjectURL(res.data)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
