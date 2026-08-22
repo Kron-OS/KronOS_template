@@ -1,0 +1,224 @@
+Real, captured output from running poc/backend_prod_secret_config_env_exposure/run_poc.sh's
+steps manually against the actual repo state at commit time (Gap Audit Milestone MM).
+All containers/network were kronos-poc-secretfix-* (distinctly named, disposable) and were
+torn down immediately after this capture. Nothing in the shared dev stack was touched.
+
+=== 1. Build the real backend image from docker/Dockerfile ===
+
+$ docker build -f docker/Dockerfile -t kronos-backend-secret-fix-test .
+...
+#14 12.27   Created wheel for kronos: filename=kronos-0.1.0-py3-none-any.whl size=614898 ...
+#14 20.59 Successfully installed ... pydantic-2.13.4 pydantic-core-2.46.4 ... pydantic-settings-2.15.0 ...
+...
+#24 naming to docker.io/library/kronos-backend-secret-fix-test:latest done
+
+NOTE (drift, honestly flagged): pyproject.toml only pins pydantic-settings>=2.3 (a floor,
+not an exact pin) -- a fresh `docker build` picked up pydantic-settings 2.15.0 inside the
+image, one minor version ahead of this repo's local dev venv (2.14.2, confirmed via
+`python3 -c "import pydantic_settings; print(pydantic_settings.__version__)"` per the
+dispatch). The secrets_dir API used here (SettingsConfigDict(secrets_dir=...),
+SecretsSettingsSource) is unchanged between 2.14.2 and 2.15.0 (verified: the fix worked
+identically inside this 2.15.0-based image, step 5 below), but this is a real, disclosed
+gap in this repo's own dependency pinning discipline, not something this milestone
+silently papered over.
+
+=== 2. Disposable network + real Postgres + real Redis ===
+
+$ docker network create kronos-poc-secretfix-net
+6f0efe884ea58a1dbce0cc06fd2e2fe4de4ae1d60fcde24b4db855513b2a5b2c
+
+$ docker run -d --name kronos-poc-secretfix-postgres --network kronos-poc-secretfix-net \
+    -e POSTGRES_DB=kronos -e POSTGRES_USER=kronos -e POSTGRES_PASSWORD='R3alSecretPW!987' \
+    postgres:16-alpine
+606a0330e5bb044c07676ca94d98840708d63b8efbd5399641350dbf02be086a
+
+$ docker exec kronos-poc-secretfix-postgres pg_isready -U kronos
+/var/run/postgresql:5432 - accepting connections
+
+$ docker run -d --name kronos-poc-secretfix-redis --network kronos-poc-secretfix-net \
+    redis:7-alpine redis-server --requirepass 'R3disSecretPW!123'
+241b7566271f6b4e364f7605a63801670d16aa3f5f80a398f889d554653c23a2
+
+$ docker exec kronos-poc-secretfix-redis redis-cli -a 'R3disSecretPW!123' --no-auth-warning ping
+PONG
+
+=== 3. Real Docker-secret-style files (full DSN per file, field-named) ===
+
+$ mkdir -p /tmp/kronos-poc-secretfix-secrets
+$ printf 'postgresql+asyncpg://kronos:R3alSecretPW!987@kronos-poc-secretfix-postgres:5432/kronos' \
+    > /tmp/kronos-poc-secretfix-secrets/database_url
+$ printf 'redis://:R3disSecretPW!123@kronos-poc-secretfix-redis:6379/0' \
+    > /tmp/kronos-poc-secretfix-secrets/redis_url
+$ printf 'redis://:R3disSecretPW!123@kronos-poc-secretfix-redis:6379/1' \
+    > /tmp/kronos-poc-secretfix-secrets/celery_broker_url
+$ printf 'redis://:R3disSecretPW!123@kronos-poc-secretfix-redis:6379/2' \
+    > /tmp/kronos-poc-secretfix-secrets/celery_result_backend
+
+=== 4. Real db-migrate: `alembic upgrade head` via DATABASE_URL_FILE ===
+
+$ docker run --rm --name kronos-poc-secretfix-migrate \
+    --network kronos-poc-secretfix-net \
+    -v /tmp/kronos-poc-secretfix-secrets:/run/secrets:ro \
+    -e DATABASE_URL_FILE=/run/secrets/database_url \
+    kronos-backend-secret-fix-test alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 56c861716f8f, baseline schema
+INFO  [alembic.runtime.migration] Running upgrade 56c861716f8f -> 913567ca653a, add integration_source_keys table
+INFO  [alembic.runtime.migration] Running upgrade 913567ca653a -> 5a0779975c5a, repair pre-existing evidence.quota_held column drift
+
+$ docker exec kronos-poc-secretfix-postgres psql -U kronos -d kronos -c "\dt"
+                   List of relations
+ Schema |            Name             | Type  | Owner
+--------+-----------------------------+-------+--------
+ public | alembic_version             | table | kronos
+ public | assets                      | table | kronos
+ public | audit_anchor                | table | kronos
+ public | audit_log                   | table | kronos
+ public | cases                       | table | kronos
+ public | dead_letter_events          | table | kronos
+ public | detection_correlations      | table | kronos
+ public | detections                  | table | kronos
+ public | evidence                    | table | kronos
+ public | integration_source_cursors  | table | kronos
+ public | integration_source_keys     | table | kronos
+ public | ioc_feed_current_indicators | table | kronos
+ public | ioc_feed_versions           | table | kronos
+ public | ioc_feeds                   | table | kronos
+ public | org_quotas                  | table | kronos
+ public | published_custom_rules      | table | kronos
+ public | rule_pack_versions          | table | kronos
+ public | rule_packs                  | table | kronos
+ public | sealed_batches              | table | kronos
+ public | structured_artifacts        | table | kronos
+ public | yara_rule_pack_published    | table | kronos
+ public | yara_rule_pack_versions     | table | kronos
+ public | yara_rule_packs             | table | kronos
+(23 rows)
+
+# Re-run (without --rm) specifically to capture docker inspect Config.Env:
+$ docker run -d --name kronos-poc-secretfix-migrate-inspect \
+    --network kronos-poc-secretfix-net \
+    -v /tmp/kronos-poc-secretfix-secrets:/run/secrets:ro \
+    -e DATABASE_URL_FILE=/run/secrets/database_url \
+    kronos-backend-secret-fix-test alembic current
+aa2b72e1c0e87c6a9b5ab856a31e2ab75ecd24020fecbae4dcc6e2fd31e1debe
+
+$ docker inspect kronos-poc-secretfix-migrate-inspect --format '{{json .Config.Env}}'
+["DATABASE_URL_FILE=/run/secrets/database_url","PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt","PYTHONPATH=/app","PYTHONDONTWRITEBYTECODE=1","PYTHONUNBUFFERED=1"]
+
+$ docker logs kronos-poc-secretfix-migrate-inspect
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+5a0779975c5a (head)
+
+*** Config.Env shows ONLY the path "/run/secrets/database_url" -- never the
+    real password "R3alSecretPW!987". ***
+
+=== 5. Real kronos-backend/celery-worker path: bare Settings() via secrets_dir ===
+
+(verify.py script content -- imports src.config.Settings with no args, exactly
+like src/external/startup.py / src/external/celery_app.py do, then opens a
+real asyncpg connection via settings.database_url and real Redis connections
+via settings.redis_url / celery_broker_url / celery_result_backend)
+
+$ docker run --rm --name kronos-poc-secretfix-app \
+    --network kronos-poc-secretfix-net \
+    -v /tmp/kronos-poc-secretfix-secrets:/run/secrets:ro \
+    -v /tmp/kronos-poc-secretfix-verify.py:/verify.py:ro \
+    -e KRONOS_SECRETS_DIR=/run/secrets \
+    -e MINIO_ENDPOINT=minio:9000 -e MINIO_ACCESS_KEY=dummy -e MINIO_SECRET_KEY=dummy \
+    -e OPENSEARCH_URL=https://opensearch:9200 -e OPENSEARCH_USERNAME=dummy -e OPENSEARCH_PASSWORD=dummy \
+    -e KEYCLOAK_URL=https://keycloak:8443 -e KEYCLOAK_CLIENT_SECRET=dummy \
+    -e VAULT_URL=https://vault:8200 -e VAULT_TOKEN=dummy \
+    kronos-backend-secret-fix-test python /verify.py
+KRONOS_SECRETS_DIR resolved secrets_dir: /run/secrets
+database_url (masked repr): SecretStr('**********')
+redis_url (masked repr): SecretStr('**********')
+POSTGRES CONNECT: OK (real SELECT 1 via settings.database_url)
+REDIS CONNECT: OK (real PING via settings.redis_url)
+REDIS (celery_broker_url) CONNECT: OK
+REDIS (celery_result_backend) CONNECT: OK
+ALL REAL CONNECTIONS SUCCEEDED
+
+# Re-run as a long-lived container specifically to capture docker inspect Config.Env:
+$ docker run -d --name kronos-poc-secretfix-app-inspect \
+    --network kronos-poc-secretfix-net \
+    -v /tmp/kronos-poc-secretfix-secrets:/run/secrets:ro \
+    -e KRONOS_SECRETS_DIR=/run/secrets \
+    -e MINIO_ENDPOINT=minio:9000 -e MINIO_ACCESS_KEY=dummy -e MINIO_SECRET_KEY=dummy \
+    -e OPENSEARCH_URL=https://opensearch:9200 -e OPENSEARCH_USERNAME=dummy -e OPENSEARCH_PASSWORD=dummy \
+    -e KEYCLOAK_URL=https://keycloak:8443 -e KEYCLOAK_CLIENT_SECRET=dummy \
+    -e VAULT_URL=https://vault:8200 -e VAULT_TOKEN=dummy \
+    kronos-backend-secret-fix-test python -c "import time; time.sleep(30)"
+936cb7361393545d560cf8f2ff4ab7245397a73b403d3f368272d07a43b09900
+
+$ docker inspect kronos-poc-secretfix-app-inspect --format '{{json .Config.Env}}'
+["VAULT_URL=https://vault:8200","KRONOS_SECRETS_DIR=/run/secrets","OPENSEARCH_USERNAME=dummy","KEYCLOAK_URL=https://keycloak:8443","VAULT_TOKEN=dummy","MINIO_ENDPOINT=minio:9000","MINIO_ACCESS_KEY=dummy","MINIO_SECRET_KEY=dummy","OPENSEARCH_URL=https://opensearch:9200","OPENSEARCH_PASSWORD=dummy","KEYCLOAK_CLIENT_SECRET=dummy","PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin","SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt","PYTHONPATH=/app","PYTHONDONTWRITEBYTECODE=1","PYTHONUNBUFFERED=1"]
+
+$ docker inspect kronos-poc-secretfix-app-inspect | grep -c "R3alSecretPW\|R3disSecretPW"
+0
+0 matches (clean)
+
+*** Config.Env shows ONLY the path "/run/secrets" (KRONOS_SECRETS_DIR) plus
+    intentionally-dummy placeholder values for unrelated required fields
+    (MinIO/OpenSearch/Keycloak/Vault) -- the real Postgres/Redis passwords
+    ("R3alSecretPW!987" / "R3disSecretPW!123") appear ZERO times anywhere in
+    the full `docker inspect` JSON output for either container. ***
+
+=== 6. Cleanup ===
+
+$ docker rm -f kronos-poc-secretfix-app-inspect kronos-poc-secretfix-migrate-inspect \
+    kronos-poc-secretfix-postgres kronos-poc-secretfix-redis
+kronos-poc-secretfix-app-inspect
+kronos-poc-secretfix-migrate-inspect
+kronos-poc-secretfix-postgres
+kronos-poc-secretfix-redis
+
+$ docker network rm kronos-poc-secretfix-net
+kronos-poc-secretfix-net
+
+$ docker rmi kronos-backend-secret-fix-test
+Untagged: kronos-backend-secret-fix-test:latest
+Deleted: sha256:d0885ba019db704ab92787180e93e20374c2baa3a017c7f2f99513e8f32875aa
+
+$ docker ps --format '{{.Names}}' | grep -i kronos
+docker-kronos-backend-1
+
+(Only the pre-existing shared dev stack container remains -- confirmed untouched.)
+
+=== 7. docker compose config with dummy values (all referenced vars exported) ===
+
+$ docker compose -f docker/docker-compose.prod.yml config
+time="2026-08-22T02:34:29+02:00" level=warning msg="...the attribute `version` is
+obsolete, it will be ignored, please remove it to avoid potential confusion"
+(exit code 0 -- pre-existing, unrelated `version:` key warning; full resolved
+YAML confirmed no plaintext DSN/password strings anywhere for db-migrate/
+kronos-backend/celery-worker, and confirmed the new `secrets:`/`DATABASE_URL_FILE`/
+`KRONOS_SECRETS_DIR` entries resolve exactly as designed)
+
+=== 8. Full backend test suite + lint (src/config.py, migrations/env.py, migrations/db_url.py,
+       tests/unit/test_config.py, tests/unit/test_migrations_db_url.py) ===
+
+$ python -m pytest -q --no-cov
+2025 passed, 2 skipped, 19 warnings in 29.84s
+(baseline before this change, confirmed via git stash: 2004 passed, 2 skipped --
+this change adds exactly 21 new tests, 11 in test_config.py + 10 in
+test_migrations_db_url.py, zero regressions)
+
+$ python -m ruff check src/config.py migrations/env.py migrations/db_url.py \
+    tests/unit/test_config.py tests/unit/test_migrations_db_url.py
+All checks passed!
+
+$ python -m black --check src/config.py migrations/env.py migrations/db_url.py \
+    tests/unit/test_config.py tests/unit/test_migrations_db_url.py
+All done! (5 files would be left unchanged)
+
+$ python -m mypy src/config.py migrations/env.py migrations/db_url.py
+Success: no issues found in 3 source files
+
+# Confirmed pre-existing, unrelated lint debt elsewhere in the repo via git stash
+# (CLAUDE.md's own required verification style): with this change fully stashed,
+# `ruff check src/ tests/` already reports 77 errors and `black --check src/ tests/`
+# already reports 30 files needing reformat -- IDENTICAL counts to after this change
+# (my own 5 touched/added files are not among either list, before or after).

@@ -10,21 +10,19 @@ verified against the real installed alembic==1.19.0 via `alembic init -t async`
    `settings.database_url` -> `create_async_engine()` convention
    (src/external/startup.py's wire_dependencies_async()); reusing the exact
    same call shape here keeps one pattern in the codebase instead of two.
-2. The database URL comes from the `DATABASE_URL` environment variable
-   directly (see `_database_url()` below), not from `alembic.ini`'s
-   `sqlalchemy.url` (left as an unused placeholder) or a full
-   `src.config.Settings()` instantiation -- Settings() requires ~15
-   unrelated fields (MinIO/OpenSearch/Keycloak/Vault credentials) that a
-   migration-only run (e.g. the `migrate` init-container, see
-   docs/DATABASE_MIGRATIONS.md) has no reason to need. Every real KronOS
-   process already receives DATABASE_URL via docker-compose today, so this
-   introduces no new configuration surface.
+2. The database URL comes from the `DATABASE_URL` environment variable, or
+   (Gap Audit Milestone MM) a `DATABASE_URL_FILE`-referenced secret file --
+   see `migrations/db_url.py` -- not from `alembic.ini`'s `sqlalchemy.url`
+   (left as an unused placeholder) or a full `src.config.Settings()`
+   instantiation -- Settings() requires ~15 unrelated fields (MinIO/
+   OpenSearch/Keycloak/Vault credentials) that a migration-only run (e.g.
+   the `db-migrate` init-container, see docs/DATABASE_MIGRATIONS.md) has no
+   reason to need.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -50,6 +48,7 @@ if config.config_file_name is not None:
 # different cwd (e.g. a container WORKDIR that isn't the repo root).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from migrations.db_url import resolve_database_url  # noqa: E402
 from migrations.target_metadata import build_target_metadata  # noqa: E402
 
 # See migrations/target_metadata.py's own docstring for why this is a
@@ -58,15 +57,8 @@ target_metadata = build_target_metadata()
 
 
 def _database_url() -> str:
-    """Real Postgres DSN from the environment (see module docstring)."""
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL must be set in the environment to run Alembic "
-            "migrations, e.g. postgresql+asyncpg://kronos:...@postgres:5432/kronos "
-            "-- see docs/DATABASE_MIGRATIONS.md."
-        )
-    return url
+    """Real Postgres DSN from the environment or a secret file (see migrations/db_url.py)."""
+    return resolve_database_url()
 
 
 def run_migrations_offline() -> None:

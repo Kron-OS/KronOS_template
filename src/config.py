@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,7 +16,32 @@ class Settings(BaseSettings):
     startup, preventing silent misconfigurations in production.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        # Gap Audit Milestone MM: `docker-compose.prod.yml` used to bake
+        # resolved Postgres/Redis DSNs (with plaintext passwords) directly
+        # into kronos-backend/celery-worker/db-migrate's `environment:`
+        # block — `docker inspect --format '{{json .Config.Env}}'` returned
+        # them verbatim (see poc/backend_prod_secret_config_env_exposure/
+        # for the real, captured repro+fix). pydantic-settings 2.14.2's
+        # real, current `secrets_dir` SettingsConfigDict option (verified
+        # against this repo's own installed version — see that PoC's
+        # README for the exact source read) resolves a field from a file
+        # named after the field (case-insensitively) under this directory,
+        # e.g. DATABASE_URL from <secrets_dir>/database_url. `None`
+        # (the default whenever KRONOS_SECRETS_DIR is unset, e.g.
+        # docker-compose.dev.yml) disables this source entirely and
+        # preserves the existing plain-env-var-only behaviour completely
+        # unchanged — dev never sets this var. Set
+        # KRONOS_SECRETS_DIR=/run/secrets in production so the four DSN
+        # fields below resolve from mounted Docker secret files instead.
+        # This var is a path *convention*, not a secret itself — safe to
+        # pass as a plain `environment:` value, same spirit as
+        # POSTGRES_PASSWORD_FILE naming a path rather than embedding a
+        # credential.
+        secrets_dir=os.environ.get("KRONOS_SECRETS_DIR") or None,
+    )
 
     # Application
     app_name: str = "kronos"
@@ -429,3 +455,32 @@ class Settings(BaseSettings):
     tls_ca_path: str | None = Field(
         default=None, description="Path to CA bundle for mTLS verification"
     )
+
+    @field_validator(
+        "database_url",
+        "redis_url",
+        "celery_broker_url",
+        "celery_result_backend",
+        mode="before",
+    )
+    @classmethod
+    def _reject_blank_dsn(cls, value: object, info: ValidationInfo) -> object:
+        """Fail loudly on a blank DSN instead of silently connecting nowhere.
+
+        Closes the one gap `secrets_dir`'s own file-lookup contract leaves
+        open: a secret file that exists but is empty (or whitespace-only —
+        e.g. a botched provisioning step that `touch`ed the file before
+        writing it) resolves to `""`, which is a syntactically valid `str`
+        and would otherwise sail past the "field required" check pydantic
+        already enforces for a genuinely *missing* value, only to fail much
+        later and far less clearly inside asyncpg/redis-py. A missing
+        secrets_dir file, or a missing plain env var, still correctly hits
+        that pre-existing "field required" ValidationError unchanged.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise ValueError(
+                f"{info.field_name} resolved to an empty/whitespace-only value — "
+                "check that the backing env var, or the secrets_dir file "
+                "(see KRONOS_SECRETS_DIR), actually has real content"
+            )
+        return value

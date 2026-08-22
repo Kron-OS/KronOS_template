@@ -383,8 +383,34 @@ services:
   # new image that expects a new column/table.
   db-migrate:
     image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/backend:${IMAGE_TAG:-latest}
+    # Gap Audit Milestone MM: this service (and kronos-backend/celery-worker
+    # below) used to interpolate ${POSTGRES_PASSWORD}/${REDIS_*_PASSWORD}
+    # directly into a DATABASE_URL/REDIS_URL/CELERY_* value in this
+    # `environment:` block -- `docker inspect --format
+    # '{{json .Config.Env}}'` returned the fully-resolved plaintext DSN
+    # verbatim (see poc/backend_prod_secret_config_env_exposure/ for the
+    # real, captured repro+fix -- the same class of finding Milestone LL
+    # already fixed for redis-auth-streams/redis-celery's own `command:`
+    # argv, this time in `Config.Env` instead of `Config.Cmd`). This image
+    # has no shell (cgr.dev/chainguard/python:latest, see docker/Dockerfile's
+    # own ENTRYPOINT [] comment), so Milestone LL's sh-entrypoint-script
+    # pattern doesn't apply here.
+    #
+    # This service specifically does NOT go through src/config.py's
+    # Settings class at all (`command: alembic upgrade head` -- confirmed
+    # by reading migrations/env.py's own docstring: it deliberately reads
+    # DATABASE_URL directly, bypassing Settings()'s ~15 unrelated required
+    # fields a migration-only run has no reason to need), so kronos-backend/
+    # celery-worker's `secrets_dir`/KRONOS_SECRETS_DIR fix below does not
+    # apply here. Fixed instead in migrations/db_url.py: DATABASE_URL_FILE
+    # (mirrors the official postgres image's own POSTGRES_PASSWORD_FILE
+    # convention, already used elsewhere in this same file) points at the
+    # same `database_url` Docker secret kronos-backend/celery-worker use.
     environment:
-      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets:
+      - source: database_url
+        target: database_url
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
@@ -398,12 +424,11 @@ services:
     #   - MINIO_ACCESS_KEY/SECRET_KEY must be a *scoped service account*, not root.
     #   - tusd must use a separate put-only service account, not the backend's.
     environment:
-      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
-      # DB0 (step-up tickets) + DB3 (stream-ingest, via stream_redis_db's
-      # Settings default of 3 layered on this same host/port/password) --
-      # points at the redis-auth-streams instance (Milestone X2b role
-      # split, see that service's own comment above).
-      REDIS_URL: redis://:${REDIS_AUTH_STREAMS_PASSWORD}@redis-auth-streams:6379/0
+      # Gap Audit Milestone MM: DATABASE_URL/REDIS_URL/CELERY_BROKER_URL/
+      # CELERY_RESULT_BACKEND below are no longer plaintext-interpolated
+      # here -- see db-migrate's own comment above for the full finding +
+      # fix. KRONOS_SECRETS_DIR is a path convention, not a secret.
+      KRONOS_SECRETS_DIR: ${KRONOS_SECRETS_DIR:-/run/secrets}
       # Real, separate gap found while reconciling clamav's own
       # CLAMD_CONF_StreamMaxLength/MaxFileSize/MaxScanSize below with this
       # value (see clamav service comment + poc/clamav/README_large_file_fix.md):
@@ -473,10 +498,6 @@ services:
       TSA_URL: http://tsa:318
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
-      # DB1/DB2 -- points at the redis-celery instance (Milestone X2b role
-      # split; see that service's own comment above).
-      CELERY_BROKER_URL: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/2
       # Shared step-up ticket store — required because this service runs 2
       # replicas (audit M-4). The app bootstrap passes
       # build_step_up_ticket_store(settings) into create_app().
@@ -507,6 +528,29 @@ services:
       DEFENDER_TENANT_ID: ${DEFENDER_TENANT_ID:-}
       DEFENDER_CLIENT_ID: ${DEFENDER_CLIENT_ID:-}
       DEFENDER_CLIENT_SECRET: ${DEFENDER_CLIENT_SECRET:-}
+    # Gap Audit Milestone MM: the real DSN material (was DATABASE_URL/
+    # REDIS_URL/CELERY_BROKER_URL/CELERY_RESULT_BACKEND above) now arrives as
+    # mounted secret files under KRONOS_SECRETS_DIR instead. `redis_url`'s
+    # `source:` is deliberately named `redis_auth_streams_url` (not
+    # `redis_url`) -- the DEPLOYER-FACING secret name documents which Redis
+    # instance/password it actually contains (mirrors redis_auth_streams_
+    # password's own naming below), while `target:` is what
+    # src/config.py's secrets_dir lookup actually requires (the field name,
+    # `redis_url`) -- these are allowed to differ in Compose's long secrets
+    # syntax. Each secret's CONTENT must be the full, pre-assembled DSN
+    # string (e.g. `redis://:<password>@redis-auth-streams:6379/0`), not
+    # just the bare password -- a real, documented operational step (see
+    # poc/backend_prod_secret_config_env_exposure/README.md "Operational
+    # contract" for exactly how to assemble/provision each one).
+    secrets:
+      - source: database_url
+        target: database_url
+      - source: redis_auth_streams_url
+        target: redis_url
+      - source: celery_broker_url
+        target: celery_broker_url
+      - source: celery_result_backend_url
+        target: celery_result_backend
     depends_on:
       postgres: { condition: service_healthy }
       # Needs BOTH: REDIS_URL/step-up ticket store lives on redis-auth-streams,
@@ -529,12 +573,14 @@ services:
     # celery_app.py instantiates Settings() at import — the same required
     # fields as the backend must be present or the worker crashes on boot.
     environment:
-      DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD}@postgres:5432/kronos
-      # DB0 -- this worker genuinely connects here (wire_dependencies_sync()
-      # calls build_step_up_ticket_store(settings) too, not just kronos-backend),
-      # confirmed by reading src/external/celery_app.py -> startup.py; points
-      # at the redis-auth-streams instance (Milestone X2b role split).
-      REDIS_URL: redis://:${REDIS_AUTH_STREAMS_PASSWORD}@redis-auth-streams:6379/0
+      # Gap Audit Milestone MM: DATABASE_URL/REDIS_URL/CELERY_BROKER_URL/
+      # CELERY_RESULT_BACKEND below are no longer plaintext-interpolated
+      # here -- see db-migrate's own comment (top of this file) for the
+      # full finding + fix. KRONOS_SECRETS_DIR is a path convention, not a
+      # secret. This worker genuinely needs DB0 (redis_url, step-up ticket
+      # store, confirmed via src/external/celery_app.py -> startup.py) same
+      # as kronos-backend above -- both point at redis-auth-streams.
+      KRONOS_SECRETS_DIR: ${KRONOS_SECRETS_DIR:-/run/secrets}
       # Real, reproduced finding (poc/evidence_intake_async/): this was
       # missing here even though kronos-backend has it -- process_intake
       # (validate/scan/hash/promote) now runs in THIS worker, not the
@@ -578,9 +624,6 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN}
-      # DB1/DB2 -- points at the redis-celery instance (Milestone X2b role split).
-      CELERY_BROKER_URL: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_CELERY_PASSWORD}@redis-celery:6379/2
       # SIEM/SOAR outbound sink connectors (roadmap Milestones R2-R4, wired
       # 2026-08-09 Milestone S -- see kronos-backend's identical block
       # above for the full comment). NOT including DEFENDER_* here on
@@ -596,6 +639,18 @@ services:
       SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
       SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
       SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
+    # Gap Audit Milestone MM -- same four secrets/targets as kronos-backend
+    # above (this worker needs the identical DSNs: DB0 on redis-auth-streams,
+    # DB1/DB2 on redis-celery, same Postgres primary).
+    secrets:
+      - source: database_url
+        target: database_url
+      - source: redis_auth_streams_url
+        target: redis_url
+      - source: celery_broker_url
+        target: celery_broker_url
+      - source: celery_result_backend_url
+        target: celery_result_backend
     # Was a plain list-form `depends_on: [redis, postgres]` -- that form
     # only orders container *start*, it does not wait for readiness, which
     # is not good enough for db-migrate specifically: db-migrate is a
@@ -637,6 +692,24 @@ secrets:
   redis_auth_streams_password:
     external: true
   redis_celery_password:
+    external: true
+  # Gap Audit Milestone MM -- closes db-migrate/kronos-backend/celery-worker's
+  # Config.Env exposure (poc/backend_prod_secret_config_env_exposure/): each
+  # of these four secrets' CONTENT is a full, pre-assembled connection
+  # string (not just a bare password), consumed via src/config.py's new
+  # secrets_dir support. See that PoC's README "Operational contract" for
+  # the exact `printf '...' | docker secret create <name> -` provisioning
+  # step -- deliberately full-DSN-per-secret (not per-component host/user/
+  # password fields) so a deployer with the existing db_password/
+  # redis_*_password secrets can compose these directly, no src/ DSN-
+  # assembly code needed.
+  database_url:
+    external: true
+  redis_auth_streams_url:
+    external: true
+  celery_broker_url:
+    external: true
+  celery_result_backend_url:
     external: true
 
 volumes:
