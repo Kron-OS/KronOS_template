@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from src.application.text_chunker import TextChunker
 from src.external.parsers.plaso import PlasoParser
+from tests.fixtures.factories import make_evidence, make_tenant_context
 
 # ---------------------------------------------------------------------------
 # PlasoParser
@@ -86,6 +90,103 @@ class TestPlasoParser:
         # not out-of-range-slice its way into a false positive.
         parser = PlasoParser()
         assert not parser.supports("small.bin", "application/octet-stream", b"\x00" * 20)
+
+    # -----------------------------------------------------------------
+    # Gap Audit Milestone OO: the temp file parse() writes evidence bytes
+    # into must be cleaned up even when Plaso/Firecracker fails partway
+    # through -- previously the unlink only ran after the `async for`
+    # loop completed normally, silently leaking the raw evidence (a whole
+    # disk image, or a registry hive with real credentials) into the
+    # worker's local /tmp on any real failure.
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _fake_settings() -> MagicMock:
+        settings = MagicMock()
+        settings.plaso_worker_path = None
+        return settings
+
+    @pytest.mark.asyncio
+    async def test_temp_file_is_cleaned_up_when_firecracker_run_raises(self) -> None:
+        class _FakeFailingLauncher:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def run(self, **kwargs: object) -> None:
+                raise RuntimeError("real, deliberate Firecracker failure for this test")
+
+        parser = PlasoParser()
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        async def _stream():
+            yield b"regf" + b"\x00" * 60
+
+        created_paths: list[Path] = []
+        real_unlink = Path.unlink
+
+        def _spy_unlink(self: Path, *args: object, **kwargs: object) -> None:
+            created_paths.append(self)
+            return real_unlink(self, *args, **kwargs)
+
+        with (
+            patch("src.config.Settings", return_value=self._fake_settings()),
+            patch("src.external.sandbox.firecracker.FirecrackerLauncher", _FakeFailingLauncher),
+            patch("pathlib.Path.unlink", _spy_unlink, autospec=False),
+            pytest.raises(RuntimeError, match="real, deliberate Firecracker failure"),
+        ):
+            async for _ in parser.parse(_stream(), evidence, tenant):
+                pass
+
+        assert len(created_paths) == 1
+        assert not created_paths[0].exists()
+
+    @pytest.mark.asyncio
+    async def test_temp_file_is_cleaned_up_when_consumer_stops_iterating_early(self) -> None:
+        """A downstream consumer (e.g. enrichment/timeline-ingest) that
+        raises partway through consuming this generator triggers a
+        GeneratorExit inside parse() -- the temp file must still be
+        cleaned up, not just on the happy path."""
+
+        class _FakeLauncherYieldingForever:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def run(self, **kwargs: object):
+                async def _records():
+                    while True:
+                        yield None
+
+                return _records()
+
+        parser = PlasoParser()
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+
+        async def _stream():
+            yield b"regf" + b"\x00" * 60
+
+        created_paths: list[Path] = []
+        real_unlink = Path.unlink
+
+        def _spy_unlink(self: Path, *args: object, **kwargs: object) -> None:
+            created_paths.append(self)
+            return real_unlink(self, *args, **kwargs)
+
+        with (
+            patch("src.config.Settings", return_value=self._fake_settings()),
+            patch(
+                "src.external.sandbox.firecracker.FirecrackerLauncher",
+                _FakeLauncherYieldingForever,
+            ),
+            patch("pathlib.Path.unlink", _spy_unlink, autospec=False),
+        ):
+            gen = parser.parse(_stream(), evidence, tenant)
+            await gen.__anext__()  # consume exactly one record, then abandon it
+            await gen.aclose()  # simulate the consumer stopping early
+
+        assert len(created_paths) == 1
+        assert not created_paths[0].exists()
 
 
 # ---------------------------------------------------------------------------

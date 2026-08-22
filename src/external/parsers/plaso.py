@@ -175,22 +175,36 @@ class PlasoParser(ForensicParser):
         settings = Settings()
         worker_path = Path(settings.plaso_worker_path) if settings.plaso_worker_path else None
         launcher = FirecrackerLauncher(worker_path=worker_path)
-        records = await launcher.run(
-            evidence_path=tmp_path,
-            evidence_id=str(evidence.evidence_id),
-            case_id=str(evidence.metadata.case_id),
-            org_id=str(evidence.metadata.org_id),
-            org_alias=evidence.metadata.org_alias,
-            sha256=evidence.sha256 or "",
-            parser_name=self.parser_name,
-            parser_version=self.parser_version,
-        )
 
-        async for record in records:
-            yield record
-
-        # Clean up temp file.
+        # Gap Audit Milestone OO: previously the cleanup below ran only
+        # after the `async for` loop completed normally -- any exception
+        # during Plaso parsing (a Firecracker VM crash, a worker timeout)
+        # or the consumer aborting early (e.g. a downstream enrichment/
+        # ingest failure triggering this generator's own GeneratorExit)
+        # propagated straight out, skipping the unlink entirely and
+        # leaking the raw evidence bytes (potentially a whole disk image,
+        # or a registry hive with real credentials) in the worker's local
+        # /tmp indefinitely -- unlike ZipArchiveParser/TarArchiveParser,
+        # which already wrap their own equivalent cleanup in try/finally.
+        # FirecrackerLauncher.run() never touches evidence_path itself
+        # (confirmed by reading firecracker.py -- it only ever reads from
+        # the path, never unlinks it), so this parser is the sole owner of
+        # this temp file's lifecycle.
         try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+            records = await launcher.run(
+                evidence_path=tmp_path,
+                evidence_id=str(evidence.evidence_id),
+                case_id=str(evidence.metadata.case_id),
+                org_id=str(evidence.metadata.org_id),
+                org_alias=evidence.metadata.org_alias,
+                sha256=evidence.sha256 or "",
+                parser_name=self.parser_name,
+                parser_version=self.parser_version,
+            )
+            async for record in records:
+                yield record
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
