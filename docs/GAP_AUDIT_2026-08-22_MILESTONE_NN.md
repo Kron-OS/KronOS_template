@@ -132,6 +132,56 @@ test). `ruff`/`black`/`mypy` clean on both changed files.
 
 ---
 
+## 3. `admin_connector_status.py`/`admin_integration_sources.py` reviewed, no new gap
+
+Direct review of both sibling admin route files (read-only connector
+status, and integration-source API-key provisioning/revocation).
+Confirmed org-scoping is exclusively from `tenant.org_id`, never
+client-supplied; the connector-status route's push/poll asymmetry is
+handled honestly (no fabricated status for an unconfigured/unreachable
+source); the integration-source-key routes correctly thread a matching
+`resource_id` (`f"{source_type}:{sourceId}"`) between step-up ticket
+mint-time expectation and consume-time check for both provision and
+revoke, mirroring the same real security discipline Milestone JJ's
+resource-mismatch fix established elsewhere. No new gap found.
+
+## 4. `CorrelationSyncService`'s audit events could mis-attribute a cross-case correlation — FIXED
+
+**Finding**, from the same direct-review pass extended into the security-
+analytics correlation layer (`src/application/correlation_sync.py` — not
+yet wired to any real route/beat task, an explicit, already-documented
+scope decision from when Milestone F3 was originally built, not a new
+gap): `_sync_one()`'s audit event always used `detection_a`'s own
+`case_id`, even when the correlated pair's two detections belong to two
+**different** cases — a real, plausible scenario, since case correlation
+is only ever a best-effort parse of each finding's own `source_index`
+(the same class of gap Milestone LL already fixed for
+`ContainmentAction`/`DetectionSinkPushService`, just not yet extended to
+this newer, not-yet-wired sync path).
+
+**Fix.** The audit event's `case_id` is now `detection_a.case_id` only
+when both sides agree; an honest `None` (never a guessed/first-wins
+value) when they disagree — identical reasoning to
+`DetectionSinkPushService`'s own multi-case-batch handling.
+
+**Tests.** Two new tests in `test_correlation_sync.py`: same-case pair
+correctly case-scopes the audit row; different-case pair correctly
+leaves it `None`.
+
+**Verification.** Full suite: **2028 passed, 2 skipped** (2026 + 2 new
+tests). `ruff`/`black`/`mypy` clean (one `black` reformat needed on the
+new code, applied and re-verified).
+
+**Honest severity note:** since this code path has no real caller yet
+(per F3's own documented scope), this fix has zero production impact
+today — it is a correctness/consistency fix for when the feature is
+eventually wired to a route or beat task, not an active bug being
+exploited. Worth doing now specifically because it is small, mechanical,
+and prevents the same class of gap from being (re)discovered later once
+the feature does go live.
+
+---
+
 ## Recommendation for the next wake-up cycle
 
 1. **The lower-value optional SIEM/EDR secrets** (`splunk_hec_token`,
@@ -144,11 +194,20 @@ test). `ruff`/`black`/`mypy` clean on both changed files.
    (heavier, differently-shaped) or accepting this as a residual, smaller-
    blast-radius exposure (Keycloak itself, unlike `kronos-backend`, is not
    this platform's own code).
-3. **Continue the direct-code-review method** that found item 2 above —
-   this pass covered `src/external/routes/admin.py` only; the sibling
-   files `admin_connector_status.py`/`admin_integration_sources.py` (read
-   but not yet as thoroughly reviewed) and the broader security-analytics
-   correlation / parser-ingestion layers remain real candidates for a
-   future pass, per this initiative's own repeated finding that "code that
-   has never been independently reviewed by anyone other than the agent
-   who wrote it" is where new real bugs keep turning up.
+3. **Continue the direct-code-review method** that found items 2 and 4
+   above — this pass covered `src/external/routes/admin.py` (full),
+   `admin_connector_status.py`/`admin_integration_sources.py` (clean), and
+   `src/application/correlation_sync.py`/`correlation_client.py` (one
+   fix). The parser/ingestion layer
+   (`src/application/parsing_orchestration.py`, the individual
+   `src/external/parsers/*.py` modules) and the remaining OpenSearch
+   adapters (`src/adapter/opensearch/*.py` beyond the correlation ones
+   just reviewed) are the largest remaining areas with no recent
+   independent review — real candidates for the next pass, per this
+   initiative's own repeated finding that "code that has never been
+   independently reviewed by anyone other than the agent who wrote it" is
+   where new real bugs keep turning up.
+4. **`CorrelationSyncService` itself is still unwired** (F3's own
+   documented, deliberate scope decision — no route or beat task calls
+   `sync_org_correlations` anywhere) — not a bug to fix, but worth
+   revisiting if/when correlation data becomes a real product priority.

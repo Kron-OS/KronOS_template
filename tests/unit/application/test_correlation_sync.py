@@ -48,11 +48,15 @@ def _pair(finding1: str, finding2: str, rules: tuple[str, ...] = ("rule-1",)) ->
 
 
 async def _seed_detection(
-    repo: InMemoryDetectionRepository, org_id: uuid.UUID, finding_id: str
+    repo: InMemoryDetectionRepository,
+    org_id: uuid.UUID,
+    finding_id: str,
+    case_id: uuid.UUID | None = None,
 ) -> Detection:
     detection = Detection(
         org_id=org_id,
         org_alias="acme",
+        case_id=case_id,
         finding_id=finding_id,
         detector_name="kronos-acme-windows-detector",
         source_index="kronos-acme-case-abc-202601",
@@ -249,6 +253,45 @@ class TestCorrelationSyncService:
 
         assert created == 0
         assert [c async for c in correlation_repo.stream_by_org(tenant.org_id)] == []
+
+    @pytest.mark.asyncio
+    async def test_audit_event_case_id_when_both_detections_share_one_case(self) -> None:
+        """Gap Audit Milestone NN: when both correlated detections DO belong
+        to the same case, the audit row must be case-scoped so it shows up
+        in that case's own audit trail (kronos-attest case-report /
+        GET /api/cases/{id}/audit)."""
+        tenant = make_tenant_context()
+        shared_case_id = uuid.uuid4()
+        service, detection_repo, _, audit_repo, _ = _make_service([_pair("finding-a", "finding-b")])
+        await _seed_detection(detection_repo, tenant.org_id, "finding-a", case_id=shared_case_id)
+        await _seed_detection(detection_repo, tenant.org_id, "finding-b", case_id=shared_case_id)
+
+        await service.sync_org_correlations(tenant, 0, 1)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        correlated = next(e for e in events if e.event_type == AuditEventType.DETECTION_CORRELATED)
+        assert correlated.case_id == shared_case_id
+
+    @pytest.mark.asyncio
+    async def test_audit_event_case_id_is_none_when_detections_belong_to_different_cases(
+        self,
+    ) -> None:
+        """A correlation can genuinely span two different cases (case
+        correlation is only a best-effort parse of each finding's own
+        source_index) -- the audit row must NOT claim either case's id in
+        that situation, an honest None rather than a guessed/first-wins
+        value (mirrors DetectionSinkPushService's own multi-case-batch
+        handling, Gap Audit Milestone LL)."""
+        tenant = make_tenant_context()
+        service, detection_repo, _, audit_repo, _ = _make_service([_pair("finding-a", "finding-b")])
+        await _seed_detection(detection_repo, tenant.org_id, "finding-a", case_id=uuid.uuid4())
+        await _seed_detection(detection_repo, tenant.org_id, "finding-b", case_id=uuid.uuid4())
+
+        await service.sync_org_correlations(tenant, 0, 1)
+
+        events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
+        correlated = next(e for e in events if e.event_type == AuditEventType.DETECTION_CORRELATED)
+        assert correlated.case_id is None
 
     @pytest.mark.asyncio
     async def test_multiple_rule_ids_on_one_pair_are_preserved(self) -> None:

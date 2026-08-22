@@ -110,12 +110,22 @@ class CorrelationSyncService:
             "finding_id_b": finding_id_b,
             "rule_ids": list(correlation.rule_ids),
         }
+        # Gap Audit Milestone NN: previously always used detection_a's own
+        # case_id, even when the correlated pair spans two DIFFERENT cases
+        # (a real, plausible scenario -- case correlation is only a
+        # best-effort parse of each finding's own source_index, roadmap F2's
+        # own docstring). That would make this correlation's audit row
+        # invisible from detection_b's own case audit trail (kronos-attest
+        # case-report / GET /api/cases/{id}/audit), the exact same class of
+        # gap Milestone LL fixed for ContainmentAction/DetectionSinkPushService.
+        # An honest None when the two sides disagree, never a guessed value.
+        shared_case_id = detection_a.case_id if detection_a.case_id == detection_b.case_id else None
         try:
             async with self._audit.audit_context(
                 AuditEventType.DETECTION_CORRELATED,
                 AuditEventType.DETECTION_CORRELATION_SYNC_FAILED,
                 org_id=tenant.org_id,
-                case_id=detection_a.case_id,
+                case_id=shared_case_id,
                 details=details,
             ):
                 await self._correlations.save(correlation)
