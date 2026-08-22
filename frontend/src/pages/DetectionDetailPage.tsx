@@ -5,6 +5,7 @@ import { getDetection, triageDetection } from '../api/detections'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TriageStatePill } from '../components/TriageStatePill'
+import { RiskScorePill } from '../components/RiskScorePill'
 import { nextTriageStates, triageActionLabel } from '../utils/triageFsm'
 import { useAuthStore } from '../store/auth'
 import type { DetectionTriageState } from '../types'
@@ -72,7 +73,10 @@ export function DetectionDetailPage() {
             Detected {formatDateTime(data.findingTimestamp)} by {data.detectorName}
           </p>
         </div>
-        <TriageStatePill state={data.triageState} />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <TriageStatePill state={data.triageState} />
+          <RiskScorePill score={data.riskScore} />
+        </div>
       </div>
 
       {data.attackTags.length > 0 && (
@@ -150,6 +154,44 @@ export function DetectionDetailPage() {
           ))}
         </div>
       </div>
+
+      {data.riskFactors.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+            Risk Score Breakdown
+          </h2>
+          <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+                  <th className="px-4 py-2 font-medium">Factor</th>
+                  <th className="px-4 py-2 font-medium">Weight</th>
+                  <th className="px-4 py-2 font-medium">Normalized Value</th>
+                  <th className="px-4 py-2 font-medium">Detail</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+                {data.riskFactors.map((f) => (
+                  <tr key={f.name}>
+                    <td className="px-4 py-2 text-gray-800 dark:text-gray-200">{f.name}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">
+                      {f.weight.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">
+                      {f.normalizedValue === null ? (
+                        <span className="text-gray-400 dark:text-gray-600">not present</span>
+                      ) : (
+                        f.normalizedValue.toFixed(2)
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400">{f.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">Triage</h2>

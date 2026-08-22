@@ -152,6 +152,13 @@ export interface DetectionRuleMatch {
   tags: string[]
 }
 
+export interface RiskFactor {
+  name: string
+  weight: number
+  normalizedValue: number | null
+  detail: string
+}
+
 // Field names match src/external/routes/detections.py's DetectionOut DTO --
 // the only tenant-facing surface over SA finding data (roadmap A3 gate).
 export interface Detection {
@@ -168,4 +175,6 @@ export interface Detection {
   triageState: DetectionTriageState
   syncedAt: string
   updatedAt: string
+  riskScore: number | null
+  riskFactors: RiskFactor[]
 }

@@ -1,0 +1,44 @@
+=== LOGIN as admin ===
+[console error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[console warning] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.
+=== NAVIGATE: Detections list (client-side link, not a hard reload) ===
+[console error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+landed on: https://kronos.local/detections
+body text snapshot:
+KronOS
+Cases
+Detections
+Admin
+Connectors
+admin/ kronos-dev
+◑
+Sign out
+Detections
+All
+New
+Investigating
+True Positive
+False Positive
+
+Suspicious Outbound Connection to Known-Bad IOC
+
+kronos-kronos-dev-network-detector · Aug 22, 2026, 02:13 AM
+
+attack.t1071.001
+1 rule
+Critical · 89
+New
+PASS: real detections list has at least one row
+PASS: at least one real RiskScorePill rendered in the list (not just TriageStatePill)
+=== NAVIGATE: first detection's detail page ===
+PASS: RiskScorePill rendered in the detail page header
+PASS: Risk Score Breakdown section present (only when riskFactors is non-empty)
+Risk Score Breakdown table content:
+Factor	Weight	Normalized Value	Detail
+rule_severity	0.35	1.00	highest matched rule severity is 'critical'
+ioc_confidence	0.30	0.85	matched document(s) carry IOC confidence 85/100
+asset_criticality	0.20	0.75	matched document(s) resolve to asset criticality 'high'
+identity_privilege	0.15	not present	no identity-context enricher exists yet (roadmap F1 STATUS: explicitly flagged, unbuilt follow-up scope) -- omitted from the formula, never defaulted
+PASS: breakdown table has real factor rows with a Weight column
+
+5/5 checks passed

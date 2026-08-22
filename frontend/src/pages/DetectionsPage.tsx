@@ -5,6 +5,7 @@ import { getDetections } from '../api/detections'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TriageStatePill } from '../components/TriageStatePill'
+import { RiskScorePill } from '../components/RiskScorePill'
 import type { Detection, DetectionTriageState } from '../types'
 
 const FILTERS: Array<{ id: DetectionTriageState | 'ALL'; label: string }> = [
@@ -26,7 +27,7 @@ function DetectionRow({ d }: { d: Detection }) {
     <Link
       to="/detections/$detectionId"
       params={{ detectionId: d.id }}
-      className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-gray-200 px-4 py-3 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-900/40"
+      className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-4 border-b border-gray-200 px-4 py-3 hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-900/40"
     >
       <div className="min-w-0">
         <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
@@ -51,6 +52,7 @@ function DetectionRow({ d }: { d: Detection }) {
       <span className="shrink-0 text-xs text-gray-500">
         {d.ruleMatches.length} rule{d.ruleMatches.length !== 1 ? 's' : ''}
       </span>
+      <RiskScorePill score={d.riskScore} className="shrink-0" />
       <TriageStatePill state={d.triageState} className="shrink-0" />
     </Link>
   )
