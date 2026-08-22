@@ -182,6 +182,36 @@ the feature does go live.
 
 ---
 
+## 5. Parser/ingestion + OpenSearch adapter layers reviewed, one dead-code cleanup
+
+Direct review of `src/application/parsing_orchestration.py` (full),
+`src/application/parser_registry.py`, the real parser-registration order
+in `src/external/dependencies.py::get_parser_registry()` (cross-checked
+against CLAUDE.md § G.4's own checklist — `ZipArchiveParser`/
+`TarArchiveParser` first, `ChromeHistoryParser` before `PlasoParser`,
+`VolatilityModule` last — all correctly ordered), `src/adapter/opensearch/
+findings_client.py`, and `src/adapter/opensearch/client.py`. All solid —
+tenant isolation, error handling, and state-transition discipline all
+hold up under direct reading; no new correctness or security gap found.
+
+**One real, if minor, cleanup**: `src/application/validation.py` declared
+`_MAX_HEADER_BYTES = 16  # bytes read from the start of the file for
+magic detection` — a completely unused constant (confirmed via a
+repo-wide grep: the only reference was its own definition) whose comment
+actively contradicts reality. The real header buffer size used by the
+actual intake pipeline is `evidence_intake.py`'s own `_HEADER_BYTES =
+65536` (64 KiB) — far larger than 16 bytes, and necessarily so: the magic
+table in this same file has entries at offsets up to 1080
+(`ext-filesystem`). A stale, misleading constant like this is exactly the
+kind of thing that could cause a future reader (human or agent) to
+wrongly conclude the header buffer is capped at 16 bytes and "fix"
+something that was never broken, or worse, actually shrink the real
+buffer to match it — breaking ext-filesystem/ustar/FAT/NTFS detection for
+real. Removed. Full suite (2028 passed, 2 skipped, unaffected — no
+behavior change) and `ruff`/`black`/`mypy` confirmed clean.
+
+---
+
 ## Recommendation for the next wake-up cycle
 
 1. **The lower-value optional SIEM/EDR secrets** (`splunk_hec_token`,
@@ -195,18 +225,21 @@ the feature does go live.
    blast-radius exposure (Keycloak itself, unlike `kronos-backend`, is not
    this platform's own code).
 3. **Continue the direct-code-review method** that found items 2 and 4
-   above — this pass covered `src/external/routes/admin.py` (full),
-   `admin_connector_status.py`/`admin_integration_sources.py` (clean), and
-   `src/application/correlation_sync.py`/`correlation_client.py` (one
-   fix). The parser/ingestion layer
-   (`src/application/parsing_orchestration.py`, the individual
-   `src/external/parsers/*.py` modules) and the remaining OpenSearch
-   adapters (`src/adapter/opensearch/*.py` beyond the correlation ones
-   just reviewed) are the largest remaining areas with no recent
-   independent review — real candidates for the next pass, per this
-   initiative's own repeated finding that "code that has never been
-   independently reviewed by anyone other than the agent who wrote it" is
-   where new real bugs keep turning up.
+   above, and the item 5 cleanup — this pass has now covered
+   `src/external/routes/admin.py` (full), `admin_connector_status.py`/
+   `admin_integration_sources.py` (clean), `src/application/
+   correlation_sync.py`/`correlation_client.py` (one fix),
+   `parsing_orchestration.py`/`parser_registry.py`/the parser registration
+   order (clean), and `findings_client.py`/`client.py` (clean, one dead-
+   code cleanup in the adjacent `validation.py`). Real remaining
+   candidates with no recent independent review: the individual parser
+   modules themselves (`src/external/parsers/*.py` — `archive.py`,
+   `tar_archive.py`, `plaso.py`, `volatility.py` are the largest/most
+   complex and haven't been read end-to-end in this JJ-NN chain), and the
+   remaining OpenSearch adapters (`anomaly_detection_client.py`,
+   `anomaly_detector_provisioner.py`, `custom_rule_client.py`,
+   `custom_rule_detector_provisioner.py`, `detector_provisioner.py`,
+   `ism_manager.py`, `rarity_baseline_client.py`, `dashboards_client.py`).
 4. **`CorrelationSyncService` itself is still unwired** (F3's own
    documented, deliberate scope decision — no route or beat task calls
    `sync_org_correlations` anywhere) — not a bug to fix, but worth

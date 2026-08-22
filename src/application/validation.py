@@ -103,8 +103,6 @@ _TEXT_EXTENSIONS: frozenset[str] = frozenset(
 # decides), not a parallel mechanism.
 _MEMORY_DUMP_EXTENSIONS: frozenset[str] = frozenset({".vmem", ".mem", ".raw", ".dmp", ".lime"})
 
-_MAX_HEADER_BYTES = 16  # bytes read from the start of the file for magic detection
-
 
 class EvidenceValidator(ABC):
     """Abstract evidence validator.  Raise ValidationError to reject a file."""
