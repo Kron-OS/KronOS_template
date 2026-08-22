@@ -1,0 +1,36 @@
+[2026-08-22T00:46:02.577012+00:00] resolved real kronos-dev org_id=7a2d50db-f1bf-496e-8aff-16435cef14b1
+[2026-08-22T00:46:02.615986+00:00] created real throwaway target user poc-mm-target-74e40fea (773cebd3-63c9-4dc2-b11b-7001e0679880)
+[2026-08-22T00:46:02.703859+00:00] seeded real detection 54117ec8-d9a7-4c90-8130-4733d2308c5b
+[2026-08-22T00:46:02.788098+00:00] real target session created: sid=1d4d1987-5602-41db-a00b-fa8866b7c53b
+
+[2026-08-22T00:46:02.909130+00:00] === setup.py stderr (its own progress log) ===
+[2026-08-22T00:46:02.909203+00:00] real setup complete: org_id=7a2d50db-f1bf-496e-8aff-16435cef14b1 detection_id=54117ec8-d9a7-4c90-8130-4733d2308c5b target_user_id=773cebd3-63c9-4dc2-b11b-7001e0679880 target_session_id=1d4d1987-5602-41db-a00b-fa8866b7c53b
+[2026-08-22T00:46:02.965979+00:00] PASS: real target session appears in a fresh, independent Admin API sessions list BEFORE any UI action
+[2026-08-22T00:46:03.376000+00:00] === PART 1: case-lead sees and uses the full Containment UI ===
+[2026-08-22T00:46:05.726317+00:00] PASS: real detection detail page renders the Containment heading
+[2026-08-22T00:46:05.731086+00:00] PASS: case-lead sees the Sync to SIEM control
+[2026-08-22T00:46:05.733160+00:00] PASS: case-lead sees the Revoke Session controls (User ID input)
+[2026-08-22T00:46:05.781811+00:00] --- Sync to SIEM: no sink configured in this dev stack (confirmed via env) ---
+[2026-08-22T00:46:05.835486+00:00] PASS: real POST /sync-to-siem/splunk returns 404 (honest 'not configured', confirmed no SPLUNK_HEC_URL/CEF/SENTINEL env vars set on docker-kronos-backend-1)
+[2026-08-22T00:46:05.846866+00:00] PASS: UI shows the honest 'not configured' message (not a fabricated success)
+[2026-08-22T00:46:05.931821+00:00] --- Revoke Session: fill target details, request approval (real step-up) ---
+[2026-08-22T00:46:06.088618+00:00] redirected to real Keycloak step-up challenge: https://kronos.local:8443/realms/kronos/protocol/openid-connect/auth?client_id=kronos-frontend&redirect_uri=https%3A%2F%2Fkronos.local%2Fdetections%2F54117ec8-d9a7-4c90-8130-4733d2308c5b&state=af80ed13-ddf2-429d-9195-fd0d73945560&response_mode=fragment&response_type=code&scope=openid+organization&nonce=4cb131c7-3d9d-444c-987f-acf34e846841&prompt=login&acr_values=aal2&code_challenge=swx1lAvVnLlh9K3RbxbfoSeySvUGDua4KzPqDuShOfY&code_challenge_method=S256
+[2026-08-22T00:46:06.794582+00:00] real login-otp page reached (already-enrolled credential)
+[2026-08-22T00:46:06.926194+00:00] real step-up re-authentication completed, returned to app: https://kronos.local/detections/54117ec8-d9a7-4c90-8130-4733d2308c5b#state=af80ed13-ddf2-429d-9195-fd0d73945560&session_state=0d8ae7b8-00a2-4be2-be7f-cffcfca3205a&iss=https%3A%2F%2Fkronos.local%3A8443%2Frealms%2Fkronos&code=21fda769-c30d-4e1b-b764-245fae07525d.0d8ae7b8-00a2-4be2-be7f-cffcfca3205a.df5eec62-f55a-47c9-b9ed-3724257e8473
+[2026-08-22T00:46:06.972148+00:00] --- Retry after step-up: this is the SAME real UX gap noted in the brief -- 
+[2026-08-22T00:46:06.972161+00:00] the original in-flight form state was lost on the full-page redirect. ---
+[2026-08-22T00:46:07.183539+00:00] PASS: real POST /api/step-up/ticket returns 201 after step-up re-authentication (aal2 now actually carried by the SPA's token)
+[2026-08-22T00:46:07.230439+00:00] --- Confirm Revoke: fires the real revoke-session route with the real ticket ---
+[2026-08-22T00:46:07.356400+00:00] PASS: real POST /contain/revoke-session returns 200
+[2026-08-22T00:46:07.358238+00:00] PASS: real revoke succeeded=true in the response body
+[2026-08-22T00:46:07.367331+00:00] PASS: UI shows the real 'Succeeded' outcome banner
+[2026-08-22T00:46:07.416318+00:00] PASS: the real target session is GONE from a FRESH, independent Admin API re-check performed AFTER the UI action (not the same call the backend made)
+[2026-08-22T00:46:07.422725+00:00] === PART 2: analyst can use Sync to SIEM but cannot see Revoke Session ===
+[2026-08-22T00:46:09.722355+00:00] PASS: analyst sees the Sync to SIEM control
+[2026-08-22T00:46:09.724959+00:00] PASS: analyst does NOT see the Revoke Session User ID input
+[2026-08-22T00:46:09.730105+00:00] PASS: analyst does NOT see a Request Approval / Confirm Revoke button
+[2026-08-22T00:46:09.732589+00:00] PASS: analyst sees the role-restriction message for Revoke Session
+[2026-08-22T00:46:09.783146+00:00] --- analyst really can trigger sync-to-siem (same honest 404 outcome) ---
+[2026-08-22T00:46:09.816966+00:00] PASS: analyst's real POST /sync-to-siem/splunk also returns 404 (role gate allows the call through; sink is just not configured)
+[2026-08-22T00:46:09.900256+00:00] 
+16/16 checks passed

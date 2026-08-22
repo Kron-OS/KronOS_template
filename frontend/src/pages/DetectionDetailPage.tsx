@@ -6,6 +6,7 @@ import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TriageStatePill } from '../components/TriageStatePill'
 import { RiskScorePill } from '../components/RiskScorePill'
+import { ContainmentPanel } from '../components/ContainmentPanel'
 import { nextTriageStates, triageActionLabel } from '../utils/triageFsm'
 import { useAuthStore } from '../store/auth'
 import type { DetectionTriageState } from '../types'
@@ -192,6 +193,8 @@ export function DetectionDetailPage() {
           </div>
         </div>
       )}
+
+      <ContainmentPanel detectionId={detectionId} />
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">Triage</h2>

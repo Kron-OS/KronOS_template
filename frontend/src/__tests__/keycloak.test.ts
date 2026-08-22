@@ -77,6 +77,51 @@ describe('keycloak.ts token handling (AUTH-002/FE-1/FE-2)', () => {
     expect(useAuthStore.getState().accessToken).toBe(validAccessToken)
   })
 
+  it('fires a background keycloak.init() after a fast cookie-resume, so a later keycloak.login()/logout() has real adapter state', async () => {
+    ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: validAccessToken }),
+    })
+
+    const { initKeycloak, keycloak } = await import('../keycloak')
+    const initSpy = vi.spyOn(keycloak, 'init').mockResolvedValue(false)
+
+    const result = await initKeycloak()
+
+    expect(result).toBe(true)
+    // Real bug this locks in (found live building the step-up containment
+    // UI): keycloak.login()/.logout() depend on private state that ONLY
+    // keycloak.init() populates. Without this background call, any later
+    // keycloak.login() throws immediately on every page reached via the
+    // fast cookie-resume path -- i.e. every page after the very first
+    // login.
+    expect(initSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips the cookie fast path when the URL carries a pending redirect callback (code=), so a fresh step-up token is never dropped for a stale cookie-resumed one', async () => {
+    const originalHash = window.location.hash
+    window.location.hash = '#state=abc&session_state=def&code=xyz'
+    try {
+      const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ access_token: validAccessToken }) })
+
+      const { initKeycloak, keycloak } = await import('../keycloak')
+      const initSpy = vi.spyOn(keycloak, 'init').mockResolvedValue(false)
+
+      await initKeycloak()
+
+      // The cookie-refresh fast path (POST /auth/refresh) must NOT have
+      // won the race -- keycloak.init() (which alone processes the real
+      // `code=` callback) is what ran instead.
+      const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/refresh'))
+      expect(refreshCalls).toHaveLength(0)
+      expect(initSpy).toHaveBeenCalledTimes(1)
+      expect(initSpy.mock.calls[0][0]).toMatchObject({ onLoad: 'check-sso' })
+    } finally {
+      window.location.hash = originalHash
+    }
+  })
+
   it('refreshAccessToken clears auth on failure (expired/revoked cookie)', async () => {
     useAuthStore.getState().setAuth('stale-token', {
       userId: 'user-1',

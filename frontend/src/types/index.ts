@@ -178,3 +178,26 @@ export interface Detection {
   riskScore: number | null
   riskFactors: RiskFactor[]
 }
+
+// Field names match src/external/routes/detections.py's PlaybookStepResultOut/
+// PlaybookExecutionResultOut DTOs exactly (roadmap M7/H1, Gap Audit
+// Milestone EE1/MM) -- the shared response shape for both
+// POST /detections/{id}/contain/revoke-session and
+// POST /detections/{id}/sync-to-siem/{sink_name}. Always a 200 on a
+// well-formed request; the real outcome lives in succeeded/stepResults,
+// never a second, competing HTTP status (see both routes' own docstrings).
+export interface PlaybookStepResult {
+  stepId: string
+  actionName: string
+  outcome: string
+  output: Record<string, unknown> | null
+  error: string | null
+}
+
+export interface PlaybookExecutionResult {
+  executionId: string
+  playbookName: string
+  succeeded: boolean
+  haltedEarly: boolean
+  stepResults: PlaybookStepResult[]
+}

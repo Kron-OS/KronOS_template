@@ -122,39 +122,92 @@ export async function refreshAccessToken(): Promise<boolean> {
   return true
 }
 
+// Shared with the fast-path's own background call below — keycloak-js's
+// `login()`/`logout()`/`register()` all read `pkceMethod`/`responseMode`/
+// `scope`/etc back off the instance, so whichever branch of initKeycloak()
+// runs, keycloak.init() must be called with the SAME options or a later
+// keycloak.login() (e.g. apiClient's step-up-triggered call) would silently
+// behave differently depending on which page loaded it first.
+const KEYCLOAK_INIT_OPTIONS = {
+  pkceMethod: 'S256' as const,
+  responseMode: 'fragment' as const,
+  useNonce: true,
+  checkLoginIframe: false,
+  // The backend requires the `organization` claim. Request the scope
+  // explicitly so the minted token always carries it, independent of the
+  // realm's default-scope configuration.
+  scope: 'openid organization',
+}
+
+/**
+ * A pending `code=`/`error=` fragment means this load is a direct return
+ * from a real Keycloak redirect — either the initial login OR a step-up
+ * re-authentication (apiClient's response interceptor calling
+ * `keycloak.login({ acrValues: 'aal2', ... })`, ./api/client.ts). That
+ * fragment carries the FRESHEST possible token (e.g. the one that now
+ * actually satisfies acr=aal2); it must always be processed via
+ * keycloak.init(), never skipped.
+ */
+function hasPendingRedirectCallback(): boolean {
+  return /[#&](code|error)=/.test(window.location.hash)
+}
+
 /**
  * Establish (or resume) the SPA session without ever touching Web Storage.
  *
- * 1. Try resuming purely from the backend's HttpOnly refresh-token cookie —
- *    this is what survives a page reload, since no token is ever persisted
- *    client-side.
- * 2. If that fails (first visit, or the cookie is absent/expired), fall
- *    back to keycloak-js's own silent-SSO check (a hidden iframe against
- *    Keycloak's session cookie — blocked by third-party-cookie restrictions
- *    in some browsers, in which case the user just sees the login page). On
- *    success, hand its refresh token to the backend exactly once so the
- *    HttpOnly cookie is established, then this module never reads
- *    keycloak-js's copy again.
+ * 1. If this load is NOT a return from a real Keycloak redirect (see
+ *    `hasPendingRedirectCallback`), try resuming purely from the backend's
+ *    HttpOnly refresh-token cookie — this is what survives a plain page
+ *    reload, since no token is ever persisted client-side.
+ * 2. Otherwise (first visit, cookie absent/expired, or a pending redirect
+ *    callback that must win the race against an still-valid OLD cookie —
+ *    see below), fall back to keycloak-js's own full `init()` — either
+ *    processing the real callback in the URL, or a silent-SSO check (a
+ *    hidden iframe against Keycloak's session cookie — blocked by
+ *    third-party-cookie restrictions in some browsers, in which case the
+ *    user just sees the login page). On success, hand its refresh token to
+ *    the backend exactly once so the HttpOnly cookie is established, then
+ *    this module never reads keycloak-js's copy again.
+ *
+ * Real, reproduced bug fixed here (found live while building the step-up
+ * containment UI, poc/detection_containment_ui/README.md — the FIRST real
+ * caller of `keycloak.login()` anywhere in this codebase other than the
+ * very first login page): keycloak-js's `login()`/`logout()`/`register()`
+ * all depend on private instance state (adapter, PKCE method, scope, …)
+ * that ONLY `keycloak.init()` populates. The cookie fast path above never
+ * called it, so on every page reached via that fast path (i.e. every page
+ * after the very first login) `keycloak.login()` threw immediately on an
+ * unset internal field — silently, since it happened inside an
+ * unawaited/uncaught call inside apiClient's interceptor. A second, related
+ * bug: even after fixing that, a page reached by returning from a step-up
+ * redirect still has the OLD refresh-token cookie sitting there (not yet
+ * expired) — resuming from it first would win the race against the fresh
+ * `code=` in the URL and silently adopt the stale, pre-step-up (still
+ * aal1) token, discarding the fragment unprocessed. `hasPendingRedirectCallback`
+ * closes that race by always preferring the real callback when one exists.
  */
 export async function initKeycloak(): Promise<boolean> {
-  const resumed = await callRefreshEndpoint()
-  if (resumed) {
-    adoptAccessToken(resumed.access_token)
-    return true
+  if (!hasPendingRedirectCallback()) {
+    const resumed = await callRefreshEndpoint()
+    if (resumed) {
+      adoptAccessToken(resumed.access_token)
+      // Fire-and-forget: populates keycloak-js's own private adapter/PKCE/
+      // scope state so a LATER keycloak.login()/.logout() call on this
+      // same page works. Real network cost (discovery + 3p-cookie iframe —
+      // keycloak-js has no cheaper way to do just this part), so this must
+      // not block the fast path's whole point (immediate render). Any
+      // failure here just means login()/logout() would still be broken on
+      // this page; the already-resumed session itself is unaffected.
+      void keycloak.init(KEYCLOAK_INIT_OPTIONS).catch(() => {})
+      return true
+    }
   }
 
   let authenticated = false
   try {
     authenticated = await keycloak.init({
-      pkceMethod: 'S256',
-      responseMode: 'fragment',
-      useNonce: true,
-      checkLoginIframe: false,
+      ...KEYCLOAK_INIT_OPTIONS,
       onLoad: 'check-sso',
-      // The backend requires the `organization` claim. Request the scope
-      // explicitly so the minted token always carries it, independent of the
-      // realm's default-scope configuration.
-      scope: 'openid organization',
       silentCheckSsoRedirectUri: window.location.origin + '/silent-check-sso.html',
     })
   } catch {
