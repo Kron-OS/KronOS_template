@@ -454,7 +454,22 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-minio:9000}
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # Gap Audit Milestone NN: MINIO_SECRET_KEY/OPENSEARCH_PASSWORD/
+      # KEYCLOAK_CLIENT_SECRET/VAULT_TOKEN below were the same class of
+      # docker inspect Config.Env plaintext exposure Milestone MM fixed for
+      # DATABASE_URL/REDIS_URL/CELERY_BROKER_URL/CELERY_RESULT_BACKEND --
+      # missed in that pass because the grep that found them was scoped to
+      # ${...PASSWORD}/DSN-shaped values, not every SecretStr field in
+      # Settings. Fixed the same way: resolved via KRONOS_SECRETS_DIR
+      # (already set above) from the `secrets:` block below -- no new
+      # src/config.py code needed, secrets_dir already applies to every
+      # Settings field, verified directly against a real Settings()
+      # instantiation for these exact four fields before this file was
+      # touched. Deliberately drops the MINIO_ROOT_PASSWORD fallback this
+      # var used to have -- the secret file must contain the real,
+      # intentional MinIO secret key value; see this repo's own SECURITY
+      # TODO comment above this block (a scoped service account, not root,
+      # is the real fix for that fallback's own root-credential-reuse risk).
       # Must match minio's MINIO_API_CORS_ALLOW_ORIGIN above. Defaults to the
       # Keycloak hostname as a best-guess prod domain — override with the
       # real frontend origin(s) if they differ (comma-separated).
@@ -472,7 +487,8 @@ services:
       OPENSEARCH_URL: https://opensearch:9200
       # Non-superuser service account (a superuser bypasses OpenSearch DLS).
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
-      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # OPENSEARCH_PASSWORD -- see Gap Audit Milestone NN comment above
+      # MINIO_SECRET_KEY: resolved via KRONOS_SECRETS_DIR + secrets: below.
       # Real OpenSearch Security plugin is genuinely enabled on the `opensearch`
       # image/config above (unlike a DISABLE_SECURITY_PLUGIN=true dev-only
       # cluster) -- this was previously unset here (defaults False,
@@ -485,7 +501,8 @@ services:
       KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      # KEYCLOAK_CLIENT_SECRET -- resolved via KRONOS_SECRETS_DIR + secrets:
+      # below, same as OPENSEARCH_PASSWORD/MINIO_SECRET_KEY/VAULT_TOKEN.
       # Browser-facing OpenSearch Dashboards origin (e.g.
       # https://os.kronos.example) for the Timeline tab's iframe embed.
       # No OpenSearch Dashboards service is deployed by this compose file —
@@ -497,7 +514,7 @@ services:
       CLAMD_PORT: "3310"
       TSA_URL: http://tsa:318
       VAULT_URL: http://vault:8200
-      VAULT_TOKEN: ${VAULT_TOKEN}
+      # VAULT_TOKEN -- resolved via KRONOS_SECRETS_DIR + secrets: below.
       # Shared step-up ticket store — required because this service runs 2
       # replicas (audit M-4). The app bootstrap passes
       # build_step_up_ticket_store(settings) into create_app().
@@ -551,6 +568,27 @@ services:
         target: celery_broker_url
       - source: celery_result_backend_url
         target: celery_result_backend
+      # Gap Audit Milestone NN: the four SecretStr fields below (
+      # MINIO_SECRET_KEY/OPENSEARCH_PASSWORD/KEYCLOAK_CLIENT_SECRET/
+      # VAULT_TOKEN) are the same class of Config.Env exposure Milestone MM
+      # fixed for the DSN fields, missed there because that pass grepped
+      # for DSN-shaped values, not every SecretStr field in Settings.
+      # secrets_dir already applies generically to ANY Settings field (no
+      # src/config.py change needed -- verified directly: a real Settings()
+      # call with KRONOS_SECRETS_DIR pointed at a temp dir containing files
+      # named minio_secret_key/opensearch_password/keycloak_client_secret/
+      # vault_token resolved all four correctly, same mechanism Milestone MM
+      # already proved against database_url/etc). Source/target match here
+      # (unlike redis_auth_streams_url above) since the field names ARE
+      # already deployer-legible.
+      - source: minio_secret_key
+        target: minio_secret_key
+      - source: opensearch_password
+        target: opensearch_password
+      - source: keycloak_client_secret
+        target: keycloak_client_secret
+      - source: vault_token
+        target: vault_token
     depends_on:
       postgres: { condition: service_healthy }
       # Needs BOTH: REDIS_URL/step-up ticket store lives on redis-auth-streams,
@@ -599,12 +637,13 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_USE_TLS: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # MINIO_SECRET_KEY -- Gap Audit Milestone NN: resolved via
+      # KRONOS_SECRETS_DIR + secrets: below, same as kronos-backend above.
       # Fixed 2026-08-10 (Gap Audit P0-1) -- same real scheme mismatch as
       # kronos-backend's own OPENSEARCH_URL above.
       OPENSEARCH_URL: https://opensearch:9200
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
-      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+      # OPENSEARCH_PASSWORD -- resolved via KRONOS_SECRETS_DIR + secrets: below.
       # This worker consumes q.index (dispatch_parse/finalize_evidence), which
       # is exactly the code path that calls
       # TimelineIngestionService.ensure_generic_tenant_role() -- the same
@@ -621,9 +660,10 @@ services:
       KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: kronos
       KEYCLOAK_CLIENT_ID: kronos-backend
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      # KEYCLOAK_CLIENT_SECRET -- resolved via KRONOS_SECRETS_DIR + secrets:
+      # below.
       VAULT_URL: http://vault:8200
-      VAULT_TOKEN: ${VAULT_TOKEN}
+      # VAULT_TOKEN -- resolved via KRONOS_SECRETS_DIR + secrets: below.
       # SIEM/SOAR outbound sink connectors (roadmap Milestones R2-R4, wired
       # 2026-08-09 Milestone S -- see kronos-backend's identical block
       # above for the full comment). NOT including DEFENDER_* here on
@@ -642,6 +682,10 @@ services:
     # Gap Audit Milestone MM -- same four secrets/targets as kronos-backend
     # above (this worker needs the identical DSNs: DB0 on redis-auth-streams,
     # DB1/DB2 on redis-celery, same Postgres primary).
+    # Gap Audit Milestone NN adds the same four additional secrets as
+    # kronos-backend's own block above (MINIO_SECRET_KEY/OPENSEARCH_PASSWORD/
+    # KEYCLOAK_CLIENT_SECRET/VAULT_TOKEN) -- this worker needs the identical
+    # values.
     secrets:
       - source: database_url
         target: database_url
@@ -651,6 +695,14 @@ services:
         target: celery_broker_url
       - source: celery_result_backend_url
         target: celery_result_backend
+      - source: minio_secret_key
+        target: minio_secret_key
+      - source: opensearch_password
+        target: opensearch_password
+      - source: keycloak_client_secret
+        target: keycloak_client_secret
+      - source: vault_token
+        target: vault_token
     # Was a plain list-form `depends_on: [redis, postgres]` -- that form
     # only orders container *start*, it does not wait for readiness, which
     # is not good enough for db-migrate specifically: db-migrate is a
@@ -710,6 +762,23 @@ secrets:
   celery_broker_url:
     external: true
   celery_result_backend_url:
+    external: true
+  # Gap Audit Milestone NN -- closes kronos-backend/celery-worker's
+  # remaining Config.Env exposure, the same class of finding Milestone MM
+  # fixed for the four DSN fields above but missed for these four (a
+  # separate, ordinary Settings SecretStr field each, not DSN-shaped, so
+  # MM's own DSN-focused grep didn't catch them). Unlike the DSN secrets
+  # above, each of these four secrets' content is the bare, single value
+  # itself (a real password/token/client-secret string) -- there is no
+  # "assembly" step, the deployer just puts the existing raw credential
+  # value into a file for each.
+  minio_secret_key:
+    external: true
+  opensearch_password:
+    external: true
+  keycloak_client_secret:
+    external: true
+  vault_token:
     external: true
 
 volumes:

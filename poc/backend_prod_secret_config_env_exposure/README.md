@@ -1,7 +1,9 @@
 # PoC: `docker-compose.prod.yml`'s backend/celery/db-migrate services leak DSN passwords via `docker inspect Config.Env`
 
-**STATUS: FIXED (Gap Audit Milestone MM).** See "Fix" and "Real, captured
-verification" below.
+**STATUS: FIXED (Gap Audit Milestone MM; extended in Milestone NN to four
+more `SecretStr` fields the original grep missed).** See "Fix" and "Real,
+captured verification" below, and "Extension (Gap Audit Milestone NN)"
+further down for the follow-up pass.
 
 ## Versions pinned
 
@@ -238,6 +240,119 @@ from running it) for the full sequence:
    built test image, temp secret files) torn down immediately after
    capture. The shared dev stack (`docker-kronos-backend-1`, etc.) was
    never touched.
+
+## Extension (Gap Audit Milestone NN): four more SecretStr fields missed by the original grep
+
+The original pass above was scoped by grepping for DSN-shaped
+`${...PASSWORD}`/`${...SECRET}`/`${...TOKEN}` values that looked like
+connection strings. A fresh, broader grep across every `SecretStr` field
+actually declared in `src/config.py`
+(`grep -n ': SecretStr' src/config.py`) found four more real,
+still-plaintext-in-`Config.Env` fields on `kronos-backend`/`celery-worker`
+that the original pass missed entirely: `MINIO_SECRET_KEY`,
+`OPENSEARCH_PASSWORD`, `KEYCLOAK_CLIENT_SECRET`, `VAULT_TOKEN`.
+
+**No `src/config.py` change was needed.** `secrets_dir` (added by the fix
+above) already applies generically to *any* `Settings` field named after
+the mounted file, not just the four DSN fields it was originally added
+for — confirmed directly via a real `Settings()` call in this repo's dev
+venv before touching the compose file, and independently confirmed
+end-to-end against a real, freshly-built `kronos-backend:dev` image
+below. Optional `SecretStr | None` fields (`splunk_hec_token`,
+`sentinel_client_secret`, `defender_client_secret`) also degrade correctly
+(resolve to `None` when neither an env var nor a secrets_dir file is
+present) — verified, but **not fixed here**: those three are lower-value
+(only relevant when that specific SIEM/EDR integration is actually
+configured) and are left as an explicitly-named follow-up rather than
+folded into this pass.
+
+**Fix.** `docker-compose.prod.yml`: removed the plaintext
+`${MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}`/`${OPENSEARCH_PASSWORD}`/
+`${KEYCLOAK_CLIENT_SECRET}`/`${VAULT_TOKEN}` values from both
+`kronos-backend`'s and `celery-worker`'s `environment:` blocks (their
+existing `KRONOS_SECRETS_DIR` from the fix above already applies), added
+four more `source:`/`target:` entries to each service's existing
+`secrets:` block, and four new top-level `external: true` secrets
+(`minio_secret_key`, `opensearch_password`, `keycloak_client_secret`,
+`vault_token` — each secret's content is the bare credential value
+itself, not an assembled DSN, unlike `database_url`/etc. above).
+Deliberately drops `MINIO_SECRET_KEY`'s old fallback to
+`MINIO_ROOT_PASSWORD` — the secret file must now contain the real,
+intentional MinIO secret key value (this fallback's own root-credential-
+reuse risk is the pre-existing `SECURITY TODO` comment on this same
+service block, unrelated to this fix).
+
+**Real verification.** A stale `kronos-backend:dev` image (rebuilt during
+Milestone MM's own "stale container" item, but *before* that same
+milestone's `secrets_dir` fix had been merged) initially made this look
+broken — `Settings()` raised `8 validation errors`, all fields missing,
+because that image's `src/config.py` simply predated the mechanism
+entirely (confirmed directly: `secrets_dir` string absent from that
+image's own `inspect.getsource(src.config)` output). Rebuilt
+`kronos-backend:dev` fresh from current `HEAD` (confirmed present this
+time), then:
+
+```
+$ docker run -d --name kronos-poc-nn-verify \
+    -v /tmp/kronos-poc-nn-secrets:/run/secrets:ro \
+    -e KRONOS_SECRETS_DIR=/run/secrets \
+    -e MINIO_ENDPOINT=minio:9000 -e MINIO_ACCESS_KEY=dummy \
+    -e OPENSEARCH_URL=https://opensearch:9200 -e OPENSEARCH_USERNAME=dummy \
+    -e KEYCLOAK_URL=https://keycloak:8443 -e VAULT_URL=https://vault:8200 \
+    kronos-backend:dev python -c "
+from src.config import Settings
+s = Settings()
+print('minio_secret_key:', s.minio_secret_key.get_secret_value())
+print('opensearch_password:', s.opensearch_password.get_secret_value())
+print('keycloak_client_secret:', s.keycloak_client_secret.get_secret_value())
+print('vault_token:', s.vault_token.get_secret_value())
+print('database_url:', s.database_url.get_secret_value())
+import time; time.sleep(30)
+"
+
+$ docker logs kronos-poc-nn-verify
+minio_secret_key: R3alMinioSecretKey987
+opensearch_password: R3alOpenSearchPW654
+keycloak_client_secret: R3alKeycloakClientSecret321
+vault_token: R3alVaultToken111
+database_url: postgresql+asyncpg://kronos:R3alPgPW@kronos-poc-nn-postgres:5432/kronos
+
+$ docker inspect kronos-poc-nn-verify --format '{{json .Config.Env}}'
+["KRONOS_SECRETS_DIR=/run/secrets","MINIO_ENDPOINT=minio:9000","MINIO_ACCESS_KEY=dummy",
+"OPENSEARCH_URL=https://opensearch:9200","OPENSEARCH_USERNAME=dummy",
+"KEYCLOAK_URL=https://keycloak:8443","VAULT_URL=https://vault:8200", ...PATH/PYTHON* only]
+
+$ docker inspect kronos-poc-nn-verify | grep -c "R3alMinioSecretKey987\|R3alOpenSearchPW654\|R3alKeycloakClientSecret321\|R3alVaultToken111\|R3alPgPW\|R3alRedisPW"
+0
+```
+
+The real `Settings()` call resolved all four new fields (plus the four
+already-fixed DSN fields, re-confirmed working) correctly from real
+mounted secret files, while `docker inspect`'s full JSON output contains
+zero occurrences of any of the six distinct real secret values used in
+this run. Disposable container removed and temp secret files deleted
+immediately after capture (`docker rm -f kronos-poc-nn-verify`); the
+shared dev stack was untouched (the running `docker-kronos-backend-1`
+container remains pinned to its own pre-existing image ID, unaffected by
+the `kronos-backend:dev` tag being rebuilt).
+
+`docker compose -f docker/docker-compose.prod.yml config` (dummy values
+exported for every referenced var) resolves cleanly with all eight new
+`secrets:` entries present. Full backend suite unaffected (no `src/`
+change in this extension): **2025 passed, 2 skipped**, identical to
+before.
+
+**Remaining, explicitly not fixed:** Keycloak's own `KC_DB_PASSWORD`/
+`KC_ADMIN_PASSWORD` (the `keycloak` service itself, not `kronos-backend`/
+`celery-worker`) are still plaintext in `Config.Env`. Checked against
+Keycloak's own real, current documentation (server configuration guide +
+container guide, for the pinned `quay.io/keycloak/keycloak:26.2`): no
+`_FILE`-suffix or file-based secret convention exists for Keycloak's own
+config system — its only documented secret-indirection mechanism is a
+Java KeyStore (`--config-keystore`/`--config-keystore-password`), a
+heavier, differently-shaped fix than this PoC's own file-per-secret
+pattern, and still needs its own password supplied somewhere. Left as a
+named, separate follow-up rather than folded into this pass.
 
 ## Honest scope limits (do not overclaim)
 
