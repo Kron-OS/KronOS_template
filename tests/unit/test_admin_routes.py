@@ -18,6 +18,7 @@ from src.external.routes.admin import (
     _is_org_member,
     _iso_from_epoch_millis,
     _to_http_error,
+    invite_user,
     list_org_users,
 )
 from tests.fixtures.factories import make_tenant_context
@@ -302,3 +303,62 @@ async def test_list_org_users_propagates_keycloak_failure_as_http_error(
     with pytest.raises(HTTPException) as exc_info:
         await list_org_users(tenant)
     assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# Gap Audit Milestone NN: re-inviting an existing org member must REPLACE
+# their managed role, not merely add the new one on top of whatever they
+# already had (confirmed real against a live Keycloak 26.2.5 --
+# poc/admin_reinvite_role_escalation/ -- re-inviting an org-admin with
+# role=read-only used to leave them with BOTH roles, i.e. still a real,
+# live org-admin despite an operator's attempt to demote them).
+# ---------------------------------------------------------------------------
+
+
+async def test_invite_user_reuse_path_replaces_role_not_just_adds_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.application.audit_log import AuditLogService
+    from tests.conftest import InMemoryAuditLogRepository
+
+    tenant = make_tenant_context().model_copy(update={"acr": "aal2"})
+    audit_log = AuditLogService(InMemoryAuditLogRepository())
+
+    async def fake_create_or_get_user(*_args: object, **_kwargs: object) -> tuple[str, bool]:
+        return "existing-user-1", False  # reused, already a member
+
+    async def fake_add_org_member(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_assert_user_in_org(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    set_realm_role_calls: list[tuple[str, str]] = []
+
+    async def fake_set_realm_role(_tenant: object, user_id: str, role_name: str) -> None:
+        set_realm_role_calls.append((user_id, role_name))
+
+    async def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError(
+            "invite_user must use _set_realm_role (replace), not _assign_realm_role (add-only) "
+            "-- see Gap Audit Milestone NN / poc/admin_reinvite_role_escalation/"
+        )
+
+    monkeypatch.setattr("src.external.routes.admin._create_or_get_user", fake_create_or_get_user)
+    monkeypatch.setattr("src.external.routes.admin._add_org_member", fake_add_org_member)
+    monkeypatch.setattr("src.external.routes.admin._assert_user_in_org", fake_assert_user_in_org)
+    monkeypatch.setattr("src.external.routes.admin._set_realm_role", fake_set_realm_role)
+    monkeypatch.setattr("src.external.routes.admin._assign_realm_role", fail_if_called)
+
+    body = InviteUserIn(
+        email="existing@example.invalid",
+        firstName="Existing",
+        lastName="User",
+        password="RealDemotionAttempt#2026",
+        role="read-only",
+    )
+
+    result = await invite_user(body, tenant, audit_log)
+
+    assert set_realm_role_calls == [("existing-user-1", "read-only")]
+    assert result["created"] is False

@@ -163,13 +163,22 @@ async def invite_user(
     user's name and initial password directly and shares it out of band. The
     new user must change this password on first login (UPDATE_PASSWORD). If
     a user with this email already exists **and already belongs to the
-    caller's org**, they are reused and simply re-assigned the requested role
-    (their name/password are untouched). An email that already exists under a
-    *different* org is never reused, re-roled, or acknowledged as existing
+    caller's org**, they are reused and their role is REPLACED with the
+    requested one (their name/password are untouched) — Gap Audit Milestone
+    NN: this used to call ``_assign_realm_role`` (add-only), so re-inviting
+    an existing member with a *different* role left them with BOTH the old
+    and new managed role simultaneously — e.g. attempting to demote an
+    org-admin to read-only via this route silently left them still a real,
+    live org-admin. Confirmed real against a live Keycloak 26.2.5
+    (``poc/admin_reinvite_role_escalation/``). Now uses ``_set_realm_role``
+    (the same replace-not-add helper ``update_user_role`` already used
+    correctly), so a re-invite's role is authoritative, matching this
+    docstring's own "re-assigned" claim. An email that already exists under
+    a *different* org is never reused, re-roled, or acknowledged as existing
     (AUTH-003/AUTH-011) — see ``_find_user_by_email``.
 
     Org membership is established (``_add_org_member``) *before* any
-    realm-role-mapping call, so ``_assign_realm_role`` never touches a user
+    realm-role-mapping call, so ``_set_realm_role`` never touches a user
     who isn't confirmed as a member of ``tenant.org_id`` (AUTH-003).
     """
     _assert_aal2(tenant)
@@ -179,7 +188,7 @@ async def invite_user(
         )
         await _add_org_member(tenant, user_id)
         await _assert_user_in_org(tenant, user_id)
-        await _assign_realm_role(tenant, user_id, body.role)
+        await _set_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise _to_http_error(exc) from exc
 

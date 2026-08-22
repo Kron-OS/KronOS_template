@@ -1,0 +1,14 @@
+resolved real kronos-dev org_id=7a2d50db-f1bf-496e-8aff-16435cef14b1
+PASS: real user created (201)
+created real user b7757160-32a4-44af-9bfd-f31042b2727e (poc-nn-reinvite-5d0f6ca2@example.invalid)
+PASS: real user added to kronos-dev org
+PASS: after first invite (role=org-admin): user has exactly {'org-admin'}
+managed roles after first invite: {'org-admin'}
+managed roles after re-invite with role=read-only: {'org-admin', 'read-only'}
+PASS: *** FINDING *** re-inviting with role=read-only did NOT remove the prior org-admin role -- user still has BOTH roles simultaneously, despite invite_user's own docstring claiming the role is 're-assigned'
+PASS: the user is THEREFORE still a real, live org-admin in Keycloak even though an operator just attempted to demote them to read-only via the invite/re-invite flow
+PASS: real DELETE of stale role-mappings succeeds
+PASS: the DEDICATED update_user_role endpoint's own _set_realm_role logic (explicit DELETE-stale-then-assign) DOES correctly leave only {'read-only'} -- confirming this is a real invite_user-specific bug, not a Keycloak API limitation
+PASS: real throwaway user deleted
+
+8/8 checks passed
