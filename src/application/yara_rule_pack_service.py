@@ -119,8 +119,10 @@ class YaraRulePackService:
             tenant, pack, remaining, prev.source_tier, signature_verified=prev.signature_verified
         )
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
-        return await self._repo.list_versions(pack_id)
+    async def list_versions(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[YaraRulePackVersion]:
+        return await self._repo.list_versions(pack_id, org_id)
 
     async def get_latest_version(
         self, pack_id: uuid.UUID, org_id: uuid.UUID
@@ -187,7 +189,7 @@ class YaraRulePackService:
         happens before ever touching the pointer.
         """
         pack = await self.get_or_create_pack(tenant, pack_name)
-        versions = await self._repo.list_versions(pack.pack_id)
+        versions = await self._repo.list_versions(pack.pack_id, tenant.org_id)
         target = next((v for v in versions if v.version == version), None)
         if target is None:
             await self._audit.log(

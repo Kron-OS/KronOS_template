@@ -82,7 +82,7 @@ class TestAddCustomRule:
         await service.add_custom_rule(tenant, "pack1", "Rule B", _EXPENSIVE_RULE, "network")
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        all_versions = await service.list_versions(pack.pack_id)
+        all_versions = await service.list_versions(pack.pack_id, tenant.org_id)
         assert [v.version for v in all_versions] == [1, 2]
         assert len(all_versions[0].rules) == 1
         assert len(all_versions[1].rules) == 2
@@ -98,10 +98,14 @@ class TestAddCustomRule:
 
 class TestUpdateAndDeleteCustomRule:
     @pytest.mark.asyncio
-    async def test_update_replaces_rule_content_as_new_version(self, service: RulePackService) -> None:
+    async def test_update_replaces_rule_content_as_new_version(
+        self, service: RulePackService
+    ) -> None:
         tenant = make_tenant_context()
         await service.add_custom_rule(tenant, "pack1", "Rule A", _REASONABLE_RULE, "network")
-        updated = await service.update_custom_rule(tenant, "pack1", "Rule A", _EXPENSIVE_RULE, "network")
+        updated = await service.update_custom_rule(
+            tenant, "pack1", "Rule A", _EXPENSIVE_RULE, "network"
+        )
         assert not updated.is_accepted
 
         pack = await service.get_or_create_pack(tenant, "pack1")
@@ -113,7 +117,9 @@ class TestUpdateAndDeleteCustomRule:
     async def test_update_nonexistent_rule_raises(self, service: RulePackService) -> None:
         tenant = make_tenant_context()
         with pytest.raises(ValidationError):
-            await service.update_custom_rule(tenant, "pack1", "Nonexistent", _REASONABLE_RULE, "network")
+            await service.update_custom_rule(
+                tenant, "pack1", "Nonexistent", _REASONABLE_RULE, "network"
+            )
 
     @pytest.mark.asyncio
     async def test_delete_removes_rule_as_new_version(self, service: RulePackService) -> None:
@@ -146,7 +152,12 @@ class TestImportSignedPack:
         signature_verifier.verify.return_value = True
 
         version = await service.import_signed_pack(
-            tenant, "signed-pack", b"content", b"sig", "/tmp/pub.key", [("R", "network", _REASONABLE_RULE)]
+            tenant,
+            "signed-pack",
+            b"content",
+            b"sig",
+            "/tmp/pub.key",
+            [("R", "network", _REASONABLE_RULE)],
         )
         assert version.signature_verified is True
         assert version.source_tier == RulePackSourceTier.SIGNED_THIRD_PARTY
@@ -161,7 +172,12 @@ class TestImportSignedPack:
 
         with pytest.raises(RulePackError):
             await service.import_signed_pack(
-                tenant, "bad-pack", b"content", b"sig", "/tmp/pub.key", [("R", "network", _REASONABLE_RULE)]
+                tenant,
+                "bad-pack",
+                b"content",
+                b"sig",
+                "/tmp/pub.key",
+                [("R", "network", _REASONABLE_RULE)],
             )
 
         pack = await service.get_or_create_pack(tenant, "bad-pack")
@@ -178,7 +194,12 @@ class TestImportSignedPack:
 
         with pytest.raises(RulePackError):
             await service.import_signed_pack(
-                tenant, "bad-pack", b"content", b"sig", "/tmp/pub.key", [("R", "network", _REASONABLE_RULE)]
+                tenant,
+                "bad-pack",
+                b"content",
+                b"sig",
+                "/tmp/pub.key",
+                [("R", "network", _REASONABLE_RULE)],
             )
 
         types = [e.event_type for e in audit_repo.events]

@@ -46,9 +46,12 @@ class IOCFeedRepository(ABC):
         ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
-    async def list_versions(self, feed_id: uuid.UUID) -> list[IOCFeedVersion]:
-        """Return every version for *feed_id*, ascending by version number --
-        proof that an older version is never lost when a newer one is added."""
+    async def list_versions(self, feed_id: uuid.UUID, org_id: uuid.UUID) -> list[IOCFeedVersion]:
+        """Return every version for *feed_id* scoped to *org_id*, ascending
+        by version number -- proof that an older version is never lost when
+        a newer one is added, and defense-in-depth org scoping (mirrors
+        ``get_latest_version``; see ``rule_pack.py``'s identical fix, Gap
+        Audit Milestone RR)."""
 
     @abstractmethod
     async def match_indicator(
@@ -95,8 +98,9 @@ class InMemoryIOCFeedRepository(IOCFeedRepository):
             return None
         return max(versions, key=lambda v: v.version)
 
-    async def list_versions(self, feed_id: uuid.UUID) -> list[IOCFeedVersion]:
-        return sorted(self._versions.get(feed_id, []), key=lambda v: v.version)
+    async def list_versions(self, feed_id: uuid.UUID, org_id: uuid.UUID) -> list[IOCFeedVersion]:
+        versions = [v for v in self._versions.get(feed_id, []) if v.org_id == org_id]
+        return sorted(versions, key=lambda v: v.version)
 
     async def match_indicator(
         self, org_id: uuid.UUID, ioc_type: IOCType, value: str

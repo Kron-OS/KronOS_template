@@ -93,9 +93,26 @@ class TestInMemoryIOCFeedRepository:
         await repo.save_version(v1)
         await repo.save_version(v2)
 
-        versions = await repo.list_versions(feed.feed_id)
+        versions = await repo.list_versions(feed.feed_id, org_id)
 
         assert [v.version for v in versions] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_list_versions_cross_org_isolation(self) -> None:
+        """A lookup with the wrong org_id must return nothing even though
+        the feed_id is real -- Gap Audit Milestone RR: list_versions was
+        missing the defense-in-depth org scoping every sibling method on
+        this repository already has (get_latest_version, match_indicator)."""
+        repo = InMemoryIOCFeedRepository()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        feed = await repo.get_or_create_feed(org_a, "f")
+        version = IOCFeedVersion(
+            feed_id=feed.feed_id, version=1, org_id=org_a, source_format="stix2.1"
+        )
+        await repo.save_version(version)
+
+        assert await repo.list_versions(feed.feed_id, org_a) == [version]
+        assert await repo.list_versions(feed.feed_id, org_b) == []
 
     @pytest.mark.asyncio
     async def test_match_indicator_real_hit(self) -> None:

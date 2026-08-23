@@ -45,9 +45,13 @@ class RulePackRepository(ABC):
         ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
-    async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
-        """Return every version for *pack_id*, ascending by version number --
-        proof that an older version is never lost when a newer one is added."""
+    async def list_versions(self, pack_id: uuid.UUID, org_id: uuid.UUID) -> list[RulePackVersion]:
+        """Return every version for *pack_id* scoped to *org_id*, ascending
+        by version number -- proof that an older version is never lost when
+        a newer one is added, and defense-in-depth org scoping (mirrors
+        ``get_latest_version``/``get_published_opensearch_id``, hardened for
+        the same reason in P2-SEC-3 -- this method was simply missed in
+        that pass, see Gap Audit Milestone RR)."""
 
     @abstractmethod
     async def record_publication(
@@ -67,9 +71,11 @@ class RulePackRepository(ABC):
         mirrors ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
-    async def delete_publication(self, rule_id: uuid.UUID) -> None:
+    async def delete_publication(self, rule_id: uuid.UUID, org_id: uuid.UUID) -> None:
         """Forget a rule's publication record (used when a rule is removed
-        from a pack by a later version). Idempotent."""
+        from a pack by a later version), scoped to *org_id*. Idempotent --
+        also a no-op (not an error) if *rule_id* exists but belongs to a
+        different org, same defense-in-depth reasoning as ``list_versions``."""
 
 
 class InMemoryRulePackRepository(RulePackRepository):
@@ -112,8 +118,9 @@ class InMemoryRulePackRepository(RulePackRepository):
             return None
         return max(versions, key=lambda v: v.version)
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
-        return sorted(self._versions.get(pack_id, []), key=lambda v: v.version)
+    async def list_versions(self, pack_id: uuid.UUID, org_id: uuid.UUID) -> list[RulePackVersion]:
+        versions = [v for v in self._versions.get(pack_id, []) if v.org_id == org_id]
+        return sorted(versions, key=lambda v: v.version)
 
     async def record_publication(
         self, rule_id: uuid.UUID, org_id: uuid.UUID, opensearch_rule_id: str
@@ -128,5 +135,7 @@ class InMemoryRulePackRepository(RulePackRepository):
             return None
         return entry[1]
 
-    async def delete_publication(self, rule_id: uuid.UUID) -> None:
-        self._publications.pop(rule_id, None)
+    async def delete_publication(self, rule_id: uuid.UUID, org_id: uuid.UUID) -> None:
+        entry = self._publications.get(rule_id)
+        if entry is not None and entry[0] == org_id:
+            del self._publications[rule_id]

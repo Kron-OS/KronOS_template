@@ -54,9 +54,14 @@ class YaraRulePackRepository(ABC):
         ``DetectionRepository.get_by_id``)."""
 
     @abstractmethod
-    async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
-        """Return every version for *pack_id*, ascending by version number --
-        proof that an older version is never lost when a newer one is added."""
+    async def list_versions(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[YaraRulePackVersion]:
+        """Return every version for *pack_id* scoped to *org_id*, ascending
+        by version number -- proof that an older version is never lost when
+        a newer one is added, and defense-in-depth org scoping (mirrors
+        ``get_latest_version``/``get_published_version``; see
+        ``rule_pack.py``'s identical fix, Gap Audit Milestone RR)."""
 
     @abstractmethod
     async def publish_version(self, pack_id: uuid.UUID, version: int) -> None:
@@ -132,8 +137,11 @@ class InMemoryYaraRulePackRepository(YaraRulePackRepository):
             return None
         return max(versions, key=lambda v: v.version)
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
-        return sorted(self._versions.get(pack_id, []), key=lambda v: v.version)
+    async def list_versions(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[YaraRulePackVersion]:
+        versions = [v for v in self._versions.get(pack_id, []) if v.org_id == org_id]
+        return sorted(versions, key=lambda v: v.version)
 
     async def publish_version(self, pack_id: uuid.UUID, version: int) -> None:
         self._published[pack_id] = version

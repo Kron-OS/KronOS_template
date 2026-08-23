@@ -59,7 +59,7 @@ class TestAddRule:
         await service.add_rule(tenant, "pack1", "RuleB", _RULE_B)
 
         pack = await service.get_or_create_pack(tenant, "pack1")
-        all_versions = await service.list_versions(pack.pack_id)
+        all_versions = await service.list_versions(pack.pack_id, tenant.org_id)
         assert [v.version for v in all_versions] == [1, 2]
         assert len(all_versions[0].rules) == 1
         assert len(all_versions[1].rules) == 2
@@ -216,7 +216,7 @@ class TestPublishVersion:
         assert current.version == 2
         # version 1 remains independently retrievable -- publishing never
         # deletes/mutates any version row.
-        all_versions = await service.list_versions(pack.pack_id)
+        all_versions = await service.list_versions(pack.pack_id, tenant.org_id)
         assert [v.version for v in all_versions] == [1, 2]
 
     @pytest.mark.asyncio

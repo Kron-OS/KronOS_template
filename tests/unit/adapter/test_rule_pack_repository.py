@@ -72,6 +72,43 @@ class TestInMemoryRulePackRepository:
         assert await repo.get_latest_version(pack.pack_id, org_b) is None
 
     @pytest.mark.asyncio
+    async def test_list_versions_cross_org_isolation(self) -> None:
+        """A lookup with the wrong org_id must return nothing even though
+        the pack_id is real -- Gap Audit Milestone RR: list_versions was
+        missing the same defense-in-depth org scoping P2-SEC-3 already gave
+        get_latest_version/get_published_opensearch_id on this repository."""
+        repo = InMemoryRulePackRepository()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        pack = await repo.get_or_create_pack(org_a, "p")
+        version = RulePackVersion(
+            pack_id=pack.pack_id,
+            version=1,
+            org_id=org_a,
+            source_tier=RulePackSourceTier.TENANT_CUSTOM,
+        )
+        await repo.save_version(version)
+
+        assert await repo.list_versions(pack.pack_id, org_a) == [version]
+        assert await repo.list_versions(pack.pack_id, org_b) == []
+
+    @pytest.mark.asyncio
+    async def test_delete_publication_cross_org_isolation(self) -> None:
+        """Deleting a publication with the wrong org_id must be a no-op --
+        the real record must survive, redeemable by its actual owning org.
+        Gap Audit Milestone RR: delete_publication was the one write method
+        on this repository with no org_id parameter at all."""
+        repo = InMemoryRulePackRepository()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        rule_id = uuid.uuid4()
+        await repo.record_publication(rule_id, org_a, "os-rule-1")
+
+        await repo.delete_publication(rule_id, org_b)
+        assert await repo.get_published_opensearch_id(rule_id, org_a) == "os-rule-1"
+
+        await repo.delete_publication(rule_id, org_a)
+        assert await repo.get_published_opensearch_id(rule_id, org_a) is None
+
+    @pytest.mark.asyncio
     async def test_get_published_opensearch_id_round_trips(self) -> None:
         repo = InMemoryRulePackRepository()
         org_id = uuid.uuid4()

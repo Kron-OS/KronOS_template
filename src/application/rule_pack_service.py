@@ -117,8 +117,8 @@ class RulePackService:
             tenant, pack, remaining, prev.source_tier, signature_verified=prev.signature_verified
         )
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
-        return await self._repo.list_versions(pack_id)
+    async def list_versions(self, pack_id: uuid.UUID, org_id: uuid.UUID) -> list[RulePackVersion]:
+        return await self._repo.list_versions(pack_id, org_id)
 
     async def get_latest_version(
         self, pack_id: uuid.UUID, org_id: uuid.UUID

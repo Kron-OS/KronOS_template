@@ -76,7 +76,7 @@ class TestIOCFeedIngestionService:
         assert v2.version == 2
         assert v1.feed_id == v2.feed_id
 
-        versions = await repo.list_versions(v1.feed_id)
+        versions = await repo.list_versions(v1.feed_id, org_id)
         assert [v.version for v in versions] == [1, 2]
 
     @pytest.mark.asyncio

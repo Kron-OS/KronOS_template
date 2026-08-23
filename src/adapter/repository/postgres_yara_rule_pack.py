@@ -152,11 +152,16 @@ class PostgresYaraRulePackRepository(YaraRulePackRepository):
             ).one_or_none()
         return None if row is None else self._version_from_row(row._asdict())
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[YaraRulePackVersion]:
+    async def list_versions(
+        self, pack_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[YaraRulePackVersion]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 yara_rule_pack_versions_table.select()
-                .where(yara_rule_pack_versions_table.c.pack_id == pack_id)
+                .where(
+                    yara_rule_pack_versions_table.c.pack_id == pack_id,
+                    yara_rule_pack_versions_table.c.org_id == org_id,
+                )
                 .order_by(yara_rule_pack_versions_table.c.version.asc())
             )
             return [self._version_from_row(row._asdict()) for row in result]

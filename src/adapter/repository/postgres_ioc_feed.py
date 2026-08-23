@@ -192,11 +192,14 @@ class PostgresIOCFeedRepository(IOCFeedRepository):
             ).one_or_none()
         return None if row is None else self._version_from_row(row._asdict())
 
-    async def list_versions(self, feed_id: uuid.UUID) -> list[IOCFeedVersion]:
+    async def list_versions(self, feed_id: uuid.UUID, org_id: uuid.UUID) -> list[IOCFeedVersion]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 ioc_feed_versions_table.select()
-                .where(ioc_feed_versions_table.c.feed_id == feed_id)
+                .where(
+                    ioc_feed_versions_table.c.feed_id == feed_id,
+                    ioc_feed_versions_table.c.org_id == org_id,
+                )
                 .order_by(ioc_feed_versions_table.c.version.asc())
             )
             return [self._version_from_row(row._asdict()) for row in result]

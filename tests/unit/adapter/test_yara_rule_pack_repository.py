@@ -65,6 +65,26 @@ class TestInMemoryYaraRulePackRepository:
         assert await repo.get_latest_version(pack.pack_id, org_b) is None
 
     @pytest.mark.asyncio
+    async def test_list_versions_cross_org_isolation(self) -> None:
+        """A lookup with the wrong org_id must return nothing even though
+        the pack_id is real -- Gap Audit Milestone RR: list_versions was
+        missing the same defense-in-depth org scoping P2-SEC-3 already gave
+        get_latest_version/get_published_version on this repository."""
+        repo = InMemoryYaraRulePackRepository()
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        pack = await repo.get_or_create_pack(org_a, "p")
+        version = YaraRulePackVersion(
+            pack_id=pack.pack_id,
+            version=1,
+            org_id=org_a,
+            source_tier=RulePackSourceTier.TENANT_CUSTOM,
+        )
+        await repo.save_version(version)
+
+        assert await repo.list_versions(pack.pack_id, org_a) == [version]
+        assert await repo.list_versions(pack.pack_id, org_b) == []
+
+    @pytest.mark.asyncio
     async def test_get_published_version_round_trips(self) -> None:
         repo = InMemoryYaraRulePackRepository()
         org_id = uuid.uuid4()

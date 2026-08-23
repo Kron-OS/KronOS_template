@@ -123,7 +123,11 @@ class PostgresRulePackRepository(RulePackRepository):
             except Exception as exc:
                 raise StorageError(
                     "RulePackVersion already exists for this (pack_id, version)",
-                    context={"pack_id": str(version.pack_id), "version": version.version, "error": str(exc)},
+                    context={
+                        "pack_id": str(version.pack_id),
+                        "version": version.version,
+                        "error": str(exc),
+                    },
                 ) from exc
         return version
 
@@ -144,11 +148,14 @@ class PostgresRulePackRepository(RulePackRepository):
             ).one_or_none()
         return None if row is None else self._version_from_row(row._asdict())
 
-    async def list_versions(self, pack_id: uuid.UUID) -> list[RulePackVersion]:
+    async def list_versions(self, pack_id: uuid.UUID, org_id: uuid.UUID) -> list[RulePackVersion]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 rule_pack_versions_table.select()
-                .where(rule_pack_versions_table.c.pack_id == pack_id)
+                .where(
+                    rule_pack_versions_table.c.pack_id == pack_id,
+                    rule_pack_versions_table.c.org_id == org_id,
+                )
                 .order_by(rule_pack_versions_table.c.version.asc())
             )
             return [self._version_from_row(row._asdict()) for row in result]
@@ -189,18 +196,22 @@ class PostgresRulePackRepository(RulePackRepository):
             ).one_or_none()
         return None if row is None else str(row._asdict()["opensearch_rule_id"])
 
-    async def delete_publication(self, rule_id: uuid.UUID) -> None:
+    async def delete_publication(self, rule_id: uuid.UUID, org_id: uuid.UUID) -> None:
         async with self._engine.begin() as conn:
             await conn.execute(
                 published_custom_rules_table.delete().where(
-                    published_custom_rules_table.c.rule_id == rule_id
+                    published_custom_rules_table.c.rule_id == rule_id,
+                    published_custom_rules_table.c.org_id == org_id,
                 )
             )
 
     @staticmethod
     def _pack_from_row(row: dict[str, Any]) -> RulePack:
         return RulePack(
-            pack_id=row["pack_id"], org_id=row["org_id"], name=row["name"], created_at=row["created_at"]
+            pack_id=row["pack_id"],
+            org_id=row["org_id"],
+            name=row["name"],
+            created_at=row["created_at"],
         )
 
     @staticmethod
