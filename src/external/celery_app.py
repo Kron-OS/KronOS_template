@@ -273,7 +273,6 @@ def dispatch_parse(
     *,
     org_id: str,
     user_id: str,
-    parser_type: str = "fast",
 ) -> str:
     """Select the correct parse queue and chain finalize_evidence.
 
@@ -287,9 +286,17 @@ def dispatch_parse(
         await resources.orchestration_service.start_parsing(uuid.UUID(evidence_id), tenant)
 
     run_evidence_coro(_work)
-    logger.info(
-        "dispatch_parse_done", extra={"evidence_id": evidence_id, "parser_type": parser_type}
-    )
+    # Gap Audit Milestone QQ: this used to also log a `parser_type` field
+    # defaulting to "fast" -- no caller anywhere (production or test) ever
+    # passed a different value, and the REAL fast-vs-heavy routing decision
+    # is made one call frame down, inside start_parsing() itself, which
+    # already logs the true value via its own "parse_queued" info log and
+    # the PARSE_STARTED audit event. The dead default meant this log line
+    # always claimed "fast" even when start_parsing() had just routed the
+    # evidence to the heavy Plaso queue -- a misleading field, not a
+    # meaningful one, so it's removed rather than fixed to be accurate
+    # (that data already exists, one frame down, correctly).
+    logger.info("dispatch_parse_done", extra={"evidence_id": evidence_id})
     return evidence_id
 
 
