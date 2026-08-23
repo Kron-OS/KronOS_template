@@ -115,6 +115,8 @@ class _RedisLike(Protocol):
 
     def set(self, name: str, value: str, ex: int | None = ...) -> Any: ...
 
+    def get(self, name: str) -> Any: ...
+
     def getdel(self, name: str) -> Any: ...
 
 
@@ -122,11 +124,24 @@ class RedisTicketStore(TicketStore):
     """Redis-backed ticket store providing cross-instance single-use semantics.
 
     ``put`` writes ``user|operation|resource`` under ``kronos:stepup:<id>`` with
-    a TTL so expired tickets vanish automatically. ``consume`` uses ``GETDEL``,
-    which atomically returns and removes the value in one round-trip — so a
-    ticket can be spent exactly once even when several replicas race. The match
-    check is performed after the atomic delete: any presentation of a ticket
-    spends it (fail-closed), which is at least as strict as the in-memory store.
+    a TTL so expired tickets vanish automatically. ``consume`` first ``GET``s
+    the stored value and compares it in Python; the ticket is only actually
+    removed (via ``GETDEL``) when the presented fields match, mirroring
+    ``InMemoryTicketStore``'s own semantics exactly: a mismatched presentation
+    (a client bug, a stale retry, or a guessed ticket id) never spends a still-
+    valid ticket, so the legitimate holder can still redeem it before it
+    expires. An earlier version called ``GETDEL`` unconditionally before
+    comparing, which spent the ticket on ANY presentation regardless of
+    whether the fields matched -- a single wrong guess or client-side bug
+    would permanently burn a ticket the real caller had not yet used,
+    forcing a full step-up re-challenge for no security benefit (the ticket
+    id is only ever returned in a POST response body, never a URL or log
+    line, so it is not realistically guessable by an attacker who couldn't
+    already see the correct fields too). A benign race between two
+    concurrent redemption attempts presenting the SAME correct fields is
+    still resolved safely: only one caller's ``GETDEL`` can return the real
+    value, so single-use is preserved even though the check is no longer a
+    single round-trip.
     """
 
     _PREFIX = "kronos:stepup:"
@@ -151,10 +166,16 @@ class RedisTicketStore(TicketStore):
     def consume(
         self, ticket_id: uuid.UUID, user_id: uuid.UUID, operation: str, resource_id: str
     ) -> ConsumeResult:
-        stored = self._client.getdel(self._PREFIX + str(ticket_id))
+        key = self._PREFIX + str(ticket_id)
+        stored = self._client.get(key)
         if stored is None:
             return ConsumeResult.NOT_FOUND
         if isinstance(stored, bytes):
             stored = stored.decode("utf-8")
-        expected = self._value(user_id, operation, resource_id)
-        return ConsumeResult.CONSUMED if stored == expected else ConsumeResult.MISMATCH
+        if stored != self._value(user_id, operation, resource_id):
+            return ConsumeResult.MISMATCH
+        # Only reached on a real match -- GETDEL here (rather than DEL) also
+        # keeps a concurrent, identically-correct redemption attempt safe:
+        # at most one caller's GETDEL returns the real value.
+        deleted = self._client.getdel(key)
+        return ConsumeResult.CONSUMED if deleted is not None else ConsumeResult.NOT_FOUND

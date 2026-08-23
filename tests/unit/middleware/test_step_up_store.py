@@ -30,6 +30,9 @@ class _FakeRedis:
         self.last_ex = ex
         return True
 
+    def get(self, name: str):  # type: ignore[no-untyped-def]
+        return self.store.get(name)
+
     def getdel(self, name: str):  # type: ignore[no-untyped-def]
         return self.store.pop(name, None)
 
@@ -71,6 +74,26 @@ def test_wrong_fields_are_mismatch() -> None:
         assert store.consume(tid, uuid.uuid4(), op, res) is ConsumeResult.MISMATCH, label
 
 
+def test_mismatch_does_not_burn_the_ticket_for_a_later_legitimate_retry() -> None:
+    """A wrong-field presentation (a client bug or a guessed ticket id) must
+    never spend a still-valid ticket -- the legitimate holder must still be
+    able to redeem it before it expires. Gap Audit Milestone PP: an earlier
+    RedisTicketStore.consume() called GETDEL unconditionally before checking
+    the fields, so ANY presentation (even a wrong one) permanently deleted
+    the ticket -- only InMemoryTicketStore actually preserved it. This test
+    runs against both stores to keep them at parity."""
+    for label, store in _make_stores():
+        tid = uuid.uuid4()
+        user, op, res = _ids()
+        store.put(tid, user, op, res)
+
+        assert store.consume(tid, uuid.uuid4(), op, res) is ConsumeResult.MISMATCH, label
+        # The real holder must still be able to redeem the same ticket.
+        assert store.consume(tid, user, op, res) is ConsumeResult.CONSUMED, label
+        # And now it really is spent.
+        assert store.consume(tid, user, op, res) is ConsumeResult.NOT_FOUND, label
+
+
 def test_redis_put_sets_ttl() -> None:
     fake = _FakeRedis()
     store = RedisTicketStore(fake)
@@ -84,6 +107,10 @@ def test_redis_store_decodes_bytes_values() -> None:
     """A redis client without decode_responses returns bytes; consume still works."""
 
     class _BytesRedis(_FakeRedis):
+        def get(self, name: str):  # type: ignore[no-untyped-def]
+            v = self.store.get(name)
+            return v.encode() if v is not None else None
+
         def getdel(self, name: str):  # type: ignore[no-untyped-def]
             v = self.store.pop(name, None)
             return v.encode() if v is not None else None
