@@ -472,8 +472,13 @@ async def list_case_audit_events(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     assert_case_lead_or_admin(tenant, case)
 
+    # Gap Audit Milestone SS: stream_by_case now takes org_id itself
+    # (defense-in-depth, mirrors every other repository's own pattern) --
+    # the explicit post-filter below is now redundant with the repository's
+    # own WHERE clause, but kept as a second, cheap layer rather than
+    # removed, matching this codebase's own belt-and-braces precedent.
     events: list[AuditEvent] = []
-    async for ev in audit_svc._repository.stream_by_case(case_id):
+    async for ev in audit_svc._repository.stream_by_case(case_id, tenant.org_id):
         if ev.org_id != tenant.org_id:
             continue
         events.append(ev)

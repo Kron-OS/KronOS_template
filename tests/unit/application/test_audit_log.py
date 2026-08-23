@@ -158,6 +158,52 @@ class TestAuditLogErrors:
             await_coro(audit_service.log(AuditEventType.SYSTEM_ERROR))
 
 
+class TestStreamByCaseAndEvidenceOrgScoping:
+    """Gap Audit Milestone SS: stream_by_case/stream_by_evidence were the
+    only two AuditLogRepository methods with no org_id parameter at all --
+    every sibling method (get_latest_hash, get_latest_sequence, append_atomic)
+    already takes org_id. These tests prove the new parameter is actually
+    enforced by InMemoryAuditLogRepository, not just accepted and ignored."""
+
+    def test_stream_by_case_cross_org_isolation(
+        self, audit_service: AuditLogService, audit_repo: InMemoryAuditLogRepository
+    ) -> None:
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        case_id = uuid.uuid4()
+        event = await_coro(
+            audit_service.log(
+                AuditEventType.EVIDENCE_UPLOAD_REQUESTED,
+                org_id=org_a,
+                case_id=case_id,
+            )
+        )
+
+        async def _collect(org_id: uuid.UUID) -> list[uuid.UUID]:
+            return [e.event_id async for e in audit_repo.stream_by_case(case_id, org_id)]
+
+        assert await_coro(_collect(org_a)) == [event.event_id]
+        assert await_coro(_collect(org_b)) == []
+
+    def test_stream_by_evidence_cross_org_isolation(
+        self, audit_service: AuditLogService, audit_repo: InMemoryAuditLogRepository
+    ) -> None:
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        evidence_id = uuid.uuid4()
+        event = await_coro(
+            audit_service.log(
+                AuditEventType.EVIDENCE_UPLOAD_REQUESTED,
+                org_id=org_a,
+                evidence_id=evidence_id,
+            )
+        )
+
+        async def _collect(org_id: uuid.UUID) -> list[uuid.UUID]:
+            return [e.event_id async for e in audit_repo.stream_by_evidence(evidence_id, org_id)]
+
+        assert await_coro(_collect(org_a)) == [event.event_id]
+        assert await_coro(_collect(org_b)) == []
+
+
 class TestConcurrentWrites:
     """Regression test for the sequence-number/hash-chain race condition.
 

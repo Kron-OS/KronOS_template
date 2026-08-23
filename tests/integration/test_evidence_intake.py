@@ -138,7 +138,7 @@ async def test_audit_events_persisted(postgres_engine, local_storage) -> None:
     )
 
     audit_repo = PostgresAuditLogRepository(postgres_engine)
-    events = [e async for e in audit_repo.stream_by_evidence(evidence.evidence_id)]
+    events = [e async for e in audit_repo.stream_by_evidence(evidence.evidence_id, tenant.org_id)]
     assert len(events) >= 5
 
 

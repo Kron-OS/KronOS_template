@@ -143,21 +143,31 @@ class PostgresAuditLogRepository(AnchorRepository):
                 ) from exc
         return event
 
-    async def stream_by_evidence(self, evidence_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
+    async def stream_by_evidence(
+        self, evidence_id: uuid.UUID, org_id: uuid.UUID
+    ) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 audit_log_table.select()
-                .where(audit_log_table.c.evidence_id == evidence_id)
+                .where(
+                    audit_log_table.c.evidence_id == evidence_id,
+                    audit_log_table.c.org_id == org_id,
+                )
                 .order_by(audit_log_table.c.sequence_number)
             )
             for row in result:
                 yield self._from_row(row._asdict())
 
-    async def stream_by_case(self, case_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
+    async def stream_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> AsyncIterator[AuditEvent]:
         async with self._engine.connect() as conn:
             result = await conn.execute(
                 audit_log_table.select()
-                .where(audit_log_table.c.case_id == case_id)
+                .where(
+                    audit_log_table.c.case_id == case_id,
+                    audit_log_table.c.org_id == org_id,
+                )
                 .order_by(audit_log_table.c.sequence_number)
             )
             for row in result:

@@ -48,12 +48,18 @@ class AuditLogRepository(ABC):
         """
 
     @abstractmethod
-    def stream_by_evidence(self, evidence_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
-        """Yield audit events for a given evidence item in chronological order."""
+    def stream_by_evidence(
+        self, evidence_id: uuid.UUID, org_id: uuid.UUID
+    ) -> AsyncIterator[AuditEvent]:
+        """Yield audit events for a given evidence item in chronological
+        order, scoped to *org_id* -- defense-in-depth org scoping (mirrors
+        ``EvidenceRepository.get_by_id``; see Gap Audit Milestone SS)."""
 
     @abstractmethod
-    def stream_by_case(self, case_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
-        """Yield audit events for a given case in chronological order."""
+    def stream_by_case(self, case_id: uuid.UUID, org_id: uuid.UUID) -> AsyncIterator[AuditEvent]:
+        """Yield audit events for a given case in chronological order,
+        scoped to *org_id* -- defense-in-depth org scoping (mirrors
+        ``CaseRepository.get_by_id``; see Gap Audit Milestone SS)."""
 
     @abstractmethod
     def stream_by_org(self, org_id: uuid.UUID) -> AsyncIterator[AuditEvent]:

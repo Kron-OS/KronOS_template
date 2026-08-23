@@ -59,17 +59,17 @@ class InMemoryAuditLogRepository(AnchorRepository):
             return event
 
     async def stream_by_evidence(  # type: ignore[override]
-        self, evidence_id: uuid.UUID
+        self, evidence_id: uuid.UUID, org_id: uuid.UUID
     ) -> AsyncIterator[AuditEvent]:
         for event in self._events:
-            if event.evidence_id == evidence_id:
+            if event.evidence_id == evidence_id and event.org_id == org_id:
                 yield event
 
     async def stream_by_case(  # type: ignore[override]
-        self, case_id: uuid.UUID
+        self, case_id: uuid.UUID, org_id: uuid.UUID
     ) -> AsyncIterator[AuditEvent]:
         for event in self._events:
-            if event.case_id == case_id:
+            if event.case_id == case_id and event.org_id == org_id:
                 yield event
 
     async def stream_by_org(  # type: ignore[override]
