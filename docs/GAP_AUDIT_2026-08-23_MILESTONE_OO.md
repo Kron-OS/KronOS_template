@@ -97,14 +97,89 @@ tenant-crossing risk into the OpenSearch Dashboards saved-object id/
 
 ---
 
+## 5. Remaining seven OpenSearch adapters reviewed, no new gap
+
+Full direct read of the rest of the Security Analytics/AD/ISM adapter
+layer named in section 4's own recommendation:
+
+- `detector_provisioner.py` — `SecurityAnalyticsDetectorProvisioner`'s
+  check-then-create-only design (never PUT-updates an existing detector,
+  documented real `EmptyMap`/`MutableMap` OpenSearch 2.11.1 bug) and its
+  nested-query idempotency check against `.opensearch-sap-detectors-config`
+  confirmed correct; per-org scoping via `kronos-{org_alias}-*` confirmed.
+- `anomaly_detector_provisioner.py` — `OpenSearchAnomalyDetectorProvisioner`'s
+  real race-condition handling for concurrent detector creation
+  (`_NOT_READY_ERROR_MARKERS` distinguishing "org has no data yet" from a
+  genuine failure) confirmed correct. Noted, but not fixed: this class
+  sanitizes `org_alias` via `re.sub(r"[^a-z0-9-]", "-", org_alias.lower())`
+  before building a detector name, while `detector_provisioner.py` does
+  not sanitize at all. Not a live bug — org aliases are Keycloak-admin
+  controlled, not open tenant self-service, and every write here goes
+  through httpx's `json=` encoding, which cannot be used to inject into
+  the request structure regardless of the string's contents. Worth
+  normalizing for consistency in a future pass, not urgent.
+- `custom_rule_client.py` — `SecurityAnalyticsCustomRuleClient` pushes raw
+  Sigma YAML text (not JSON) to the rules endpoint with real, empirically
+  confirmed 500-class failure modes documented (`ClassCastException` on a
+  JSON body, `NullPointerException` on YAML missing `date:`); confirmed it
+  has no field through which a caller could smuggle an index/tenant
+  reference — Sigma has no such field.
+- `custom_rule_detector_provisioner.py` — read specifically to verify
+  `custom_rule_client.py`'s own claim that "the index pattern a rule ever
+  runs against is decided entirely by the detector wrapping it, never by
+  rule content." Confirmed true: `SecurityAnalyticsCustomRuleDetectorProvisioner.
+  sync_custom_detector()` always builds `indices: [f"kronos-{org_alias}-*"]`
+  from the caller-supplied `org_alias` parameter, and `custom_rules` only
+  ever carries `{"id": ...}` (an opaque, server-generated rule id) — no
+  path exists for rule/pack content to affect index scoping. Delete-and-
+  recreate idempotency (never PUT-update, same real OpenSearch defect as
+  `detector_provisioner.py`) confirmed correct, including the two early-
+  return paths (already-matching rule set; empty desired set with no
+  existing detector to delete).
+- `ism_manager.py` — `OpenSearchIsmLifecycleManager.ensure_managed()`'s
+  documented real finding (`POST _plugins/_ism/add/{index}` can return
+  HTTP 200 with `{"failures": true, ...}` in the body, which a bare
+  `raise_for_status()` would treat as success) is defended against via
+  `_raise_if_ism_body_reports_failure()`, applied consistently to both
+  `ensure_managed()` and `place_legal_hold()`. `is_managed_and_enabled()`'s
+  post-search exact-name check defends against a non-exact match query.
+  Confirmed correct.
+- `rarity_baseline_client.py` — `OpenSearchRarityBaselineClient` always
+  requests `order: {"_count": "asc"}` on its terms aggregation (confirmed,
+  via the class's own cited live-cluster PoC, that the OpenSearch default
+  descending order would silently make the entire rarity-hunting feature
+  find nothing rare once cardinality exceeds `max_distinct_values`); the
+  documented "aggregations key entirely absent when the index pattern
+  matches zero indices" gap is correctly left for the caller to handle
+  rather than papered over in this class. Confirmed correct.
+- `anomaly_detection_client.py` — `OpenSearchAnomalyDetectionResultsClient`
+  confirmed to always use the AD plugin's own dedicated results-search
+  endpoint (`POST _plugins/_anomaly_detection/detectors/results/_search`)
+  rather than querying the protected `.opendistro-anomaly-results*` system
+  index directly — the class's own docstring documents a real, confirmed
+  finding that a direct query against that index silently returns zero
+  hits even as the admin superuser, regardless of real document count.
+  Confirmed correct.
+
+No new gap found in any of the seven. This closes out the parser +
+OpenSearch adapter layer named across Milestones NN and OO — every file in
+`src/external/parsers/` and `src/adapter/opensearch/` has now had at least
+one independent direct-read review pass in this audit chain.
+
+---
+
 ## Recommendation for the next wake-up cycle
 
-Remaining, not-yet-reviewed OpenSearch adapters (per Milestone NN's own
-list, `dashboards_client.py` now done): `anomaly_detection_client.py`,
-`anomaly_detector_provisioner.py`, `custom_rule_client.py`,
-`custom_rule_detector_provisioner.py`, `detector_provisioner.py`,
-`ism_manager.py`, `rarity_baseline_client.py`. These are the largest
-remaining area with no recent independent review in the JJ-OO chain.
+The parser and OpenSearch adapter layers have now had a full independent
+review pass with only one real bug found (`PlasoParser`'s temp-file leak,
+section 2). Diminishing returns reached for this specific area — the next
+milestone should pick a fresh, not-recently-reviewed area of the codebase
+(e.g. the Celery task layer under `src/external/`, the SOAR/playbook engine
+introduced in `feat(soar): H1 playbook engine`, or the frontend routes) as
+its "recently-landed or never-independently-reviewed" candidate set, per
+this chain's own established method (CLAUDE.md Section F/this doc's own
+header note that re-scanning old audit docs stopped surfacing new findings
+around Milestone CC).
 
 Also still open from prior milestones, unchanged:
 1. The lower-value optional SIEM/EDR secrets
