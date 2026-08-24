@@ -37,7 +37,9 @@ class TestVerify:
             assert verifier.verify(b"content", b"bundle", "/tmp/pub.key") is False
 
     def test_timeout_fails_closed_not_raised(self) -> None:
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="cosign", timeout=30)):
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="cosign", timeout=30)
+        ):
             verifier = CosignPackSignatureVerifier(cosign_binary="cosign")
             assert verifier.verify(b"content", b"bundle", "/tmp/pub.key") is False
 
@@ -47,3 +49,17 @@ class TestVerify:
             with patch("subprocess.run", return_value=result):
                 verifier = CosignPackSignatureVerifier(cosign_binary="cosign")
                 assert verifier.verify(b"c", b"s", "/tmp/pub.key") is False
+
+    def test_temp_file_write_failure_fails_closed_not_raised(self) -> None:
+        """Gap Audit Milestone VV: content_path.write_bytes()/bundle_path
+        .write_bytes() used to sit outside the try/except, so a real OSError
+        here (e.g. a full disk) escaped verify() uncaught -- violating this
+        class's own documented "never raise past the port boundary"
+        contract the other tests in this file already assert for tool
+        errors. The caller (RulePackService/YaraRulePackService
+        .import_signed_pack) has no try/except of its own, so an uncaught
+        exception here meant a signature rejection never reached the audit
+        log at all."""
+        with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
+            verifier = CosignPackSignatureVerifier(cosign_binary="cosign")
+            assert verifier.verify(b"content", b"bundle", "/tmp/pub.key") is False

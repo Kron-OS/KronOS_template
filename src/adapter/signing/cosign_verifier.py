@@ -57,9 +57,21 @@ class CosignPackSignatureVerifier(PackSignatureVerifier):
         with tempfile.TemporaryDirectory() as tmp:
             content_path = Path(tmp) / "pack.bin"
             bundle_path = Path(tmp) / "pack.bundle"
-            content_path.write_bytes(content)
-            bundle_path.write_bytes(signature)
             try:
+                # Gap Audit Milestone VV: these two writes used to sit
+                # outside this try block, so a real OSError here (e.g. a
+                # full disk) escaped verify() uncaught -- violating this
+                # class's own documented "fail closed on any tool error,
+                # never raise past the port boundary" contract (see this
+                # file's own test suite). The caller (RulePackService/
+                # YaraRulePackService.import_signed_pack) has no try/except
+                # of its own around this call, so an uncaught exception here
+                # meant a signature-rejection never reached the audit log at
+                # all (RULE_PACK_SIGNATURE_REJECTED never fired) -- a
+                # completely silent, unaudited rejection path, not merely an
+                # unclean error response.
+                content_path.write_bytes(content)
+                bundle_path.write_bytes(signature)
                 result = subprocess.run(  # noqa: S603
                     [
                         self._cosign_binary,
