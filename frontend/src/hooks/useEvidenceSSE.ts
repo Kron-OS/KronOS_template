@@ -77,9 +77,11 @@ export function useEvidenceSSE(caseId: string, onEvent: SSECallback): void {
 
     function startPolling(): void {
       if (cancelled || pollTimer) return
-      pollTimer = setInterval(async () => {
-        // Polling re-fetches the ticket each cycle; actual data fetch is handled
-        // by TanStack Query. This just signals to invalidate via a custom event.
+      pollTimer = setInterval(() => {
+        // Gap Audit Milestone YY: this never re-fetches an SSE ticket (the
+        // fallback path abandons SSE entirely, not just the current
+        // connection) -- it only dispatches a DOM event; CaseDetailPage.tsx's
+        // own listener turns that into a plain REST invalidateQueries() call.
         window.dispatchEvent(new CustomEvent('kronos:sse-poll', { detail: { caseId } }))
       }, 5_000)
     }
