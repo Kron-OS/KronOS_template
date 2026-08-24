@@ -108,6 +108,18 @@ class S3SealedBatchStorage(SealedBatchStorage):
     async def _ensure_bucket(self, bucket: str) -> None:
         try:
             await self._run(self._client.head_bucket, Bucket=bucket)
+            # Gap Audit Milestone WW: this used to return here
+            # unconditionally, silently assuming an already-existing bucket
+            # was already correctly WORM-protected. Real, live-verified gap
+            # (poc/minio_object_lock_verification/, MinIO
+            # RELEASE.2025-09-07T16-13-09Z) shared with S3EvidenceStorage's
+            # own identical pattern: create_bucket and
+            # put_object_lock_configuration are two separate calls with no
+            # transaction between them, so a crash/transient failure of the
+            # second call alone leaves a bucket with object-lock enabled
+            # but no default retention rule -- silently defeating WORM
+            # enforcement on every sealed batch written to it from then on.
+            await self._ensure_retention_rule(bucket)
             return
         except ClientError:
             pass
@@ -121,6 +133,42 @@ class S3SealedBatchStorage(SealedBatchStorage):
             # Same concurrent-first-use race S3EvidenceStorage._ensure_bucket
             # documents and handles -- two sealers for the same org racing on
             # bucket creation is the identical shape, same fix.
+            await self._ensure_retention_rule(bucket)
+            return
+        await self._run(
+            self._client.put_object_lock_configuration,
+            Bucket=bucket,
+            ObjectLockConfiguration={
+                "ObjectLockEnabled": "Enabled",
+                "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": self._retention_days}},
+            },
+        )
+
+    async def _ensure_retention_rule(self, bucket: str) -> None:
+        """Verify (never assume) an already-existing, object-lock-enabled
+        bucket actually has its default retention rule applied, applying it
+        if missing. Mirrors S3EvidenceStorage._ensure_retention_rule's own
+        docstring for the full real-captured-shape reasoning
+        (poc/minio_object_lock_verification/output.txt) -- same real MinIO
+        behavior, same recoverable-vs-unrecoverable distinction."""
+        try:
+            resp = await self._run(self._client.get_object_lock_configuration, Bucket=bucket)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code == "ObjectLockConfigurationNotFoundError":
+                raise StorageError(
+                    "Sealed-batch bucket exists but Object Lock was never enabled on "
+                    "it -- cannot be enabled retroactively on an existing bucket (real "
+                    "operator intervention required, e.g. migrate to a freshly "
+                    "created bucket)",
+                    context={"bucket": bucket},
+                ) from exc
+            raise StorageError(
+                "Failed to verify sealed-batch bucket's Object Lock configuration",
+                context={"bucket": bucket, "error": str(exc)},
+            ) from exc
+        config = resp.get("ObjectLockConfiguration", {})
+        if "Rule" in config:
             return
         await self._run(
             self._client.put_object_lock_configuration,

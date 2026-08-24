@@ -1,0 +1,55 @@
+
+================================================================================
+SCENARIO (a): partial failure -- kronos-poc-objlock-9dceed11-a
+================================================================================
+create_bucket(Bucket='kronos-poc-objlock-9dceed11-a', ObjectLockEnabledForBucket=True) -- OK
+(deliberately NOT calling put_object_lock_configuration)
+get_object_lock_configuration(kronos-poc-objlock-9dceed11-a) SUCCEEDED, body:
+  {'ObjectLockConfiguration': {'ObjectLockEnabled': 'Enabled'}}
+
+Now attempting the RECOVERY put_object_lock_configuration call (what a fixed _ensure_bucket() would do):
+  put_object_lock_configuration RECOVERY call SUCCEEDED
+get_object_lock_configuration(kronos-poc-objlock-9dceed11-a) SUCCEEDED, body:
+  {'ObjectLockConfiguration': {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': 'COMPLIANCE', 'Days': 2555}}}}
+
+================================================================================
+SCENARIO (b): object-lock never enabled -- kronos-poc-objlock-9dceed11-b
+================================================================================
+create_bucket(Bucket='kronos-poc-objlock-9dceed11-b') [no ObjectLockEnabledForBucket] -- OK
+get_object_lock_configuration(kronos-poc-objlock-9dceed11-b) RAISED ClientError:
+  HTTPStatusCode=404 Code='ObjectLockConfigurationNotFoundError' Message='Object Lock configuration does not exist for this bucket'
+
+Now attempting to retroactively enable Object Lock on it (confirming this really is unrecoverable, not assumed):
+  put_object_lock_configuration FAILED as expected: Code='InvalidBucketState' Message='Object Lock configuration cannot be enabled on existing buckets'
+
+================================================================================
+SCENARIO (c): healthy, complete setup -- kronos-poc-objlock-9dceed11-c
+================================================================================
+create_bucket + put_object_lock_configuration on 'kronos-poc-objlock-9dceed11-c' -- both OK
+get_object_lock_configuration(kronos-poc-objlock-9dceed11-c) SUCCEEDED, body:
+  {'ObjectLockConfiguration': {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': 'COMPLIANCE', 'Days': 2555}}}}
+
+================================================================================
+CLEANUP
+================================================================================
+deleted kronos-poc-objlock-9dceed11-a
+deleted kronos-poc-objlock-9dceed11-b
+deleted kronos-poc-objlock-9dceed11-c
+bucket_object_lock_retention_rule_missing_reapplying
+CASE 1: pre-existing partial-failure bucket (object-lock enabled, no retention rule)
+  before fix: {'ObjectLockEnabled': 'Enabled'}
+  after real S3EvidenceStorage._ensure_bucket() call: {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': 'COMPLIANCE', 'Days': 2555}}}
+  PASS: retention rule was retroactively applied by the real fixed code
+
+CASE 2: pre-existing bucket with object-lock never enabled at all
+  PASS: real S3EvidenceStorage._ensure_bucket() raised StorageError as expected: Evidence bucket exists but Object Lock was never enabled on it -- cannot be enabled retroactively on an existing bucket (real operator intervention required, e.g. migrate to a freshly created bucket)
+
+CASE 3: quarantine bucket (object_lock=False), pre-existing, no object-lock -- must be a no-op
+  PASS: no exception raised for the quarantine (non-object-lock) path
+CASE 1 (sealed-batch): pre-existing partial-failure bucket
+  before fix: {'ObjectLockEnabled': 'Enabled'}
+  after real S3SealedBatchStorage._ensure_bucket() call: {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': 'COMPLIANCE', 'Days': 2555}}}
+  PASS: retention rule was retroactively applied
+
+CASE 2 (sealed-batch): object-lock never enabled at all
+  PASS: raised StorageError as expected: Sealed-batch bucket exists but Object Lock was never enabled on it -- cannot be enabled retroactively on an existing bucket (real operator intervention required, e.g. migrate to a freshly created bucket)

@@ -13,10 +13,12 @@ import uuid
 from unittest.mock import MagicMock
 
 import boto3
+import pytest
 from botocore.exceptions import ClientError
 
 from src.adapter.storage.s3 import S3EvidenceStorage
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
+from src.exceptions import StorageError
 
 
 def _make_storage(quarantine_prefix: str, evidence_prefix: str) -> S3EvidenceStorage:
@@ -218,10 +220,23 @@ async def test_ensure_bucket_tolerates_concurrent_creation_race() -> None:
 
 
 async def test_ensure_evidence_bucket_tolerates_concurrent_creation_race() -> None:
+    """Gap Audit Milestone WW: losing the create_bucket race no longer
+    blindly assumes the winner already finished configuring retention --
+    the loser now verifies via get_object_lock_configuration (real,
+    live-MinIO-verified behavior, poc/minio_object_lock_verification/).
+    This simulates the winner having ALREADY completed retention setup by
+    the time the loser's own verification runs; the loser must detect that
+    and NOT redundantly re-apply it."""
     storage = _make_storage("kronos-evidence", "kronos-evidence")
     mock_client = _mock_clients(storage, bucket_exists=False)
     mock_client.exceptions = _REAL_EXCEPTIONS
     mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    mock_client.get_object_lock_configuration.return_value = {
+        "ObjectLockConfiguration": {
+            "ObjectLockEnabled": "Enabled",
+            "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": 2555}},
+        }
+    }
     ev = _evidence("acme")
     quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
 
@@ -232,5 +247,111 @@ async def test_ensure_evidence_bucket_tolerates_concurrent_creation_race() -> No
     mock_client.create_bucket.assert_called_once_with(
         Bucket="kronos-evidence-acme", ObjectLockEnabledForBucket=True
     )
+    mock_client.get_object_lock_configuration.assert_called_once_with(Bucket="kronos-evidence-acme")
     mock_client.put_object_lock_configuration.assert_not_called()
     mock_client.copy_object.assert_called_once()
+
+
+async def test_ensure_evidence_bucket_race_loser_reapplies_missing_retention() -> None:
+    """The narrower race-within-the-race: the loser's own verification
+    finds the winner has NOT finished applying retention yet -- it must
+    apply it itself rather than silently trusting the winner will."""
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=False)
+    mock_client.exceptions = _REAL_EXCEPTIONS
+    mock_client.create_bucket.side_effect = _bucket_already_owned_by_you()
+    mock_client.get_object_lock_configuration.return_value = {
+        "ObjectLockConfiguration": {"ObjectLockEnabled": "Enabled"}  # no Rule yet
+    }
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.put_object_lock_configuration.assert_called_once()
+    _, kwargs = mock_client.put_object_lock_configuration.call_args
+    assert kwargs["Bucket"] == "kronos-evidence-acme"
+    assert kwargs["ObjectLockConfiguration"]["Rule"]["DefaultRetention"]["Mode"] == "COMPLIANCE"
+
+
+# ---------------------------------------------------------------------------
+# Gap Audit Milestone WW: a bucket that already existed BEFORE this call
+# (head_bucket succeeds on the very first try, no create_bucket involved at
+# all) is the real, main scenario this milestone's finding is about -- a
+# real crash or transient failure of put_object_lock_configuration alone,
+# on some EARLIER call, silently left the bucket without a retention rule,
+# and every later call previously just saw head_bucket succeed and stopped
+# looking. Real shapes verified live against MinIO
+# RELEASE.2025-09-07T16-13-09Z, see poc/minio_object_lock_verification/.
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_bucket_reapplies_missing_retention_on_pre_existing_bucket() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    mock_client.get_object_lock_configuration.return_value = {
+        "ObjectLockConfiguration": {"ObjectLockEnabled": "Enabled"}  # no Rule
+    }
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.get_object_lock_configuration.assert_called_once_with(Bucket="kronos-evidence-acme")
+    mock_client.put_object_lock_configuration.assert_called_once()
+
+
+async def test_ensure_bucket_pre_existing_healthy_bucket_is_a_true_no_op() -> None:
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    mock_client.get_object_lock_configuration.return_value = {
+        "ObjectLockConfiguration": {
+            "ObjectLockEnabled": "Enabled",
+            "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": 2555}},
+        }
+    }
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.put_object_lock_configuration.assert_not_called()
+
+
+async def test_ensure_bucket_pre_existing_never_object_locked_fails_loudly() -> None:
+    """Real, live-confirmed unrecoverable case (poc/minio_object_lock_verification/
+    output.txt): Object Lock was never enabled on this bucket at all --
+    MinIO rejects retroactively enabling it (Code=InvalidBucketState), so
+    this must fail loudly, never silently proceed as if WORM-protected."""
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    mock_client.get_object_lock_configuration.side_effect = ClientError(
+        error_response={
+            "Error": {
+                "Code": "ObjectLockConfigurationNotFoundError",
+                "Message": "Object Lock configuration does not exist for this bucket",
+            },
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        },
+        operation_name="GetObjectLockConfiguration",
+    )
+    ev = _evidence("acme")
+    quarantine_key = f"acme/{ev.metadata.case_id}/{ev.evidence_id}/security.evtx"
+
+    with pytest.raises(StorageError):
+        await storage.promote_to_evidence_bucket(quarantine_key, ev)
+
+    mock_client.put_object_lock_configuration.assert_not_called()
+
+
+async def test_ensure_bucket_quarantine_path_unaffected_by_new_check() -> None:
+    """The non-object-lock (quarantine) path must never call
+    get_object_lock_configuration at all -- it was never expected to be
+    WORM-protected in the first place."""
+    storage = _make_storage("kronos-evidence", "kronos-evidence")
+    mock_client = _mock_clients(storage, bucket_exists=True)
+    ev = _evidence("acme")
+
+    await storage.request_presigned_upload(ev)
+
+    mock_client.get_object_lock_configuration.assert_not_called()

@@ -262,6 +262,8 @@ class S3EvidenceStorage(EvidenceStorage):
                     "bucket_already_exists_race",
                     extra={"bucket": bucket, "object_lock": object_lock},
                 )
+                if object_lock:
+                    await self._ensure_retention_rule(bucket)
                 return
             logger.info("bucket_created", extra={"bucket": bucket, "object_lock": object_lock})
             if object_lock:
@@ -284,6 +286,75 @@ class S3EvidenceStorage(EvidenceStorage):
                         },
                     },
                 )
+            return
+        # head_bucket succeeded on the FIRST try: the bucket already
+        # existed before this call. Gap Audit Milestone WW: this used to
+        # return here unconditionally, silently assuming an
+        # already-existing bucket was already correctly WORM-protected.
+        # Real, live-verified gap (poc/minio_object_lock_verification/,
+        # MinIO RELEASE.2025-09-07T16-13-09Z): create_bucket
+        # (ObjectLockEnabledForBucket=True) succeeding and
+        # put_object_lock_configuration completing are two SEPARATE calls
+        # with no transaction between them -- a process crash or a
+        # transient failure of the second call alone leaves a bucket with
+        # object-lock enabled but no default retention rule, silently
+        # defeating WORM enforcement, and every later call here (e.g. an
+        # upload retry) would see head_bucket succeed and stop looking.
+        if object_lock:
+            await self._ensure_retention_rule(bucket)
+
+    async def _ensure_retention_rule(self, bucket: str) -> None:
+        """Verify (never assume) an already-existing, object-lock-enabled
+        bucket actually has its default retention rule applied, applying it
+        if missing. Real, captured MinIO response shapes this branches on
+        (poc/minio_object_lock_verification/output.txt):
+
+        - Rule present: ``{"ObjectLockConfiguration": {"ObjectLockEnabled":
+          "Enabled", "Rule": {...}}}`` -- healthy, nothing to do.
+        - Rule absent (object-lock enabled, retention never applied):
+          the SAME shape minus the ``"Rule"`` key -- real, recoverable;
+          apply it now.
+        - Object Lock never enabled on this bucket at all: a real
+          ``ClientError`` with ``Code="ObjectLockConfigurationNotFoundError"``
+          -- NOT the same as "Rule absent" above, and NOT recoverable
+          (confirmed empirically: MinIO rejects retroactively enabling
+          Object Lock on an existing bucket with
+          ``Code="InvalidBucketState"``) -- this is a genuine
+          misconfiguration (wrong bucket, or object-lock support removed
+          out from under KronOS) that must fail loudly, never be silently
+          treated as WORM-protected.
+        """
+        try:
+            resp = await self._run(self._client.get_object_lock_configuration, Bucket=bucket)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code == "ObjectLockConfigurationNotFoundError":
+                raise StorageError(
+                    "Evidence bucket exists but Object Lock was never enabled on it -- "
+                    "cannot be enabled retroactively on an existing bucket (real "
+                    "operator intervention required, e.g. migrate to a freshly "
+                    "created bucket)",
+                    context={"bucket": bucket},
+                ) from exc
+            raise StorageError(
+                "Failed to verify evidence bucket's Object Lock configuration",
+                context={"bucket": bucket, "error": str(exc)},
+            ) from exc
+        config = resp.get("ObjectLockConfiguration", {})
+        if "Rule" in config:
+            return
+        logger.warning(
+            "bucket_object_lock_retention_rule_missing_reapplying",
+            extra={"bucket": bucket},
+        )
+        await self._run(
+            self._client.put_object_lock_configuration,
+            Bucket=bucket,
+            ObjectLockConfiguration={
+                "ObjectLockEnabled": "Enabled",
+                "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": self._retention_days}},
+            },
+        )
 
     async def _s3_stream(self, bucket: str, key: str, chunk_size: int) -> AsyncIterator[bytes]:
         loop = asyncio.get_event_loop()
