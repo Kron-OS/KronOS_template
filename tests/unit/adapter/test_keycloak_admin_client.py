@@ -92,6 +92,27 @@ class TestHttpxKeycloakAdminClientListSessions:
             with pytest.raises(KeycloakAdminError):
                 await client.list_user_sessions(uuid.uuid4())
 
+    @pytest.mark.asyncio
+    async def test_malformed_entry_fails_loudly(self) -> None:
+        """Mirrors TestHttpxKeycloakAdminClientListOrganizations's own
+        test_malformed_entry_fails_loudly (Gap Audit Milestone VV: this
+        sibling "iterate an admin API list response" method previously had
+        no equivalent guard, so a missing field raised a raw, unhelpful
+        KeyError instead of a clean KeycloakAdminError)."""
+
+        async def request(method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return _resp(200, [{"id": "sess-1"}])  # missing userId/username
+
+        async def post(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return _token_resp()
+
+        with patch("httpx.AsyncClient", return_value=_make_client(request, post)):
+            client = HttpxKeycloakAdminClient(
+                "http://localhost:8080", "kronos", "kronos-backend", "secret"
+            )
+            with pytest.raises(KeycloakAdminError):
+                await client.list_user_sessions(uuid.uuid4())
+
 
 class TestHttpxKeycloakAdminClientRevokeSession:
     @pytest.mark.asyncio

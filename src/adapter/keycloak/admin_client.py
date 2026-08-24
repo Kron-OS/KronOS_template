@@ -192,16 +192,32 @@ class HttpxKeycloakAdminClient(KeycloakAdminClient):
                 "Failed to list Keycloak user sessions",
                 context={"user_id": str(user_id), "status": resp.status_code, "body": resp.text},
             )
-        return tuple(
-            KeycloakSession(
-                session_id=s["id"],
-                user_id=s["userId"],
-                username=s["username"],
-                ip_address=s.get("ipAddress", ""),
-                started_at_epoch_ms=s.get("start", 0),
-            )
-            for s in resp.json()
-        )
+        sessions: list[KeycloakSession] = []
+        for s in resp.json():
+            try:
+                sessions.append(
+                    KeycloakSession(
+                        session_id=s["id"],
+                        user_id=s["userId"],
+                        username=s["username"],
+                        ip_address=s.get("ipAddress", ""),
+                        started_at_epoch_ms=s.get("start", 0),
+                    )
+                )
+            except KeyError as exc:
+                # Gap Audit Milestone VV: mirrors list_organizations()'s own
+                # defensive parsing (that method already raises a clean
+                # KeycloakAdminError on a missing id/alias, this sibling
+                # "iterate an admin API list response" method did not) -- a
+                # real session entry always has id/userId/username
+                # (confirmed live), so a missing one is a genuinely
+                # unexpected upstream shape worth failing loudly on, not a
+                # raw KeyError escaping into an unhelpful audit-log message.
+                raise KeycloakAdminError(
+                    "Keycloak session list entry missing required field",
+                    context={"user_id": str(user_id), "entry": s, "error": str(exc)},
+                ) from exc
+        return tuple(sessions)
 
     async def revoke_session(self, session_id: str) -> None:
         resp = await self._admin_request("DELETE", f"/sessions/{session_id}")
