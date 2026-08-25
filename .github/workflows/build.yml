@@ -18,7 +18,18 @@ jobs:
         run: docker build -t kronos-backend:${{ github.sha }} -f docker/Dockerfile .
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        # Gap Audit Milestone AAA: was pinned to @master -- a floating branch
+        # reference, not a tag. Every other action in this workflow is at
+        # least pinned to a released version; @master meant any new commit
+        # to aquasecurity/trivy-action's default branch would run immediately
+        # in this job with security-events: write + Docker build access, with
+        # no reviewed release boundary at all. Pinned to the commit SHA of
+        # the real, current v0.36.0 release (confirmed via the GitHub API:
+        # v0.36.0's tag object dereferences to this commit, tag itself is a
+        # verified/signed annotated tag) -- action.yaml at this SHA confirmed
+        # to still accept image-ref/format/output/severity/exit-code
+        # unchanged, so no other change was needed.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: kronos-backend:${{ github.sha }}
           format: sarif
