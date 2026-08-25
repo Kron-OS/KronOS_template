@@ -40,7 +40,9 @@ class TestValidateAgainstIndexTemplate:
     def test_default_registry_fields_all_mapped_in_index_template(self) -> None:
         registry = get_default_registry()
         missing = validate_against_index_template(registry, _INDEX_TEMPLATE_PATH)
-        assert missing == [], f"registry references ECS fields the index template doesn't map: {missing}"
+        assert (
+            missing == []
+        ), f"registry references ECS fields the index template doesn't map: {missing}"
 
     def test_detects_a_genuinely_unmapped_field(self) -> None:
         """Regression guard for the CI check itself: register a field that

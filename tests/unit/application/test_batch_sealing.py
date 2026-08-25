@@ -25,7 +25,7 @@ from src.adapter.queue.stream_ingest import StreamMessage
 from src.adapter.repository.sealed_batch import InMemorySealedBatchRepository
 from src.application.audit_log import AuditLogService
 from src.application.batch_sealing import BatchSealingService
-from src.application.sealing_trigger_policy import SizeBoundTriggerPolicy, TimeBoundTriggerPolicy
+from src.application.sealing_trigger_policy import SizeBoundTriggerPolicy
 from src.domain.audit import AuditEventType
 from src.domain.merkle import build_merkle_root, merkle_proof, verify_proof
 from src.domain.sealed_batch import SealedBatch
@@ -65,9 +65,7 @@ def _service(
     repository: InMemorySealedBatchRepository,
     trigger_policy,
 ) -> BatchSealingService:
-    return BatchSealingService(
-        stream_adapter, storage, tsa, audit_log, repository, trigger_policy
-    )
+    return BatchSealingService(stream_adapter, storage, tsa, audit_log, repository, trigger_policy)
 
 
 class TestSealPendingNoWork:
@@ -106,7 +104,11 @@ class TestSealPendingSuccess:
     @pytest.mark.asyncio
     async def test_full_flow_seals_worm_tsa_audit_and_merkle_root(self) -> None:
         org_id = uuid.uuid4()
-        messages = [_msg("1-0", b"event-one"), _msg("2-0", b"event-two"), _msg("3-0", b"event-three")]
+        messages = [
+            _msg("1-0", b"event-one"),
+            _msg("2-0", b"event-two"),
+            _msg("3-0", b"event-three"),
+        ]
         stream = _stream_adapter([], messages)
         storage = _storage()
         tsa = _tsa(b"real-looking-der-token")
@@ -151,7 +153,9 @@ class TestSealPendingSuccess:
         assert audit_repo._events[0].details["merkle_root"] == sealed.merkle_root
 
         # Only after everything else succeeded: ack the real source messages.
-        stream.ack.assert_awaited_once_with(org_id, "zeek-conn", "kronos-sealer", "1-0", "2-0", "3-0")
+        stream.ack.assert_awaited_once_with(
+            org_id, "zeek-conn", "kronos-sealer", "1-0", "2-0", "3-0"
+        )
 
     @pytest.mark.asyncio
     async def test_carry_over_and_fresh_messages_combined_in_order(self) -> None:
@@ -309,7 +313,9 @@ class TestSealerFallBehindAlerting:
         )
 
     @pytest.mark.asyncio
-    async def test_stale_pending_event_pages_but_does_not_raise_and_seal_still_proceeds(self) -> None:
+    async def test_stale_pending_event_pages_but_does_not_raise_and_seal_still_proceeds(
+        self,
+    ) -> None:
         org_id = uuid.uuid4()
         messages = [_msg_with_age(b"stale-event", age_seconds=3600)]  # 1 hour old
         stream = _stream_adapter([], messages)
@@ -319,7 +325,12 @@ class TestSealerFallBehindAlerting:
         # Threshold (60s) is well below the trigger policy's own threshold
         # would ever need to be -- distinct knobs, per this item's own design.
         service = BatchSealingService(
-            stream, _storage(), _tsa(), audit_log, repo, SizeBoundTriggerPolicy(1),
+            stream,
+            _storage(),
+            _tsa(),
+            audit_log,
+            repo,
+            SizeBoundTriggerPolicy(1),
             stall_alert_after_seconds=60.0,
         )
 
@@ -331,7 +342,9 @@ class TestSealerFallBehindAlerting:
         stream.ack.assert_awaited_once()
 
         alert_events = [
-            e for e in audit_repo._events if e.event_type == AuditEventType.SEALER_FALL_BEHIND_DETECTED
+            e
+            for e in audit_repo._events
+            if e.event_type == AuditEventType.SEALER_FALL_BEHIND_DETECTED
         ]
         assert len(alert_events) == 1
         assert alert_events[0].details["pending_event_count"] == 1
@@ -350,7 +363,12 @@ class TestSealerFallBehindAlerting:
         audit_log = AuditLogService(audit_repo)
         repo = InMemorySealedBatchRepository()
         service = BatchSealingService(
-            stream, _storage(), _tsa(), audit_log, repo, SizeBoundTriggerPolicy(100),
+            stream,
+            _storage(),
+            _tsa(),
+            audit_log,
+            repo,
+            SizeBoundTriggerPolicy(100),
             stall_alert_after_seconds=60.0,
         )
 
@@ -370,7 +388,9 @@ class TestInclusionProofReconstruction:
     the real (Postgres-backed) SealedBatch row would be used in production."""
 
     @pytest.mark.asyncio
-    async def test_arbitrary_event_proof_verifies_true_and_tampered_proof_verifies_false(self) -> None:
+    async def test_arbitrary_event_proof_verifies_true_and_tampered_proof_verifies_false(
+        self,
+    ) -> None:
         messages = [_msg(f"{i}-0", f"event-{i}".encode()) for i in range(1, 6)]
         stream = _stream_adapter([], messages)
         audit_log = AuditLogService(InMemoryAuditLogRepository())

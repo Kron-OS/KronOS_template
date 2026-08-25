@@ -82,7 +82,7 @@ class SealedBatch(BaseModel):
     last_message_id: str
 
     @model_validator(mode="after")
-    def _leaves_and_ids_align(self) -> "SealedBatch":
+    def _leaves_and_ids_align(self) -> SealedBatch:
         if len(self.leaf_hashes) != self.event_count or len(self.message_ids) != self.event_count:
             raise ValueError(
                 "leaf_hashes/message_ids length must equal event_count "

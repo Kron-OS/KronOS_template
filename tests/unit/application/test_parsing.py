@@ -181,9 +181,7 @@ class TestExtractArtifacts:
         parser = FakeParser(record_count=3)
         evidence = make_evidence()
         tenant = make_tenant_context()
-        artifacts = [
-            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
-        ]
+        artifacts = [a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)]
         assert artifacts == []
 
     @pytest.mark.asyncio
@@ -202,9 +200,7 @@ class TestExtractArtifacts:
         parser = FakeArtifactModule(record_count=1)
         evidence = make_evidence()
         tenant = make_tenant_context()
-        artifacts = [
-            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
-        ]
+        artifacts = [a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)]
         assert len(artifacts) == 1
         assert artifacts[0].kind == "test.pstree"
         assert artifacts[0].content["pid"] == 4
@@ -218,9 +214,7 @@ class TestExtractArtifacts:
         evidence = make_evidence()
         tenant = make_tenant_context()
         records = await _drain(parser.parse(_empty_stream(), evidence, tenant))
-        artifacts = [
-            a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)
-        ]
+        artifacts = [a async for a in parser.extract_artifacts(_empty_stream(), evidence, tenant)]
         assert len(records) == 2
         assert len(artifacts) == 1
 

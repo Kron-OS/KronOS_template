@@ -75,7 +75,9 @@ class StreamProvenance(ProvenanceBase):
     )
     event_offset: int = Field(
         ge=0,
-        description="Zero-based position of this event within its stream/batch (record_index-equivalent)",
+        description=(
+            "Zero-based position of this event within its stream/batch (record_index-equivalent)"
+        ),
     )
     # Optional and absent at ingest time by design -- attached later during
     # triage (roadmap B2), unlike EvidenceProvenance.case_id which is

@@ -90,7 +90,11 @@ class SecurityAnalyticsCustomRuleDetectorProvisioner(CustomRuleDetectorBinder):
                 if current == desired:
                     logger.info(
                         "custom_detector_already_current",
-                        extra={"org_alias": org_alias, "log_type": log_type, "rule_count": len(desired)},
+                        extra={
+                            "org_alias": org_alias,
+                            "log_type": log_type,
+                            "rule_count": len(desired),
+                        },
                     )
                     return
                 await client.delete(

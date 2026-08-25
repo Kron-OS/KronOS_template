@@ -89,9 +89,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8443)
-    parser.add_argument("--server-cert", required=True, help="This listener's own TLS server certificate")
-    parser.add_argument("--server-key", required=True, help="This listener's own TLS server private key")
-    parser.add_argument("--client-ca", required=True, help="step-ca root CA used to verify collector client certs")
+    parser.add_argument(
+        "--server-cert", required=True, help="This listener's own TLS server certificate"
+    )
+    parser.add_argument(
+        "--server-key", required=True, help="This listener's own TLS server private key"
+    )
+    parser.add_argument(
+        "--client-ca", required=True, help="step-ca root CA used to verify collector client certs"
+    )
     args = parser.parse_args()
     run(
         host=args.host,

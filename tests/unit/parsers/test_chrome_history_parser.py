@@ -33,7 +33,8 @@ _V2 = datetime(2024, 3, 15, 12, 45, 30, tzinfo=UTC)
 
 def _build_history_db(path: str) -> None:
     conn = sqlite3.connect(path)
-    conn.executescript("""
+    conn.executescript(
+        """
         CREATE TABLE urls(
             id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR,
             visit_count INTEGER DEFAULT 0, typed_count INTEGER DEFAULT 0,
@@ -41,7 +42,8 @@ def _build_history_db(path: str) -> None:
         CREATE TABLE visits(
             id INTEGER PRIMARY KEY, url INTEGER NOT NULL, visit_time INTEGER NOT NULL,
             from_visit INTEGER, transition INTEGER DEFAULT 0, visit_duration INTEGER DEFAULT 0);
-        """)
+        """
+    )
     conn.execute(
         "INSERT INTO urls VALUES(1,'https://example.com/path','Example Domain',3,1,?,0)",
         (_chrome_ts(_V2),),
@@ -162,12 +164,14 @@ class TestParse:
     async def test_empty_history_yields_no_records(self, tmp_path) -> None:
         path = tmp_path / "History"
         conn = sqlite3.connect(str(path))
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE urls(id INTEGER PRIMARY KEY, url TEXT, title TEXT,
                 visit_count INTEGER, typed_count INTEGER, last_visit_time INTEGER, hidden INTEGER);
             CREATE TABLE visits(id INTEGER PRIMARY KEY, url INTEGER, visit_time INTEGER,
                 from_visit INTEGER, transition INTEGER, visit_duration INTEGER);
-            """)
+            """
+        )
         conn.commit()
         conn.close()
         records = await _drain(

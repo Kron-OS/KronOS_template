@@ -17,7 +17,9 @@ def _resp(json_body: dict, status_code: int = 200) -> MagicMock:
     resp.json.return_value = json_body
     resp.text = str(json_body)
     if status_code >= 400:
-        resp.raise_for_status.side_effect = httpx.HTTPStatusError("error", request=MagicMock(), response=resp)
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=resp
+        )
     else:
         resp.raise_for_status.return_value = None
     return resp
@@ -125,7 +127,14 @@ class TestResolveIndices:
     async def test_returns_real_index_names_from_resolve_api(self) -> None:
         async def get(url: str, **kwargs):  # type: ignore[no-untyped-def]
             assert url.endswith("/_resolve/index/kronos-acme-case-1-*")
-            return _resp({"indices": [{"name": "kronos-acme-case-1-202607"}, {"name": "kronos-acme-case-1-202608"}]})
+            return _resp(
+                {
+                    "indices": [
+                        {"name": "kronos-acme-case-1-202607"},
+                        {"name": "kronos-acme-case-1-202608"},
+                    ]
+                }
+            )
 
         with patch("httpx.AsyncClient", return_value=_make_client(get_side_effect=get)):
             manager = OpenSearchIsmLifecycleManager("https://localhost:9200", "admin", "admin")
@@ -138,7 +147,13 @@ class TestIsManagedAndEnabled:
     @pytest.mark.asyncio
     async def test_true_when_a_matching_managed_index_doc_is_enabled(self) -> None:
         async def post(url: str, **kwargs):  # type: ignore[no-untyped-def]
-            return _resp({"hits": {"hits": [{"_source": {"managed_index": {"name": "idx1", "enabled": True}}}]}})
+            return _resp(
+                {
+                    "hits": {
+                        "hits": [{"_source": {"managed_index": {"name": "idx1", "enabled": True}}}]
+                    }
+                }
+            )
 
         with patch("httpx.AsyncClient", return_value=_make_client(post)):
             manager = OpenSearchIsmLifecycleManager("https://localhost:9200", "admin", "admin")
@@ -156,7 +171,13 @@ class TestIsManagedAndEnabled:
     @pytest.mark.asyncio
     async def test_false_when_matching_doc_is_disabled(self) -> None:
         async def post(url: str, **kwargs):  # type: ignore[no-untyped-def]
-            return _resp({"hits": {"hits": [{"_source": {"managed_index": {"name": "idx1", "enabled": False}}}]}})
+            return _resp(
+                {
+                    "hits": {
+                        "hits": [{"_source": {"managed_index": {"name": "idx1", "enabled": False}}}]
+                    }
+                }
+            )
 
         with patch("httpx.AsyncClient", return_value=_make_client(post)):
             manager = OpenSearchIsmLifecycleManager("https://localhost:9200", "admin", "admin")

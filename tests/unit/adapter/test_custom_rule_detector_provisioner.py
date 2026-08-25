@@ -40,12 +40,16 @@ class TestSyncCustomDetector:
                 return _resp({"hits": {"hits": []}})
             if url.endswith("/detectors"):
                 assert kwargs["json"]["inputs"][0]["detector_input"]["indices"] == ["kronos-acme-*"]
-                assert kwargs["json"]["inputs"][0]["detector_input"]["custom_rules"] == [{"id": "rule-1"}]
+                assert kwargs["json"]["inputs"][0]["detector_input"]["custom_rules"] == [
+                    {"id": "rule-1"}
+                ]
                 return _resp({"_id": "new-id"})
             raise AssertionError(url)
 
         with patch("httpx.AsyncClient", return_value=_make_client(post)):
-            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner("https://localhost:9200", "admin", "admin")
+            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner(
+                "https://localhost:9200", "admin", "admin"
+            )
             await provisioner.sync_custom_detector("acme", "network", ("rule-1",))
 
         assert any(c.endswith("/detectors") for c in calls)
@@ -62,7 +66,14 @@ class TestSyncCustomDetector:
                                     "_id": "existing-id",
                                     "_source": {
                                         "inputs": [
-                                            {"detector_input": {"custom_rules": [{"id": "rule-1"}, {"id": "rule-2"}]}}
+                                            {
+                                                "detector_input": {
+                                                    "custom_rules": [
+                                                        {"id": "rule-1"},
+                                                        {"id": "rule-2"},
+                                                    ]
+                                                }
+                                            }
                                         ]
                                     },
                                 }
@@ -73,7 +84,9 @@ class TestSyncCustomDetector:
             raise AssertionError(f"unexpected create/delete call: {url}")
 
         with patch("httpx.AsyncClient", return_value=_make_client(post)):
-            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner("https://localhost:9200", "admin", "admin")
+            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner(
+                "https://localhost:9200", "admin", "admin"
+            )
             await provisioner.sync_custom_detector("acme", "network", ("rule-2", "rule-1"))
 
     @pytest.mark.asyncio
@@ -89,7 +102,15 @@ class TestSyncCustomDetector:
                             "hits": [
                                 {
                                     "_id": "existing-id",
-                                    "_source": {"inputs": [{"detector_input": {"custom_rules": [{"id": "old-rule"}]}}]},
+                                    "_source": {
+                                        "inputs": [
+                                            {
+                                                "detector_input": {
+                                                    "custom_rules": [{"id": "old-rule"}]
+                                                }
+                                            }
+                                        ]
+                                    },
                                 }
                             ]
                         }
@@ -105,7 +126,9 @@ class TestSyncCustomDetector:
             return _resp({})
 
         with patch("httpx.AsyncClient", return_value=_make_client(post, delete)):
-            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner("https://localhost:9200", "admin", "admin")
+            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner(
+                "https://localhost:9200", "admin", "admin"
+            )
             await provisioner.sync_custom_detector("acme", "network", ("new-rule",))
 
         assert any("existing-id" in d for d in deleted)
@@ -124,7 +147,15 @@ class TestSyncCustomDetector:
                             "hits": [
                                 {
                                     "_id": "existing-id",
-                                    "_source": {"inputs": [{"detector_input": {"custom_rules": [{"id": "old-rule"}]}}]},
+                                    "_source": {
+                                        "inputs": [
+                                            {
+                                                "detector_input": {
+                                                    "custom_rules": [{"id": "old-rule"}]
+                                                }
+                                            }
+                                        ]
+                                    },
                                 }
                             ]
                         }
@@ -138,7 +169,9 @@ class TestSyncCustomDetector:
             return _resp({})
 
         with patch("httpx.AsyncClient", return_value=_make_client(post, delete)):
-            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner("https://localhost:9200", "admin", "admin")
+            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner(
+                "https://localhost:9200", "admin", "admin"
+            )
             await provisioner.sync_custom_detector("acme", "network", ())
 
         assert any("existing-id" in d for d in deleted)
@@ -152,5 +185,7 @@ class TestSyncCustomDetector:
             raise AssertionError("must not touch OpenSearch further")
 
         with patch("httpx.AsyncClient", return_value=_make_client(post)):
-            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner("https://localhost:9200", "admin", "admin")
+            provisioner = SecurityAnalyticsCustomRuleDetectorProvisioner(
+                "https://localhost:9200", "admin", "admin"
+            )
             await provisioner.sync_custom_detector("acme", "network", ())  # must not raise

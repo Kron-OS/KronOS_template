@@ -40,7 +40,8 @@ def _make_cert(sans: list[x509.GeneralName] | None) -> bytes:
 class TestExtract:
     def test_valid_urn_san_yields_correct_identity(self) -> None:
         org_id = uuid.uuid4()
-        der = _make_cert([x509.UniformResourceIdentifier(f"urn:kronos:collector:org:{org_id}:source:zeek-conn")])
+        uri = f"urn:kronos:collector:org:{org_id}:source:zeek-conn"
+        der = _make_cert([x509.UniformResourceIdentifier(uri)])
 
         identity = X509SanCollectorIdentityExtractor().extract(der)
 
@@ -63,7 +64,8 @@ class TestExtract:
         # group) but not a syntactically valid UUID -- reaches uuid.UUID()'s
         # own ValueError branch, not the "no matching URN at all" case.
         bad_org_id = "-" * 34 + "00"
-        der = _make_cert([x509.UniformResourceIdentifier(f"urn:kronos:collector:org:{bad_org_id}:source:x")])
+        uri = f"urn:kronos:collector:org:{bad_org_id}:source:x"
+        der = _make_cert([x509.UniformResourceIdentifier(uri)])
         with pytest.raises(AuthenticationError, match="malformed org_id"):
             X509SanCollectorIdentityExtractor().extract(der)
 
@@ -75,7 +77,8 @@ class TestExtract:
         """The URN pattern's source_id group is greedy -- confirm a
         source_id containing its own colons round-trips correctly."""
         org_id = uuid.uuid4()
-        der = _make_cert([x509.UniformResourceIdentifier(f"urn:kronos:collector:org:{org_id}:source:edr:vendor-x:host42")])
+        uri = f"urn:kronos:collector:org:{org_id}:source:edr:vendor-x:host42"
+        der = _make_cert([x509.UniformResourceIdentifier(uri)])
 
         identity = X509SanCollectorIdentityExtractor().extract(der)
 

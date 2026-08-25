@@ -101,7 +101,8 @@ def tsa_fixture(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     )
 
     tsa_cnf = d / "tsa.cnf"
-    tsa_cnf.write_text(f"""\
+    tsa_cnf.write_text(
+        f"""\
 [tsa]
 default_tsa = tsa_config1
 
@@ -121,7 +122,8 @@ clock_precision_digits = 0
 ordering = yes
 tsa_name = yes
 ess_cert_id_chain = no
-""")
+"""
+    )
     return {"ca_pem": ca_pem, "tsa_cnf": tsa_cnf, "dir": d}
 
 

@@ -111,7 +111,9 @@ class InMemoryDetectionRepository(DetectionRepository):
             if detection.org_id == org_id:
                 yield detection
 
-    async def stream_by_case(self, case_id: uuid.UUID, org_id: uuid.UUID) -> AsyncIterator[Detection]:
+    async def stream_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> AsyncIterator[Detection]:
         for detection in sorted(self._store.values(), key=lambda d: d.synced_at):
             if detection.org_id == org_id and detection.case_id == case_id:
                 yield detection

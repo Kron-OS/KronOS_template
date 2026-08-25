@@ -57,7 +57,9 @@ class RulePackPublisher:
         self._detector_binder = detector_binder
         self._audit = audit_log
 
-    async def publish_pack_version(self, tenant: TenantContext, pack_name: str, log_type: str) -> int:
+    async def publish_pack_version(
+        self, tenant: TenantContext, pack_name: str, log_type: str
+    ) -> int:
         """Push every ACCEPTED, not-yet-published rule of *log_type* in
         *pack_name*'s latest version to OpenSearch, then resync that org's
         custom-rule detector for *log_type* to reference exactly the current
@@ -126,9 +128,7 @@ class RulePackPublisher:
         for rule in rules:
             if rule.log_type != log_type or not rule.is_accepted:
                 continue
-            published_id = await self._repo.get_published_opensearch_id(
-                rule.rule_id, tenant.org_id
-            )
+            published_id = await self._repo.get_published_opensearch_id(rule.rule_id, tenant.org_id)
             if published_id is not None:
                 opensearch_ids.append(published_id)
         await self._detector_binder.sync_custom_detector(

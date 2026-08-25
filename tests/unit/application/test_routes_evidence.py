@@ -269,9 +269,7 @@ class TestRetryParseRoute:
             parser_registry=get_parser_registry(),
             task_queue=get_task_queue(),
         )
-        client.app.dependency_overrides[get_parsing_orchestration_service] = (
-            lambda: orchestrator
-        )
+        client.app.dependency_overrides[get_parsing_orchestration_service] = lambda: orchestrator
         return evidence_repo
 
     def _force_error(self, evidence_repo, evidence_id: str, org_id, reason: str) -> None:  # type: ignore[no-untyped-def]

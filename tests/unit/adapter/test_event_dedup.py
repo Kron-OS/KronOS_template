@@ -44,7 +44,10 @@ class TestRedisEventDedupChecker:
         await checker.is_duplicate(org_b, "src", "same-hash", ttl_seconds=60)
 
         keys_used = {call.args[0] for call in redis.set.await_args_list}
-        assert keys_used == {f"kronos:dedup:{org_a}:src:same-hash", f"kronos:dedup:{org_b}:src:same-hash"}
+        assert keys_used == {
+            f"kronos:dedup:{org_a}:src:same-hash",
+            f"kronos:dedup:{org_b}:src:same-hash",
+        }
 
 
 class TestInMemoryEventDedupChecker:

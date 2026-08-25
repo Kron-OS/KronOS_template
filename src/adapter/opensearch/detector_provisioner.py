@@ -127,7 +127,9 @@ class SecurityAnalyticsDetectorProvisioner(DetectorProvisioner):
     def _detector_name(self, org_alias: str, log_type: str) -> str:
         return f"kronos-{org_alias}-{log_type}-detector"
 
-    async def _ensure_detector(self, client: httpx.AsyncClient, org_alias: str, log_type: str) -> None:
+    async def _ensure_detector(
+        self, client: httpx.AsyncClient, org_alias: str, log_type: str
+    ) -> None:
         name = self._detector_name(org_alias, log_type)
 
         # Idempotency check: does a detector with this exact name already
@@ -177,7 +179,10 @@ class SecurityAnalyticsDetectorProvisioner(DetectorProvisioner):
             "inputs": [
                 {
                     "detector_input": {
-                        "description": f"KronOS auto-provisioned detector for org {org_alias}, log type {log_type}",
+                        "description": (
+                            f"KronOS auto-provisioned detector for org {org_alias}, "
+                            f"log type {log_type}"
+                        ),
                         "indices": [f"kronos-{org_alias}-*"],
                         "pre_packaged_rules": [{"id": rid} for rid in rule_ids],
                         "custom_rules": [],
@@ -202,7 +207,9 @@ class SecurityAnalyticsDetectorProvisioner(DetectorProvisioner):
             },
         )
 
-    async def _fetch_prepackaged_rule_ids(self, client: httpx.AsyncClient, log_type: str) -> list[str]:
+    async def _fetch_prepackaged_rule_ids(
+        self, client: httpx.AsyncClient, log_type: str
+    ) -> list[str]:
         """All real prepackaged rule ids for this log type -- not a hand-picked
         subset, matching C1's own methodology."""
         resp = await client.post(
@@ -211,7 +218,9 @@ class SecurityAnalyticsDetectorProvisioner(DetectorProvisioner):
             params={"pre_packaged": "true"},
             json={
                 "size": 10000,
-                "query": {"nested": {"path": "rule", "query": {"match": {"rule.category": log_type}}}},
+                "query": {
+                    "nested": {"path": "rule", "query": {"match": {"rule.category": log_type}}}
+                },
             },
         )
         resp.raise_for_status()

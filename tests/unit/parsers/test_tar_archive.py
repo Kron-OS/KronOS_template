@@ -18,7 +18,6 @@ import io
 import tarfile
 import zipfile
 from collections.abc import AsyncIterator
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest

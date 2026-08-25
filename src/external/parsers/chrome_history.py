@@ -143,7 +143,8 @@ class ChromeHistoryParser(ForensicParser):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             try:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT v.visit_time     AS visit_time,
                            v.transition     AS transition,
                            v.visit_duration AS visit_duration,
@@ -154,7 +155,8 @@ class ChromeHistoryParser(ForensicParser):
                     FROM visits v
                     JOIN urls u ON u.id = v.url
                     ORDER BY v.visit_time ASC
-                    """)
+                    """
+                )
             except sqlite3.Error as exc:
                 # Detection matched the magic + table names, but the actual
                 # schema isn't Chrome's — surface it rather than silently

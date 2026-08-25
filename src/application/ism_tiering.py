@@ -60,7 +60,11 @@ class DefaultIsmTierResolver(IsmTierResolver):
     def policy_body_for_id(self, policy_id: str) -> dict:
         import json
 
-        filename = "ism_policy.json" if policy_id == _STANDARD_POLICY_ID else "ism_policy_stream_aggressive.json"
+        filename = (
+            "ism_policy.json"
+            if policy_id == _STANDARD_POLICY_ID
+            else "ism_policy_stream_aggressive.json"
+        )
         path = Path(__file__).parent.parent / "adapter" / "opensearch" / filename
         with path.open() as fh:
             return json.load(fh)

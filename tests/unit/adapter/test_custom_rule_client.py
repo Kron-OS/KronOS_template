@@ -15,7 +15,9 @@ def _resp(json_body: dict, status_code: int = 200) -> MagicMock:
     resp.status_code = status_code
     resp.json.return_value = json_body
     if status_code >= 400:
-        resp.raise_for_status.side_effect = httpx.HTTPStatusError("error", request=MagicMock(), response=resp)
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=resp
+        )
     else:
         resp.raise_for_status.return_value = None
     return resp

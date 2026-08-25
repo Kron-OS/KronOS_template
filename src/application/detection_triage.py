@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 class DetectionTriageService:
     """Validates and applies triage FSM transitions on a Detection."""
 
-    def __init__(self, detection_repository: DetectionRepository, audit_log: AuditLogService) -> None:
+    def __init__(
+        self, detection_repository: DetectionRepository, audit_log: AuditLogService
+    ) -> None:
         self._repo = detection_repository
         self._audit = audit_log
 

@@ -24,7 +24,10 @@ from src.external.middleware.collector_mtls import get_collector_identity
 @pytest.fixture
 def identity() -> CollectorIdentity:
     return CollectorIdentity(
-        org_id=uuid.uuid4(), source_id="zeek-conn", cert_subject="CN=test", not_after="2026-01-01T00:00:00+00:00"
+        org_id=uuid.uuid4(),
+        source_id="zeek-conn",
+        cert_subject="CN=test",
+        not_after="2026-01-01T00:00:00+00:00",
     )
 
 
@@ -43,12 +46,16 @@ def client(identity: CollectorIdentity, service: AsyncMock) -> TestClient:
 
 class TestIngestRoute:
     def test_accepted_events_return_202(self, client: TestClient, service: AsyncMock) -> None:
-        service.ingest_events.return_value = [EventOutcome(accepted=True, duplicate=False, message_id="1-0")]
+        service.ingest_events.return_value = [
+            EventOutcome(accepted=True, duplicate=False, message_id="1-0")
+        ]
 
         resp = client.post("/api/collector/ingest", json={"events": [{"a": 1}]})
 
         assert resp.status_code == 202
-        assert resp.json() == {"results": [{"accepted": True, "duplicate": False, "messageId": "1-0"}]}
+        assert resp.json() == {
+            "results": [{"accepted": True, "duplicate": False, "messageId": "1-0"}]
+        }
 
     def test_backpressure_returns_503(self, client: TestClient, service: AsyncMock) -> None:
         service.ingest_events.side_effect = BackpressureError("stream at capacity")

@@ -37,7 +37,9 @@ def dedup_checker() -> AsyncMock:
 
 @pytest.fixture
 def service(stream_adapter: AsyncMock, dedup_checker: AsyncMock) -> CollectorIngestService:
-    return CollectorIngestService(stream_adapter, dedup_checker, max_stream_length=100, dedup_ttl_seconds=3600)
+    return CollectorIngestService(
+        stream_adapter, dedup_checker, max_stream_length=100, dedup_ttl_seconds=3600
+    )
 
 
 class TestIngestEvents:

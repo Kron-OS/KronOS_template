@@ -117,7 +117,9 @@ class OpenSearchIsmLifecycleManager(IsmLifecycleManager):
         whether a policy was already attached.
         """
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
-            await client.post(f"{self._base_url}/_plugins/_ism/remove/{index_name}", auth=self._auth)
+            await client.post(
+                f"{self._base_url}/_plugins/_ism/remove/{index_name}", auth=self._auth
+            )
             resp = await client.post(
                 f"{self._base_url}/_plugins/_ism/add/{index_name}",
                 auth=self._auth,

@@ -18,7 +18,9 @@ from tests.conftest import InMemoryAuditLogRepository
 from tests.fixtures.factories import make_tenant_context
 
 
-def _make_detection(org_id: uuid.UUID, state: DetectionTriageState = DetectionTriageState.NEW) -> Detection:
+def _make_detection(
+    org_id: uuid.UUID, state: DetectionTriageState = DetectionTriageState.NEW
+) -> Detection:
     return Detection(
         org_id=org_id,
         org_alias="testorg",
@@ -31,7 +33,9 @@ def _make_detection(org_id: uuid.UUID, state: DetectionTriageState = DetectionTr
     )
 
 
-def _make_service() -> tuple[DetectionTriageService, InMemoryDetectionRepository, InMemoryAuditLogRepository]:
+def _make_service() -> (
+    tuple[DetectionTriageService, InMemoryDetectionRepository, InMemoryAuditLogRepository]
+):
     audit_repo = InMemoryAuditLogRepository()
     audit_log = AuditLogService(audit_repo)
     repo = InMemoryDetectionRepository()
@@ -58,7 +62,9 @@ class TestDetectionTriageServiceValidTransitions:
     async def test_investigating_to_true_positive(self) -> None:
         service, repo, _ = _make_service()
         tenant = make_tenant_context()
-        detection = await repo.save(_make_detection(tenant.org_id, DetectionTriageState.INVESTIGATING))
+        detection = await repo.save(
+            _make_detection(tenant.org_id, DetectionTriageState.INVESTIGATING)
+        )
 
         updated = await service.transition(
             detection.detection_id, DetectionTriageState.TRUE_POSITIVE, tenant
@@ -113,7 +119,9 @@ class TestDetectionTriageServiceIllegalTransitions:
         detection = await repo.save(_make_detection(tenant.org_id))
 
         with pytest.raises(DetectionStateError):
-            await service.transition(detection.detection_id, DetectionTriageState.TRUE_POSITIVE, tenant)
+            await service.transition(
+                detection.detection_id, DetectionTriageState.TRUE_POSITIVE, tenant
+            )
 
         # Rejected transition must not have mutated the stored row.
         persisted = await repo.get_by_id(detection.detection_id, tenant.org_id)
@@ -127,7 +135,9 @@ class TestDetectionTriageServiceIllegalTransitions:
         detection = await repo.save(_make_detection(tenant.org_id))
 
         with pytest.raises(DetectionStateError):
-            await service.transition(detection.detection_id, DetectionTriageState.FALSE_POSITIVE, tenant)
+            await service.transition(
+                detection.detection_id, DetectionTriageState.FALSE_POSITIVE, tenant
+            )
 
         events = [e async for e in audit_repo.stream_by_org(tenant.org_id)]
         failed = [
@@ -141,10 +151,14 @@ class TestDetectionTriageServiceIllegalTransitions:
     async def test_terminal_state_rejects_further_transitions(self) -> None:
         service, repo, _ = _make_service()
         tenant = make_tenant_context()
-        detection = await repo.save(_make_detection(tenant.org_id, DetectionTriageState.TRUE_POSITIVE))
+        detection = await repo.save(
+            _make_detection(tenant.org_id, DetectionTriageState.TRUE_POSITIVE)
+        )
 
         with pytest.raises(DetectionStateError):
-            await service.transition(detection.detection_id, DetectionTriageState.INVESTIGATING, tenant)
+            await service.transition(
+                detection.detection_id, DetectionTriageState.INVESTIGATING, tenant
+            )
 
     @pytest.mark.asyncio
     async def test_transition_on_nonexistent_detection_raises_validation_error(self) -> None:
@@ -162,4 +176,6 @@ class TestDetectionTriageServiceIllegalTransitions:
         detection = await repo.save(_make_detection(owner_tenant.org_id))
 
         with pytest.raises(ValidationError):
-            await service.transition(detection.detection_id, DetectionTriageState.INVESTIGATING, other_tenant)
+            await service.transition(
+                detection.detection_id, DetectionTriageState.INVESTIGATING, other_tenant
+            )

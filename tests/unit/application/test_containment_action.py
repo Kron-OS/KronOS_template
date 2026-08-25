@@ -31,7 +31,9 @@ class _FakeDestructiveAction(ContainmentAction):
     for a real backend call the same way _EchoAction stands in for a real
     PlaybookAction in test_playbook_execution.py."""
 
-    def __init__(self, approval_gate, audit_log: AuditLogService, calls: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, approval_gate, audit_log: AuditLogService, calls: list[dict[str, Any]]
+    ) -> None:
         super().__init__(approval_gate, audit_log)
         self._calls = calls
 
@@ -91,7 +93,9 @@ class TestContainmentActionApproved:
         assert AuditEventType.CONTAINMENT_ACTION_DENIED not in event_types
         assert AuditEventType.CONTAINMENT_ACTION_FAILED not in event_types
 
-        executed = next(e for e in events if e.event_type == AuditEventType.CONTAINMENT_ACTION_EXECUTED)
+        executed = next(
+            e for e in events if e.event_type == AuditEventType.CONTAINMENT_ACTION_EXECUTED
+        )
         assert executed.details["output"] == {"performed": True}
         assert executed.details["policy_name"] == "static_policy_allowlist"
 
@@ -134,7 +138,9 @@ class TestContainmentActionApproved:
 
 class TestContainmentActionDenied:
     @pytest.mark.asyncio
-    async def test_denied_action_raises_and_never_performs(self, audit_log: AuditLogService) -> None:
+    async def test_denied_action_raises_and_never_performs(
+        self, audit_log: AuditLogService
+    ) -> None:
         tenant = make_tenant_context()
         gate = StaticPolicyApprovalGate(frozenset())  # nothing authorized
         calls: list[dict[str, Any]] = []

@@ -11,7 +11,9 @@ from src.adapter.repository.sealed_batch import InMemorySealedBatchRepository
 from src.domain.sealed_batch import SealedBatch
 
 
-def _batch(org_id: uuid.UUID, source_id: str, sealed_at: datetime, last_message_id: str) -> SealedBatch:
+def _batch(
+    org_id: uuid.UUID, source_id: str, sealed_at: datetime, last_message_id: str
+) -> SealedBatch:
     return SealedBatch(
         org_id=org_id,
         source_id=source_id,

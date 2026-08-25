@@ -51,7 +51,9 @@ async def ingest_events(
     try:
         outcomes = await service.ingest_events(identity, body.events)
     except BackpressureError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
 
     return IngestEventsOut(
         results=[

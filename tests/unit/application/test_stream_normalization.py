@@ -44,7 +44,9 @@ def _zeek_event(seq: int) -> bytes:
     ).encode()
 
 
-def _manifest_bytes(batch_id: uuid.UUID, org_id: uuid.UUID, source_id: str, events: list[bytes]) -> bytes:
+def _manifest_bytes(
+    batch_id: uuid.UUID, org_id: uuid.UUID, source_id: str, events: list[bytes]
+) -> bytes:
     import hashlib
 
     doc = {
@@ -81,9 +83,7 @@ def _sealed_batch(org_id: uuid.UUID, source_id: str, event_count: int) -> Sealed
 
 
 class TestStreamNormalizationService:
-    def _service(
-        self, storage: AsyncMock
-    ) -> tuple[
+    def _service(self, storage: AsyncMock) -> tuple[
         StreamNormalizationService,
         InMemorySealedBatchRepository,
         InMemoryOpenSearchClient,
@@ -97,7 +97,9 @@ class TestStreamNormalizationService:
         ingestion = TimelineIngestionService(opensearch=os_client, audit_log=audit)
         registry = get_default_stream_normalizer_registry()
         dead_letters = InMemoryDeadLetterSink()
-        service = StreamNormalizationService(repo, storage, ingestion, registry, dead_letters, audit)
+        service = StreamNormalizationService(
+            repo, storage, ingestion, registry, dead_letters, audit
+        )
         return service, repo, os_client, dead_letters, audit_repo
 
     @pytest.mark.asyncio
@@ -106,7 +108,9 @@ class TestStreamNormalizationService:
         batch = _sealed_batch(org_id, "zeek-conn-log", event_count=3)
         events = [_zeek_event(i) for i in range(3)]
         storage = AsyncMock()
-        storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", events
+        )
 
         service, repo, os_client, dead_letters, _audit_repo = self._service(storage)
         await repo.save(batch)
@@ -136,7 +140,9 @@ class TestStreamNormalizationService:
         batch = _sealed_batch(org_id, "zeek-conn-log", event_count=2)
         events = [_zeek_event(i) for i in range(2)]
         storage = AsyncMock()
-        storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", events
+        )
         service, repo, os_client, _dl, _audit_repo = self._service(storage)
         await repo.save(batch)
 
@@ -220,7 +226,9 @@ class TestStreamNormalizationService:
         assert dead[0].error_type  # a real exception class name, not blank
 
         dead_letter_audit = [
-            e for e in audit_repo._events if e.event_type == AuditEventType.STREAM_EVENT_DEAD_LETTERED
+            e
+            for e in audit_repo._events
+            if e.event_type == AuditEventType.STREAM_EVENT_DEAD_LETTERED
         ]
         assert len(dead_letter_audit) == 1
         assert dead_letter_audit[0].details["event_offset"] == 1
@@ -249,7 +257,9 @@ class TestStreamNormalizationService:
         batch = _sealed_batch(org_id, "zeek-conn-log", event_count=1)
         events = [_zeek_event(0)]
         storage = AsyncMock()
-        storage.get_batch.return_value = _manifest_bytes(batch.batch_id, org_id, "zeek-conn-log", events)
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", events
+        )
 
         captured: list = []
         service, repo, os_client, _dl, _audit_repo = self._service(storage)

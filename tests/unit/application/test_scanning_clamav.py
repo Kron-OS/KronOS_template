@@ -74,9 +74,7 @@ class TestClamAVScanner:
         exactly this. Must now surface as a StorageError with a clear,
         actionable message instead."""
         reader, writer = _make_mock_connection(b"INSTREAM: Size limit reached.\0")
-        writer.write = MagicMock(
-            side_effect=[None, BrokenPipeError("[Errno 32] Broken pipe")]
-        )
+        writer.write = MagicMock(side_effect=[None, BrokenPipeError("[Errno 32] Broken pipe")])
         with patch("asyncio.open_connection", return_value=(reader, writer)):
             scanner = ClamAVScanner()
             with pytest.raises(StorageError, match="exceeds clamd's configured"):

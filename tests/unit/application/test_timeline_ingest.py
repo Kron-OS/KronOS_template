@@ -205,7 +205,9 @@ class TestIsmSelfHealingWiring:
         self.evidence_id = uuid.uuid4()
 
     async def test_ensure_managed_not_called_when_no_ism_manager_configured(self) -> None:
-        svc = TimelineIngestionService(opensearch=self.os_client, audit_log=self.audit, batch_size=10)
+        svc = TimelineIngestionService(
+            opensearch=self.os_client, audit_log=self.audit, batch_size=10
+        )
         await svc.ingest_records(_records(make_timeline_record()), self.tenant, self.evidence_id)
         # No exception, no-op -- ism_manager=None is a valid, explicit "not configured" state.
 

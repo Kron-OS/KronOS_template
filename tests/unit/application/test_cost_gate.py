@@ -71,7 +71,7 @@ class TestRuleCostGate:
         verdict = RuleCostGate().evaluate(_ENDSWITH)
         assert not verdict.accepted
 
-    def test_startswith_modifier_is_NOT_rejected(self) -> None:
+    def test_startswith_modifier_is_not_rejected(self) -> None:
         """A trailing-only wildcard is a cheap prefix query -- must not be flagged."""
         verdict = RuleCostGate().evaluate(_STARTSWITH)
         assert verdict.accepted
@@ -81,7 +81,7 @@ class TestRuleCostGate:
         assert not verdict.accepted
         assert verdict.findings[0].heuristic == "leading_wildcard"
 
-    def test_anchored_regex_is_NOT_rejected(self) -> None:
+    def test_anchored_regex_is_not_rejected(self) -> None:
         verdict = RuleCostGate().evaluate(_ANCHORED_REGEX)
         assert verdict.accepted
 
