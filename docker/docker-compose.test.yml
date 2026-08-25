@@ -261,15 +261,30 @@ services:
       db-migrate: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
 
-  # RFC 3161 TSA — FreeTSA compatible mock for testing chain-of-custody timestamping
+  # RFC 3161 TSA — real openssl-`ts`-backed responder for testing
+  # chain-of-custody timestamping. `freetsa/freetsa:latest` (the image this
+  # replaced) does not exist on Docker Hub -- confirmed via the real Docker
+  # Hub API, the freetsa namespace has zero repositories -- so this service
+  # could never actually start. See docker/init/Dockerfile.tsa-mock and
+  # poc/rfc3161/README.md for the real, captured proof this responder
+  # round-trips correctly against the production RFC3161TimestampService.
   tsa:
-    image: freetsa/freetsa:latest
+    build:
+      context: ..
+      dockerfile: docker/init/Dockerfile.tsa-mock
     ports: ["318:318"]
     healthcheck:
-      test: ["CMD-SHELL", "echo 'quit' | openssl s_client -connect localhost:318 2>/dev/null || curl -sf http://localhost:80/index.php || true"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      # Real bug found while verifying this against a real `docker compose
+      # run`: `localhost` resolves to `::1` first inside this container, but
+      # the Python responder only binds IPv4 (`0.0.0.0`) -- `wget
+      # http://localhost:318/` gets a real connection-refused every time,
+      # `http://127.0.0.1:318/` succeeds. Explicit IPv4 loopback, not a
+      # hostname, avoids depending on this image's IPv6/IPv4 resolution
+      # order at all.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:318/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # NGINX reverse proxy — serves frontend SPA and proxies /api/ to backend
   nginx:

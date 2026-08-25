@@ -1,0 +1,15 @@
+# Real RFC 3161 TSA responder for docker-compose.test.yml only -- replaces
+# freetsa/freetsa:latest, which does not exist on Docker Hub (confirmed via
+# the real Docker Hub API: the freetsa namespace has zero repositories).
+# docker-compose.dev.yml's own "tsa" service comment already documented this
+# ("freetsa/freetsa has no public Docker image; use a lightweight stub for
+# dev") but that stub returns a bare HTTP 200 with an empty body -- it can
+# never decode as a real DER TimeStampResp, so it cannot exercise
+# RFC3161TimestampService.verify() at all. This image instead runs a real
+# openssl `ts` responder (see poc/rfc3161/README.md for the full, real,
+# captured round-trip proof against the exact same technique).
+FROM python:3.12-alpine
+RUN apk add --no-cache openssl
+COPY --chmod=0755 docker/init/tsa-mock-entrypoint.sh /tsa-mock-entrypoint.sh
+COPY docker/init/tsa_mock_server.py /tsa_mock_server.py
+ENTRYPOINT ["/tsa-mock-entrypoint.sh"]
