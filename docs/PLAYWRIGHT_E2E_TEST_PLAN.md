@@ -356,9 +356,39 @@ with no record, and not claimed as CI-covered when they aren't.
    reconfirmed: `npm run build`, `npm run test` (103/103), `npm run lint`
    (0 errors), all three E2E specs together (`login` + `evidence-upload` +
    `evidence-retry`, serialized) passing in one run.
-4. §3.3 detections/triage, §3.5 isolation — in that order, since triage
-   fixtures are needed before isolation tests can assert on real
-   cross-tenant Detection data.
+4. **[DONE 2026-08-28, triage half only]** §3.3's core triage transition
+   (NEW -> INVESTIGATING). New `frontend/e2e/fixtures/seed_detection.py`
+   seeds a real Detection for the E2E suite, reusing two already-proven
+   patterns rather than re-deriving them: live `org_id` resolution via
+   Keycloak Admin REST (`poc/detection_containment_ui/setup.py`'s own
+   pattern — org_id churns across dev-stack recreations, confirmed
+   unchanged from `poc/detection_risk_score_ui/`'s original but resolved
+   live regardless, not hardcoded) and insertion through the real
+   `PostgresDetectionRepository`/`DetectionRiskScorer` domain code
+   (`poc/detection_risk_score_ui/seed_detection.py`'s own pattern) rather
+   than hand-written SQL, so it can't silently drift from the real schema.
+   `frontend/e2e/DetectionSeeder.ts` wraps it (`execFileSync`, parses its
+   JSON stdout). New `DetectionDetailPage`/`DetectionsPage` page objects,
+   new spec `frontend/e2e/detection-triage.spec.ts` — real click-through
+   of "Start Investigating", confirmed both live in the DOM (`expect.poll`,
+   no reload) and independently via a fresh real
+   `GET /api/detections/{id}` call per this section's own requirement.
+   **Real, reproduced finding along the way**:
+   `PostgresDetectionRepository.stream_by_org` sorts ascending by
+   `synced_at` (not descending) — a freshly-seeded detection lands on the
+   LAST page of `/detections` (default `pageSize=50`), not the first, given
+   this repo's accumulated PoC history has seeded far more than 50 real
+   detections into `kronos-dev` over time. Not fixed (untested whether
+   ascending is intentional, e.g. "oldest unresolved first" triage
+   priority) — worked around by having `DetectionDetailPage.openById()`
+   navigate directly to the real per-detection URL instead of paging
+   through the list, which is also more realistic for what this spec
+   actually tests. Full suite reconfirmed: `npm run build`, `npm run test`
+   (103/103), `npm run lint` (0 errors), all four E2E specs together
+   (`login` + `evidence-upload` + `evidence-retry` + `detection-triage`,
+   serialized) passing in one 2.7-minute run.
+   §3.5 isolation still open (needs a second real org — bigger lift,
+   deferred to the next item).
 5. §3.4 admin/org-settings — sequenced after real settings persistence
    ships (see the note in §3.4).
 6. §3.6 dashboards embed, §3.7 resilience, §3.8 a11y/visual — lower

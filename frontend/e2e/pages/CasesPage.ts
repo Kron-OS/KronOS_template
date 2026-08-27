@@ -1,5 +1,6 @@
 import { KronosPage } from "./KronosPage";
 import { CaseDetailPage } from "./CaseDetailPage";
+import { DetectionsPage } from "./DetectionsPage";
 
 /** Real, authenticated `/cases` dashboard. */
 export class CasesPage extends KronosPage {
@@ -25,9 +26,10 @@ export class CasesPage extends KronosPage {
     return this.page.locator("header").innerText();
   }
 
-  async goToDetections(): Promise<void> {
+  async goToDetections(): Promise<DetectionsPage> {
     await this.page.click("text=Detections");
     await this.page.waitForURL("**/detections", { timeout: 10000 });
+    return new DetectionsPage(this.page);
   }
 
   /**
