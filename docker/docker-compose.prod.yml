@@ -289,32 +289,84 @@ services:
 
   opensearch:
     image: opensearchproject/opensearch:2.13.0
+    # Gap Audit Milestone DDD: the previous approach here -- bind-mounting
+    # docker/opensearch/opensearch.yml (containing only
+    # plugins.security.unsupported.restapi.allow_securityconfig_modification)
+    # over the container's own config/opensearch.yml, dropping only the
+    # earlier `:ro` flag -- was verified LIVE to still crash-loop with the
+    # exact same "failed to load plugin class [OpenSearchSecurityPlugin] ...
+    # transport.keystore_filepath or ... pemcert_filepath must be set"
+    # error the `:ro` removal was believed to have fixed. Real root cause,
+    # confirmed by reading the container's own boot log line by line:
+    # OpenSearch's bundled install_demo_configuration.sh checks whether
+    # opensearch.yml already contains ANY `plugins.security.*` key --
+    # including this file's single REST-API flag, unrelated to SSL -- and
+    # if so prints "seems to be already configured for Security. Quit."
+    # and skips populating the transport-SSL cert paths + copying the demo
+    # certs entirely, so the security plugin ends up enabled with SSL
+    # requested but zero cert paths configured. `docker-compose.dev.yml`'s
+    # own opensearch service (proven working end-to-end, poc/
+    # opensearch_dashboards_sso/) never hit this because it does NOT mount
+    # any file over opensearch.yml at all -- it passes the identical flag
+    # as a plain environment override instead (OpenSearch's real
+    # entrypoint, opensearch-docker-entrypoint.sh, translates any
+    # `key.subkey=value` env into `-Ekey.subkey=value`, independent of the
+    # file), leaving the container's own internal opensearch.yml genuinely
+    # empty of any plugins.security.* key so the demo installer runs
+    # unimpeded. Mirrored that exact, already-proven pattern here --
+    # confirmed live afterward: security plugin loads, cluster goes
+    # healthy. docker/opensearch/opensearch.yml is no longer referenced by
+    # this file (dev never referenced it either); left in place only in
+    # case a future real (non-demo) TLS material path wants a real config
+    # file again.
+    #
+    # Second real bug found in the same boot log: OpenSearch >=2.12 (this
+    # pins 2.13.0; dev deliberately pins 2.11.1 and never hit this)
+    # requires OPENSEARCH_INITIAL_ADMIN_PASSWORD or the demo installer
+    # refuses to set any admin credential and quits. Reused the same real
+    # OPENSEARCH_ADMIN_PASSWORD this file's own opensearch-security-init
+    # service already requires below, rather than inventing a second
+    # admin-password variable.
     environment:
       - cluster.name=kronos-prod
       - node.name=kronos-node-1
       - discovery.type=single-node
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+      - plugins.security.unsupported.restapi.allow_securityconfig_modification=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:?OPENSEARCH_ADMIN_PASSWORD is required to bootstrap OpenSearch security}
     volumes:
       - opensearch_data:/usr/share/opensearch/data
-      # NOT :ro -- real, reproduced finding (docker-compose.dev.yml's own
-      # opensearch service has the full account): the security plugin's
-      # bundled demo installer (install_demo_configuration.sh, runs at
-      # every container start unless DISABLE_INSTALL_DEMO_CONFIG=true, which
-      # this file does not set) APPENDS its own transport-SSL cert paths
-      # into this same file; a read-only mount makes that append fail and
-      # the security plugin crash-loops on missing cert paths. This file
-      # itself (docker/opensearch/opensearch.yml) previously didn't exist
-      # at all (access-management-review.md [C-2]) and now does, but this
-      # mount is still relying on the bundled *demo* self-signed certs, not
-      # real production TLS material -- tracked as a real, still-open gap,
-      # not fixed here.
-      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
+    # Previously absent -- nothing in this file waited for OpenSearch to be
+    # genuinely healthy before opensearch-security-init ran (plain list-form
+    # `depends_on: [opensearch]` only orders container *start*). Mirrors
+    # docker-compose.dev.yml's own proven healthcheck, adapted for the real
+    # (non-demo-default) admin password this file requires.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -u admin:${OPENSEARCH_ADMIN_PASSWORD:-} -f https://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
 
   keycloak:
     # 26.2 (not 26.0): the organization-id token claim (addOrganizationId) the
     # backend's _extract_tenant requires only lands in 26.1+. Keep in sync with dev.
     image: quay.io/keycloak/keycloak:26.2
-    command: start
+    # Gap Audit Milestone DDD: this file had NO mechanism to provision the
+    # `kronos` realm at all -- confirmed live, keycloak-init below (whose
+    # own comment already assumed "the realm is already provisioned")
+    # failed for real with "realm 'kronos' does not exist" once the two
+    # more severe boot-time bugs above were fixed enough to reach it.
+    # docs/deployment.md's own Path-A-adjacent instructions already say
+    # "Ensure docker/keycloak/kronos-realm.json is mounted and Keycloak has
+    # --import-realm flag" -- that instruction was never actually wired
+    # into this file. `--import-realm` is a genuine Keycloak Quarkus CLI
+    # option, not a `start-dev`-only flag (confirmed live: works
+    # identically under production `start`, real Postgres backend, real
+    # HTTPS+bootstrap-admin config all still active). Config mirrors
+    # docker-compose.dev.yml's own already-proven `start-dev --import-realm`
+    # pattern, minus the dev-only `start-dev`.
+    command: start --import-realm
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/kronos
@@ -323,9 +375,57 @@ services:
       KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-keycloak.kronos.example}
       KC_HTTPS_CERTIFICATE_FILE: /certs/keycloak.crt
       KC_HTTPS_CERTIFICATE_KEY_FILE: /certs/keycloak.key
-      KC_FEATURES: organization,token-exchange,fgap-v2
+      # Gap Audit Milestone DDD: this file never configured a bootstrap
+      # admin account at all (unlike docker-compose.dev.yml's own
+      # KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD) -- confirmed live, real
+      # Keycloak logs a genuine LOGIN_ERROR/user_not_found for "admin" on
+      # every attempt, meaning keycloak-init below (and any real human
+      # operator) could never authenticate to a fresh deployment at all.
+      # Reuses the exact same KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD vars
+      # keycloak-init already consumes as KC_ADMIN_USER/KC_ADMIN_PASSWORD
+      # below, so the two are guaranteed to match rather than drifting.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # Gap Audit Milestone DDD: confirmed live (Keycloak's own startup log:
+      # "Listening on: https://0.0.0.0:8443" -- nothing else) that
+      # Quarkus's production `start` command, once HTTPS certs are
+      # configured, disables the plain HTTP listener entirely unless this
+      # is explicitly set. That silently broke every internal caller this
+      # file itself wires to `http://keycloak:8080`: keycloak-init hangs in
+      # its own retry loop until a hard ~5-minute timeout (confirmed live:
+      # never once reached "waiting" -> success), and -- far more severe --
+      # kronos-backend/celery-worker's own KEYCLOAK_URL below, which real
+      # JWT verification (JWKS fetch) depends on for every request, points
+      # at the identical unreachable http://keycloak:8080. Real production
+      # JWT auth would have been completely broken, not just the
+      # provisioning script. Internal container-network traffic (this
+      # entire compose network is never exposed to a browser directly --
+      # only nginx's real, externally-trusted TLS on 80/443 is) has no need
+      # for the internal hop to also be TLS; KC_HOSTNAME/HTTPS above remain
+      # the correct config for whatever DOES terminate real external HTTPS
+      # to Keycloak directly, if anything ever does.
+      KC_HTTP_ENABLED: "true"
+      # Gap Audit Milestone DDD: "fgap-v2" is not a real Keycloak 26.2
+      # feature flag -- confirmed live, this made Keycloak exit(2) at boot
+      # ("fgap-v2 is an unrecognized feature") before it could serve a
+      # single request, the most severe kind of finding since nothing
+      # downstream (keycloak-init, opensearch-security-init's openid authc
+      # domain, the backend's own JWT verification) can work at all while
+      # Keycloak itself won't start. Traced the origin: reviews/
+      # Part_6_Review.md describes "FGAP v2" (Organizations as an
+      # admin-permission resource type) as a Keycloak 26.7.0 (May 2026)
+      # feature -- this repo pins 26.2 (see this service's own comment
+      # above on why: the org-id token claim needs 26.1+, but not as new
+      # as 26.7), and grep confirms zero src/ code depends on FGAP v2
+      # today. Removed rather than swapped to a real flag name -- there is
+      # no FGAP-v2-equivalent flag in 26.2, the feature doesn't exist yet
+      # at this pinned version. Revisit alongside a real Keycloak 26.7+
+      # upgrade if/when reviews/Part_6_Review.md's org-scoped
+      # fine-grained-authz design is actually implemented.
+      KC_FEATURES: organization,token-exchange
     volumes:
       - ./certs:/certs:ro
+      - ./keycloak/kronos-realm.json:/opt/keycloak/data/import/kronos-realm.json:ro
 
   # Ensures the KronOS organization exists via the Admin REST API (the same
   # approach as dev) — never via a realm-import organizations block, which
@@ -351,7 +451,21 @@ services:
       ORG_NAME: ${KRONOS_ORG_NAME:-KronOS}
       ORG_ALIAS: ${KRONOS_ORG_ALIAS:-kronos}
       ORG_DESCRIPTION: KronOS production organization
-      ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:-}
+      # Gap Audit Milestone DDD: was `${KRONOS_ORG_DOMAIN:-}` (silently
+      # empty) -- confirmed live against the real Keycloak 26.2 Organizations
+      # API that an empty `domains: []` array is rejected outright:
+      # `{"errorMessage":"You must provide at least one domain"}`, HTTP 400,
+      # every time. scripts/provision_keycloak_org.sh's own comment already
+      # explains *why* prod needs a real domain ("real users join the org
+      # through the IdP / org domain, not by seeded ids") but the var
+      # supplying that domain had no required-value guard, so an operator
+      # who didn't already know this Keycloak API constraint would get a
+      # silent, unexplained "organization kronos could not be created or
+      # found" failure with no indication a domain was the missing
+      # ingredient. Required now, matching this file's own
+      # OPENSEARCH_ADMIN_PASSWORD precedent above for a var with no safe
+      # default.
+      ORG_DOMAIN: ${KRONOS_ORG_DOMAIN:?KRONOS_ORG_DOMAIN is required -- Keycloak's real Organizations API rejects an org with zero domains}
 
   # Adds the openid authc domain (trusting Keycloak) and the generic DLS
   # tenant role to OpenSearch's security config -- the exact same one-time
@@ -373,8 +487,14 @@ services:
   opensearch-security-init:
     image: python:3.12-alpine
     restart: "no"
+    # Gap Audit Milestone DDD: was list-form `- opensearch` (start-order
+    # only) -- now that `opensearch` has a real healthcheck (added this
+    # same pass), wait for genuine health, matching every other real
+    # `condition: service_healthy` dependency in this file. Without this,
+    # this script's own connection retries were the only thing standing
+    # between it and racing a still-booting security plugin.
     depends_on:
-      - opensearch
+      opensearch: { condition: service_healthy }
     volumes:
       - ../scripts/provision_opensearch_security.py:/provision_opensearch_security.py:ro
     environment:
@@ -809,12 +929,37 @@ services:
           memory: 1g
 
 secrets:
+  # Gap Audit Milestone DDD: every secret below used to be declared
+  # `external: true`. Real, reproduced finding: plain (non-Swarm) `docker
+  # compose up` -- the exact command README.md's own "Path A — Docker
+  # Compose (single host)" section documents and this repo has never run
+  # any other way -- rejects an `external: true` secret outright with
+  # "unsupported external secret <name>" the moment the first
+  # secret-consuming service (postgres) starts; confirmed live, nothing
+  # in this file could ever have started past that point. `external: true`
+  # is a Docker Swarm concept (a secret pre-created via `docker secret
+  # create`, consumed by `docker stack deploy`) -- this repo documents and
+  # has only ever exercised plain Compose (README.md's own instructions,
+  # `docker-compose.dev.yml`/`.test.yml`, every CI workflow). Converted to
+  # `file:`, pointing at the exact `docker/secrets/<name>.txt` path
+  # README.md's own Path A instructions already tell the operator to
+  # `printf` each secret into (that path never existed as a real
+  # directory in this repo before this fix, and would have made the
+  # README's own copy-pasted instructions fail on this same error even if
+  # every earlier step had been followed correctly). If a real Swarm
+  # deployment is ever wanted, restore `external: true` and provision via
+  # `docker secret create` instead. `poc/postgres_replication/README.md`
+  # PART 3 already independently found and worked around this identical
+  # issue for its own one-off verification run, scoped to db_password/
+  # replication_password only -- this fix applies the same, now-standard
+  # fix to all ten secrets in this file, not just those two, and updates
+  # the real shipped file rather than a throwaway PoC copy.
   db_password:
-    external: true
+    file: ./secrets/db_password.txt
   # Streaming replication (Gap Audit V10/X2a) -- dedicated password for the
-  # `replicator` role, mirrors db_password's own external-secret pattern.
+  # `replicator` role, mirrors db_password's own file-secret pattern.
   replication_password:
-    external: true
+    file: ./secrets/replication_password.txt
   # Gap Audit Milestone LL -- closes the redis-auth-streams/redis-celery
   # `command:`-argv secret exposure found in the second multi-scenario
   # assessment (poc/redis_prod_secret_cli_exposure/). Two separate secrets,
@@ -822,27 +967,26 @@ secrets:
   # redis-auth-streams' comment above for why one shared REDIS_PASSWORD
   # was rejected).
   redis_auth_streams_password:
-    external: true
+    file: ./secrets/redis_auth_streams_password.txt
   redis_celery_password:
-    external: true
+    file: ./secrets/redis_celery_password.txt
   # Gap Audit Milestone MM -- closes db-migrate/kronos-backend/celery-worker's
   # Config.Env exposure (poc/backend_prod_secret_config_env_exposure/): each
   # of these four secrets' CONTENT is a full, pre-assembled connection
   # string (not just a bare password), consumed via src/config.py's new
   # secrets_dir support. See that PoC's README "Operational contract" for
-  # the exact `printf '...' | docker secret create <name> -` provisioning
-  # step -- deliberately full-DSN-per-secret (not per-component host/user/
-  # password fields) so a deployer with the existing db_password/
-  # redis_*_password secrets can compose these directly, no src/ DSN-
-  # assembly code needed.
+  # the provisioning step -- deliberately full-DSN-per-secret (not
+  # per-component host/user/password fields) so a deployer with the
+  # existing db_password/redis_*_password secrets can compose these
+  # directly, no src/ DSN-assembly code needed.
   database_url:
-    external: true
+    file: ./secrets/database_url.txt
   redis_auth_streams_url:
-    external: true
+    file: ./secrets/redis_auth_streams_url.txt
   celery_broker_url:
-    external: true
+    file: ./secrets/celery_broker_url.txt
   celery_result_backend_url:
-    external: true
+    file: ./secrets/celery_result_backend_url.txt
   # Gap Audit Milestone NN -- closes kronos-backend/celery-worker's
   # remaining Config.Env exposure, the same class of finding Milestone MM
   # fixed for the four DSN fields above but missed for these four (a
@@ -853,13 +997,13 @@ secrets:
   # "assembly" step, the deployer just puts the existing raw credential
   # value into a file for each.
   minio_secret_key:
-    external: true
+    file: ./secrets/minio_secret_key.txt
   opensearch_password:
-    external: true
+    file: ./secrets/opensearch_password.txt
   keycloak_client_secret:
-    external: true
+    file: ./secrets/keycloak_client_secret.txt
   vault_token:
-    external: true
+    file: ./secrets/vault_token.txt
 
 volumes:
   postgres_data:

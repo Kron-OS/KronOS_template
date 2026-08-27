@@ -227,8 +227,20 @@ pre-built images `ghcr.io/<org>/backend:<tag>` plus Docker secrets.
 cd docker
 cp .env.example .env            # fill in REAL secrets (rotate the Keycloak secret)
 
-# Provide production secrets (example for the bundled db_password secret)
+# Provide production secrets -- see docker/secrets/README.md for the full
+# list (Gap Audit Milestone DDD: these are real file-based Docker secrets,
+# not `external: true` Swarm secrets -- plain `docker compose` cannot
+# resolve those at all). Example for db_password:
 printf '%s' "$(openssl rand -base64 32)" > secrets/db_password.txt
+
+# Set the remaining required vars this file has no safe default for
+# (KRONOS_ORG_DOMAIN: Keycloak's real Organizations API rejects an org
+# with zero domains -- see docker-compose.prod.yml's own comment)
+export KEYCLOAK_HOSTNAME=<real-hostname>
+export OPENSEARCH_ADMIN_PASSWORD=<real-password>
+export KRONOS_DB_PASSWORD=<same value as secrets/db_password.txt>
+export KEYCLOAK_ADMIN_PASSWORD=<real-password>
+export KRONOS_ORG_DOMAIN=<real-domain>
 
 # Pull/point at a published image and start
 export GITHUB_REPOSITORY=kron-os/kronos

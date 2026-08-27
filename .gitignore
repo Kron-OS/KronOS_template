@@ -29,6 +29,12 @@ id_rsa*
 
 scripts/dev_autoresume/.state/
 
+# Gap Audit Milestone DDD: docker-compose.prod.yml's Docker secrets are
+# `file:`-based (docker/secrets/<name>.txt), matching README.md's own Path A
+# deployment instructions -- real secret material, never committed. The
+# directory itself (with its README explaining the convention) IS tracked.
+/docker/secrets/*.txt
+
 # Vendored Bitnami chart tarballs from `helm dependency build` -- fetched,
 # regenerable dependency artifacts, not source. `Chart.lock` IS committed
 # (standard Helm practice: it pins the exact resolved postgresql/
