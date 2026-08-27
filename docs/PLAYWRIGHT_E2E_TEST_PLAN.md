@@ -1,5 +1,16 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_EEE.md` for the full account of
+this cycle's multi-scenario subagent assessment** (security, maintainability,
+adversarial coverage-gap review) run once items 2-4 below landed, including
+a real concurrent-triage-race bug found and fixed
+(`ConcurrentModificationError`, 409 not 503), a real Compose
+project-name-collision security finding (fixed: explicit `name:` in all
+three compose files — with a loud operator warning in
+`docker-compose.dev.yml` about the already-running legacy-named stack),
+and three maintainability findings queued for the next cycle (suite
+runtime scaling, TS+Python toolchain docs, page-object duplication).
+
 **Status (updated 2026-08-28, Gap Audit continuation):** partially proven,
 not yet a maintained suite. Correcting this doc's own earlier "nothing
 implemented yet" claim — untrue as of this update. Between this plan being
