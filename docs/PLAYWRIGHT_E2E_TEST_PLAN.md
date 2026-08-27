@@ -297,10 +297,26 @@ with no record, and not claimed as CI-covered when they aren't.
    stale dependency residue. Full existing suite re-confirmed green after:
    `npm run build`, `npm run test` (101/101), `npm run lint` (0 errors, 1
    pre-existing benign warning).
-2. §3.2's core upload-to-COMPLETE flow — the single highest-value spec in
-   the whole plan, since it's the platform's own core loop and the exact
-   shape of bug (`browser_verify.py`'s SSE fix) this suite exists to catch
-   automatically next time.
+2. **[DONE 2026-08-28]** §3.2's core upload-to-COMPLETE flow. Added
+   `CaseDetailPage` (case creation, `uploadEvidence()`, and
+   `watchEvidenceStateLive()` — polls the real evidence row's own text
+   without reloading, exactly what proves the live SSE push path works)
+   and `CasesPage.createCase()`, reusing the exact selectors
+   `poc/evidence_sse_realtime/browser_verify.py` already proved. New spec
+   `frontend/e2e/evidence-upload.spec.ts`, real fixture
+   `tests/fixtures/samples/cloudtrail.json` — **passed**: real case
+   creation, real upload, real live state transition to `Complete`
+   observed without a reload. Found a real, reproduced (not flaky) bug in
+   the same pass: Playwright runs separate spec *files* concurrently
+   across workers by default even with `fullyParallel: false` (which only
+   serializes within one file) — two specs each logging in as the same
+   shared dev-seeded `case-lead` account at nearly the same instant caused
+   a genuine Keycloak `"Invalid username or password"` rejection on the
+   second login. Confirmed via `--workers=1` passing cleanly. Fixed by
+   pinning `workers: 1` in `playwright.config.ts`, documented inline —
+   this suite intentionally reuses one real shared fixture account per
+   §0.1, so concurrent runs of it are never safe until specs are split
+   across `DEV_USERS.caseLead`/`analyst`/`admin`.
 3. §3.2's Retry-button specs — closes a already-named, real, currently-open
    verification gap.
 4. §3.3 detections/triage, §3.5 isolation — in that order, since triage

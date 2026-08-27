@@ -1,9 +1,24 @@
 import { KronosPage } from "./KronosPage";
+import { CaseDetailPage } from "./CaseDetailPage";
 
 /** Real, authenticated `/cases` dashboard. */
 export class CasesPage extends KronosPage {
   async waitUntilReady(): Promise<void> {
     await this.page.waitForSelector("text=New Case", { timeout: 10000 });
+  }
+
+  /** Real case creation via the UI -- selectors proven by poc/evidence_sse_realtime/. */
+  async createCase(title: string, ref: string): Promise<CaseDetailPage> {
+    await this.page.click("text=New Case");
+    await this.page.waitForSelector("#case-title", { timeout: 10000 });
+    await this.page.fill("#case-title", title);
+    await this.page.fill("#case-ref", ref);
+    await this.page.click("button:has-text('Create')");
+    await this.page.waitForSelector(`text=${title}`, { timeout: 15000 });
+    await this.page.click(`text=${title}`);
+    const detail = new CaseDetailPage(this.page);
+    await detail.waitUntilReady();
+    return detail;
   }
 
   async headerText(): Promise<string> {
