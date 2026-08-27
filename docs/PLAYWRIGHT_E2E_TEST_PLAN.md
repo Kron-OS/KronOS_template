@@ -1,32 +1,59 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**Status:** plan only, nothing implemented yet. Written per CLAUDE.md's
-standing guidelines (§F verification-first, OOP where code is involved) —
-implementation, when it happens, follows the same PoC-first discipline as
-every `poc/*/` item in this repo: pin the real version, build the smallest
-real thing first, capture real output, only then grow the suite.
+**Status (updated 2026-08-28, Gap Audit continuation):** partially proven,
+not yet a maintained suite. Correcting this doc's own earlier "nothing
+implemented yet" claim — untrue as of this update. Between this plan being
+written and now, **six separate real-browser (Python Playwright) passes
+already ran against the real dev stack** and proved most of §3's flow-tier
+scenarios work at least once: `poc/keycloak_browser_login/` (real PKCE
+login/logout), `poc/evidence_sse_realtime/browser_verify.py` (real upload →
+live SSE status flip), `poc/detection_containment_ui/` (real step-up MFA
+with real TOTP), `poc/detection_risk_score_ui/` (real triage UI),
+`poc/evidence_download_ui/` (real download round-trip, hash-verified),
+`poc/dashboards_embed/autoload_verification/` (real Dashboards iframe
+embed, zero-click autoload). One more, `poc/frontend_theme_fix/`, used a
+real browser but a **mocked** backend/auth harness — do not cite it as
+end-to-end evidence for anything auth-related.
+
+The maintained `frontend/e2e/` suite §1 below describes now exists and has
+its first real, passing spec (§5 item 1, done) — this closes the "no
+maintained suite" gap structurally, though only one of §3's many scenarios
+is covered so far; the rest of §5's delivery order is still open. Before
+this suite existed, all six real passes above were scattered, one-off
+scripts, several of them fighting the same recurring friction (see the new
+§0.1) independently instead of sharing
+fixtures. This update's job is to promote that proven-but-scattered
+coverage into the real suite, per §5's own delivery order, still following
+CLAUDE.md's §F verification-first / OOP discipline: pin the real version,
+build the smallest real thing first, capture real output, only then grow
+the suite.
 
 ## 0. Where this starts from (verified facts, not assumed)
 
-- `playwright` (Python) **1.61.0** is already installed in this host's venv
-  and already has one real, working precedent:
-  `poc/evidence_sse_realtime/browser_verify.py` — real Chromium, real
-  Keycloak login form, real UI-driven case creation and upload, used to
-  prove a real SSE bug fix. This is the *only* browser-driven test in the
-  repo today; it is a one-off verification script, not a maintained suite,
-  and there is no `poc/frontend_browser/` despite earlier docs
-  (`docs/verification-pass-findings.md`) flagging one as still pending.
-- **`@playwright/test`, the TypeScript test-runner framework, is not a
-  dependency anywhere** (`frontend/package.json` has no `playwright`
-  entry). The frontend already has a real Vitest unit-test setup
-  (`@testing-library/react`, 43 passing tests per the last verified run) —
-  E2E is a genuinely new capability, not an extension of something that
-  exists.
+- `playwright` (Python) **1.61.0** is installed in this host's venv with
+  `chromium-1228` cached and working — this is what all six real passes
+  above actually used. **`@playwright/test` (the TypeScript runner) is a
+  different story**: `frontend/package.json` lists a bare `playwright`
+  (not `@playwright/test`) devDependency added incidentally by
+  `frontend_theme_fix` — **but `frontend/node_modules/playwright` does not
+  exist on a fresh checkout**, no `playwright.config.*` exists anywhere,
+  and no `frontend/e2e/` directory exists. That `package.json` entry is
+  dead weight, not a working install — §1 replaces it with a real,
+  verified one rather than building on top of it.
 - Real pages that exist today (`frontend/src/pages/`): `LoginPage`,
   `CasesPage`, `CaseDetailPage`, `DetectionsPage`, `DetectionDetailPage`,
-  `AdminPage`. Real components: `UploadDrawer` (Uppy, S3-multipart + TUS),
-  `EvidenceDetailDrawer`, `RbacGuard`, `AuthGuard`, `StatusPill`/
-  `TriageStatePill`, `ErrorCatalogue`.
+  `AdminPage`. Real components: `UploadDrawer`, `EvidenceDetailDrawer`,
+  `RbacGuard`, `AuthGuard`, `StatusPill`/`TriageStatePill`,
+  `ErrorCatalogue`. **Correction: `UploadDrawer` is NOT Uppy/TUS** despite
+  this doc previously saying so and `@uppy/*` sitting in `package.json`
+  dependencies — `grep -rn uppy frontend/src` returns zero matches. The
+  real, shipped mechanism is hand-rolled: client-side magic-byte + SHA-256
+  pre-check, `POST /api/evidence/upload/request` for a single presigned
+  PUT URL, a raw `XMLHttpRequest` PUT of the whole file, then
+  `finalizeUploadWithHash()`. Six real-browser PoCs have exercised this
+  exact real path successfully — treat the Uppy dependencies in
+  `package.json` as unused residue, not as documentation of how upload
+  actually works.
 - Auth is real Keycloak 26.2 (`keycloak-js`), PKCE, with real step-up
   (aal2/TOTP) for privileged actions — any E2E suite touching admin/triage/
   destructive actions must drive the real step-up flow, not bypass it.
@@ -39,6 +66,23 @@ real thing first, capture real output, only then grow the suite.
   something to route around with a mocked backend (mocking the backend
   would defeat the point of an E2E suite in a platform this session's own
   history shows breaks in exactly the seams between real services).
+
+### 0.1 Recurring friction found independently by 3+ of the six real passes (fix once, in shared fixtures, not per-spec)
+
+- **`kronos.local`'s step-ca leaf cert has a 24h TTL** and had expired mid
+  session for both `poc/keycloak_browser_login/` and
+  `poc/detection_containment_ui/`, each independently working around it
+  with `docker compose ... up -d tls-init && docker restart docker-nginx-1`.
+  A maintained suite needs a shared pre-flight fixture that checks/refreshes
+  this once, not N specs rediscovering the same expired-cert error.
+- **Org IDs churn across dev-stack recreations** (`poc/detection_risk_score_ui/README.md`
+  flags this explicitly) — any fixture must resolve `org_id` live via the
+  Keycloak Admin API at setup time, never hardcode a value copied from a
+  previous session.
+- **TOTP secrets are reusable** — `case-lead`'s real enrolled TOTP secret
+  from `poc/detection_containment_ui/case_lead_totp_secret.txt` avoids
+  re-enrolling on every run; a shared fixture should read/seed this once
+  rather than each spec re-deriving it.
 
 ## 1. Framework choice: `@playwright/test`, not more Python scripts
 
@@ -108,7 +152,7 @@ one test — a `describe` block, several `test()`s inside.
 
 ### 3.2 Evidence lifecycle (the platform's core loop)
 - Real case creation → real file upload via the actual `UploadDrawer`
-  (Uppy S3-multipart) → **no manual reload** → `StatusPill` transitions
+  (hand-rolled presigned-PUT, not Uppy — see §0) → **no manual reload** → `StatusPill` transitions
   live via real SSE, UPLOADING → ... → COMPLETE (this is exactly what
   `browser_verify.py` proved once by hand; promote it into the suite so a
   future regression is caught automatically, not by another bug report).
@@ -226,10 +270,33 @@ with no record, and not claimed as CI-covered when they aren't.
 
 ## 5. Suggested delivery order (verification-first, smallest real thing first)
 
-1. Stand up `@playwright/test` + one real spec: login → see `CasesPage`
-   (§3.1, smoke tier) — proves the whole toolchain (browser install, base
-   URL config against real `kronos.local`, auth helper reuse from
-   `poc/*/auth_flow` patterns) before writing anything else.
+1. **[DONE 2026-08-28]** Stood up real `@playwright/test` 1.62.1 (pinned
+   to match the already-installed Python 1.61.0 line as closely as npm's
+   real published versions allowed) in `frontend/`, with
+   `frontend/playwright.config.ts` and an OOP page-object suite
+   (`frontend/e2e/pages/KronosPage.ts` base class, `LoginPage`,
+   `CasesPage`) reusing the exact selectors
+   `poc/keycloak_browser_login/run_poc.py` already proved
+   (`#username`/`#password`/`#kc-login`, `text=Sign in with SSO`). One real
+   spec, `frontend/e2e/login.spec.ts`, run for real against the live dev
+   stack (`docker compose -f docker-compose.dev.yml`, already up) —
+   **passed**: real PKCE login through Keycloak's real hosted form, lands
+   on `/cases`, real client-side nav to `/detections` without a re-login
+   prompt, real decoded access-token claims fetched via the app's own
+   `/auth/refresh` cookie proxy. Two real, previously-unknown integration
+   bugs found and fixed in the same pass: (a) Vitest's default include
+   glob was also picking up `e2e/*.spec.ts` and failing trying to run
+   Playwright's `test()` as a Vitest test — fixed via
+   `vite.config.ts`'s `test.exclude`; (b) `oxlint`'s `react-hooks/rules-of-hooks`
+   false-positived on Playwright's fixture `use()` callback param (not a
+   React hook) — fixed via a new `.eslintignore` excluding `e2e/`. Also
+   removed the residual, entirely-unused `playwright` (bare) devDependency
+   and all five `@uppy/*` dependencies (confirmed zero real usage,
+   `grep -rli uppy frontend/src` → nothing — see §0's correction) as a
+   direct byproduct of getting this right rather than building on top of
+   stale dependency residue. Full existing suite re-confirmed green after:
+   `npm run build`, `npm run test` (101/101), `npm run lint` (0 errors, 1
+   pre-existing benign warning).
 2. §3.2's core upload-to-COMPLETE flow — the single highest-value spec in
    the whole plan, since it's the platform's own core loop and the exact
    shape of bug (`browser_verify.py`'s SSE fix) this suite exists to catch

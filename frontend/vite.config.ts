@@ -32,6 +32,13 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       globals: true,
       setupFiles: ['./src/__tests__/setup.ts'],
+      // e2e/ is a separate @playwright/test suite (real browser, real
+      // backend) -- Vitest's default include glob otherwise picks up
+      // e2e/*.spec.ts too and fails trying to run Playwright's `test()`
+      // as a Vitest test (confirmed live: "calling test() from an async
+      // test.describe() block" from vitest importing playwright/test's
+      // runner internals). Run E2E via `npx playwright test` instead.
+      exclude: ['**/node_modules/**', './e2e/**'],
     },
   }
 })

@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# @playwright/test output (frontend/e2e/) -- real-browser E2E suite,
+# docs/PLAYWRIGHT_E2E_TEST_PLAN.md
+e2e-report/
+test-results/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

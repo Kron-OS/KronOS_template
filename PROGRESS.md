@@ -144,10 +144,10 @@ version, with captured output — not inferred from source reading alone.
 ### 2.7 Frontend SPA
 - [x] Vite+React 19+TanStack Router scaffold, Zustand, Tailwind v4+shadcn/ui — [`frontend/`](frontend/), confirmed via real `npm run build`
 - [x] Cases/evidence list, detail drawer, status pills, error catalogue — [`frontend/src/pages/`](frontend/src/pages/), [`frontend/src/components/`](frontend/src/components/)
-- [x] Uppy resumable upload (S3-multipart) — [`frontend/package.json`](frontend/package.json) deps confirmed real
+- [x] File upload — **correction 2026-08-28: NOT Uppy**, despite the `@uppy/*` deps sitting unused in `frontend/package.json`. The real, shipped mechanism in [`UploadDrawer`](frontend/src/components/UploadDrawer.tsx) is hand-rolled: client-side magic-byte+SHA-256 pre-check, a single presigned-PUT URL from `POST /api/evidence/upload/request`, a raw `XMLHttpRequest` PUT, then `finalizeUploadWithHash()`. Verified for real via six separate real-Chromium Playwright passes (see below).
 - [x] SSE evidence-status hook — [`frontend/src/hooks/useEvidenceSSE.ts`](frontend/src/hooks/useEvidenceSSE.ts)
 - [x] Auth token-storage/refresh-proxy and RBAC gaps found by `Static_Compliance_Pentest_Review.md` (FE-1/FE-2/FE-3) fixed — see that file §0
-- [ ] **No browser-level verification has ever been run** — build+unit-test-green is not the same as "works in a real browser end to end." See Remaining §2.
+- [x] **Correction 2026-08-28 — this row previously read "no browser-level verification has ever been run"; that was already false and had gone stale.** Six real-Chromium-Playwright passes against the real running dev stack landed since: real PKCE login/logout (`poc/keycloak_browser_login/`), real upload → live SSE status flip (`poc/evidence_sse_realtime/browser_verify.py`), real step-up MFA with real TOTP (`poc/detection_containment_ui/`), real triage UI (`poc/detection_risk_score_ui/`), real download round-trip with hash verification (`poc/evidence_download_ui/`), and real Dashboards iframe zero-click autoload (`poc/dashboards_embed/autoload_verification/`). What's still true and still open: these are scattered one-off scripts, not a maintained suite — see `docs/PLAYWRIGHT_E2E_TEST_PLAN.md` (now itself corrected and being executed against, not "plan only").
 
 ### 2.8 CI/CD
 - [x] `test.yml` — lint (mypy/ruff/black), CodeQL security scan, unit tests with `--cov-fail-under=80`, frontend build — [`.github/workflows/test.yml`](.github/workflows/test.yml)
