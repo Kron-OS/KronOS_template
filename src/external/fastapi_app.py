@@ -14,6 +14,7 @@ from src.exceptions import (
     AuditLogError,
     AuthenticationError,
     AuthorizationError,
+    ConcurrentModificationError,
     KronOSException,
     StorageError,
     StorageQuotaExceededError,
@@ -160,6 +161,22 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StorageError)
     async def storage_error_handler(request: Request, exc: StorageError) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    # Gap Audit 2026-08-28 (real bug, found via a real E2E test, not just
+    # inspection): a concurrent-modification race (e.g. two analysts
+    # triaging the same Detection near-simultaneously) previously fell
+    # through to the generic StorageError handler above -> 503, wrongly
+    # indistinguishable from an actual infra outage. Registered before/
+    # independent of detections.py's own route-level catch, mirroring
+    # StorageQuotaExceededError's own precedent immediately below for the
+    # same "defense in depth for any future call site without its own
+    # try/except" reasoning. Must be registered so Starlette's exact-type
+    # lookup prefers this over the parent StorageError handler above.
+    @app.exception_handler(ConcurrentModificationError)
+    async def concurrent_modification_handler(
+        request: Request, exc: ConcurrentModificationError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     # Registered before/independent of evidence.py's own route-level catch
     # (defense in depth for any future call site that raises this without

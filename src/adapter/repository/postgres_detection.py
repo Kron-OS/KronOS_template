@@ -17,7 +17,7 @@ from src.adapter.repository._schema_lock import acquire_schema_creation_lock
 from src.adapter.repository.detection import DetectionRepository
 from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState
 from src.domain.risk import RiskFactor
-from src.exceptions import StorageError
+from src.exceptions import ConcurrentModificationError, StorageError
 
 _metadata = sa.MetaData()
 
@@ -135,7 +135,17 @@ class PostgresDetectionRepository(DetectionRepository):
                 detections_table.update().where(*conditions).values(**self._to_row(detection))
             )
             if result.rowcount == 0:
-                raise StorageError(
+                # Gap Audit 2026-08-28: when expected_state was supplied,
+                # zero rows means the WHERE's triage_state predicate is
+                # what excluded this row -- i.e. someone else changed it
+                # first (the only realistic cause here: this method is
+                # only ever called right after a get_by_id() confirmed the
+                # row exists, per DetectionTriageService.transition).
+                # Distinct exception so the route can return a real 409,
+                # not the generic StorageError handler's 503 -- see
+                # ConcurrentModificationError's own docstring.
+                error_cls = ConcurrentModificationError if expected_state is not None else StorageError
+                raise error_cls(
                     "Detection not found for update, or its triage state changed concurrently",
                     context={
                         "detection_id": str(detection.detection_id),

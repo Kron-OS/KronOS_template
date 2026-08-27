@@ -316,6 +316,54 @@ class TestTriageDetection:
         assert persisted is not None
         assert persisted.triage_state == DetectionTriageState.NEW
 
+    def test_concurrent_modification_returns_409_not_503(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Gap Audit 2026-08-28 (real bug, found via a real E2E test): two
+        analysts triaging the same Detection near-simultaneously raced a
+        real optimistic-concurrency check that correctly detected the
+        conflict but, before this fix, surfaced as a generic 503
+        (StorageError's own handler) instead of a 409 -- indistinguishable
+        from a real infra outage. Simulates the real TOCTOU window between
+        DetectionTriageService.transition's own get_by_id() and its
+        subsequent update(expected_state=...) by mutating the store, via
+        the real repository's own real update() method, in between --
+        exercises the real ConcurrentModificationError raise path, not a
+        mock of it (mirrors this file's own "exercise the real repo"
+        philosophy)."""
+
+        class _RacingRepo(InMemoryDetectionRepository):
+            """Wraps the real repo: the FIRST get_by_id() call also applies
+            a second, real, already-committed transition to the same row
+            (as if another request won the race in between), so the
+            route's own subsequent update() call genuinely finds a
+            mismatched expected_state -- not a fabricated exception."""
+
+            async def get_by_id(self, detection_id: uuid.UUID, org_id: uuid.UUID) -> Detection | None:
+                detection = await super().get_by_id(detection_id, org_id)
+                if detection is not None and detection.triage_state == DetectionTriageState.NEW:
+                    winner = detection.with_triage_state(DetectionTriageState.INVESTIGATING)
+                    await super().update(winner, expected_state=DetectionTriageState.NEW)
+                return detection
+
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        racing_repo = _RacingRepo()
+        racing_repo._store = detection_repo._store  # noqa: SLF001 -- share the same backing store
+        client = _build_client(racing_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+
+        resp = client.post(
+            f"/api/detections/{detection.detection_id}/triage",
+            json={"targetState": "INVESTIGATING"},
+        )
+
+        assert resp.status_code == 409
+        # The real winner's transition (applied inside get_by_id above) must
+        # still be the one that persisted -- the loser's request must not
+        # have silently overwritten it.
+        persisted = asyncio.run(detection_repo.get_by_id(detection.detection_id, ORG_A))
+        assert persisted is not None
+        assert persisted.triage_state == DetectionTriageState.INVESTIGATING
+
     def test_terminal_state_rejects_retransition(
         self, detection_repo: InMemoryDetectionRepository
     ) -> None:

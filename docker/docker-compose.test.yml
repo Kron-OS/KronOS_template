@@ -1,3 +1,8 @@
+# Gap Audit 2026-08-28 -- see docker-compose.dev.yml's own matching
+# comment for the full real, verified finding (both files defaulted to
+# the identical Compose project name "docker", a real container-collision
+# hazard, not hypothetical). Disjoint name from dev's `kronos-dev`.
+name: kronos-test
 services:
   postgres:
     image: postgres:16-alpine

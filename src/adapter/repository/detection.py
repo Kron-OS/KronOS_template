@@ -94,9 +94,12 @@ class InMemoryDetectionRepository(DetectionRepository):
                 context={"detection_id": str(detection.detection_id)},
             )
         if expected_state is not None and current.triage_state != expected_state:
-            from src.exceptions import StorageError  # noqa: PLC0415
+            from src.exceptions import ConcurrentModificationError  # noqa: PLC0415
 
-            raise StorageError(
+            # Gap Audit 2026-08-28: distinct from the "not found" branch
+            # above -- mirrors postgres_detection.py's own real fix so a
+            # route can map this specific condition to 409, not 503.
+            raise ConcurrentModificationError(
                 "Detection triage state changed concurrently",
                 context={
                     "detection_id": str(detection.detection_id),

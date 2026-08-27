@@ -23,7 +23,7 @@ from src.application.playbook_execution import PlaybookExecutionService
 from src.domain.detection import Detection, DetectionTriageState
 from src.domain.playbook import Playbook, PlaybookStep
 from src.domain.user import Role, TenantContext
-from src.exceptions import DetectionStateError, ValidationError
+from src.exceptions import ConcurrentModificationError, DetectionStateError, ValidationError
 from src.external.dependencies import (
     get_detection_repository,
     get_detection_triage_service,
@@ -225,12 +225,22 @@ async def triage_detection(
     raw 500. "Detection not found or belongs to another org" is a 404
     (``DetectionTriageService.transition`` already scopes its own lookup
     by ``tenant.org_id``), never a 403 that would leak existence.
+
+    Gap Audit 2026-08-28 (real bug, found via a real E2E test): a real
+    concurrent-modification race (two analysts triaging the same
+    Detection near-simultaneously) also surfaces as 409, not the generic
+    ``StorageError`` handler's 503 -- explicit here even though
+    ``fastapi_app.py`` also registers a global handler for this, so the
+    intent is documented at the call site, matching this route's own
+    existing ``DetectionStateError``/``ValidationError`` catches.
     """
     try:
         updated = await triage_service.transition(detection_id, body.targetState, tenant)
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DetectionStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ConcurrentModificationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return _to_detection_out(updated)

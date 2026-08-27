@@ -2,6 +2,13 @@ version: "3.9"
 # Production configuration — requires external secrets management
 # Set KRONOS_DB_PASSWORD, KRONOS_MINIO_SECRET, etc. via environment or Docker secrets
 
+# Gap Audit 2026-08-28 -- see docker-compose.dev.yml's own comment for the
+# full finding (dev.yml/test.yml shared the same default project name).
+# This file already fails closed on missing required vars before a
+# project name would ever resolve, so the collision itself doesn't reach
+# this file in practice -- added for explicitness/consistency, not
+# because a live collision was reproduced here.
+name: kronos-prod
 services:
   vault:
     image: hashicorp/vault:1.17

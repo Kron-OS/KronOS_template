@@ -1,3 +1,41 @@
+# Gap Audit 2026-08-28 (frontend<->backend connectivity initiative,
+# security-scenario subagent assessment): this file previously had no
+# explicit project `name:`, so plain `docker compose` derives one from the
+# directory (`docker/` -> project "docker") -- confirmed live,
+# docker-compose.test.yml derives the exact SAME default name from the
+# same directory. Running both on one host (e.g. a real dev stack up
+# alongside `make test-integration`) makes Compose treat them as the SAME
+# project: differing service definitions (test.yml's opensearch has a
+# different image/security config) would make Compose silently recreate
+# -- i.e. kill and replace -- the live dev container of the same name.
+# frontend/e2e/DevStackFaultInjector.ts's real `docker stop/start
+# docker-opensearch-1` calls (used by evidence-retry.spec.ts) implicitly
+# depend on that container name meaning "the dev stack, uniquely" -- a
+# real, verified hazard, not hypothetical. Explicit `name:` gives dev/test
+# disjoint namespaces regardless of which directory either is invoked from.
+#
+# ******************************************************************
+# OPERATOR WARNING, added the same day this line was: any stack that was
+# already running BEFORE this line existed is still under the OLD implicit
+# project name (the directory name, "docker" on this host) -- confirmed
+# live: `docker inspect <container> --format
+# '{{index .Config.Labels "com.docker.compose.project"}}'` on an
+# already-running container. A plain `docker compose -f
+# docker-compose.dev.yml up -d <service>` against that same host now
+# targets the NEW name "kronos-dev" instead -- Compose treats this as a
+# DIFFERENT project and tries to stand up a second, parallel stack
+# alongside the still-running old one, real port collisions included
+# (reproduced live: `docker compose up -d nginx` immediately hit "Bind for
+# 0.0.0.0:9000 failed: port is already allocated" against the old minio).
+# Until a deliberate `docker compose -p docker down` (old name) + fresh
+# `up` (new name) cutover happens -- an explicit, owner-approved action,
+# NOT something to script unattended, since Postgres/MinIO/OpenSearch data
+# volumes are also named per-project and a naive cutover would start from
+# empty volumes -- every compose command against an already-running old
+# stack on this host MUST pass `-p docker` explicitly to keep targeting
+# it. Remove this whole warning once that cutover has actually happened.
+# ******************************************************************
+name: kronos-dev
 services:
   postgres:
     image: postgres:16-alpine

@@ -17,6 +17,21 @@ class StorageError(KronOSException):
     """Raised on failures interacting with object storage (MinIO/S3)."""
 
 
+class ConcurrentModificationError(StorageError):
+    """Raised when an optimistic-concurrency `update(..., expected_state=...)`
+    affects zero rows because the record's real state no longer matches
+    what the caller expected (Gap Audit 2026-08-28, real bug: two analysts
+    triaging the same Detection near-simultaneously). Subclasses
+    StorageError so any existing generic StorageError handling still
+    catches it, but is distinct so a route can map it to a real 409
+    ("someone else changed this first, refresh and retry") instead of the
+    generic StorageError handler's 503 ("service unavailable") -- those
+    are not the same condition and should not share a status code: 503
+    tells a client to back off and retry blindly; 409 tells it to refetch
+    the current state first. Detected live via a real, reproduced E2E
+    test (frontend/e2e/detection-triage-race.spec.ts), not just inspection."""
+
+
 class ParsingError(KronOSException):
     """Raised when a forensic parser cannot process evidence."""
 

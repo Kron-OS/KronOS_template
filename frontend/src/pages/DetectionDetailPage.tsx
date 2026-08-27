@@ -39,7 +39,20 @@ export function DetectionDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['detections'] })
       setPendingTarget(null)
     },
-    onError: () => setPendingTarget(null),
+    // Gap Audit 2026-08-28 (real bug, found via a real E2E test + backend
+    // source tracing): previously only cleared pendingTarget, leaving the
+    // TriageStatePill and action buttons rendering the STALE pre-race
+    // state from cache indefinitely -- the "loser" of a real concurrent
+    // triage race (backend now correctly answers 409, see
+    // src/exceptions.py's ConcurrentModificationError) saw an error
+    // banner but the same, now-invalid action button stayed clickable,
+    // producing repeat failures with no path to the correct state short
+    // of a manual reload. Refetch so the real current state (and its
+    // real available next actions) replace the stale cache entry.
+    onError: () => {
+      setPendingTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['detection', detectionId] })
+    },
   })
 
   if (isLoading) {
