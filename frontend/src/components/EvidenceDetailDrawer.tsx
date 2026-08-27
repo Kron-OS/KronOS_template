@@ -52,6 +52,16 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
     onSuccess: (_result, _evidenceId) => {
       if (evidence) {
         void queryClient.invalidateQueries({ queryKey: ['evidence', evidence.caseId] })
+        // Real bug found via frontend/e2e/evidence-retry.spec.ts (Gap Audit
+        // 2026-08-28): useEvidenceSSE closes its stream once evidence first
+        // reaches a terminal state (ERROR included) and never reopens it --
+        // a successful retry un-terminates evidence server-side with no
+        // client-side signal to reconnect, so the UI froze on the stale
+        // ERROR state even though the backend genuinely completed. This
+        // reuses the same CustomEvent bridge the polling fallback already
+        // established (`kronos:sse-poll`) to tell useEvidenceSSE to
+        // reconnect with a fresh ticket.
+        window.dispatchEvent(new CustomEvent('kronos:sse-reconnect', { detail: { caseId: evidence.caseId } }))
       }
     },
   })

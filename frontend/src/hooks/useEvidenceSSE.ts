@@ -14,6 +14,35 @@ export function useEvidenceSSE(caseId: string, onEvent: SSECallback): void {
     let openTimer: ReturnType<typeof setTimeout> | null = null
     let cancelled = false
 
+    // Gap Audit 2026-08-28 (frontend<->backend connectivity initiative):
+    // real bug found via a real Playwright E2E run (frontend/e2e/evidence-retry.spec.ts)
+    // cross-checked against real backend logs -- retrying ERROR evidence
+    // (POST retry-intake/retry-parse) genuinely recovers to COMPLETE on
+    // the backend, but the UI never showed it. Root cause: the `done`
+    // handler below (correctly) closes the stream once ALL evidence is
+    // terminal, per src/external/routes/sse.py's own "stop streaming once
+    // all evidence is terminal" behavior -- but nothing ever reopens it.
+    // A retry un-terminates evidence server-side with no client-side
+    // signal to reconnect, so the UI sat frozen on the stale ERROR state
+    // forever (not even the poll fallback runs -- that's only wired to
+    // the onerror path, not `done`). Fixed by reusing the same
+    // CustomEvent bridge `kronos:sse-poll` already established for the
+    // polling fallback: EvidenceDetailDrawer's retry mutation now also
+    // dispatches `kronos:sse-reconnect` on success, which tears down
+    // whatever's currently running (open connection or poll timer) and
+    // opens a fresh SSE connection with a fresh ticket.
+    function handleReconnectRequest(e: Event): void {
+      const detail = (e as CustomEvent<{ caseId: string }>).detail
+      if (!detail || detail.caseId !== caseId || cancelled) return
+      if (openTimer) clearTimeout(openTimer)
+      if (pollTimer) clearInterval(pollTimer)
+      pollTimer = null
+      es?.close()
+      es = null
+      void connect()
+    }
+    window.addEventListener('kronos:sse-reconnect', handleReconnectRequest)
+
     async function connect(): Promise<void> {
       try {
         const { ticket } = await getSSETicket(caseId)
@@ -90,6 +119,7 @@ export function useEvidenceSSE(caseId: string, onEvent: SSECallback): void {
 
     return () => {
       cancelled = true
+      window.removeEventListener('kronos:sse-reconnect', handleReconnectRequest)
       if (openTimer) clearTimeout(openTimer)
       if (pollTimer) clearInterval(pollTimer)
       es?.close()

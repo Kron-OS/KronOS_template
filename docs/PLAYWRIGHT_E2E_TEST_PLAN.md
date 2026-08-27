@@ -317,8 +317,45 @@ with no record, and not claimed as CI-covered when they aren't.
    this suite intentionally reuses one real shared fixture account per
    §0.1, so concurrent runs of it are never safe until specs are split
    across `DEV_USERS.caseLead`/`analyst`/`admin`.
-3. §3.2's Retry-button specs — closes a already-named, real, currently-open
-   verification gap.
+3. **[DONE 2026-08-28]** §3.2's Retry-button spec — closes the exact
+   already-named gap `poc/evidence_parse_retry/README.md` left open ("a
+   real browser click-through of the Retry button succeeding ... was not
+   worth burning further effort on" after selector/routing trouble).
+   Added `DevStackFaultInjector` (`frontend/e2e/DevStackFaultInjector.ts`)
+   reusing that same PoC's own proven trigger — stop real
+   `docker-opensearch-1` before upload to force a real, transient
+   `ERROR/ingest_failed`, restart it and wait for real `healthy`, then
+   drive the real Retry button. New spec
+   `frontend/e2e/evidence-retry.spec.ts`.
+   **First three real runs found a genuine, previously-unknown product bug,
+   not a test bug** (confirmed by cross-referencing real `celery-worker`
+   logs showing the backend actually reached `finalize_evidence_done` while
+   the UI stayed frozen on `Parsing`/stale `Error`): `useEvidenceSSE.ts`
+   permanently closes its SSE stream the first time all evidence reaches a
+   terminal state (`src/external/routes/sse.py`'s own "stop streaming once
+   all evidence is terminal" `done` event) and had no mechanism to reopen
+   it — so a successful retry recovered silently on the backend with the
+   UI never finding out short of a manual reload. Real fix: `EvidenceDetailDrawer.tsx`'s
+   retry mutation now dispatches a `kronos:sse-reconnect` CustomEvent
+   (reusing the exact bridge pattern the existing `kronos:sse-poll`
+   fallback already established) on success; `useEvidenceSSE.ts` listens
+   for it and reconnects with a fresh ticket. Verified the fix by rebuilding
+   and redeploying the real `docker-nginx-1` image
+   (`docker compose -f docker-compose.dev.yml build nginx && ... up -d nginx`)
+   and re-running the spec against the real running dev stack — passed,
+   real live recovery to `Complete` observed without a reload. Also fixed
+   a real, reproduced bug in `CaseDetailPage.ts`'s own `watchEvidenceStateLive()`
+   test helper along the way: re-watching a row already sitting on a
+   terminal state (re-watching after Retry) read the *stale* terminal text
+   on its first poll and returned immediately, before the backend had done
+   any work — added a `seedState` parameter so only a genuine transition
+   away from the seeded state counts. Added unit coverage
+   (`EvidenceDetailDrawer.test.tsx`) for the event-dispatch side of the fix
+   (the reconnect side itself is only realistically provable against a
+   real `EventSource`/backend, which the E2E spec covers). Full suite
+   reconfirmed: `npm run build`, `npm run test` (103/103), `npm run lint`
+   (0 errors), all three E2E specs together (`login` + `evidence-upload` +
+   `evidence-retry`, serialized) passing in one run.
 4. §3.3 detections/triage, §3.5 isolation — in that order, since triage
    fixtures are needed before isolation tests can assert on real
    cross-tenant Detection data.

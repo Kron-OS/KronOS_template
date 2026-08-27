@@ -6,14 +6,16 @@ import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import type { Evidence, EvidenceState } from '../types'
 
 const downloadEvidenceMock = vi.fn().mockResolvedValue(undefined)
+const retryIntakeMock = vi.fn().mockResolvedValue(undefined)
+const retryParseMock = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../api/evidence', () => ({
   downloadEvidence: (...args: unknown[]) => downloadEvidenceMock(...args),
-  retryIntake: vi.fn(),
-  retryParse: vi.fn(),
+  retryIntake: (...args: unknown[]) => retryIntakeMock(...args),
+  retryParse: (...args: unknown[]) => retryParseMock(...args),
 }))
 
-function makeEvidence(state: EvidenceState): Evidence {
+function makeEvidence(state: EvidenceState, retryAction: Evidence['retryAction'] = null): Evidence {
   return {
     id: 'ev-1',
     caseId: 'case-1',
@@ -23,8 +25,11 @@ function makeEvidence(state: EvidenceState): Evidence {
     sha256: 'abc123',
     md5: 'def456',
     state,
-    errorReason: null,
-    retryAction: null,
+    // Real markup constraint (EvidenceDetailDrawer.tsx): the Retry button
+    // only renders when BOTH errorReason and retryAction are truthy --
+    // must set a real reason whenever a caller wants Retry visible.
+    errorReason: retryAction ? 'ingest_failed' : null,
+    retryAction,
     uploadedBy: 'analyst',
     uploadedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -32,11 +37,11 @@ function makeEvidence(state: EvidenceState): Evidence {
   }
 }
 
-function renderDrawer(state: EvidenceState) {
+function renderDrawer(state: EvidenceState, retryAction: Evidence['retryAction'] = null) {
   const queryClient = new QueryClient()
   return render(
     <QueryClientProvider client={queryClient}>
-      <EvidenceDetailDrawer evidence={makeEvidence(state)} onClose={() => {}} />
+      <EvidenceDetailDrawer evidence={makeEvidence(state, retryAction)} onClose={() => {}} />
     </QueryClientProvider>,
   )
 }
@@ -72,4 +77,50 @@ describe('EvidenceDetailDrawer download affordance', () => {
       expect(downloadEvidenceMock).toHaveBeenCalledWith('case-1', 'ev-1', 'sample.log')
     })
   })
+})
+
+describe('EvidenceDetailDrawer retry recovery', () => {
+  beforeEach(() => {
+    retryIntakeMock.mockClear()
+    retryParseMock.mockClear()
+  })
+
+  it('calls retryParse (not retryIntake) when retryAction is "parse"', async () => {
+    const user = userEvent.setup()
+    renderDrawer('ERROR', 'parse')
+
+    await user.click(screen.getByRole('button', { name: /retry/i }))
+
+    await waitFor(() => expect(retryParseMock).toHaveBeenCalledWith('ev-1'))
+    expect(retryIntakeMock).not.toHaveBeenCalled()
+  })
+
+  it(
+    // Real, reproduced bug (frontend/e2e/evidence-retry.spec.ts, Gap
+    // Audit 2026-08-28): useEvidenceSSE closes its SSE stream permanently
+    // once evidence first reaches a terminal state and never reopens it,
+    // so a successful retry recovered on the backend but never showed up
+    // live in the UI. Fixed by dispatching this event on retry success so
+    // useEvidenceSSE can reconnect -- this test guards the dispatch side
+    // of that fix (the reconnect side itself is only realistically
+    // provable against a real EventSource/backend, which the E2E spec
+    // covers).
+    'dispatches kronos:sse-reconnect with the real caseId on a successful retry',
+    async () => {
+      const user = userEvent.setup()
+      const seen: CustomEvent<{ caseId: string }>[] = []
+      const listener = (e: Event) => seen.push(e as CustomEvent<{ caseId: string }>)
+      window.addEventListener('kronos:sse-reconnect', listener)
+
+      try {
+        renderDrawer('ERROR', 'intake')
+        await user.click(screen.getByRole('button', { name: /retry/i }))
+
+        await waitFor(() => expect(seen).toHaveLength(1))
+        expect(seen[0].detail).toEqual({ caseId: 'case-1' })
+      } finally {
+        window.removeEventListener('kronos:sse-reconnect', listener)
+      }
+    },
+  )
 })
