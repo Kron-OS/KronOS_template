@@ -1,6 +1,21 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLL.md` for the latest cycle**
+— multi-scenario subagent assessment (security/CI-reliability/coverage-gap)
+of Milestone JJJ+KKK's landed work. Fixed two real, cheap findings: a
+previously-unguarded safety-rule risk in `DevStackFaultInjector.ts`
+(hardcoded dev-stack container name, now asserts the Compose project
+label before acting) and several `frontend-e2e-smoke` CI-reliability gaps
+(timeout-cancelled jobs were silently skipping failure diagnostics,
+`--reporter=list` was dropping the configured HTML report, log capture
+was too thin across 9 services). Documented, not yet fixed: the exact
+refresh-token race Milestone III fixed isn't re-exercised by CI,
+`security-stack` never boots `kronos-backend` so the "both consumers
+coexist" claim isn't itself continuously re-proven, and wiring in the
+next flow-tier spec needs `celery-worker` + Python-fixture tooling this
+job doesn't yet set up.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md` for the prior cycle**
 — wired a new `frontend-e2e-smoke` job into
 `.github/workflows/security-integration-tests.yml` (nightly + manual
 dispatch, same as the existing `security-stack` job): builds the real
