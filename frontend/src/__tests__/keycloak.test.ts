@@ -122,6 +122,44 @@ describe('keycloak.ts token handling (AUTH-002/FE-1/FE-2)', () => {
     }
   })
 
+  it(
+    // Real, reproduced bug (Gap Audit 2026-08-28): api/client.ts's 401
+    // interceptor and this module's own scheduleSilentRefresh timer are
+    // two independent, uncoordinated callers of refreshAccessToken(). A
+    // real browser test (frontend/e2e/) confirmed live that two
+    // concurrent POST /auth/refresh calls sharing the same cookie race
+    // Keycloak's real refresh-token rotation -- one gets a real 200, the
+    // other a real 401 -- and the loser previously read that as "session
+    // actually invalid" and forced a real user through a full re-login
+    // for no reason other than losing an avoidable race. This test locks
+    // in the fix: two concurrent refreshAccessToken() callers must share
+    // one real HTTP round trip (a single-flight promise), not fire two.
+    'refreshAccessToken shares one in-flight request across concurrent callers',
+    async () => {
+      let resolveFetch!: (value: unknown) => void
+      const fetchMock = vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          resolveFetch = resolve
+        }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { refreshAccessToken } = await import('../keycloak')
+
+      const first = refreshAccessToken()
+      const second = refreshAccessToken()
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      resolveFetch({ ok: true, json: async () => ({ access_token: validAccessToken }) })
+
+      const [firstResult, secondResult] = await Promise.all([first, second])
+      expect(firstResult).toBe(true)
+      expect(secondResult).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    },
+  )
+
   it('refreshAccessToken clears auth on failure (expired/revoked cookie)', async () => {
     useAuthStore.getState().setAuth('stale-token', {
       userId: 'user-1',

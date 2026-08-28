@@ -101,6 +101,29 @@ function adoptAccessToken(accessToken: string): void {
   scheduleSilentRefresh(accessToken)
 }
 
+// Real, reproduced bug (Gap Audit 2026-08-28, frontend<->backend
+// connectivity initiative): two independent, uncoordinated callers of
+// `refreshAccessToken()` exist -- api/client.ts's own 401 interceptor
+// (which already queues *other* 401s behind itself via its own
+// `isRefreshing`/`pendingRequests`, but has no visibility into this
+// module) and `scheduleSilentRefresh`'s own timer below. If both fire
+// close together, each sends the SAME cookie-held refresh_token to
+// POST /auth/refresh independently -- confirmed live, twice, that
+// Keycloak's real refresh-token rotation accepts exactly one and rejects
+// the other with a real 401 "Token refresh failed" (not a mock, not
+// hypothetical: `fetch('/auth/refresh',...)` called twice concurrently
+// in a real browser against a real running stack reproduces this on
+// demand, every time). The losing caller previously read this as "the
+// session is actually invalid" and called `clearAuth()` +
+// `keycloak.login()` -- forcing a real user through a full re-login for
+// no reason other than losing an entirely avoidable race, not because
+// their session was ever actually invalid. Fixed with a module-level
+// single-flight promise every caller of `refreshAccessToken()` shares
+// (both this module's own timer and api/client.ts's interceptor import
+// the same function), so a second call while one is already in flight
+// awaits the SAME real HTTP round trip instead of racing a second one.
+let inFlightRefresh: Promise<boolean> | null = null
+
 /**
  * Refresh the access token via the backend's HttpOnly-cookie proxy.
  *
@@ -111,15 +134,25 @@ function adoptAccessToken(accessToken: string): void {
  * login, preserving the current location as the post-login redirect target.
  */
 export async function refreshAccessToken(): Promise<boolean> {
-  const result = await callRefreshEndpoint()
-  if (!result) {
-    useAuthStore.getState().clearAuth()
-    if (refreshTimer) clearTimeout(refreshTimer)
-    keycloak.login({ redirectUri: window.location.href })
-    return false
+  if (inFlightRefresh) return inFlightRefresh
+
+  inFlightRefresh = (async () => {
+    const result = await callRefreshEndpoint()
+    if (!result) {
+      useAuthStore.getState().clearAuth()
+      if (refreshTimer) clearTimeout(refreshTimer)
+      keycloak.login({ redirectUri: window.location.href })
+      return false
+    }
+    adoptAccessToken(result.access_token)
+    return true
+  })()
+
+  try {
+    return await inFlightRefresh
+  } finally {
+    inFlightRefresh = null
   }
-  adoptAccessToken(result.access_token)
-  return true
 }
 
 // Shared with the fast-path's own background call below — keycloak-js's

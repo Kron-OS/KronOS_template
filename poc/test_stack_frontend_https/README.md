@@ -68,20 +68,26 @@ navigation, and real Detections navigation all work end-to-end against
 this PoC's own question ("can `frontend/e2e/` run against this profile at
 all") is **yes**, with the concrete fixes above.
 
-**Not resolved this pass**: `login.spec.ts`'s own final assertion
-(`fetchDecodedAccessTokenClaims()`, a *second*, explicit
-`/auth/refresh` call after the login flow already completed) got a real
-401 `"Token refresh failed"` — reproduced twice, not flaky. Real
-hypothesis: Keycloak refresh-token rotation racing the app's own internal
-bootstrap refresh call. `login.spec.ts` has passed dozens of times this
-session against `docker-compose.dev.yml` with no such failure — open
-question whether this is specific to this fresh/cold test stack's timing
-or a rare, real race that dev's warmer stack usually avoids by luck.
-**Next step for whoever picks this up**: instrument
-`src/external/routes/auth.py`'s `/auth/refresh` (or the Keycloak-side
-token endpoint call it makes) to log real refresh-token-rotation events,
-then reproduce against both stacks to compare timing, before concluding
-which explanation is correct.
+**[RESOLVED, Milestone III, same day]** `login.spec.ts`'s own final
+assertion had gotten a real 401 `"Token refresh failed"` on this PoC's
+test stack, reproduced twice, not flaky. Root-caused for real rather than
+left as a hypothesis: forced two concurrent bare `fetch('/auth/refresh',
+{credentials:'include'})` calls in a real browser against the (fast,
+already-running) **dev** stack — reproduced the identical race on demand,
+every time (one real 200, one real 401), proving this was never a
+cold-stack timing artifact. Real cause: `api/client.ts`'s 401 interceptor
+and `keycloak.ts`'s own `scheduleSilentRefresh` timer are two
+independent, uncoordinated callers of `refreshAccessToken()` — if both
+fire close together, each sends the browser's current cookie to Keycloak
+independently, and Keycloak's real refresh-token rotation accepts exactly
+one. The loser previously read this as "session actually invalid" and
+forced the user through a full, unwanted re-login. Fixed with a
+module-level single-flight promise in `keycloak.ts` shared by every
+caller of `refreshAccessToken()`. Verified two ways: a new Vitest test
+(`refreshAccessToken shares one in-flight request across concurrent
+callers`) locks in the exact mechanism, and the full six-spec
+`frontend/e2e/` suite stayed green. See
+`docs/GAP_AUDIT_2026-08-28_MILESTONE_III.md` for the full account.
 
 ## What would still be needed to fold this into the shared file permanently
 
