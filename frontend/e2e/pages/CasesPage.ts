@@ -35,17 +35,15 @@ export class CasesPage extends KronosPage {
   /**
    * Real access-token claims, fetched the same way the app's own
    * bootstrap does (same-origin POST /auth/refresh, real HttpOnly cookie
-   * attached by the browser) -- not read off a mocked store.
+   * attached by the browser) -- not read off a mocked store. Decoded in
+   * Node (not another page.evaluate) since JWT payload decoding is pure
+   * string manipulation once the real token is in hand.
    */
   async fetchDecodedAccessTokenClaims(): Promise<Record<string, unknown>> {
-    return this.page.evaluate(async () => {
-      const res = await fetch("/auth/refresh", { method: "POST", credentials: "include" });
-      const body = await res.json();
-      const token: string = body.accessToken ?? body.access_token;
-      const payloadB64 = token.split(".")[1];
-      const padded = payloadB64 + "=".repeat((4 - (payloadB64.length % 4)) % 4);
-      const json = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-      return JSON.parse(json);
-    });
+    const token = await this.getFreshAccessToken();
+    const payloadB64 = token.split(".")[1];
+    const padded = payloadB64 + "=".repeat((4 - (payloadB64.length % 4)) % 4);
+    const json = Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
+    return JSON.parse(json);
   }
 }

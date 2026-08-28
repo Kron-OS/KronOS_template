@@ -29,16 +29,11 @@ export class CaseDetailPage extends KronosPage {
    * Polls the real evidence row's own text WITHOUT reloading the page --
    * this is what actually proves the live SSE push path works, not just
    * that the terminal state is eventually correct after a fresh GET.
-   * Returns the ordered sequence of distinct states observed, and whether
-   * a terminal state was reached before `timeoutMs`.
-   *
-   * `seedState`: real, reproduced bug this parameter fixes -- re-watching
-   * a row that's already sitting on a terminal state from a PRIOR watch
-   * (e.g. re-watching after clicking Retry on an ERROR row) otherwise
-   * reads that stale terminal text on the very first poll and returns
-   * immediately, before the backend has done any real work. Seeding
-   * `last` with the already-known state means only a genuine, new
-   * transition away from it counts.
+   * Delegates to KronosPage.pollLiveText -- see that method's own
+   * docstring for the real, reproduced bug its `seedValue` guard fixes
+   * (re-watching a row already sitting on a terminal state from a PRIOR
+   * watch, e.g. after clicking Retry on an ERROR row, otherwise reads
+   * that stale text on the first poll and returns immediately).
    */
   async watchEvidenceStateLive(
     fileName: string,
@@ -46,25 +41,13 @@ export class CaseDetailPage extends KronosPage {
     seedState: string | null = null,
   ): Promise<{ seenStates: string[]; terminal: string | null }> {
     const row = this.page.locator(`tr:has-text('${fileName}')`);
-    await row.waitFor({ timeout: 15000 });
-
-    const seenStates: string[] = [];
-    let last: string | null = seedState;
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      const text = await row.innerText();
-      for (const candidate of KNOWN_STATES) {
-        if (text.includes(candidate) && candidate !== last) {
-          seenStates.push(candidate);
-          last = candidate;
-        }
-      }
-      if (last && last !== seedState && (TERMINAL_STATES as readonly string[]).includes(last)) break;
-      await this.page.waitForTimeout(500);
-    }
-
-    return { seenStates, terminal: last === seedState ? null : last };
+    const { seenValues, terminal } = await this.pollLiveText(row, {
+      knownValues: KNOWN_STATES,
+      terminalValues: TERMINAL_STATES,
+      seedValue: seedState,
+      timeoutMs,
+    });
+    return { seenStates: seenValues, terminal };
   }
 
   /** Opens EvidenceDetailDrawer by clicking the real evidence row (CaseDetailPage.tsx's own onClick). */

@@ -8,8 +8,17 @@ a real concurrent-triage-race bug found and fixed
 project-name-collision security finding (fixed: explicit `name:` in all
 three compose files — with a loud operator warning in
 `docker-compose.dev.yml` about the already-running legacy-named stack),
-and three maintainability findings queued for the next cycle (suite
-runtime scaling, TS+Python toolchain docs, page-object duplication).
+and three maintainability findings, of which the cheapest
+(page-object duplication + missing E2E toolchain docs) was closed the
+same day as a follow-up cycle: `KronosPage` gained shared
+`getFreshAccessToken()`/`fetchJson()`/`pollLiveText()` helpers (removing
+duplicate token-fetch blocks from `CasesPage`/`DetectionDetailPage` and
+generalizing `watchEvidenceStateLive`'s reactively-bolted-on `seedState`
+guard so `DetectionDetailPage.watchTriageStateLive` gets it for free
+instead of the previous unguarded inline `expect.poll`), and
+`frontend/e2e/README.md` now documents the Python-toolchain prerequisite
+`DetectionSeeder.ts` depends on. Suite runtime scaling and the TS+Python
+toolchain-consolidation question remain open — see the milestone doc.
 
 **Status (updated 2026-08-28, Gap Audit continuation):** partially proven,
 not yet a maintained suite. Correcting this doc's own earlier "nothing

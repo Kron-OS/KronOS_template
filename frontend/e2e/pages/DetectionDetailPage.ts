@@ -1,5 +1,7 @@
 import { KronosPage } from "./KronosPage";
 
+const TRIAGE_STATES = ["New", "Investigating", "True Positive", "False Positive"] as const;
+
 /** Real, authenticated `/detections/{id}` detail view. */
 export class DetectionDetailPage extends KronosPage {
   /**
@@ -41,23 +43,35 @@ export class DetectionDetailPage extends KronosPage {
   }
 
   /**
+   * Polls the real TriageStatePill's own live text WITHOUT reloading --
+   * generalization of CaseDetailPage.watchEvidenceStateLive's seedState
+   * guard (KronosPage.pollLiveText's own docstring explains why: a
+   * re-watch after an action that starts from a KNOWN current value must
+   * not treat that stale value as a fresh reading). Pass `seedValue` when
+   * re-watching after a prior watch already observed a value (e.g. after
+   * clicking a triage action) so only a genuine change counts.
+   */
+  async watchTriageStateLive(
+    seedValue: string | null = null,
+    timeoutMs = 10000,
+  ): Promise<{ seenValues: string[]; terminal: string | null }> {
+    const pill = this.page.locator("span").filter({
+      hasText: /^(New|Investigating|True Positive|False Positive)$/,
+    });
+    return this.pollLiveText(pill.first(), {
+      knownValues: TRIAGE_STATES,
+      terminalValues: TRIAGE_STATES,
+      seedValue,
+      timeoutMs,
+    });
+  }
+
+  /**
    * Independent confirmation via a fresh real API call -- not trusted
    * from the same page load that rendered the pill, per
-   * docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.3's own requirement. Reuses the
-   * same real /auth/refresh cookie-proxy CasesPage already uses to obtain
-   * a real bearer token, since the app authenticates API calls with an
-   * Authorization header, not cookies.
+   * docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.3's own requirement.
    */
   async fetchRealTriageStateFromApi(detectionId: string): Promise<string> {
-    return this.page.evaluate(async (id) => {
-      const tokenRes = await fetch("/auth/refresh", { method: "POST", credentials: "include" });
-      const tokenBody = await tokenRes.json();
-      const accessToken: string = tokenBody.accessToken ?? tokenBody.access_token;
-      const res = await fetch(`/api/detections/${id}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const body = await res.json();
-      return body.triageState as string;
-    }, detectionId);
+    return (await this.fetchJson<{ triageState: string }>(`/api/detections/${detectionId}`)).triageState;
   }
 }

@@ -68,8 +68,8 @@ test("real concurrent triage race: one 200, one real 409 (not 503), loser's UI r
 
     // Both tabs' UIs must converge on the real current state -- including
     // the loser's, which previously stayed frozen on stale "New".
-    await expect.poll(() => detailA.triageStateLabel(), { timeout: 10000 }).toBe("Investigating");
-    await expect.poll(() => detailB.triageStateLabel(), { timeout: 10000 }).toBe("Investigating");
+    expect((await detailA.watchTriageStateLive("New")).terminal).toBe("Investigating");
+    expect((await detailB.watchTriageStateLive("New")).terminal).toBe("Investigating");
   } finally {
     await contextA.close();
     await contextB.close();

@@ -24,9 +24,8 @@ test("real triage transition NEW -> INVESTIGATING updates live and persists", as
 
   await detail.clickTriageAction("Start Investigating");
 
-  await expect
-    .poll(async () => detail.triageStateLabel(), { timeout: 10000 })
-    .toBe("Investigating");
+  const { terminal } = await detail.watchTriageStateLive("New");
+  expect(terminal).toBe("Investigating");
 
   const persisted = await detail.fetchRealTriageStateFromApi(seeded.detectionId);
   expect(persisted).toBe("INVESTIGATING");
