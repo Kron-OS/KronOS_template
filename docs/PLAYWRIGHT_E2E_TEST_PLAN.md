@@ -1,6 +1,17 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_GGG.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHH.md` for the latest cycle**
+— real PoC (`poc/test_stack_frontend_https/`) got `frontend/e2e/`'s real
+PKCE login + navigation working against `docker-compose.test.yml` over
+genuine HTTPS, finding and fixing 5 real bugs along the way. Also
+promoted a real, separate, permanent fix into the shared file:
+`kronos-backend`/`celery-worker` had never fully booted there at all
+(6 missing required `Settings` fields — `celery-worker` couldn't boot at
+all, `kronos-backend` silently 500'd on every real `/auth/refresh` call).
+One precise item still open: a reproduced (not flaky) refresh-token race
+on the PoC's own final assertion, not yet root-caused.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_GGG.md` for the prior cycle**
 — corrected a stale claim this plan (and PROGRESS.md) had carried since
 its first research pass: the "`docker-compose.test.yml` has no
 OpenSearch-security/Keycloak scaffolding" gap was already closed by an
