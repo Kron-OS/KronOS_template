@@ -1,6 +1,24 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMM.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md` for the latest cycle**
+— wired `detection-triage.spec.ts` and `detection-triage-race.spec.ts`
+(pure Postgres/OpenSearch CRUD, no Celery) into `frontend-e2e-smoke`.
+Found one real, confirmed blocker before either could run against
+`docker-compose.test.yml` for the first time: their shared
+`DetectionSeeder` fixture's underlying Python script
+(`seed_detection.py`) hardcoded the DEV stack's own Postgres DSN
+(different password AND database name from the test profile) and
+default org alias (`kronos-dev` vs. this profile's own
+`kronos-test`). Fixed with env-var overrides
+(`KRONOS_E2E_POSTGRES_DSN`/`KRONOS_E2E_SEED_ORG_ALIAS`/`KRONOS_E2E_KEYCLOAK_URL`),
+matching the pattern already established by `KRONOS_E2E_PYTHON`. Also
+added the CI job's first-ever Python setup step (`actions/setup-python` +
+`pip install -e ".[dev]"`), since these fixture scripts run on the
+runner directly, not inside a container. All four now-wired specs
+(login, evidence-upload, detection-triage, detection-triage-race)
+verified passing together against a freshly-built isolated stack.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMM.md` for the prior cycle**
 — wired `evidence-upload.spec.ts` (the first flow-tier spec) into
 `frontend-e2e-smoke`, needing `celery-worker` added to that CI job.
 Running it for the first time against `docker-compose.test.yml` surfaced
