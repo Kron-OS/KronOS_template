@@ -1,6 +1,17 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJ.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md` for the latest cycle**
+— wired a new `frontend-e2e-smoke` job into
+`.github/workflows/security-integration-tests.yml` (nightly + manual
+dispatch, same as the existing `security-stack` job): builds the real
+frontend, brings up the full `docker-compose.test.yml` profile, and runs
+the real, unmodified `login.spec.ts` against it. Verified by locally
+re-running the exact same step sequence (fresh `npm ci`, fresh
+`playwright install --with-deps`, the real spec) against a freshly-built
+isolated stack before committing. `docs/PLAYWRIGHT_E2E_TEST_PLAN.md` §4's
+prerequisite is now fully closed, both halves.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJ.md` for the prior cycle**
 — folded Milestone HHH's proven `tls-init`/`nginx`-build/
 `opensearch-dashboards`-stub PoC pieces into the real
 `docker/docker-compose.test.yml` permanently (Milestone III's own
@@ -367,10 +378,14 @@ mismatch) and the four-step real verification (browser PoC, the real
 `login.spec.ts`, the real security-stack PoC script, and the real pytest
 suite — all passing together against the same stack).
 
-All three E2E tiers (smoke, flow, isolation) can now run against this
-profile in principle; wiring an actual spec into
-`.github/workflows/security-integration-tests.yml` is tracked as Milestone
-JJJ's own recommendation #1, not yet done as of this writing.
+**[RESOLVED 2026-08-28, Milestone KKK]** All three E2E tiers (smoke,
+flow, isolation) can run against this profile; the smoke tier
+(`login.spec.ts`) is now wired into
+`.github/workflows/security-integration-tests.yml` as a
+`frontend-e2e-smoke` job (nightly + manual dispatch, same as the existing
+`security-stack` job). The flow/isolation tiers are not yet CI-wired —
+deliberately scoped smaller for this pass; see Milestone KKK's own
+recommendation for adding them incrementally.
 
 ## 5. Suggested delivery order (verification-first, smallest real thing first)
 
