@@ -89,22 +89,89 @@ callers`) locks in the exact mechanism, and the full six-spec
 `frontend/e2e/` suite stayed green. See
 `docs/GAP_AUDIT_2026-08-28_MILESTONE_III.md` for the full account.
 
-## What would still be needed to fold this into the shared file permanently
+## [RESOLVED, Milestone JJJ] Folded into `docker-compose.test.yml` permanently
 
-This PoC's port remaps (`15432`, `18443`, `19443`, etc.) are
-**local-verification-only**, matching `poc/ci_security_enabled_stack/`'s
-own established precedent — a real GitHub Actions runner has no
-conflicting stack and would use `docker-compose.test.yml`'s own standard
-ports, at which point the redirect_uri origin mismatch this PoC hit
-disappears entirely (the shared realm file's `https://kronos.local/*`
-already matches the standard port). A permanent version of this addition
-to `docker-compose.test.yml` would need: the new `tls-init` service, the
-`nginx` service rebuilt from `docker/Dockerfile.frontend` instead of
-stock `nginx:alpine`, an `opensearch-dashboards` stub or a
-`nginx-lan-https.conf.template` change to make that upstream optional,
-and the `kronos-backend`/`celery-worker` Settings fields (`keycloak_url`,
-`keycloak_client_secret`, `vault_url`, `vault_token`, `celery_broker_url`,
-`celery_result_backend`) added for real — the last of these is arguably
-the most valuable fix on its own, independent of the frontend work,
-since it means `kronos-backend` has never fully booted in this file at
-all until now.
+`tls-init`, the `nginx` rebuild (`docker/Dockerfile.frontend`), and the
+`opensearch-dashboards` stub are now the real, shared
+`docker/docker-compose.test.yml` — no longer PoC-only. Two more real bugs
+were found and fixed while re-verifying this fold-in, both the kind
+Section F exists to catch (looked right, weren't run against the real
+dependency until now):
+
+**Bug 1 — a verification-harness artifact, not a product bug, but it cost
+real debugging time and is worth recording so it isn't re-hit.** Doing the
+isolated re-verification with every port remapped (`19443:8443` etc.,
+this PoC's own established pattern) made Keycloak embed the WRONG port in
+its own `iss`/redirect URLs: `KC_PROXY_HEADERS=xforwarded` makes Keycloak
+trust nginx's `X-Forwarded-Port`, but nginx's template sends `$server_port`
+— the CONTAINER port (8443), not the externally-remapped host port
+(19443). The real `docker-compose.test.yml` maps `8443:8443` 1:1, so this
+can never happen there; it's an artifact of remapping only the host side
+for local collision-avoidance. Real, reproduced symptom: Keycloak's own
+"We are sorry... An error occurred" page after form submit.
+
+**Fix for re-verifying against an isolated stack without this artifact,
+without touching the live dev stack's ports at all**: don't remap nginx's
+own ports/env — leave them exactly as the real file declares (`8443:8443`
+etc.) and reach nginx via its own Docker bridge IP directly (`docker
+inspect <nginx-container> --format '{{...IPAddress}}'`), never through a
+host-published port. For a real browser (Playwright, running on the host,
+not in a container) to resolve `kronos.local` to that container IP without
+touching global `/etc/hosts` (already pointed at the live dev stack's own
+`kronos.local`), Chromium's `--host-resolver-rules=MAP kronos.local <ip>`
+launch arg scopes the override to just that one browser process. See
+`verify_login_container_network.mjs` in this directory — a throwaway
+script (not the real suite) that drives the exact `login.spec.ts` steps
+this way; kept as the reusable pattern for any future re-verification of
+this profile without a second `/etc/hosts` edit or a live-stack port
+collision.
+
+**Bug 2 — a real, previously-undiscovered product bug**, found via that
+same container-network re-run: `kronos-backend`'s `/auth/refresh`
+real REFRESH_TOKEN_ERROR "Invalid token issuer. Expected
+'http://keycloak:8080/realms/kronos'" — with `KC_HOSTNAME` deliberately
+left unset (Milestone III's own reasoning at the time, since superseded),
+Keycloak derives `iss` per-request from whichever Host reached it. A
+browser-minted refresh token (`iss=kronos.local:8443`, via nginx) was then
+rejected when `kronos-backend` redeemed it through the internal
+`keycloak:8080` short-circuit (`iss=keycloak:8080`) — exactly the class of
+bug `docker-compose.dev.yml`'s own `KC_HOSTNAME` comment already
+documented, just never actually hit in this profile before because nginx
+never proxied real browser traffic to it here until this fold-in.
+
+**Fix**: pinned `KC_HOSTNAME`/`KC_HOSTNAME_BACKCHANNEL_DYNAMIC` on
+`docker-compose.test.yml`'s `keycloak` service, mirroring dev's own
+already-proven config exactly. This reintroduced the *other* real risk
+Milestone III's reasoning had correctly flagged (and is why KC_HOSTNAME
+was left unset in the first place): `tests/integration/
+test_security_enabled_stack.py` and `poc/ci_security_enabled_stack/
+verify_security_stack.py` both construct their `KeycloakTokenValidator`
+with `issuer=f"{KC_BASE}/realms/kronos"`, assuming `KC_BASE` (a direct,
+unproxied `http://localhost:8080` in CI) equals the token's `iss` — no
+longer true once `iss` is pinned to `kronos.local:8443` regardless of
+which door reached Keycloak. Fixed at the source in both files: read the
+real issuer from Keycloak's own `/.well-known/openid-configuration`
+document instead of assuming it equals `KC_BASE` — correct whether or not
+`KC_HOSTNAME` is pinned, present or future.
+
+**Verified for real, in this order**, all against the real fold-in (not
+a re-remapped throwaway compose file):
+1. `verify_login_container_network.mjs` (real Chromium, real PKCE flow,
+   real Keycloak hosted form) — landed authenticated, `/auth/refresh`
+   bootstrap `200`.
+2. The real `npx playwright test e2e/login.spec.ts` (unmodified spec,
+   temporarily launched with the same `--host-resolver-rules` override,
+   reverted immediately after) — 1 passed, including the token-claims
+   assertion (`fetchDecodedAccessTokenClaims`) that exercises
+   `/auth/refresh` a second time.
+3. `poc/ci_security_enabled_stack/verify_security_stack.py` (real
+   password-grant logins, real `KeycloakTokenValidator`, real OpenSearch
+   DLS isolation) against the SAME pinned-`KC_HOSTNAME` isolated stack —
+   11/11 checks passed.
+4. The real pytest suite, `tests/integration/test_security_enabled_stack.py`
+   — 3/3 passed.
+
+Both real consumers of this Keycloak instance (real browser E2E via
+nginx, and the direct-`:8080` pytest/PoC suite) now coexist correctly on
+one shared, pinned-`KC_HOSTNAME` Keycloak service. See
+`docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJ.md` for the full account.

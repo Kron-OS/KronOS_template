@@ -1,6 +1,24 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_III.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJ.md` for the latest cycle**
+— folded Milestone HHH's proven `tls-init`/`nginx`-build/
+`opensearch-dashboards`-stub PoC pieces into the real
+`docker/docker-compose.test.yml` permanently (Milestone III's own
+recommendation #1). Found and fixed two more real bugs while
+re-verifying: dead `KEYCLOAK_ISSUER`/`KEYCLOAK_JWKS_URL` env vars on
+`kronos-backend` (never read by the actual code), and a real
+`kronos-backend` `/auth/refresh` failure (`REFRESH_TOKEN_ERROR "Invalid
+token issuer"`) caused by `KC_HOSTNAME` being left unset — fixed by
+pinning it (mirroring `docker-compose.dev.yml`'s already-proven config),
+which in turn required fixing `tests/integration/
+test_security_enabled_stack.py` and `poc/ci_security_enabled_stack/
+verify_security_stack.py` to read Keycloak's real issuer from its own
+discovery document instead of assuming it equals `KRONOS_SECURITY_STACK_KC_BASE`.
+Verified for real: a real browser PKCE login + `/auth/refresh` round trip,
+the real unmodified `login.spec.ts`, and the real pytest security-stack
+suite (3/3) all pass together against the same stack.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_III.md` for the prior cycle**
 — root-caused and fixed Milestone HHH's one open item: a real (not
 timing-artifact) frontend bug where two independent, uncoordinated
 `/auth/refresh` callers (`api/client.ts`'s 401 interceptor and
@@ -327,55 +345,32 @@ one test — a `describe` block, several `test()`s inside.
 
 ## 4. Prerequisite: a CI-capable, security-enabled compose profile
 
-**[Corrected 2026-08-28, Milestone GGG — this section was stale, see §0's
-own correction for the full account]** The OpenSearch-security/real-Keycloak-org-provisioning
-half of this prerequisite is **already done** (commit `ba91a24`, predating
-this initiative) and **already CI-wired**:
-`.github/workflows/security-integration-tests.yml` runs
+**[RESOLVED 2026-08-28, Milestone JJJ]** Both halves of this prerequisite
+are now done. The OpenSearch-security/real-Keycloak-org-provisioning half
+was already done (commit `ba91a24`, predating this initiative) and already
+CI-wired: `.github/workflows/security-integration-tests.yml` runs
 `docker-compose.test.yml`'s real security-enabled profile nightly (+
-manual dispatch, deliberately not per-PR — see that workflow's own
-comments for the reasoned scoping) against
-`tests/integration/test_security_enabled_stack.py`. Re-verified live this
-same day (isolated, port-remapped run, never touching the live dev
-stack) — 3/3 real tests passed.
+manual dispatch, deliberately not per-PR) against
+`tests/integration/test_security_enabled_stack.py`. The frontend-serving
+half (real TLS, `kronos.local`, the compiled SPA) — tracked as the
+remaining gap since Milestone GGG — is now folded into the shared file
+too: `nginx` builds `docker/Dockerfile.frontend` on standard ports
+`80`/`443`/`8443`, with a `tls-init` cert-generation service and an
+`opensearch-dashboards` stub nginx needs to parse its shared config
+template. `KC_HOSTNAME` is pinned (mirroring `docker-compose.dev.yml`) so
+that `kronos-backend`'s own `/auth/refresh` token redemption — which goes
+through the internal `keycloak:8080` short-circuit, not through nginx —
+gets a matching issuer against browser-minted tokens. See
+`docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJ.md` for the two real bugs found
+fixing this (dead backend env vars, and the KC_HOSTNAME/refresh-issuer
+mismatch) and the four-step real verification (browser PoC, the real
+`login.spec.ts`, the real security-stack PoC script, and the real pytest
+suite — all passing together against the same stack).
 
-**What's genuinely still missing, more precisely scoped after directly
-reading the file a second time**: `docker-compose.test.yml`'s `nginx`
-service (lines 295-308) is `image: nginx:alpine` with only
-`nginx.conf.template` mounted — **it never builds or serves the compiled
-frontend SPA at all** (no `Dockerfile.frontend`, no static-asset mount;
-contrast `docker-compose.dev.yml`'s `nginx` service, which `build:`s
-`docker/Dockerfile.frontend`). This file's `nginx` is API-reverse-proxy-only,
-consistent with its original backend-integration-testing purpose. There's
-also no `kronos.local`/step-ca HTTPS scaffolding (plain `http://localhost`
-throughout) — a second, separate gap. Neither has ever blocked the
-backend-only integration test above (it never touches a browser-facing
-origin), but both block running `frontend/e2e/`'s own Playwright suite
-against this profile as-is: there's no SPA to load, and even if there
-were, `playwright.config.ts` defaults to `https://kronos.local`, not
-plain HTTP. Also relevant: `VITE_KEYCLOAK_URL` (the frontend's Keycloak
-origin) is a Vite **build-time** arg baked into the compiled bundle
-(`docker/Dockerfile.frontend` `ARG`/`ENV`), not runtime-configurable — a
-frontend image built for this profile would need its own build with a
-matching `--build-arg`, distinct from dev's image. Real, smaller
-remaining work than originally scoped, but genuinely more than a
-one-line fix: (1) add an actual frontend-building `nginx` service to
-`docker-compose.test.yml` (or a sibling service) mirroring dev's own
-pattern, (2) decide plain-HTTP-`localhost` vs. TLS/`kronos.local` for
-this profile specifically (a real design choice, not yet made — plain
-HTTP is simpler and this file already uses it everywhere else, but a
-step-up/cookie-security code path could behave differently under HTTP
-vs. HTTPS and would need checking, not assuming), (3) make
-`playwright.config.ts`'s base URL assumption match whatever is chosen.
-Not attempted this pass — correctly scoping it is this cycle's
-contribution, not implementing it.
-
-Until either lands: Smoke-tier tests (§3.1's login/logout, page-boots-with-a-
-mocked-401 style checks that don't need a full real backend) can
-reasonably run against a lighter, backend-optional setup. Flow/Isolation
-tiers should be documented as "run locally against `docker-compose.dev.yml`
-before every release" as an interim, honest state — not silently skipped
-with no record, and not claimed as CI-covered when they aren't.
+All three E2E tiers (smoke, flow, isolation) can now run against this
+profile in principle; wiring an actual spec into
+`.github/workflows/security-integration-tests.yml` is tracked as Milestone
+JJJ's own recommendation #1, not yet done as of this writing.
 
 ## 5. Suggested delivery order (verification-first, smallest real thing first)
 
