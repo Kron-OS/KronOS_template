@@ -1,5 +1,12 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_FFF.md` for the latest cycle**
+(closed the maintainability findings + §3.5 cross-tenant isolation,
+completing E2E delivery-order item 4 — but also documents a real incident
+worth reading before touching the dev Keycloak by hand: an ad hoc cleanup
+command run outside the proper fixture script briefly deleted every real
+user in the realm, fully recovered, full account in that file's Part 2).
+
 **See `docs/GAP_AUDIT_2026-08-28_MILESTONE_EEE.md` for the full account of
 this cycle's multi-scenario subagent assessment** (security, maintainability,
 adversarial coverage-gap review) run once items 2-4 below landed, including
@@ -407,8 +414,24 @@ with no record, and not claimed as CI-covered when they aren't.
    (103/103), `npm run lint` (0 errors), all four E2E specs together
    (`login` + `evidence-upload` + `evidence-retry` + `detection-triage`,
    serialized) passing in one 2.7-minute run.
-   §3.5 isolation still open (needs a second real org — bigger lift,
-   deferred to the next item).
+   **§3.5 isolation — [DONE 2026-08-28]**: new
+   `frontend/e2e/fixtures/seed_second_org.py` creates a genuinely fresh,
+   real Keycloak Organization + member user per run (real Admin REST
+   calls: org creation, user creation, org membership, the real `org_id`
+   flat-claim user attribute via a GET-then-splice PUT — `PUT
+   .../users/{id}` is NOT a partial update, a known real gotcha this repo
+   already hit once — and a separate realm-role-mappings call, since
+   `realmRoles` in the user-creation body is silently ignored). New spec
+   `frontend/e2e/cross-tenant-isolation.spec.ts`: real case created in
+   `kronos-dev` as `case-lead`, a fresh org B member given that case's
+   real ID directly via the URL bar — real, observed `404` (not a
+   redirect that merely looks like isolation), and org A's case title
+   confirmed absent anywhere in org B's rendered DOM. Consolidated the
+   Python-fixture-wrapping pattern (`DetectionSeeder.ts` had its own
+   `execFileSync` call) into a shared `frontend/e2e/pythonFixture.ts`
+   rather than repeating it a second time, per the maintainability
+   assessment's own recommendation for the *next* fixture need. This
+   closes item 4 completely.
 5. §3.4 admin/org-settings — sequenced after real settings persistence
    ships (see the note in §3.4).
 6. §3.6 dashboards embed, §3.7 resilience, §3.8 a11y/visual — lower
