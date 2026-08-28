@@ -91,10 +91,12 @@ jobs:
     # Milestone KKK's own local dry run (docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md)
     # used a warm local image cache, same caveat security-stack's own header
     # comment already makes about its own timing -- this job does MORE
-    # (builds two fresh images, npm ci, a fresh Chromium download) than
-    # that job's measured ~46s, so budgeted well above a guess-based 25min.
-    # First real GHA run is still the actual confirmation; not yet measured.
-    timeout-minutes: 35
+    # (builds three fresh images as of Milestone MMM's celery-worker
+    # addition, npm ci, a fresh Chromium download, plus a real
+    # upload->parse->COMPLETE pipeline run) than that job's measured ~46s,
+    # so budgeted well above a guess-based figure. First real GHA run is
+    # still the actual confirmation; not yet measured.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: docker
@@ -116,8 +118,10 @@ jobs:
       - name: Run opensearch-init + keycloak-init + db-migrate (real production provisioning/migration)
         run: docker compose -f docker-compose.test.yml up opensearch-init keycloak-init db-migrate
 
-      - name: Build and start kronos-backend, tls-init, opensearch-dashboards stub, nginx (real frontend build)
-        run: docker compose -f docker-compose.test.yml up -d --build kronos-backend tls-init opensearch-dashboards nginx
+      - name: Build and start kronos-backend, celery-worker, tls-init, opensearch-dashboards stub, nginx (real frontend build)
+        # celery-worker added Milestone MMM: the evidence-upload flow spec
+        # below needs the real intake/parse pipeline, not just login.
+        run: docker compose -f docker-compose.test.yml up -d --build kronos-backend celery-worker tls-init opensearch-dashboards nginx
 
       - name: Wait for nginx to serve the real frontend over HTTPS
         run: |
@@ -139,13 +143,19 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run the smoke-tier real-browser E2E spec
+      - name: Run the smoke + evidence-upload flow-tier real-browser E2E specs
         working-directory: frontend
-        # No --reporter override: playwright.config.ts's own configured
-        # reporters (list + html) both run, so a failure gets the full
-        # HTML report (traces/screenshots), not just the raw test-results/
-        # dir a bare --reporter=list would have left as the only output.
-        run: npx playwright test e2e/login.spec.ts
+        # evidence-upload.spec.ts added Milestone MMM, the first
+        # incremental flow-tier spec per Milestone KKK/LLL's own
+        # recommendation -- verified it needs only celery-worker (not
+        # celery-worker-plaso/celery-beat/clamav) since its fixture file
+        # (cloudtrail.json) is a fast-path text parser, no Python-fixture
+        # tooling this job doesn't already have. No --reporter override:
+        # playwright.config.ts's own configured reporters (list + html)
+        # both run, so a failure gets the full HTML report (traces/
+        # screenshots), not just the raw test-results/ dir a bare
+        # --reporter=list would have left as the only output.
+        run: npx playwright test e2e/login.spec.ts e2e/evidence-upload.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation

@@ -34,6 +34,14 @@ services:
     environment:
       MINIO_ROOT_USER: kronos_minio
       MINIO_ROOT_PASSWORD: kronos_minio_password
+      # Milestone MMM: real, previously-unexercised gap -- no spec in this
+      # profile ever drove a real evidence upload before. Browsers PUT
+      # evidence directly to MinIO via presigned URLs, cross-origin
+      # (different port) from the app's own https://kronos.local origin;
+      # MinIO's PutBucketCors API returns "NotImplemented" on this image,
+      # CORS is a server-level setting instead. Mirrors
+      # docker-compose.dev.yml's own already-proven config verbatim.
+      MINIO_API_CORS_ALLOW_ORIGIN: "https://kronos.local"
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -314,9 +322,33 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
       REDIS_URL: redis://redis:6379/0
-      MINIO_ENDPOINT: http://minio:9000
+      # Milestone MMM: real, previously-uncaught bug -- `minio_endpoint`
+      # (src/config.py) expects a bare "host:port" (its own docstring says
+      # so, "e.g. minio:9000"), but this was a full URL. startup.py builds
+      # `endpoint_url=f"{scheme}://{minio_endpoint}"`, so the old value
+      # produced the literal string "https://http://minio:9000" --
+      # botocore then tried to resolve the hostname "http" and failed with
+      # a real, reproduced `socket.gaierror` on every real MinIO call
+      # (confirmed live: the first real evidence-upload spec run against
+      # this profile ever, a genuine 500 on `POST
+      # /api/evidence/upload/request`). No prior spec in this profile ever
+      # exercised a real MinIO operation, so this was never caught.
+      MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: kronos_minio
       MINIO_SECRET_KEY: kronos_minio_password
+      # This image's MinIO has no TLS listener at all -- the internal hop
+      # must stay plain HTTP. `minio_use_tls` (src/config.py) defaults to
+      # True; left unset here, every real internal MinIO call would
+      # attempt a TLS handshake against a plain-HTTP server. Mirrors
+      # docker-compose.dev.yml's own already-proven value.
+      MINIO_USE_TLS: "false"
+      # Browser-facing endpoint used ONLY to sign presigned upload/download
+      # URLs -- the browser cannot resolve "minio", and SigV4 signs the
+      # Host header, so a URL signed against the internal hostname is
+      # cryptographically invalid once a browser sends it elsewhere.
+      # Reaches MinIO via nginx's own :9444 reverse proxy (see that
+      # service below), mirroring dev's identical, already-proven pattern.
+      MINIO_PUBLIC_ENDPOINT: https://kronos.local:9444
       # Gap Audit P1-14 / V3: OpenSearch security is now genuinely enabled
       # above (was DISABLE_SECURITY_PLUGIN=true) -- these three were never
       # set before, so this container previously could not even boot
@@ -395,9 +427,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
       REDIS_URL: redis://redis:6379/0
-      MINIO_ENDPOINT: http://minio:9000
+      # Milestone MMM: same real bare-host-vs-full-URL bug as
+      # kronos-backend above (this worker downloads evidence from MinIO
+      # to parse it -- the old value would have crashed that call too,
+      # just never exercised before this profile had any real spec that
+      # forced evidence all the way through parsing).
+      MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: kronos_minio
       MINIO_SECRET_KEY: kronos_minio_password
+      MINIO_USE_TLS: "false"
       # See kronos-backend's identical comment above -- same real,
       # previously-unset-and-unbootable-against-real-security fields.
       OPENSEARCH_URL: https://opensearch:9200
@@ -420,7 +458,16 @@ services:
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
       db-migrate: { condition: service_completed_successfully }
-    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index -c 4
+    # Milestone MMM: real, previously-undiscovered bug -- this worker never
+    # consumed `q.intake`, so `kronos.process_intake` (the current
+    # validate/scan/hash/promote step every real upload goes through
+    # before dispatch_parse) had no consumer at all in this profile. Every
+    # real evidence upload against docker-compose.test.yml would have sat
+    # in UPLOADING forever, silently, with zero error anywhere -- the task
+    # just accumulates unconsumed in Redis's q.intake list. No prior spec
+    # against this profile ever drove a real upload far enough to notice.
+    # Matches docker-compose.dev.yml's own celery-worker queue list exactly.
+    command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
 
   # RFC 3161 TSA — real openssl-`ts`-backed responder for testing
   # chain-of-custody timestamping. `freetsa/freetsa:latest` (the image this
@@ -471,7 +518,13 @@ services:
       dockerfile: docker/Dockerfile.frontend
       args:
         VITE_KEYCLOAK_URL: https://kronos.local:8443
-    ports: ["80:80", "443:443", "8443:8443"]
+    # 9444 added Milestone MMM: nginx-lan-https.conf.template's own :9444
+    # server block (real, shared, already existed -- MinIO's browser-direct
+    # presigned-upload reverse proxy, same as docker-compose.dev.yml) was
+    # never published to the host in this profile, so no browser could
+    # ever reach it even after the presigned URL itself pointed at the
+    # right place.
+    ports: ["80:80", "443:443", "8443:8443", "9444:9444"]
     # See docker/nginx/nginx.conf.template / nginx-lan-https.conf.template
     # — nginx's docker-entrypoint envsubst step renders these into BOTH
     # templates' CSP headers at startup (envsubst applies one shared
@@ -481,7 +534,14 @@ services:
     environment:
       KEYCLOAK_PUBLIC_URL: "https://kronos.local:8443"
       BACKEND_PUBLIC_URL: "https://kronos.local"
-      MINIO_PUBLIC_URL: ""
+      # Milestone MMM: was "" -- harmless for login-only specs (no CSP
+      # violation possible if nothing ever calls MinIO), but a real,
+      # previously-unexercised gap once evidence-upload.spec.ts's
+      # presigned PUT actually tries to reach kronos.local:9444: the
+      # browser's own CSP connect-src would have blocked it even after
+      # every other MinIO fix above. Must match kronos-backend's
+      # MINIO_PUBLIC_ENDPOINT exactly.
+      MINIO_PUBLIC_URL: "https://kronos.local:9444"
       OPENSEARCH_DASHBOARDS_URL: ""
     volumes:
       - fe_tls_certs:/etc/kronos/tls:ro
