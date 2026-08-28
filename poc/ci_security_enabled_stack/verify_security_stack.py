@@ -57,6 +57,15 @@ TOKEN_URL = f"{KC_BASE}/realms/{REALM}/protocol/openid-connect/token"
 JWKS_URL = f"{KC_BASE}/realms/{REALM}/protocol/openid-connect/certs"
 CI_CLIENT_ID = "kronos-ci-verifier"
 
+# Milestone JJJ: KC_HOSTNAME is now pinned on docker-compose.test.yml's
+# keycloak service, so `iss` on every issued token is that fixed value, not
+# necessarily KC_BASE. Read it from Keycloak's own discovery document
+# instead of assuming KC_BASE equals it -- kept in sync with
+# tests/integration/test_security_enabled_stack.py's own fix.
+ISSUER = httpx.get(
+    f"{KC_BASE}/realms/{REALM}/.well-known/openid-configuration", timeout=15.0
+).json()["issuer"]
+
 PASS: list[str] = []
 FAIL: list[str] = []
 
@@ -145,7 +154,7 @@ async def main() -> None:
         "=" * 10,
     )
     validator = KeycloakTokenValidator(
-        issuer=f"{KC_BASE}/realms/{REALM}", audience="kronos-backend", jwks_url=JWKS_URL
+        issuer=ISSUER, audience="kronos-backend", jwks_url=JWKS_URL
     )
     tenant_a = await validator.validate_and_extract(token_a)
     tenant_b = await validator.validate_and_extract(token_b)

@@ -52,6 +52,17 @@ _REALM = "kronos"
 _TOKEN_URL = f"{_KC_BASE}/realms/{_REALM}/protocol/openid-connect/token"
 _JWKS_URL = f"{_KC_BASE}/realms/{_REALM}/protocol/openid-connect/certs"
 _CI_CLIENT_ID = "kronos-ci-verifier"
+
+# Real Keycloak's `iss` claim doesn't necessarily equal `_KC_BASE`: when
+# KC_HOSTNAME is pinned (docker-compose.test.yml / Milestone JJJ, mirroring
+# docker-compose.dev.yml), every token this realm issues carries that fixed
+# issuer regardless of which host/port actually reached it -- including this
+# suite's own direct `_KC_BASE` password-grant calls. Reading it from
+# Keycloak's own discovery document (rather than assuming `_KC_BASE` equals
+# it) keeps this test correct whether or not KC_HOSTNAME is pinned.
+_ISSUER = httpx.get(
+    f"{_KC_BASE}/realms/{_REALM}/.well-known/openid-configuration", timeout=15.0
+).json()["issuer"]
 _OS_ADMIN_PASSWORD = os.environ.get("KRONOS_SECURITY_STACK_OS_ADMIN_PASSWORD", "KronOSCiTest#2026")
 
 
@@ -96,7 +107,7 @@ class TestRealKeycloakJwtValidation:
         self, org_a_token: str, org_b_token: str
     ) -> None:
         validator = KeycloakTokenValidator(
-            issuer=f"{_KC_BASE}/realms/{_REALM}", audience="kronos-backend", jwks_url=_JWKS_URL
+            issuer=_ISSUER, audience="kronos-backend", jwks_url=_JWKS_URL
         )
         tenant_a = await validator.validate_and_extract(org_a_token)
         tenant_b = await validator.validate_and_extract(org_b_token)
@@ -110,7 +121,7 @@ class TestRealKeycloakJwtValidation:
 
         with pytest.raises(AuthenticationError):
             await KeycloakTokenValidator(
-                issuer=f"{_KC_BASE}/realms/{_REALM}", audience="kronos-backend", jwks_url=_JWKS_URL
+                issuer=_ISSUER, audience="kronos-backend", jwks_url=_JWKS_URL
             ).validate_and_extract(org_a_token[:-4] + "abcd")
 
 

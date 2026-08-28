@@ -118,9 +118,79 @@ services:
       KC_REALM: kronos
     entrypoint: ["python3", "/provision_opensearch_security.py"]
 
+  # Gap Audit III (2026-08-28, poc/test_stack_frontend_https/): real,
+  # throwaway self-signed cert (SAN=kronos.local only -- the sole
+  # authorized domain, poc/tls_lan_https/README.md) for the new `nginx`
+  # service below. Not step-ca (docker-compose.dev.yml's own tls-init) --
+  # a second step-ca instance is unneeded complexity for a CI/test-only
+  # profile; frontend/e2e/playwright.config.ts already sets
+  # `ignoreHTTPSErrors: true` globally, so cert *validity* was never going
+  # to matter, only that HTTPS is genuinely served at the fixed path
+  # (/etc/kronos/tls/server.{crt,key}) nginx-lan-https.conf.template
+  # hardcodes.
+  tls-init:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -keyout /certs/server.key -out /certs/server.crt \
+          -subj "/CN=kronos.local" \
+          -addext "subjectAltName=DNS:kronos.local"
+        chmod 0644 /certs/server.crt /certs/server.key
+    volumes:
+      - fe_tls_certs:/certs
+
+  # Gap Audit III: real, shared, unmodified nginx-lan-https.conf.template
+  # (baked into docker/Dockerfile.frontend) statically proxy_passes to
+  # opensearch-dashboards:5601, and nginx fails HARD at config-parse time
+  # if that hostname doesn't resolve at all -- not just at request time
+  # (confirmed live, poc/test_stack_frontend_https/output.txt). This
+  # profile's own stated purpose is CI/backend-integration testing, not
+  # dev-parity -- a full, real, SSO-integrated Dashboards instance
+  # (docker-compose.dev.yml's own opensearch-dashboards service, itself a
+  # whole dedicated PoC's worth of real Keycloak-openid wiring,
+  # poc/opensearch_dashboards_sso/) is disproportionate scope for a
+  # config-load-time DNS dependency nothing in this file's own test
+  # coverage exercises. Honest, documented trade-off, not a silent gap:
+  # a minimal DNS-resolvable stub, not a real Dashboards. Revisit with a
+  # real service if/when docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.6 (dashboards
+  # embed spec) is actually built against this profile.
+  opensearch-dashboards:
+    image: nginx:alpine
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.2
     command: start-dev --import-realm
+    # Milestone JJJ superseded the reasoning that used to be here (which
+    # claimed leaving KC_HOSTNAME unset "correctly and independently
+    # supports both" the pytest suite's direct :8080 access and real
+    # browser traffic via nginx :8443, "verified live"). That claim was
+    # WRONG -- it was verified only up to the login redirect, not the
+    # backend's own subsequent refresh-token redemption. A real live run
+    # of login.spec.ts against this exact profile reproduced Keycloak
+    # rejecting kronos-backend's /auth/refresh redemption with
+    # REFRESH_TOKEN_ERROR "Invalid token issuer. Expected
+    # 'http://keycloak:8080/realms/kronos'": with no KC_HOSTNAME pinned,
+    # Keycloak derives `iss` per-request, so a token minted via the
+    # browser's nginx :8443 path (iss=kronos.local:8443) is rejected when
+    # kronos-backend redeems it via the internal keycloak:8080 path
+    # (iss=keycloak:8080) -- the exact same class of bug
+    # docker-compose.dev.yml's own KC_HOSTNAME comment already documented
+    # for the dev stack. Fixed the same way dev does it: KC_HOSTNAME
+    # pinned + KC_PROXY_HEADERS + KC_HOSTNAME_BACKCHANNEL_DYNAMIC below.
+    # This reintroduces the *other* real risk the old comment correctly
+    # identified -- tests/integration/test_security_enabled_stack.py's
+    # own password-grant tokens (minted via a direct :8080 call) would
+    # now ALSO carry the pinned kronos.local:8443 issuer, mismatching
+    # that test's old `issuer=f"{KRONOS_SECURITY_STACK_KC_BASE}/realms/
+    # kronos"` (built from KC_BASE=http://localhost:8080, never
+    # Keycloak's own truth). Fixed at the source instead of avoided here:
+    # that test now reads the issuer from Keycloak's own discovery
+    # document rather than assuming KC_BASE equals it -- correct
+    # regardless of whether KC_HOSTNAME is pinned, see that file's own
+    # comment. Both fixes verified live this same pass (JJJ milestone doc).
     environment:
       KC_DB: dev-mem
       # KC_BOOTSTRAP_ADMIN_* (not the deprecated KEYCLOAK_ADMIN* names,
@@ -134,6 +204,39 @@ services:
       # health endpoints 404 and the healthcheck below never passes (same
       # gotcha documented in docker-compose.dev.yml's keycloak service).
       KC_HEALTH_ENABLED: "true"
+      # Pin Keycloak's canonical issuer/frontend URL -- mirrors
+      # docker-compose.dev.yml's own keycloak service exactly (see that
+      # file's comment for the original reasoning). Without it, a
+      # browser-minted refresh token (iss=whatever Host the browser used,
+      # via nginx :8443) is rejected when kronos-backend redeems it via
+      # the internal keycloak:8080 short-circuit -- reproduced live as a
+      # real REFRESH_TOKEN_ERROR "Invalid token issuer" (Milestone JJJ).
+      # Must exactly match kronos-backend's KEYCLOAK_PUBLIC_URL below.
+      KC_HOSTNAME: https://kronos.local:8443
+      # Standard Keycloak reverse-proxy setting -- trusts X-Forwarded-*
+      # from the nginx :8443 proxy in front of it. Real, reproduced
+      # finding: nginx-lan-https.conf.template already sends correct
+      # X-Forwarded-Proto/Host/Port headers, but without this, Keycloak
+      # doesn't trust/use them when constructing absolute URLs it embeds
+      # in its own responses -- confirmed live: the real hosted login
+      # form's submit action came back pointing at the WRONG origin
+      # (the frontend's own :443 port, not Keycloak's :8443 proxy port),
+      # and the browser's real POST to it got a real nginx 400 ("plain
+      # HTTP request was sent to HTTPS port"). Safe for the existing pytest
+      # suite's own direct :8080 calls (no proxy involved, no
+      # X-Forwarded-* headers present, Keycloak falls back to its own raw
+      # connection view exactly as before) -- this only changes behavior
+      # for requests that actually arrive via nginx's real proxy headers.
+      KC_PROXY_HEADERS: xforwarded
+      # Keeps `token_endpoint` (and other backchannel-only discovery-doc
+      # URLs) resolving per-requester instead of the pinned KC_HOSTNAME,
+      # while the actual `iss` claim on issued tokens stays pinned
+      # (verified directly against a real Keycloak 26.2 -- see
+      # docker-compose.dev.yml's own comment for the reproduction this
+      # was ported from). Not currently load-bearing for this profile the
+      # way it is for dev's Dashboards SSO, but keeps this service
+      # consistent with dev's proven config rather than a partial copy.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports: ["8080:8080"]
     volumes:
       # This file never existed in the repo (was "realm-export.json") --
@@ -228,8 +331,23 @@ services:
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: KronOSCiTest#2026
       OPENSEARCH_SECURITY_ENABLED: "true"
-      KEYCLOAK_ISSUER: http://keycloak:8080/realms/kronos
-      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/kronos/protocol/openid-connect/certs
+      # Gap Audit III (2026-08-28): KEYCLOAK_ISSUER/KEYCLOAK_JWKS_URL (this
+      # block's own prior contents) are DEAD -- confirmed by reading the
+      # real code: src/external/fastapi_app.py's module-level bootstrap
+      # reads `KEYCLOAK_PUBLIC_URL`/`KEYCLOAK_URL` directly via os.getenv
+      # to DERIVE the issuer/JWKS URL itself (`{public_url}/realms/{realm}`,
+      # `{internal_url}/realms/{realm}/protocol/openid-connect/certs`) --
+      # it never reads a var named KEYCLOAK_ISSUER or KEYCLOAK_JWKS_URL at
+      # all. This means kronos-backend's real JWT validation has never
+      # actually been configured correctly in this file, at any point
+      # before this fix -- a real, latent bug, not something this pass
+      # introduced. KEYCLOAK_URL (internal, JWKS fetch) already added in
+      # Milestone HHH; KEYCLOAK_PUBLIC_URL (browser-visible issuer) is new
+      # here, needed now that real browser-issued tokens via the nginx
+      # service below carry iss=https://kronos.local:8443/... (Keycloak's
+      # own per-request dynamic issuer, no KC_HOSTNAME pinning -- see that
+      # service's own comment).
+      KEYCLOAK_PUBLIC_URL: https://kronos.local:8443
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
       # Gap Audit HHH (2026-08-28, poc/test_stack_frontend_https/): this
@@ -330,22 +448,53 @@ services:
       retries: 5
 
   # NGINX reverse proxy — serves frontend SPA and proxies /api/ to backend
+  # Gap Audit III: previously the stock nginx:alpine image (API-proxy-only
+  # on :80, no frontend SPA served at all -- confirmed live,
+  # poc/test_stack_frontend_https/output.txt). Rebuilt from the same real
+  # image docker-compose.dev.yml's own nginx service builds
+  # (docker/Dockerfile.frontend), which bakes the compiled SPA in and
+  # already includes BOTH nginx.conf.template (:80) and
+  # nginx-lan-https.conf.template (real TLS termination on :443/:8443 +
+  # Keycloak/backend reverse-proxying) -- no template bind-mount needed at
+  # all, unlike the prior stock-image service. Standard ports (443/8443),
+  # not the locally-remapped ones poc/test_stack_frontend_https/ used for
+  # verification on this host (which already runs docker-compose.dev.yml
+  # on those exact ports) -- a real GitHub Actions runner has no
+  # conflicting stack; local verification on a host with a live dev stack
+  # needs its own port-remap override, matching
+  # poc/ci_security_enabled_stack/docker-compose.override.yml's own
+  # established pattern.
   nginx:
-    image: nginx:alpine
-    ports: ["80:80"]
-    # See docker/nginx/nginx.conf.template — nginx's docker-entrypoint
-    # envsubst step renders these into the CSP header at startup.
+    image: kronos-test-nginx:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_KEYCLOAK_URL: https://kronos.local:8443
+    ports: ["80:80", "443:443", "8443:8443"]
+    # See docker/nginx/nginx.conf.template / nginx-lan-https.conf.template
+    # — nginx's docker-entrypoint envsubst step renders these into BOTH
+    # templates' CSP headers at startup (envsubst applies one shared
+    # environment across every *.template file, so the :80 and :443/:8443
+    # blocks necessarily share these same values -- matching
+    # docker-compose.dev.yml's own nginx service, which does the same).
     environment:
-      KEYCLOAK_PUBLIC_URL: http://localhost:8080
-      BACKEND_PUBLIC_URL: http://localhost:8000
-      MINIO_PUBLIC_URL: http://localhost:9000
+      KEYCLOAK_PUBLIC_URL: "https://kronos.local:8443"
+      BACKEND_PUBLIC_URL: "https://kronos.local"
+      MINIO_PUBLIC_URL: ""
       OPENSEARCH_DASHBOARDS_URL: ""
     volumes:
-      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - fe_tls_certs:/etc/kronos/tls:ro
     depends_on:
-      - kronos-backend
+      kronos-backend:
+        condition: service_started
+      tls-init:
+        condition: service_completed_successfully
+      opensearch-dashboards:
+        condition: service_started
 
 volumes:
   postgres_data:
   minio_data:
   opensearch_data:
+  fe_tls_certs:
