@@ -1,6 +1,16 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHH.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_III.md` for the latest cycle**
+— root-caused and fixed Milestone HHH's one open item: a real (not
+timing-artifact) frontend bug where two independent, uncoordinated
+`/auth/refresh` callers (`api/client.ts`'s 401 interceptor and
+`keycloak.ts`'s own silent-refresh timer) could race Keycloak's real
+refresh-token rotation, and the loser forced a real, valid session
+through an unwanted full re-login. Fixed with a shared single-flight
+promise in `keycloak.ts`; verified via a new unit test locking in the
+mechanism plus a full, green six-spec E2E regression.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHH.md` for the prior cycle**
 — real PoC (`poc/test_stack_frontend_https/`) got `frontend/e2e/`'s real
 PKCE login + navigation working against `docker-compose.test.yml` over
 genuine HTTPS, finding and fixing 5 real bugs along the way. Also
