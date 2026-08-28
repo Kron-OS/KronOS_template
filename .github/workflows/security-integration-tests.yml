@@ -68,7 +68,10 @@ jobs:
         run: pytest tests/integration/test_security_enabled_stack.py -v --no-cov
 
       - name: Dump service logs on failure
-        if: failure()
+        # Milestone KKK: cancelled(), not just failure() -- a
+        # timeout-minutes cancellation isn't "failure" in GHA, so
+        # if: failure() alone silently skips this on a timeout.
+        if: failure() || cancelled()
         run: docker compose -f docker-compose.test.yml logs --tail=200
 
       - name: Tear down
@@ -85,7 +88,13 @@ jobs:
   # roughly doubles wall time.
   frontend-e2e-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Milestone KKK's own local dry run (docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md)
+    # used a warm local image cache, same caveat security-stack's own header
+    # comment already makes about its own timing -- this job does MORE
+    # (builds two fresh images, npm ci, a fresh Chromium download) than
+    # that job's measured ~46s, so budgeted well above a guess-based 25min.
+    # First real GHA run is still the actual confirmation; not yet measured.
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: docker
@@ -132,19 +141,45 @@ jobs:
 
       - name: Run the smoke-tier real-browser E2E spec
         working-directory: frontend
-        run: npx playwright test e2e/login.spec.ts --reporter=list
+        # No --reporter override: playwright.config.ts's own configured
+        # reporters (list + html) both run, so a failure gets the full
+        # HTML report (traces/screenshots), not just the raw test-results/
+        # dir a bare --reporter=list would have left as the only output.
+        run: npx playwright test e2e/login.spec.ts
 
-      - name: Upload Playwright report on failure
-        if: failure()
+      - name: Upload Playwright report + traces on failure or cancellation
+        # cancelled(), not just failure(): a timeout-minutes cancellation
+        # is NOT "failure" in GitHub Actions -- if: failure() alone would
+        # silently skip this AND the log dump below on exactly the
+        # scenario most likely on this job's first real run (a cold,
+        # multi-image-build stack overrunning the timeout), leaving no
+        # diagnostics at all for the one failure mode most worth seeing.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: frontend/test-results/
+          path: |
+            frontend/test-results/
+            frontend/e2e-report/
           retention-days: 7
 
-      - name: Dump service logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.test.yml logs --tail=200
+      - name: Dump full service logs on failure or cancellation
+        if: failure() || cancelled()
+        # Full logs to a file + artifact upload, not a --tail=200 dump to
+        # the step log: 200 lines split across 9 real services is easily
+        # consumed by one chatty service (OpenSearch's own startup
+        # logging observed locally), truncating exactly the nginx/
+        # tls-init/kronos-backend lines most likely to hold the real
+        # signal for what this job specifically exists to prove.
+        run: docker compose -f docker-compose.test.yml logs --no-color > /tmp/compose-logs.txt
+
+      - name: Upload full service logs on failure or cancellation
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: /tmp/compose-logs.txt
+          retention-days: 7
 
       - name: Tear down
         if: always()
