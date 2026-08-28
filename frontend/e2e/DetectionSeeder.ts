@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runPythonFixture } from "./pythonFixture";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SEED_SCRIPT = path.resolve(__dirname, "fixtures/seed_detection.py");
-const PYTHON = process.env.KRONOS_E2E_PYTHON ?? path.join(process.env.HOME ?? "", "venv/bin/python3");
 
 export type SeededDetection = { detectionId: string; orgId: string; ruleName: string };
 
@@ -17,11 +16,6 @@ export type SeededDetection = { detectionId: string; orgId: string; ruleName: st
  */
 export class DetectionSeeder {
   seed(ruleName: string, orgAlias = "kronos-dev"): SeededDetection {
-    const stdout = execFileSync(
-      PYTHON,
-      [SEED_SCRIPT, "--org-alias", orgAlias, "--rule-name", ruleName],
-      { stdio: ["ignore", "pipe", "inherit"] },
-    ).toString();
-    return JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as SeededDetection;
+    return runPythonFixture<SeededDetection>(SEED_SCRIPT, ["--org-alias", orgAlias, "--rule-name", ruleName]);
   }
 }
