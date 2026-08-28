@@ -15,7 +15,15 @@ export type SeededDetection = { detectionId: string; orgId: string; ruleName: st
  * instead of drifting out of sync with a second, hand-written INSERT.
  */
 export class DetectionSeeder {
-  seed(ruleName: string, orgAlias = "kronos-dev"): SeededDetection {
+  // KRONOS_E2E_SEED_ORG_ALIAS override (Milestone NNN): the dev stack's
+  // keycloak-init provisions "kronos-dev", but docker-compose.test.yml's
+  // own keycloak-init provisions "kronos-test" instead -- login as
+  // case-lead there gets that org's org_id, which would never match a
+  // detection seeded under the wrong default. Callers targeting a non-dev
+  // stack should still prefer passing orgAlias explicitly; this env
+  // fallback exists so CI can point the whole suite at the right org
+  // without editing every spec that omits the argument.
+  seed(ruleName: string, orgAlias = process.env.KRONOS_E2E_SEED_ORG_ALIAS ?? "kronos-dev"): SeededDetection {
     return runPythonFixture<SeededDetection>(SEED_SCRIPT, ["--org-alias", orgAlias, "--rule-name", ruleName]);
   }
 }

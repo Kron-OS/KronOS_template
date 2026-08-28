@@ -92,16 +92,30 @@ jobs:
     # used a warm local image cache, same caveat security-stack's own header
     # comment already makes about its own timing -- this job does MORE
     # (builds three fresh images as of Milestone MMM's celery-worker
-    # addition, npm ci, a fresh Chromium download, plus a real
-    # upload->parse->COMPLETE pipeline run) than that job's measured ~46s,
-    # so budgeted well above a guess-based figure. First real GHA run is
+    # addition, npm ci + pip install as of Milestone NNN, a fresh Chromium
+    # download, plus a real upload->parse->COMPLETE pipeline run and two
+    # detection-seeding round trips) than that job's measured ~46s, so
+    # budgeted well above a guess-based figure. First real GHA run is
     # still the actual confirmation; not yet measured.
-    timeout-minutes: 40
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: docker
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        # Milestone NNN: detection-triage.spec.ts/detection-triage-race.spec.ts
+        # need this -- their DetectionSeeder fixture shells out to a real
+        # Python script (frontend/e2e/fixtures/seed_detection.py) that
+        # goes through the real backend domain code
+        # (PostgresDetectionRepository/DetectionRiskScorer) rather than a
+        # hand-written INSERT. Same install as security-stack's own step.
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+        working-directory: .
 
       - name: Point kronos.local at this runner
         # Safe here specifically because a GHA runner is a fresh VM with no
@@ -143,19 +157,36 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run the smoke + evidence-upload flow-tier real-browser E2E specs
+      - name: Run the smoke + flow-tier real-browser E2E specs
         working-directory: frontend
         # evidence-upload.spec.ts added Milestone MMM, the first
         # incremental flow-tier spec per Milestone KKK/LLL's own
         # recommendation -- verified it needs only celery-worker (not
         # celery-worker-plaso/celery-beat/clamav) since its fixture file
-        # (cloudtrail.json) is a fast-path text parser, no Python-fixture
-        # tooling this job doesn't already have. No --reporter override:
-        # playwright.config.ts's own configured reporters (list + html)
-        # both run, so a failure gets the full HTML report (traces/
-        # screenshots), not just the raw test-results/ dir a bare
+        # (cloudtrail.json) is a fast-path text parser.
+        # detection-triage.spec.ts/detection-triage-race.spec.ts added
+        # Milestone NNN, need no extra services (pure Postgres/OpenSearch
+        # CRUD) but DO need the three env vars below -- their
+        # DetectionSeeder fixture's underlying Python script
+        # (seed_detection.py) hardcodes docker-compose.dev.yml's own
+        # Postgres DSN/org-alias defaults by default (a real, confirmed
+        # blocker running it against this profile's different DB name/
+        # password and org alias for the first time), and this job's
+        # earlier steps run on the runner directly (not proxied through
+        # nginx or a container), so KEYCLOAK_URL doesn't need overriding
+        # here the way it does for local multi-stack-host verification
+        # (see docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md). No --reporter
+        # override: playwright.config.ts's own configured reporters
+        # (list + html) both run, so a failure gets the full HTML report
+        # (traces/screenshots), not just the raw test-results/ dir a bare
         # --reporter=list would have left as the only output.
-        run: npx playwright test e2e/login.spec.ts e2e/evidence-upload.spec.ts
+        env:
+          KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
+          KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
+          KRONOS_E2E_PYTHON: "python3"
+        run: >
+          npx playwright test e2e/login.spec.ts e2e/evidence-upload.spec.ts
+          e2e/detection-triage.spec.ts e2e/detection-triage-race.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation

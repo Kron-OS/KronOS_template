@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -38,11 +39,28 @@ from src.adapter.repository.postgres_detection import PostgresDetectionRepositor
 from src.application.risk_scoring import DetectionRiskScorer  # noqa: E402
 from src.domain.detection import Detection, DetectionRuleMatch  # noqa: E402
 
-KEYCLOAK_INTERNAL_URL = "http://localhost:8080"
+# Both docker-compose.dev.yml and .test.yml publish keycloak on host 8080
+# unremapped, so this is correct for either alone. Overridable (same
+# reasoning as POSTGRES_DSN below) for the one case it isn't: verifying
+# against an isolated, differently-port-mapped test-stack instance on a
+# host that also has the real dev stack's own keycloak already holding
+# 8080 -- not a real CI gap, CI only ever runs one stack at a time.
+KEYCLOAK_INTERNAL_URL = os.environ.get("KRONOS_E2E_KEYCLOAK_URL", "http://localhost:8080")
 KEYCLOAK_REALM = "kronos"
 KEYCLOAK_ADMIN_CLIENT_ID = "kronos-backend"
 KEYCLOAK_ADMIN_CLIENT_SECRET = "kronos-backend-secret"
-POSTGRES_DSN = "postgresql+asyncpg://kronos:kronos_dev_password@localhost:5432/kronos"
+# Milestone NNN: this hardcoded dev-stack-only DSN was a real, confirmed
+# blocker running this script against docker-compose.test.yml for the
+# first time -- that profile's Postgres uses a different password AND
+# database name (kronos_test_password / kronos_test, not
+# kronos_dev_password / kronos), same host port. Overridable rather than
+# a second hardcoded constant, matching pythonFixture.ts's own
+# KRONOS_E2E_PYTHON precedent, so CI can point this at whichever real
+# stack it's running against without a second copy of this script.
+POSTGRES_DSN = os.environ.get(
+    "KRONOS_E2E_POSTGRES_DSN",
+    "postgresql+asyncpg://kronos:kronos_dev_password@localhost:5432/kronos",
+)
 
 
 def log(msg: str) -> None:
