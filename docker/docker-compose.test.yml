@@ -232,6 +232,34 @@ services:
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/kronos/protocol/openid-connect/certs
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
+      # Gap Audit HHH (2026-08-28, poc/test_stack_frontend_https/): this
+      # service has NEVER fully booted in this file -- src/config.py::Settings
+      # requires keycloak_url/keycloak_client_secret/vault_url/vault_token/
+      # celery_broker_url/celery_result_backend with no default, and none
+      # of the six were ever set here. wire_dependencies_async() catches
+      # the failure and logs a WARNING rather than crashing at startup, so
+      # this was never caught by anything that only checks "does Uvicorn
+      # start" -- but src/external/routes/auth.py's /auth/refresh
+      # instantiates a fresh Settings() PER REQUEST, so this is a genuine,
+      # reproduced 500 on every real token refresh, not a cosmetic startup
+      # warning (confirmed live: poc/test_stack_frontend_https/output.txt).
+      # keycloak_url/client_secret use this file's own already-real
+      # keycloak/keycloak-init services; celery_broker_url/result_backend
+      # reuse the real redis already here (DB1/DB2, matching
+      # docker-compose.dev.yml's pre-DB-role-split convention -- this file
+      # has no dedicated Celery redis instance). vault_url/token are
+      # syntactically-valid placeholders only -- this file has no real
+      # Vault service (unlike docker-compose.dev.yml, which optionally
+      # layers in docker/vault/docker-compose.vault.yml) -- confirmed live
+      # that nothing in a login/auth-only flow actually calls Vault, but a
+      # real evidence-upload integration test added later would need the
+      # real service, not this placeholder.
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_CLIENT_SECRET: kronos-backend-secret
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: unused-placeholder-no-real-vault-service-in-this-file
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -258,6 +286,16 @@ services:
       OPENSEARCH_USERNAME: admin
       OPENSEARCH_PASSWORD: KronOSCiTest#2026
       OPENSEARCH_SECURITY_ENABLED: "true"
+      # Gap Audit HHH -- see kronos-backend's identical, fuller comment
+      # above. celery_app.py instantiates Settings() at import, so this
+      # worker has never been able to boot at all in this file (a harder
+      # failure than kronos-backend's own "logs a warning" degradation).
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_CLIENT_SECRET: kronos-backend-secret
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: unused-placeholder-no-real-vault-service-in-this-file
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }

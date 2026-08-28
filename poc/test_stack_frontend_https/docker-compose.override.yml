@@ -1,0 +1,147 @@
+# Local-verification-only. Port-remap pattern reused verbatim from
+# poc/ci_security_enabled_stack/docker-compose.override.yml (same host,
+# same live-dev-stack port collision, same `!override` requirement --
+# Compose merges list-typed `ports:` by concatenation, not replacement).
+# Extended here with a real tls-init + a real frontend-building nginx
+# service, neither of which the base docker-compose.test.yml has. See
+# README.md for the full account of why (secure=True refresh cookie makes
+# plain HTTP non-viable) and what's reused vs. new.
+services:
+  postgres:
+    ports: !override ["15432:5432"]
+  redis:
+    ports: !override ["16379:6379"]
+  minio:
+    ports: !override ["19000:9000", "19001:9001"]
+  opensearch:
+    ports: !override ["19200:9200", "19600:9600"]
+  clamav:
+    ports: !override ["13310:3310"]
+  tsa:
+    ports: !override ["10318:318"]
+
+  # Real, reproduced (poc/tls_lan_https/) requirement: kronos.local is the
+  # sole authorized SAN, no localhost/127.0.0.1 alternates. Throwaway
+  # self-signed cert (not step-ca) -- frontend/e2e/playwright.config.ts
+  # already sets ignoreHTTPSErrors: true globally, so cert *validity* was
+  # never going to matter here, only that HTTPS is genuinely served, at
+  # the exact fixed path (/etc/kronos/tls/server.{crt,key}) the real,
+  # reused nginx-lan-https.conf.template hardcodes.
+  tls-init:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -keyout /certs/server.key -out /certs/server.crt \
+          -subj "/CN=kronos.local" \
+          -addext "subjectAltName=DNS:kronos.local"
+        chmod 0644 /certs/server.crt /certs/server.key
+        echo "tls-init: real self-signed cert generated for kronos.local"
+    volumes:
+      - fe_tls_certs:/certs
+
+  keycloak:
+    ports: !override ["18080:8080"]
+    environment:
+      # Mirrors docker-compose.dev.yml's own real, already-proven config
+      # (same comments there explain each var) -- remapped port only.
+      KC_HOSTNAME: https://kronos.local:19443
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+
+  kronos-backend:
+    ports: !override ["18000:8000"]
+    environment:
+      # Must match keycloak's KC_HOSTNAME above exactly (the value this
+      # validates the real JWT `iss` claim against) -- same real
+      # constraint docker-compose.dev.yml's own comment documents.
+      KEYCLOAK_PUBLIC_URL: https://kronos.local:19443
+      KEYCLOAK_ISSUER: https://kronos.local:19443/realms/kronos
+      # Real, separate bug found live (not this PoC's own doing): the base
+      # docker-compose.test.yml's kronos-backend never set these at all --
+      # src/config.py::Settings requires them with no default, so the real
+      # app has never fully wired up in this file (wire_dependencies_async()
+      # catches the failure and logs a warning rather than crashing at
+      # STARTUP, so Uvicorn boots anyway -- a separate, real footgun).
+      # Real, reproduced finding this PoC's own login flow surfaced:
+      # src/external/routes/auth.py's /auth/refresh instantiates a fresh
+      # Settings() per REQUEST, not just at startup -- so this isn't just
+      # a cosmetic startup warning, it's a genuine 500 on every real
+      # refresh call, which the frontend's own silent-refresh/session-
+      # bootstrap logic depends on. celery_broker_url/result_backend point
+      # at the real redis already in this file (no functional need for a
+      # dedicated broker for a login-only flow); vault_url/token only need
+      # to be present and syntactically valid -- nothing in a login flow
+      # actually calls Vault, confirmed by this fix working.
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_CLIENT_SECRET: kronos-backend-secret
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: poc-unused-placeholder
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+
+  # Replaces the base file's stock nginx:alpine (API-proxy-only, no
+  # frontend) with the real dev-proven build: docker/Dockerfile.frontend
+  # bakes the compiled SPA in and already includes BOTH
+  # nginx.conf.template (:80) and nginx-lan-https.conf.template (real TLS
+  # termination + Keycloak/backend reverse-proxying) -- no template
+  # bind-mount needed at all, unlike the base file's stock-image service.
+  nginx:
+    image: kronos-poc-fe-tls-nginx:latest
+    build:
+      # Real, reproduced gotcha: Compose resolves a relative `context:` in
+      # an override file against the invocation cwd (this file is invoked
+      # via `docker compose -f docker-compose.test.yml -f
+      # poc/.../docker-compose.override.yml` from `docker/`), NOT against
+      # this override file's own directory -- `../..` here (which would be
+      # correct if resolved relative to poc/test_stack_frontend_https/)
+      # actually resolved to one level *above* the repo root and failed
+      # with "lstat .../Kronos/docker: no such file". Matches the base
+      # file's own `context: ..` convention instead (correct relative to
+      # the same `docker/` cwd every other service in this file already
+      # assumes).
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_KEYCLOAK_URL: https://kronos.local:19443
+    # :443 is the frontend/API origin, :8443 is nginx-lan-https.conf.template's
+    # OWN SEPARATE server block that reverse-proxies to Keycloak
+    # specifically (real, reproduced gotcha this override hit: pointing
+    # KC_HOSTNAME/VITE_KEYCLOAK_URL at the SAME port as the frontend
+    # instead of this dedicated one gets a real "Not Found" from nginx,
+    # since nothing routes Keycloak traffic through :443's own location
+    # blocks).
+    ports: !override ["10080:80", "18443:443", "19443:8443"]
+    environment: !override
+      KEYCLOAK_PUBLIC_URL: "https://kronos.local:19443"
+      BACKEND_PUBLIC_URL: "https://kronos.local"
+      MINIO_PUBLIC_URL: ""
+      OPENSEARCH_DASHBOARDS_URL: ""
+    volumes: !override
+      - fe_tls_certs:/etc/kronos/tls:ro
+    depends_on:
+      kronos-backend:
+        condition: service_started
+      tls-init:
+        condition: service_completed_successfully
+      opensearch-dashboards:
+        condition: service_started
+
+  # Real, separate gap found live: nginx-lan-https.conf.template (real,
+  # shared, unmodified -- see README.md) statically proxy_passes to
+  # `opensearch-dashboards:5601`, and nginx fails HARD at config-parse
+  # time ("host not found in upstream") if that hostname doesn't resolve
+  # at all -- not just at request time. docker-compose.test.yml has no
+  # opensearch-dashboards service (out of scope for its own original
+  # backend-integration purpose). This PoC's login flow never touches
+  # Dashboards, so a minimal DNS-resolvable stub (not the real, heavy
+  # Dashboards image) is the correctly-scoped fix here -- editing the
+  # shared template to make this upstream optional is out of scope for a
+  # PoC and risks the real, working dev config.
+  opensearch-dashboards:
+    image: nginx:alpine
+
+volumes:
+  fe_tls_certs:

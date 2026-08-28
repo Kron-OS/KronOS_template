@@ -1,0 +1,108 @@
+Real, captured run — 2026-08-28. Isolated Compose project `kronos-poc-fe-tls`
+(docker-compose.test.yml + docker-compose.override.yml in this directory),
+never touching the live dev stack (confirmed via `docker ps` before/after
+every step, container count unchanged at 15 throughout).
+
+=== Base services (postgres/redis/minio/opensearch/keycloak) ===
+All real, healthy. tls-init: real self-signed cert generated for kronos.local
+(exit 0).
+
+=== db-migrate ===
+Real Alembic run, 3 real revisions applied, exit 0.
+
+=== opensearch-init + keycloak-init ===
+Both real, clean, exit 0. Real org "kronos-test" created, real org_id
+attributes set, real openid authc domain + DLS role configured.
+
+=== kronos-backend (first attempt) ===
+Real, separate bug found (pre-existing in the base file, not introduced by
+this PoC): Settings validation failed at startup --
+  keycloak_url, keycloak_client_secret, vault_url, vault_token,
+  celery_broker_url, celery_result_backend
+all "Field required" -- docker-compose.test.yml's kronos-backend service
+never set them at all. wire_dependencies_async() catches this and logs a
+WARNING rather than crashing, so Uvicorn boots anyway (a separate, real
+footgun: silent partial startup instead of failing loudly).
+
+=== nginx (first attempt) ===
+Real build succeeded (docker/Dockerfile.frontend, real frontend compiled
+in), but nginx failed to START:
+  nginx: [emerg] host not found in upstream "opensearch-dashboards" in
+  /etc/nginx/conf.d/nginx-lan-https.conf:232
+Real gap: nginx-lan-https.conf.template (real, shared, unmodified) statically
+proxy_passes to opensearch-dashboards:5601; docker-compose.test.yml has no
+such service at all. Fixed with a minimal nginx:alpine stub under that
+service name (DNS-resolvable only, not functional -- this PoC's login flow
+never touches Dashboards).
+
+=== Real HTTPS confirmed serving the real frontend ===
+  curl -sk https://kronos.local:18443/ -> HTTP 200, real compiled SPA HTML.
+
+=== First real E2E attempt: real "Not Found" ===
+KC_HOSTNAME/VITE_KEYCLOAK_URL/KEYCLOAK_PUBLIC_URL/KEYCLOAK_ISSUER were all
+pointed at the SAME port as the frontend (:18443/443) -- but
+nginx-lan-https.conf.template routes Keycloak through its OWN, separate
+:8443 server block, never published to any host port at all in the first
+attempt. Fixed: published nginx's container :8443 to host :19443, moved
+every Keycloak-public-URL reference there.
+
+=== Second real E2E attempt: real 400, "Invalid redirect_uri" (via nginx access log) ===
+  GET /realms/kronos/protocol/openid-connect/auth?...&redirect_uri=
+  https%3A%2F%2Fkronos.local%3A18443%2Fsilent-check-sso.html... -> 400
+Real cause: docker/keycloak/kronos-realm.json's "kronos-frontend" client
+redirectUris/webOrigins are ["https://kronos.local/*"] /
+["https://kronos.local"] -- origin-exact-match on scheme+host+PORT (the
+`/*` wildcard only covers the path), and this PoC's local-verification-only
+port remap (:18443, needed only because this host already runs the real
+dev stack on the standard ports) doesn't match. Real CI (a clean GitHub
+Actions runner with no conflicting stack) would use the file's own
+standard 443/8443 ports and never hit this -- confirmed this is a
+local-verification-only artifact, not a real gap in the shared realm file.
+Fixed for this isolated instance only, via a live Admin REST PUT (the same
+kind of post-import client patch keycloak-init/provision_keycloak_org.sh
+already do for organizations) adding the :18443 origin -- the shared
+kronos-realm.json file itself was never touched.
+
+=== Third real E2E attempt: real login succeeded, app stuck loading Cases list ===
+Real screenshot confirmed: header shows real "case-lead" username, real
+nav, real "New Case" button -- genuine authenticated session. Cases list
+itself spun forever. Backend logs showed the real cause:
+  ERROR: Exception in ASGI application
+  pydantic_core._pydantic_core.ValidationError: 4 validation errors for Settings
+  POST /auth/refresh -> 401, then 500
+Real, reproduced finding: src/external/routes/auth.py's /auth/refresh
+instantiates a fresh Settings() per REQUEST (not just at process startup),
+so the vault_url/token/celery_broker_url/result_backend gap from the very
+first kronos-backend attempt wasn't just a cosmetic startup warning -- it's
+a genuine 500 on every real refresh call, which the frontend's own
+silent-refresh/session-bootstrap logic depends on. Fixed: celery_broker_url/
+result_backend point at the real redis already in this file (DB1/DB2, no
+functional need for a dedicated broker for a login-only flow); vault_url/
+token given syntactically-valid placeholder values -- confirmed nothing in
+a login-only flow actually calls Vault (fix worked with no Vault service
+present at all).
+
+=== Fourth real E2E attempt: login.spec.ts passed through login + Cases +
+Detections navigation; failed on its OWN final assertion ===
+Re-ran twice (not flaky, consistent): the test's own explicit
+fetchDecodedAccessTokenClaims() call got a real 401 from a fresh
+`fetch("/auth/refresh", ...)`:
+  RAW BODY: {"status":401,"text":"{\"detail\":\"Token refresh failed\"}"}
+Real hypothesis, not yet confirmed: Keycloak refresh-token rotation --
+the app's own bootstrap logic likely already called /auth/refresh once
+during the login flow (rotating the real refresh_token cookie), and this
+test's own LATER explicit call either raced that rotation or used an
+already-consumed pre-rotation cookie. login.spec.ts has run successfully
+against docker-compose.dev.yml dozens of times this same session with no
+such failure -- open question whether this is a timing/latency artifact
+specific to this fresh, cold-built test stack, or a genuine, rare race in
+the app's real refresh handling that dev's warmer/faster stack usually
+avoids by chance. NOT resolved this pass -- flagged as a precise,
+well-scoped open item for the next cycle (see README.md).
+
+=== Teardown ===
+`down -v --remove-orphans` + explicit `docker rmi` of all four built
+images (nginx/kronos-backend/db-migrate/keycloak-init). Confirmed clean:
+zero kronos-poc-fe-tls-* containers/images remain; live dev stack
+(`docker-*` project) untouched throughout, verified via `docker ps`
+before and after (15 containers, unchanged).
