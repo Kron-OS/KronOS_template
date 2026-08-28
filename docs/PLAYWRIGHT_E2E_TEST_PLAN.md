@@ -1,6 +1,24 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLL.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMM.md` for the latest cycle**
+— wired `evidence-upload.spec.ts` (the first flow-tier spec) into
+`frontend-e2e-smoke`, needing `celery-worker` added to that CI job.
+Running it for the first time against `docker-compose.test.yml` surfaced
+**six real, previously-undiscovered bugs** that meant NO real evidence
+upload could ever have completed in this profile before now: three
+`MinIO` env-var mistakes (a full-URL-vs-bare-host format bug that crashed
+every real MinIO call, `MINIO_USE_TLS` defaulting to a scheme this
+profile's plain-HTTP MinIO doesn't speak, a missing browser-facing
+`MINIO_PUBLIC_ENDPOINT`), nginx never publishing MinIO's dedicated `:9444`
+port or setting its CSP `connect-src` for it, MinIO having no CORS
+configuration for the genuinely cross-origin presigned PUT, and — the
+most severe — `celery-worker` never consuming the `q.intake` queue the
+current intake pipeline actually uses, meaning every real upload would
+have sat in `UPLOADING` forever with zero error anywhere. All six fixed
+and verified via a real upload reaching `Complete` over live SSE, then a
+full mirror of the exact final CI job sequence run fresh end to end.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLL.md` for the prior cycle**
 — multi-scenario subagent assessment (security/CI-reliability/coverage-gap)
 of Milestone JJJ+KKK's landed work. Fixed two real, cheap findings: a
 previously-unguarded safety-rule risk in `DevStackFaultInjector.ts`
