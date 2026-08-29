@@ -180,6 +180,16 @@ jobs:
         # (list + html) both run, so a failure gets the full HTML report
         # (traces/screenshots), not just the raw test-results/ dir a bare
         # --reporter=list would have left as the only output.
+        # cross-tenant-isolation.spec.ts added Milestone OOO: its own
+        # SecondOrgSeeder fixture (seed_second_org.py) needed the SAME
+        # KRONOS_E2E_KEYCLOAK_URL override treatment as seed_detection.py
+        # got in Milestone NNN -- a real gap in that sibling script, not
+        # just style drift (see that milestone doc for the full account
+        # of how chasing this looked exactly like a Keycloak bug before
+        # the actual cause -- two different Keycloak instances during
+        # local verification -- was found). Not needed as a CI env var
+        # here for the same reason KEYCLOAK_URL isn't set above: no
+        # local-multi-stack-host collision on a real GHA runner.
         env:
           KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
           KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
@@ -187,6 +197,7 @@ jobs:
         run: >
           npx playwright test e2e/login.spec.ts e2e/evidence-upload.spec.ts
           e2e/detection-triage.spec.ts e2e/detection-triage-race.spec.ts
+          e2e/cross-tenant-isolation.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
