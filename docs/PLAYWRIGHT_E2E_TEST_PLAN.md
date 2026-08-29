@@ -24,7 +24,21 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQ.md` for the latest spec-coverage cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSS.md` for the latest
+spec-coverage cycle** — `frontend-e2e-smoke` now runs all 7
+`frontend/e2e/` specs. New `evidence-parse-retry.spec.ts` (test-stack
+profile, via new `TestStackOpenSearchFaultInjector`) is the test-stack
+analogue of `evidence-retry.spec.ts`, completing error/retry coverage
+for both failure shapes (MinIO upload-request, OpenSearch parse-stage)
+on both compose profiles. Verifying it hit a real methodology near-miss
+worth remembering: several other specs briefly looked broken when
+re-run afterward, but it was this cycle's own local-verification stack
+missing Postgres/Keycloak port publishing — the exact class of
+self-inflicted false positive Milestone OOO's incident was about — caught
+immediately via the specific error messages this time, not chased as a
+phantom bug.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQ.md` for the prior spec-coverage cycle**
 — `frontend-e2e-smoke` now runs all 6 `frontend/e2e/` specs, the entire
 existing suite. New spec `evidence-upload-storage-outage.spec.ts`
 (test-stack profile, via new `TestStackFaultInjector`) closes the
