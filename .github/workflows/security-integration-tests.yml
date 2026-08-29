@@ -23,9 +23,27 @@ name: Security-Enabled Integration Tests
 #   3. Matches this initiative's own established precedent (I1/H-series:
 #      real local verification now, CI wiring as an explicit, scoped,
 #      nightly-not-per-PR follow-up for exactly this class of heavier stack).
+# Milestone RRR (docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md): the
+# schedule trigger below is CURRENTLY INERT. GitHub Actions only
+# evaluates a workflow's `schedule:` trigger from the copy of this file
+# on the repository's *default* branch -- a platform constraint, not
+# something fixable in this YAML. This file has only ever existed on
+# feat/nextgen-soc-cert-platform, confirmed never merged to main
+# (`git show main:.github/workflows/security-integration-tests.yml`
+# fails) -- so the nightly cron below has never actually fired, and
+# won't until either a real workflow_dispatch is run against this
+# branch by someone with repo access (`gh workflow run
+# security-integration-tests.yml --ref feat/nextgen-soc-cert-platform`,
+# or the equivalent GitHub UI/API action), or this branch merges to
+# main. Every job below has been verified extensively via local
+# isolated-stack dry runs (per CLAUDE.md SS F) -- that work is real and
+# stands on its own -- but none of it has yet run on GitHub's actual
+# infrastructure. Do not remove this comment when merging; remove it
+# only once a real run (dispatch or post-merge) has actually been
+# observed to succeed.
 on:
   schedule:
-    - cron: "0 3 * * *" # nightly, 03:00 UTC
+    - cron: "0 3 * * *" # nightly, 03:00 UTC -- see note above, inert until merged/dispatched
   workflow_dispatch: {}
 
 jobs:

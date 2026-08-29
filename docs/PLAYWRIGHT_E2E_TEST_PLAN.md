@@ -1,6 +1,30 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQ.md` for the latest cycle**
+**Correction 2026-08-29 (Milestone RRR) — read before trusting any
+"nightly CI"/"CI-wired" claim below or in Milestones KKK-QQQ's own
+docs.** `.github/workflows/security-integration-tests.yml` has never
+actually executed on GitHub Actions: it only exists on
+`feat/nextgen-soc-cert-platform` (never merged to `main`), and GitHub
+only evaluates a workflow's `schedule:` trigger from the file as it
+exists on the repository's *default* branch — a hard platform
+constraint, confirmed directly (`git show main:.github/workflows/security-integration-tests.yml`
+fails; the GitHub API's workflow list for this repo doesn't include this
+file at all). **This turned out not to be specific to this one
+workflow**: every workflow in this repo (`build.yml`,
+`integration-tests.yml`, `test.yml`) triggers only on `push`/
+`pull_request` to `main` — none fire on push to
+`feat/nextgen-soc-cert-platform` either, so no commit on this branch has
+ever been checked by ANY of this repo's own CI. Every "CI now
+runs/covers X" statement in this document and in the KKK-QQQ milestone
+docs means "the job definition is real, correct, and locally verified
+to work when run" — it does NOT mean an independent, automatic
+confirmation has ever actually happened on GitHub's own infrastructure.
+See `docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md` for the full account
+and what would actually close this (a manual `workflow_dispatch` against
+this branch, or a merge to `main` — both outside this initiative's
+current tooling/authority).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQ.md` for the latest spec-coverage cycle**
 — `frontend-e2e-smoke` now runs all 6 `frontend/e2e/` specs, the entire
 existing suite. New spec `evidence-upload-storage-outage.spec.ts`
 (test-stack profile, via new `TestStackFaultInjector`) closes the
