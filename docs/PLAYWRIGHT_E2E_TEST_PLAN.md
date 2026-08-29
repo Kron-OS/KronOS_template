@@ -1,6 +1,27 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_PPP.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQ.md` for the latest cycle**
+— `frontend-e2e-smoke` now runs all 6 `frontend/e2e/` specs, the entire
+existing suite. New spec `evidence-upload-storage-outage.spec.ts`
+(test-stack profile, via new `TestStackFaultInjector`) closes the
+"only happy-path coverage" gap Milestone PPP flagged. The originally
+suggested approach (mirror `evidence-retry.spec.ts`'s OpenSearch-outage
+pattern but for MinIO/`q.intake`) turned out not to transfer directly —
+MinIO sits in the upload's own first synchronous step, unlike
+OpenSearch, so a genuinely reliable test targets a different, real,
+fully-deterministic failure shape (storage down from the start of the
+upload attempt) instead of forcing a race. Investigating it live found
+a real, previously-shipped bug: `UploadDrawer.tsx` never cleared a
+file's stale error text on a successful retry, so a user who fixed the
+underlying problem and clicked Upload again would see "Request failed
+with status code 500" forever even though the upload had genuinely
+succeeded. Fixed and verified live. Also extracted a shared
+`ContainerFaultInjector` base class (`DevStackFaultInjector` and the new
+`TestStackFaultInjector` both extend it) per this initiative's own
+lesson from Milestone PPP — create the shared module at the *second*
+instance of a pattern.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_PPP.md` for the prior cycle**
 — second multi-scenario subagent assessment (security/CI-reliability/
 coverage-gap) of Milestones MMM-OOO's landed work. Two structural fixes:
 a shared `frontend/e2e/fixtures/_e2e_env.py` config module (both
