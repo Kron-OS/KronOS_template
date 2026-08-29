@@ -256,6 +256,20 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/evidence-upload-storage-outage.spec.ts
 
+      # Milestone SSS: test-stack analogue of evidence-retry.spec.ts
+      # (dev-stack-only), closing the parity gap Milestone QQQ named --
+      # QQQ covered the upload-REQUEST-stage failure shape (MinIO), this
+      # covers the PARSE-stage shape (OpenSearch), via
+      # TestStackOpenSearchFaultInjector. Same real timing as the
+      # dev-stack version: reaching ERROR can take up to ~2 minutes
+      # (parse_artefact_fast's own max_retries=3, 30s delays), restarting
+      # OpenSearch up to 90s -- budgeted for in this job's own
+      # timeout-minutes already.
+      - name: "E2E: evidence-parse-retry"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-parse-retry.spec.ts
+
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
         # is NOT "failure" in GitHub Actions -- if: failure() alone would
