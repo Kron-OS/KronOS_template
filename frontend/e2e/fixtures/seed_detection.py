@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -31,36 +30,24 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx  # noqa: E402
+
+# Milestone PPP: KEYCLOAK_INTERNAL_URL/POSTGRES_DSN moved to the shared
+# _e2e_env.py -- see that module's own docstring for why (Milestone OOO's
+# real incident: this exact override existed here but not yet in the
+# sibling seed_second_org.py, for a whole cycle).
+from _e2e_env import KEYCLOAK_INTERNAL_URL, POSTGRES_DSN  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from src.adapter.repository.postgres_detection import PostgresDetectionRepository  # noqa: E402
 from src.application.risk_scoring import DetectionRiskScorer  # noqa: E402
 from src.domain.detection import Detection, DetectionRuleMatch  # noqa: E402
 
-# Both docker-compose.dev.yml and .test.yml publish keycloak on host 8080
-# unremapped, so this is correct for either alone. Overridable (same
-# reasoning as POSTGRES_DSN below) for the one case it isn't: verifying
-# against an isolated, differently-port-mapped test-stack instance on a
-# host that also has the real dev stack's own keycloak already holding
-# 8080 -- not a real CI gap, CI only ever runs one stack at a time.
-KEYCLOAK_INTERNAL_URL = os.environ.get("KRONOS_E2E_KEYCLOAK_URL", "http://localhost:8080")
 KEYCLOAK_REALM = "kronos"
 KEYCLOAK_ADMIN_CLIENT_ID = "kronos-backend"
 KEYCLOAK_ADMIN_CLIENT_SECRET = "kronos-backend-secret"
-# Milestone NNN: this hardcoded dev-stack-only DSN was a real, confirmed
-# blocker running this script against docker-compose.test.yml for the
-# first time -- that profile's Postgres uses a different password AND
-# database name (kronos_test_password / kronos_test, not
-# kronos_dev_password / kronos), same host port. Overridable rather than
-# a second hardcoded constant, matching pythonFixture.ts's own
-# KRONOS_E2E_PYTHON precedent, so CI can point this at whichever real
-# stack it's running against without a second copy of this script.
-POSTGRES_DSN = os.environ.get(
-    "KRONOS_E2E_POSTGRES_DSN",
-    "postgresql+asyncpg://kronos:kronos_dev_password@localhost:5432/kronos",
-)
 
 
 def log(msg: str) -> None:

@@ -29,28 +29,22 @@ Run: ~/venv/bin/python3 frontend/e2e/fixtures/seed_second_org.py
 from __future__ import annotations
 
 import json
-import os
 import sys
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
-import httpx
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Milestone OOO: this sibling script didn't get the same
-# KRONOS_E2E_KEYCLOAK_URL override seed_detection.py got in Milestone NNN
-# -- a real gap, not just a style inconsistency. Running this script
-# unmodified against an isolated, differently-port-mapped test-stack
-# instance on this host (which also has the real dev stack's own
-# Keycloak holding the unremapped 8080) silently created every org/user
-# on the WRONG (dev stack's) Keycloak instance while every verification
-# check queried the isolated instance -- looked exactly like Keycloak
-# silently deleting freshly-created users within ~1 second, and cost
-# real debugging time chasing a phantom bug before the actual cause
-# (two different Keycloak instances, never one deleting anything) was
-# found. Same reasoning as seed_detection.py's own override: correct for
-# either compose profile alone (both publish 8080 unremapped), only a
-# problem for local multi-stack-host verification, not real CI.
-KEYCLOAK_INTERNAL_URL = os.environ.get("KRONOS_E2E_KEYCLOAK_URL", "http://localhost:8080")
+import httpx  # noqa: E402
+
+# Milestone PPP: moved to the shared _e2e_env.py -- see that module's own
+# docstring for why. This script's own missing override (fixed Milestone
+# OOO, docs/GAP_AUDIT_2026-08-28_MILESTONE_OOO.md) is the exact incident
+# that motivated consolidating this into one place instead of letting
+# each new fixture script redefine its own copy.
+from _e2e_env import KEYCLOAK_INTERNAL_URL  # noqa: E402
+
 KEYCLOAK_REALM = "kronos"
 KEYCLOAK_ADMIN_CLIENT_ID = "kronos-backend"
 KEYCLOAK_ADMIN_CLIENT_SECRET = "kronos-backend-secret"

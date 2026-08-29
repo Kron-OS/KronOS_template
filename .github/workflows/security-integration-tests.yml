@@ -157,47 +157,70 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run the smoke + flow-tier real-browser E2E specs
+      # Milestone PPP: split from one bundled `npx playwright test <5 specs>`
+      # step into 5 separate steps (own CI-reliability finding: a bundled
+      # step means one failure's exact spec is buried in list-reporter
+      # output rather than surfaced as its own red X in the job summary).
+      # `if: always()` on every step after the first: without it, GHA's
+      # default behavior stops the whole job at the first failing step,
+      # losing information about whether the REMAINING specs would also
+      # have failed -- exactly the wrong tradeoff for a job whose entire
+      # purpose is diagnostic signal on a profile that's never run on a
+      # real GHA runner yet. No --reporter override on any step:
+      # playwright.config.ts's own configured reporters (list + html)
+      # both run, so a failure gets the full HTML report (traces/
+      # screenshots), not just the raw test-results/ dir a bare
+      # --reporter=list would have left as the only output.
+      - name: "E2E: login (smoke)"
         working-directory: frontend
-        # evidence-upload.spec.ts added Milestone MMM, the first
-        # incremental flow-tier spec per Milestone KKK/LLL's own
-        # recommendation -- verified it needs only celery-worker (not
-        # celery-worker-plaso/celery-beat/clamav) since its fixture file
-        # (cloudtrail.json) is a fast-path text parser.
-        # detection-triage.spec.ts/detection-triage-race.spec.ts added
-        # Milestone NNN, need no extra services (pure Postgres/OpenSearch
-        # CRUD) but DO need the three env vars below -- their
-        # DetectionSeeder fixture's underlying Python script
-        # (seed_detection.py) hardcodes docker-compose.dev.yml's own
-        # Postgres DSN/org-alias defaults by default (a real, confirmed
-        # blocker running it against this profile's different DB name/
-        # password and org alias for the first time), and this job's
-        # earlier steps run on the runner directly (not proxied through
-        # nginx or a container), so KEYCLOAK_URL doesn't need overriding
-        # here the way it does for local multi-stack-host verification
-        # (see docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md). No --reporter
-        # override: playwright.config.ts's own configured reporters
-        # (list + html) both run, so a failure gets the full HTML report
-        # (traces/screenshots), not just the raw test-results/ dir a bare
-        # --reporter=list would have left as the only output.
-        # cross-tenant-isolation.spec.ts added Milestone OOO: its own
-        # SecondOrgSeeder fixture (seed_second_org.py) needed the SAME
-        # KRONOS_E2E_KEYCLOAK_URL override treatment as seed_detection.py
-        # got in Milestone NNN -- a real gap in that sibling script, not
-        # just style drift (see that milestone doc for the full account
-        # of how chasing this looked exactly like a Keycloak bug before
-        # the actual cause -- two different Keycloak instances during
-        # local verification -- was found). Not needed as a CI env var
-        # here for the same reason KEYCLOAK_URL isn't set above: no
-        # local-multi-stack-host collision on a real GHA runner.
+        run: npx playwright test e2e/login.spec.ts
+
+      # evidence-upload.spec.ts added Milestone MMM, the first incremental
+      # flow-tier spec -- verified it needs only celery-worker (not
+      # celery-worker-plaso/celery-beat/clamav) since its fixture file
+      # (cloudtrail.json) is a fast-path text parser.
+      - name: "E2E: evidence-upload"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-upload.spec.ts
+
+      # detection-triage.spec.ts/detection-triage-race.spec.ts/
+      # cross-tenant-isolation.spec.ts (Milestones NNN/OOO) need no extra
+      # services (pure Postgres/OpenSearch/Keycloak-Admin-API calls) but
+      # DO need the env vars below -- their Python fixture scripts
+      # (frontend/e2e/fixtures/seed_detection.py, seed_second_org.py,
+      # sharing config via the new frontend/e2e/fixtures/_e2e_env.py,
+      # Milestone PPP) default to docker-compose.dev.yml's own Postgres
+      # DSN/org-alias, a real, confirmed blocker running them against this
+      # profile's different DB name/password and org alias for the first
+      # time. KEYCLOAK_URL doesn't need overriding here the way it does
+      # for local multi-stack-host verification (see
+      # docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md /_OOO.md) -- no
+      # local-multi-stack-host collision on a real GHA runner.
+      - name: "E2E: detection-triage"
+        if: always()
+        working-directory: frontend
         env:
           KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
           KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
           KRONOS_E2E_PYTHON: "python3"
-        run: >
-          npx playwright test e2e/login.spec.ts e2e/evidence-upload.spec.ts
-          e2e/detection-triage.spec.ts e2e/detection-triage-race.spec.ts
-          e2e/cross-tenant-isolation.spec.ts
+        run: npx playwright test e2e/detection-triage.spec.ts
+
+      - name: "E2E: detection-triage-race"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
+          KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/detection-triage-race.spec.ts
+
+      - name: "E2E: cross-tenant-isolation"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/cross-tenant-isolation.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
