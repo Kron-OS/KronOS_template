@@ -1,6 +1,22 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOO.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_PPP.md` for the latest cycle**
+— second multi-scenario subagent assessment (security/CI-reliability/
+coverage-gap) of Milestones MMM-OOO's landed work. Two structural fixes:
+a shared `frontend/e2e/fixtures/_e2e_env.py` config module (both
+`seed_detection.py` and `seed_second_org.py` had independently
+duplicated the same env-var-override pattern — exactly the class of gap
+that caused Milestone OOO's incident — now consolidated so a third
+fixture script can't repeat it), and `frontend-e2e-smoke`'s bundled
+5-spec CI step split into 5 separate named steps with `if: always()`
+for real per-spec failure attribution instead of one buried
+list-reporter block. Security review: clean, no exploitable findings.
+Three real, larger-scope gaps newly documented for the next cycle:
+heavy parsers (`PlasoParser` etc.) are structurally unexercised by any
+CI path, only happy-path error/retry coverage exists, and RBAC
+access-denial paths remain zero-coverage (already tracked).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOO.md` for the prior cycle**
 — wired `cross-tenant-isolation.spec.ts` into `frontend-e2e-smoke`,
 completing all viable existing specs (5 of 6; `evidence-retry.spec.ts`
 remains deliberately unwired, see Milestone LLL). A real, cautionary
