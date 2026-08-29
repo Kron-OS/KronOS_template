@@ -222,6 +222,22 @@ jobs:
           KRONOS_E2E_PYTHON: "python3"
         run: npx playwright test e2e/cross-tenant-isolation.spec.ts
 
+      # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
+      # recommendation #1), test-stack profile only -- uses
+      # TestStackFaultInjector (frontend/e2e/TestStackFaultInjector.ts),
+      # which `docker stop`/`start`s this job's own real
+      # kronos-test-minio-1 container directly on the runner's Docker
+      # daemon (the same one every earlier `docker compose` step in this
+      # job already used -- not a nested/remote daemon). Asserts the
+      # container's real com.docker.compose.project label matches
+      # "kronos-test" before touching it (ContainerFaultInjector), so a
+      # misconfigured runner fails loudly instead of silently reaching
+      # for the wrong container.
+      - name: "E2E: evidence-upload-storage-outage"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-upload-storage-outage.spec.ts
+
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
         # is NOT "failure" in GitHub Actions -- if: failure() alone would

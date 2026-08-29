@@ -99,22 +99,23 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
 
     setUploading(true)
     setGlobalError(null)
+    setFiles((prev) => prev.map((f) => ({ ...f, error: null })))
 
     await Promise.allSettled(
       selected.map(async (file, i) => {
         try {
           await uploadFile(caseId, file, (pct) => {
             setFiles((prev) =>
-              prev.map((f, j) => (j === i ? { ...f, progress: pct } : f)),
+              prev.map((f, j) => (j === i ? { ...f, progress: pct, error: null } : f)),
             )
           })
           setFiles((prev) =>
-            prev.map((f, j) => (j === i ? { ...f, progress: 100, done: true } : f)),
+            prev.map((f, j) => (j === i ? { ...f, progress: 100, done: true, error: null } : f)),
           )
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Upload failed'
           setFiles((prev) =>
-            prev.map((f, j) => (j === i ? { ...f, error: msg } : f)),
+            prev.map((f, j) => (j === i ? { ...f, error: msg, done: false } : f)),
           )
         }
       }),
