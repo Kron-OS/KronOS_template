@@ -1,6 +1,22 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md` for the latest cycle**
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOO.md` for the latest cycle**
+— wired `cross-tenant-isolation.spec.ts` into `frontend-e2e-smoke`,
+completing all viable existing specs (5 of 6; `evidence-retry.spec.ts`
+remains deliberately unwired, see Milestone LLL). A real, cautionary
+debugging account: what looked exactly like Keycloak silently deleting
+freshly-created users within ~1 second turned out to be a much simpler
+cause — `seed_second_org.py` was missing the same
+`KRONOS_E2E_KEYCLOAK_URL` override its sibling `seed_detection.py` got in
+Milestone NNN, so local verification was silently creating fixtures on
+the **live dev stack's** Keycloak while checking the isolated test-stack
+instance. Fixed (one line, same pattern as the sibling script), verified
+by printing the resolved constant before trusting it again, and all five
+now-relevant specs confirmed passing together. The live dev stack's
+accidental fixture debris was cleaned up using the script's own
+`cleanup_stale_fixtures()` function, not an ad hoc delete.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNN.md` for the prior cycle**
 — wired `detection-triage.spec.ts` and `detection-triage-race.spec.ts`
 (pure Postgres/OpenSearch CRUD, no Celery) into `frontend-e2e-smoke`.
 Found one real, confirmed blocker before either could run against
