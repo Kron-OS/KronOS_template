@@ -57,6 +57,6 @@ test("real Retry button recovers a transient parse-stage error to COMPLETE", asy
       "Complete",
     );
   } finally {
-    injector.ensureRunning();
+    await injector.ensureRunning();
   }
 });

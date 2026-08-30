@@ -106,16 +106,30 @@ jobs:
   # roughly doubles wall time.
   frontend-e2e-smoke:
     runs-on: ubuntu-latest
-    # Milestone KKK's own local dry run (docs/GAP_AUDIT_2026-08-28_MILESTONE_KKK.md)
-    # used a warm local image cache, same caveat security-stack's own header
-    # comment already makes about its own timing -- this job does MORE
-    # (builds three fresh images as of Milestone MMM's celery-worker
-    # addition, npm ci + pip install as of Milestone NNN, a fresh Chromium
-    # download, plus a real upload->parse->COMPLETE pipeline run and two
-    # detection-seeding round trips) than that job's measured ~46s, so
-    # budgeted well above a guess-based figure. First real GHA run is
-    # still the actual confirmation; not yet measured.
-    timeout-minutes: 45
+    # Milestone TTT: this number was raised twice before (35->40->45)
+    # without ever being re-derived from real per-step ceilings -- a
+    # CI-reliability subagent review correctly called that out ("headroom
+    # is asserted, not demonstrated"). Re-derived here, not just bumped
+    # again: cold setup (checkout, pip install, 5 base services
+    # --wait, opensearch-init/keycloak-init/db-migrate, a 3-image --build
+    # with no BuildKit/GHA layer cache configured, npm ci +
+    # playwright install --with-deps) has no real GHA measurement and
+    # stays the dominant unbounded variable (Docker Hub pull-rate risk in
+    # particular -- a fixed timeout number cannot fully protect against
+    # that; the cancelled()-handling and full-log-capture below are the
+    # actual mitigation for a stuck-not-just-slow run, not this number).
+    # What COULD be pinned down for real: the two fault-injection specs'
+    # own explicit worst-case ceilings -- evidence-upload-storage-outage
+    # (test.setTimeout(120000), 2min) and evidence-parse-retry
+    # (testInfo.setTimeout(420000), 7min, Celery's real max_retries=3 @
+    # 30s + up to 90s OpenSearch health-wait) -- neither was previously
+    # reflected in this number at all. 45 already clears a pessimistic
+    # bounded-slow estimate (~20-29min: cold setup + 5 fast specs + both
+    # fault specs' worst case) with real margin; raised to 55 specifically
+    # to fold in the two fault specs' own 9min combined ceiling explicitly
+    # rather than leave it implicit. First real GHA run is still the
+    # actual confirmation -- see docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: docker

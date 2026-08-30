@@ -58,10 +58,7 @@ export abstract class ContainerFaultInjector {
     execSync(`docker stop ${this.container}`, { stdio: "pipe" });
   }
 
-  /** Restarts and blocks until the real container reports `healthy` again. */
-  protected async restartAndWaitHealthy(timeoutMs = 90000): Promise<void> {
-    this.assertExpectedProject();
-    execSync(`docker start ${this.container}`, { stdio: "pipe" });
+  private async waitHealthy(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const status = execSync(`docker inspect -f '{{.State.Health.Status}}' ${this.container}`, {
@@ -75,8 +72,36 @@ export abstract class ContainerFaultInjector {
     throw new Error(`${this.container} did not report healthy within ${timeoutMs}ms`);
   }
 
-  /** Best-effort cleanup for a test that failed before its own restart step ran. */
-  ensureRunning(): void {
+  /** Restarts and blocks until the real container reports `healthy` again. */
+  protected async restartAndWaitHealthy(timeoutMs = 90000): Promise<void> {
+    this.assertExpectedProject();
+    execSync(`docker start ${this.container}`, { stdio: "pipe" });
+    await this.waitHealthy(timeoutMs);
+  }
+
+  /**
+   * Best-effort cleanup for a test that failed before its own restart step
+   * ran. Milestone TTT: real, reproduced gap in the ORIGINAL version of
+   * this method (CI-reliability subagent review) -- it only checked
+   * `.State.Status == "running"` and returned immediately, never waiting
+   * for `.State.Health.Status`. A container `docker start`ed (by this
+   * same method, or mid-flight when a test crashed between `stop()` and
+   * its own `restartAndWaitHealthy()`) is `running` from the instant the
+   * process launches, but MinIO/OpenSearch's own real startup work
+   * (OpenSearch's security-plugin demo-cert provisioning in particular)
+   * can still be in progress for several seconds to tens of seconds after
+   * that. Every spec using this class runs as a SEPARATE, SEQUENTIAL CI
+   * step against one shared, never-recreated stack (frontend-e2e-smoke) --
+   * a `ensureRunning()` that returned the instant `docker start` fired,
+   * without confirming health, could let the NEXT spec in the same job
+   * start against a dependency that LOOKS restored but isn't actually
+   * ready yet, producing a misleading, hard-to-diagnose cascading failure
+   * instead of one clear root cause. Fixed to actually wait for health
+   * the same way `restartAndWaitHealthy()` already did -- verified live
+   * (see this milestone's own gap-audit doc for the real, continuous,
+   * exact-CI-order run this fix was checked against).
+   */
+  async ensureRunning(timeoutMs = 90000): Promise<void> {
     this.assertExpectedProject();
     const status = execSync(`docker inspect -f '{{.State.Status}}' ${this.container}`, {
       stdio: "pipe",
@@ -86,5 +111,6 @@ export abstract class ContainerFaultInjector {
     if (status !== "running") {
       execSync(`docker start ${this.container}`, { stdio: "pipe" });
     }
+    await this.waitHealthy(timeoutMs);
   }
 }

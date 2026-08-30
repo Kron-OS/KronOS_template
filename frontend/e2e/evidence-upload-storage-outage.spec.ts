@@ -67,6 +67,6 @@ test("upload fails cleanly when storage is down, and a real retry recovers witho
     const recovered = await detail.watchEvidenceStateLive("cloudtrail.json", 60000);
     expect(recovered.terminal, `observed state sequence: ${recovered.seenStates.join(" -> ")}`).toBe("Complete");
   } finally {
-    injector.ensureRunning();
+    await injector.ensureRunning();
   }
 });

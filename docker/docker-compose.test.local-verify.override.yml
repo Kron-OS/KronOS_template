@@ -1,0 +1,100 @@
+# Milestone TTT (docs/GAP_AUDIT_2026-08-28_MILESTONE_TTT.md): a committed,
+# reusable local-verification override for docker-compose.test.yml,
+# closing a real, TWICE-repeated process risk -- Milestones OOO and SSS
+# each independently hand-built a throwaway /tmp override file for the
+# SAME purpose (verify docker-compose.test.yml's frontend-e2e-smoke
+# specs against a real, isolated stack on THIS multi-stack host, without
+# colliding with the already-running live dev stack), and each time
+# forgot to publish a port a host-side Python fixture script actually
+# needed (Postgres in one cycle, Keycloak in another) -- reproducing the
+# exact class of false positive Milestone OOO's own incident was about,
+# because nothing forced re-deriving "which ports does THIS run actually
+# need" from a real, checked list instead of from memory.
+#
+# WHY these specific ports, not others: nginx itself is deliberately NOT
+# published here -- Playwright reaches it via the isolated stack's own
+# Docker bridge container IP (`docker inspect <nginx-container>
+# --format '{{range $n,$c := .NetworkSettings.Networks}}{{$c.IPAddress}}
+# {{end}}'`) plus Chromium's `--host-resolver-rules=MAP kronos.local
+# <that-ip>` launch arg (see frontend/playwright.config.ts's own
+# KRONOS_E2E_HOST_RESOLVER_RULE-conditional launchOptions) -- this is
+# the single most faithful way to test the real, unmodified
+# docker-compose.test.yml file (nginx's own ports/env stay byte-for-byte
+# identical to what real CI uses; only THIS override's other services'
+# ports differ, and only because a host-side Python process --
+# frontend/e2e/fixtures/seed_detection.py, seed_second_org.py, both via
+# frontend/e2e/fixtures/_e2e_env.py's KRONOS_E2E_* overrides -- needs
+# host-published reachability that a browser-only spec does not).
+#
+# Postgres and Keycloak ARE published, remapped off their real ports
+# (5432, 8080) specifically because this host's live dev stack already
+# holds those exact ports unremapped -- confirmed via `docker port
+# docker-postgres-1`/`docker port docker-keycloak-1` before this file
+# was written. minio/redis/opensearch need no host publish at all: no
+# spec's own Python fixture touches them directly, only kronos-backend/
+# celery-worker do, over the compose network.
+#
+# USAGE (mirrors every prior milestone's own local-verification
+# pattern -- see docs/GAP_AUDIT_2026-08-28_MILESTONE_{OOO,QQQ,SSS,TTT}.md
+# for real, captured runs using this exact file):
+#
+#   cd docker
+#   docker compose -f docker-compose.test.yml \
+#     -f docker-compose.test.local-verify.override.yml \
+#     up -d --wait postgres redis minio opensearch keycloak
+#   docker compose -f docker-compose.test.yml \
+#     -f docker-compose.test.local-verify.override.yml \
+#     up opensearch-init keycloak-init db-migrate
+#   docker compose -f docker-compose.test.yml \
+#     -f docker-compose.test.local-verify.override.yml \
+#     up -d --build kronos-backend celery-worker tls-init \
+#       opensearch-dashboards nginx
+#
+#   # deliberately NO -p flag: docker-compose.test.yml's own `name:
+#   # kronos-test` (Milestone EEE) is what makes the resulting container
+#   # names (kronos-test-minio-1, kronos-test-opensearch-1, ...) match
+#   # EXACTLY what the real CI job's own containers are named --
+#   # TestStackFaultInjector/TestStackOpenSearchFaultInjector target
+#   # those exact literal names (Milestone QQQ/SSS), so running with an
+#   # explicit -p kronos-poc-* here would make their own
+#   # assertExpectedProject() safety check correctly refuse to run.
+#
+#   NGINX_IP=$(docker inspect kronos-test-nginx-1 --format \
+#     '{{range $n,$c := .NetworkSettings.Networks}}{{$c.IPAddress}}{{end}}')
+#   cd ../frontend
+#   KRONOS_E2E_BASE_URL=https://kronos.local \
+#   KRONOS_E2E_HOST_RESOLVER_RULE="MAP kronos.local $NGINX_IP" \
+#   KRONOS_E2E_POSTGRES_DSN="postgresql+asyncpg://kronos:kronos_test_password@localhost:15432/kronos_test" \
+#   KRONOS_E2E_SEED_ORG_ALIAS="kronos-test" \
+#   KRONOS_E2E_KEYCLOAK_URL="http://localhost:18080" \
+#     npx playwright test e2e/<spec>.spec.ts
+#
+#   # KRONOS_E2E_HOST_RESOLVER_RULE only takes effect if
+#   # frontend/playwright.config.ts's own launchOptions block reads it --
+#   # that block is intentionally NOT committed (it would silently affect
+#   # a real CI run, which needs no such override -- CI's /etc/hosts
+#   # entry makes kronos.local resolve directly, see that job's own
+#   # comment). Add it back temporarily for a local run, per every prior
+#   # milestone's own documented pattern, and revert before committing.
+#
+#   # Teardown when done:
+#   docker compose -f docker-compose.test.yml \
+#     -f docker-compose.test.local-verify.override.yml \
+#     down -v --remove-orphans
+#   docker rmi $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^kronos-test-')
+#
+services:
+  postgres:
+    ports: !override ["15432:5432"]
+  redis:
+    ports: !override []
+  minio:
+    ports: !override []
+  opensearch:
+    ports: !override []
+  keycloak:
+    ports: !override ["18080:8080"]
+  kronos-backend:
+    ports: !override []
+  nginx:
+    ports: !override []
