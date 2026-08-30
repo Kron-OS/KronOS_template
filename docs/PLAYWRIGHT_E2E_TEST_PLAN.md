@@ -24,7 +24,29 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_VVV.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_WWW.md` for the latest
+cycle** — closes Milestone VVV's own recommendation #1: the last
+HEAVY-tier (`q.parse.plaso`) parser with zero full-pipeline verification,
+`VolatilityModule` (real memory-forensics via `volatility3`). New
+`poc/volatility_pipeline_ingest/` (backend-only, not a frontend E2E spec
+— VolatilityModule has no frontend read surface at all, intentional per
+`CLAUDE.md` §G.2) drove the real, complete autonomous pipeline against
+the dev stack: real login → case → 512 MiB `cridex.vmem` upload →
+`finalize_upload` → real Celery `q.intake`/`q.parse.plaso` →
+`VolatilityModule.extract_artifacts()` (real `volatility3` subprocess) →
+`ArtifactIngestService` → real Postgres `structured_artifacts` rows,
+verified by querying Postgres directly (no HTTP read API exists for
+`StructuredArtifact` yet). Real result: 2 rows (`volatility.pstree`
+correctly empty, `volatility.psscan` with 17 real process rows, matching
+the earlier isolated-verification PoC's own already-documented finding),
+full provenance match. Hit and fixed a real, recurring friction point
+(expired step-ca leaf cert) along the way. Every HEAVY-tier parser this
+repo has now has real, captured, full-pipeline verification — closing
+the arc Milestone PPP first opened. Not wired into CI (the real fixture
+is 512 MiB, deliberately never committed, same reasoning as the earlier
+isolated PoC).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_VVV.md` for the prior
 cycle** — closes Milestone UUU's own recommendation #1: real browser E2E
 coverage for the two remaining HEAVY-tier (`q.parse.plaso`) code paths,
 `ZipArchiveParser`'s real container recursion (a real KAPE-shaped zip,
