@@ -24,7 +24,28 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_YYY.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_ZZZ.md` for the latest
+cycle** — closes Milestone YYY's recommendation #1: `TarArchiveParser`
+CI-wired coverage. `poc/tar_container_unwrapping/`'s own real,
+reproduced-incident fixture (`forensic2.E01` — actually a tar archive,
+deliberately misnamed to match the real incident that motivated
+`TarArchiveParser`'s existence) predates this initiative and was never
+cited in any of Milestones UUU-YYY's "HEAVY-tier now covered" claims.
+Relocated the fixture to `tests/fixtures/samples/real/tar_container/`
+(matching this repo's established convention, `git mv` preserving
+history) and added a 3rd test to `evidence-upload-heavy-parser-archive.spec.ts`.
+Verified live: all 3 tests in that spec pass, and the new test's real
+`record_count: 20` was cross-checked directly against
+`celery-worker-plaso`'s own logs (matching
+`poc/tar_container_unwrapping/verification.json`'s own already-documented
+figure), not just a green checkmark. Every HEAVY-tier parser this repo
+ships now has real, CI-wired browser E2E coverage (Volatility's own
+512 MiB fixture remains the one deliberate, documented exception — a
+backend-only `poc/` script, Milestone WWW). **Note for future cycles**:
+this is the last available triple-letter milestone slug (`AAA`-`ZZZ`);
+the next new milestone should move to a 4-letter scheme (`AAAA`, ...).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_YYY.md` for the prior
 cycle** — closes Milestone XXX's coverage-gap review's own top
 recommendation: three straight cycles (UUU/VVV/WWW) gave every
 HEAVY-tier parser real, dedicated E2E coverage and left FAST-tier
