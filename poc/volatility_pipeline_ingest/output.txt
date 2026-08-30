@@ -1,0 +1,46 @@
+=== run_ingest.py (real login + case + upload/finalize) ===
+real sample: /home/reca/scratch/kronos-poc-volatility/cridex.vmem (536870912 bytes)
+real sha256: 02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d
+login OK (mfa_path=none)
+create_case -> 201 {"id":"99ccd04f-775e-495e-b089-0f17f032a043","orgId":"7a2d50db-f1bf-496e-8aff-16435cef14b1","title":"Volatility memory-forensics pipeline ingestion test","description":"Real upload/finalize of the real cridex.vmem sample, verifying VolatilityModule.extract_artifacts() -> ArtifactIngestService -> Postgres structured_artifacts, end to end through the real autonomous pipeline (closes poc/volatility_m
+case_id=99ccd04f-775e-495e-b089-0f17f032a043
+upload/request -> 201 {"evidenceId":"eab213ad-a70a-4593-97cc-c9a41b0afbdf","presignedUrl":"https://kronos.local:9444/kronos-evidence-kronos-dev-quarantine/kronos-dev/99ccd04f-775e-495e-b089-0f17f032a043/eab213ad-a70a-4593-97cc-c9a41b0afbdf/cridex.vmem?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=kronos_minio%2F20260
+PUT to MinIO -> 200
+finalize -> 202 {"id":"eab213ad-a70a-4593-97cc-c9a41b0afbdf","caseId":"99ccd04f-775e-495e-b089-0f17f032a043","filename":"cridex.vmem","contentType":"application/octet-stream","sizeBytes":536870912,"sha256":null,"md5":null,"state":"UPLOADING","errorReason":null,"retryAction":null,"uploadedBy":"1878f5d4-c285-4112-895
+wrote /home/reca/Claude/Kronos/KronOS_template/poc/volatility_pipeline_ingest/evidence_ids.json
+{"case_id": "99ccd04f-775e-495e-b089-0f17f032a043", "evidence_id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf", "filename": "cridex.vmem", "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d", "size_bytes": 536870912}
+
+=== verify_artifacts.py (poll to terminal + real Postgres structured_artifacts fetch/verify) ===
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=SCANNING
+state=HASHING
+state=PARSING
+state=PARSING
+state=COMPLETE
+final state: COMPLETE
+fetched 2 real structured_artifacts row(s) for evidence_id=eab213ad-a70a-4593-97cc-c9a41b0afbdf
+by kind: {'volatility.pstree': 1, 'volatility.psscan': 1}
+verdict: PASS
+{
+  "case_id": "99ccd04f-775e-495e-b089-0f17f032a043",
+  "evidence_id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf",
+  "final_evidence_state": "COMPLETE",
+  "structured_artifact_row_count": 2,
+  "by_kind": {
+    "volatility.pstree": 1,
+    "volatility.psscan": 1
+  },
+  "psscan_process_count": 17,
+  "all_rows_evidence_id_matches": true,
+  "all_rows_case_id_matches": true,
+  "all_rows_sha256_matches_upload": true,
+  "verdict": "PASS"
+}

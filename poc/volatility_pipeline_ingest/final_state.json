@@ -1,0 +1,18 @@
+{
+  "id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf",
+  "caseId": "99ccd04f-775e-495e-b089-0f17f032a043",
+  "filename": "cridex.vmem",
+  "contentType": "application/octet-stream",
+  "sizeBytes": 536870912,
+  "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+  "md5": "7494f3b77db1525c1974f5380744ae46",
+  "state": "COMPLETE",
+  "errorReason": null,
+  "retryAction": null,
+  "uploadedBy": "1878f5d4-c285-4112-8955-7a2bc0d3fc01",
+  "uploadedAt": "2026-08-30T13:58:45.393235+00:00",
+  "updatedAt": "2026-08-30T14:01:10.589347+00:00",
+  "rfc3161Token": null,
+  "legalHold": false,
+  "objectLockUntil": "2027-08-30T14:00:43.882749+00:00"
+}
