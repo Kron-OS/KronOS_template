@@ -26,7 +26,11 @@ import tarfile
 from pathlib import Path
 
 WORK = Path(__file__).parent / "_fixture_build"
-OUT_TAR = Path(__file__).parent / "forensic2.E01"
+# Gap Audit Milestone ZZZ: relocated to tests/fixtures/samples/real/ (this
+# repo's established convention for real fixture bytes, see that
+# directory's own NOTICE.md) so frontend/e2e specs can reference it
+# without duplicating the ~4 MB file.
+OUT_TAR = Path(__file__).resolve().parents[2] / "tests/fixtures/samples/real/tar_container/forensic2.E01"
 
 
 FILES: dict[str, tuple[str, str]] = {

@@ -1,5 +1,15 @@
 # tar_container_unwrapping — roadmap E1 real PoC
 
+**Gap Audit Milestone ZZZ note:** the `forensic2.E01` fixture this PoC
+builds/uses now lives at
+`tests/fixtures/samples/real/tar_container/forensic2.E01` (this repo's
+established convention for real fixture bytes), not directly in this
+directory — `build_fixture.py`/`run_ingest.py` updated accordingly. Also
+now reused by `frontend/e2e/evidence-upload-heavy-parser-archive.spec.ts`
+for real browser E2E coverage of `TarArchiveParser`, closing the gap
+Milestone YYY's own recommendation named (this PoC's own real verification
+predates that initiative and had never been cited/wired into CI).
+
 Real, reproduced incident this closes (`docs/NEXTGEN_SOC_ROADMAP.md` E1): a
 `forensic2.E01`-named evidence file was actually a **tar archive** containing
 `image.dd` (a raw disk image) and `memory.dmp`. Nothing in KronOS recognised

@@ -155,6 +155,13 @@ jobs:
     # Playwright's own 30s per-test default, and measured live at ~7s
     # each (~28s total) against the dev stack.
     #
+    # Milestone ZZZ: evidence-upload-heavy-parser-archive.spec.ts gained a
+    # 3rd test (TarArchiveParser, test.setTimeout(150000)) -- the spec's
+    # own combined worst-case ceiling is now 330s + 150s = 480s (8min),
+    # still well inside the ~5.5min headroom this number already had.
+    # Real measured cost for all 3 tests together: ~1.1min (18s + 21.5s +
+    # 22.1s), against the dev stack.
+    #
     # First real GHA run is still the actual confirmation -- see
     # docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
     timeout-minutes: 70

@@ -17,6 +17,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // browser flow).
 const KAPE_ZIP = path.resolve(__dirname, "../../tests/fixtures/samples/real/kape/kape_triage.zip");
 const KAPE_E01 = path.resolve(__dirname, "../../tests/fixtures/samples/real/kape/kape_triage.E01");
+// Real, reproduced incident fixture (tests/fixtures/samples/real/tar_container/NOTICE.md,
+// poc/tar_container_unwrapping/): a real tar archive (real ext4 disk image
+// + a placeholder memory.dmp) deliberately misnamed "forensic2.E01" --
+// the exact real incident this fixture reproduces -- to prove
+// TarArchiveParser's detection is magic-byte-driven (real ustar bytes at
+// header offset 257), not extension-driven. Already verified end-to-end
+// at the backend level (poc/tar_container_unwrapping/output.txt: 20 real
+// timeline events with correct per-file timestamps, memory.dmp correctly
+// producing zero records without erroring) -- this spec is the first time
+// it's ever been driven through a real browser upload, closing Milestone
+// YYY's own recommendation #1 (this PoC's own real verification predates
+// this initiative and had never been cited/wired into CI, unlike
+// Zip/EWF above).
+const TAR_CONTAINER = path.resolve(
+  __dirname,
+  "../../tests/fixtures/samples/real/tar_container/forensic2.E01",
+);
 
 /**
  * Flow tier (docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.2), test-stack profile.
@@ -67,6 +84,41 @@ test("real HEAVY-tier (PlasoParser EWF/E01) KAPE disk image reaches COMPLETE liv
   await detail.uploadEvidence(KAPE_E01);
 
   const { seenStates, terminal } = await detail.watchEvidenceStateLive("kape_triage.E01", 150000);
+
+  expect(seenStates.length, `observed state sequence: ${seenStates.join(" -> ")}`).toBeGreaterThan(0);
+  expect(terminal, `observed state sequence: ${seenStates.join(" -> ")}`).toBe("Complete");
+});
+
+/**
+ * TarArchiveParser: explodes a tar container and recursively re-dispatches
+ * each member through the same ParserRegistry (ZipArchiveParser's own
+ * recursion pattern, reused unchanged) -- a real, DISTINCT code path from
+ * both cases above: the outer tar itself contributes no timeline records
+ * (recursion only), and its one real inner member with a registered parser
+ * (image.dd, a raw ext4 disk image) routes to PlasoParser's raw-disk-image
+ * magic-byte detection (added alongside TarArchiveParser itself, per
+ * poc/tar_container_unwrapping/README.md's own "sub-investigation 2") --
+ * itself a real, distinct routing path from EWF/E01's own whole-image
+ * case above. The second real member, a placeholder memory.dmp, has no
+ * registered parser at all -- proving the "recognised container member,
+ * no parser yet" path (the real `tar_member_no_parser` log line) doesn't
+ * crash or silently sink the evidence to ERROR, only contributes zero
+ * records. Budgeted like the zip case: real backend-only verification
+ * (poc/tar_container_unwrapping/output.txt) showed this fixture's
+ * dominant cost is one Plaso whole-image invocation against a 16 MiB
+ * ext4 image -- smaller and faster than the KAPE E01's own 414-event FAT
+ * whole-image parse above.
+ */
+test("real HEAVY-tier (TarArchiveParser) tar-wrapped disk image reaches COMPLETE live, via SSE", async ({
+  casesPageAsCaseLead,
+}) => {
+  test.setTimeout(150000);
+  const title = `E2E heavy-parser archive(tar) spec ${Date.now()}`;
+  const detail = await casesPageAsCaseLead.createCase(title, `E2E-HEAVY-TAR-${Date.now()}`);
+
+  await detail.uploadEvidence(TAR_CONTAINER);
+
+  const { seenStates, terminal } = await detail.watchEvidenceStateLive("forensic2.E01", 120000);
 
   expect(seenStates.length, `observed state sequence: ${seenStates.join(" -> ")}`).toBeGreaterThan(0);
   expect(terminal, `observed state sequence: ${seenStates.join(" -> ")}`).toBe("Complete");

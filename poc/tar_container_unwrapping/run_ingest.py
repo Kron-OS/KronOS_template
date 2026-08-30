@@ -25,7 +25,9 @@ auth_helpers.REDIRECT_URI = "https://kronos.local/cases"
 auth_helpers.trust_dev_stack_step_ca()
 
 BACKEND = "http://localhost:8000"
-FIXTURE = Path(__file__).parent / "forensic2.E01"
+# Gap Audit Milestone ZZZ: relocated to tests/fixtures/samples/real/ -- see
+# that directory's own NOTICE.md.
+FIXTURE = Path(__file__).resolve().parents[2] / "tests/fixtures/samples/real/tar_container/forensic2.E01"
 
 
 def log(*args: object) -> None:
