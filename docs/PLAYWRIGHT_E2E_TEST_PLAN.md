@@ -24,7 +24,30 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTT.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_UUU.md` for the latest
+cycle** — closes the heavy-parser CI coverage gap carried since
+Milestone PPP and named again in Milestone TTT's own recommendation #1:
+`docker-compose.test.yml` had no consumer for `q.parse.plaso` at all, so
+a real `ParserType.HEAVY` upload (Plaso, archive EWF/ZIP routing,
+VolatilityModule) would sit in `RECEIVED`/`PARSING` forever in CI with
+zero error. Added `celery-worker-plaso` (mirroring the dev-profile
+service), a new `evidence-upload-heavy-parser.spec.ts` exercising a real
+Windows 10 prefetch sample through the real Plaso subprocess end-to-end
+to `Complete`, and wired both into `security-integration-tests.yml`
+(`timeout-minutes: 55 → 70`, grounded in the measured >5min Plaso image
+build). Verified live: confirmed real Plaso execution and 5 extracted
+timeline records in worker logs, not just a passing green check. Two
+real issues surfaced during verification, both documented honestly
+rather than hidden: a corrected setup mistake (forgot the pre-existing
+`celery-worker` service, needed for intake/dispatch before a task ever
+reaches `q.parse.plaso`), and one unreproduced transient
+`evidence-upload.spec.ts` failure (could not reproduce after
+investigation; most likely host resource contention, not a regression —
+flagged for anyone who sees it recur). Coverage is still Plaso-only;
+archive/Volatility HEAVY-tier paths sharing the same queue remain
+untested end-to-end.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTT.md` for the prior
 cycle** — third multi-scenario subagent assessment (security/
 CI-reliability/coverage-gap), against Milestones QQQ-SSS. Two real fixes:
 `ContainerFaultInjector.ensureRunning()` never actually waited for
