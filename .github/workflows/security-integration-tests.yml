@@ -127,9 +127,18 @@ jobs:
     # bounded-slow estimate (~20-29min: cold setup + 5 fast specs + both
     # fault specs' worst case) with real margin; raised to 55 specifically
     # to fold in the two fault specs' own 9min combined ceiling explicitly
-    # rather than leave it implicit. First real GHA run is still the
-    # actual confirmation -- see docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
-    timeout-minutes: 55
+    # rather than leave it implicit.
+    #
+    # Milestone UUU: celery-worker-plaso (real plaso==20260512 +
+    # volatility3==2.28.0 install) is now a 4th image build in the step
+    # above, and confirmed live -- not guessed -- to be the single
+    # slowest build in the whole job: it alone exceeded 5 minutes on a
+    # host with an already-warm Chainguard base-image cache (no measured
+    # upper bound taken; the local run was backgrounded past that point).
+    # Raised 55->70 to fold this in with real margin, not just because
+    # a new step was added. First real GHA run is still the actual
+    # confirmation -- see docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
+    timeout-minutes: 70
     defaults:
       run:
         working-directory: docker
@@ -164,10 +173,16 @@ jobs:
       - name: Run opensearch-init + keycloak-init + db-migrate (real production provisioning/migration)
         run: docker compose -f docker-compose.test.yml up opensearch-init keycloak-init db-migrate
 
-      - name: Build and start kronos-backend, celery-worker, tls-init, opensearch-dashboards stub, nginx (real frontend build)
+      - name: Build and start kronos-backend, celery-worker, celery-worker-plaso, tls-init, opensearch-dashboards stub, nginx (real frontend build)
         # celery-worker added Milestone MMM: the evidence-upload flow spec
         # below needs the real intake/parse pipeline, not just login.
-        run: docker compose -f docker-compose.test.yml up -d --build kronos-backend celery-worker tls-init opensearch-dashboards nginx
+        # celery-worker-plaso added Milestone UUU: real Plaso image
+        # (docker/Dockerfile.plaso-worker, plaso==20260512 +
+        # volatility3==2.28.0) -- confirmed live to be the single
+        # slowest image build in this job (exceeded 5 minutes on a host
+        # with an already-warm base-image cache), folded into
+        # timeout-minutes below explicitly rather than left implicit.
+        run: docker compose -f docker-compose.test.yml up -d --build kronos-backend celery-worker celery-worker-plaso tls-init opensearch-dashboards nginx
 
       - name: Wait for nginx to serve the real frontend over HTTPS
         run: |
@@ -283,6 +298,23 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/evidence-parse-retry.spec.ts
+
+      # Milestone UUU: closes a real, structural gap named by Milestone
+      # PPP's own coverage-gap review and carried since -- every spec
+      # above only ever exercised FAST-path parsers (evtx-rs/CloudTrail/
+      # nginx text via celery-worker's q.parse.fast). ParserType.HEAVY
+      # (Plaso, archive/EWF routing, Volatility) always routes to
+      # q.parse.plaso, which had NO consumer at all in this profile until
+      # celery-worker-plaso above -- the exact same class of gap
+      # Milestone MMM found for q.intake, recurring for the heavy-parser
+      # queue. Real sample (tests/fixtures/samples/real/CMD.EXE-087B4001.pf,
+      # a real Windows 10 prefetch file) confirmed live to route to
+      # PlasoParser and produce 5 real timeline records via the actual
+      # subprocess-sandboxed Plaso invocation (FirecrackerLauncher).
+      - name: "E2E: evidence-upload-heavy-parser"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-upload-heavy-parser.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation

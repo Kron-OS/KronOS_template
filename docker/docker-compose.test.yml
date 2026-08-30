@@ -469,6 +469,62 @@ services:
     # Matches docker-compose.dev.yml's own celery-worker queue list exactly.
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4
 
+  # Milestone UUU: real, previously-structural gap -- HEAVY parsers
+  # (PlasoParser, ArchiveParser/TarArchiveParser's EWF/ZIP routing,
+  # VolatilityModule; ParserType.HEAVY always routes to q.parse.plaso,
+  # docker-compose.dev.yml's own celery-worker-plaso comment) had NO
+  # consumer at all in this profile -- celery-worker above only ever
+  # listened on q.parse.fast/q.index/q.intake. Every real upload of a
+  # HEAVY-tier artifact (a real Windows prefetch file, a KAPE ZIP/E01
+  # container, a memory image) against docker-compose.test.yml would
+  # have sat in RECEIVED/PARSING forever, silently, with zero error
+  # anywhere -- the exact same class of gap Milestone MMM found and
+  # fixed for q.intake, just for the heavy-parser queue instead. No
+  # prior spec against this profile ever drove a HEAVY-tier upload far
+  # enough to notice (evidence-upload.spec.ts's own fixture,
+  # cloudtrail.json, is a FAST-path text format). Mirrors
+  # docker-compose.dev.yml's own celery-worker-plaso service --
+  # docker/Dockerfile.plaso-worker (real Plaso 20260512 + volatility3
+  # 2.28.0 install, shared by both HEAVY parsers per that Dockerfile's
+  # own comment) is the same image dev already builds and runs; this is
+  # the first time it's been built/run against THIS profile's own
+  # Postgres/MinIO/OpenSearch/Keycloak credentials.
+  celery-worker-plaso:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.plaso-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kronos:kronos_test_password@postgres:5432/kronos_test
+      REDIS_URL: redis://redis:6379/0
+      # Same real fixes as celery-worker's own identical block above --
+      # this worker downloads evidence from MinIO for Plaso to parse and
+      # writes results to OpenSearch, exactly like celery-worker does for
+      # FAST-path artifacts.
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: kronos_minio
+      MINIO_SECRET_KEY: kronos_minio_password
+      MINIO_USE_TLS: "false"
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: KronOSCiTest#2026
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_CLIENT_SECRET: kronos-backend-secret
+      VAULT_URL: http://vault:8200
+      VAULT_TOKEN: unused-placeholder-no-real-vault-service-in-this-file
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+      opensearch-init: { condition: service_completed_successfully }
+      db-migrate: { condition: service_completed_successfully }
+    # Matches docker-compose.dev.yml's own celery-worker-plaso queue/
+    # concurrency exactly (-c 1: Plaso's own real memory footprint per
+    # job, not an arbitrary choice -- see that service's own comment).
+    command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
+
   # RFC 3161 TSA — real openssl-`ts`-backed responder for testing
   # chain-of-custody timestamping. `freetsa/freetsa:latest` (the image this
   # replaced) does not exist on Docker Hub -- confirmed via the real Docker
