@@ -24,7 +24,31 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_UUU.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_VVV.md` for the latest
+cycle** — closes Milestone UUU's own recommendation #1: real browser E2E
+coverage for the two remaining HEAVY-tier (`q.parse.plaso`) code paths,
+`ZipArchiveParser`'s real container recursion (a real KAPE-shaped zip,
+4 real inner parsers) and `PlasoParser`'s EWF/E01 whole-image routing (a
+real FAT16 disk image, 414 real events in prior backend-only
+verification) — both fixtures already existed and were already verified
+backend-only (`poc/kape_ingestion_test/`), just never driven through a
+real browser upload before. New `evidence-upload-heavy-parser-archive.spec.ts`,
+wired into CI as a 9th step. Along the way, found and fixed a real,
+previously-unknown, live-verified bug: `POST /api/cases` directly
+`await`ed both its dashboards-index-pattern and Security-Analytics
+detector provisioning calls, contradicting both call sites' own "must
+not block case creation" comments — a real backend log showed the
+"windows" detector's own create call exceeding its 15s httpx timeout,
+hanging the entire case-creation HTTP response for 15+ seconds, caught
+because it directly broke this cycle's own new spec. Fixed with FastAPI
+`BackgroundTasks` (both provisioners are self-contained, safe to run
+after the response is sent); verified live — case creation across every
+spec in a full 10-test regression became near-instant. Confirmed
+(by grepping every route and frontend component) that VolatilityModule's
+`StructuredArtifact` output has no frontend surface at all yet, but this
+is intentional per `CLAUDE.md` §G.2, not a gap to rush to fill.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_UUU.md` for the prior
 cycle** — closes the heavy-parser CI coverage gap carried since
 Milestone PPP and named again in Milestone TTT's own recommendation #1:
 `docker-compose.test.yml` had no consumer for `q.parse.plaso` at all, so
