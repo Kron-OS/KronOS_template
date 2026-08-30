@@ -24,7 +24,31 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_WWW.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_XXX.md` for the latest
+cycle** — the fourth multi-scenario subagent assessment (security/
+CI-reliability/coverage-gap), against Milestones UUU-WWW. Security:
+clean. One HIGH-severity, concrete fix: `docker-compose.prod.yml` had no
+`celery-worker-plaso` at all — `q.parse.plaso` (every HEAVY-tier parser:
+Plaso, archive/EWF container recursion, Volatility) had zero consumer in
+**production**, the one profile that actually matters, even though
+UUU/VVV/WWW's own coverage claims only ever verified `test.yml`/`.dev.yml`.
+Deeper than a missing compose block: `.github/workflows/build.yml` never
+built/published an image from `docker/Dockerfile.plaso-worker` at all —
+fixed by matrixing `trivy-scan`/`push-image` over `{backend,
+plaso-worker}` so both images go through the same scan/SBOM/sign/attest
+pipeline, then adding the new service to `docker-compose.prod.yml`,
+field-for-field mirroring `celery-worker`'s own already-audited required-
+`Settings` set. Verified: `docker compose -f docker-compose.prod.yml
+config -q` passes with the new service's resolved fields inspected
+directly, and `docker build -f docker/Dockerfile.plaso-worker .`
+(the exact repo-root-context invocation `build.yml`'s matrix now uses)
+confirmed to build. Four CI-reliability findings and four coverage-gap
+findings documented for upcoming cycles — most notably that three cycles
+focused on closing HEAVY-tier gaps left FAST-tier parsers (evtx,
+suricata, nginx, chrome_history standalone) as the platform's now
+*least*-verified tier by comparison.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_WWW.md` for the prior
 cycle** — closes Milestone VVV's own recommendation #1: the last
 HEAVY-tier (`q.parse.plaso`) parser with zero full-pipeline verification,
 `VolatilityModule` (real memory-forensics via `volatility3`). New
