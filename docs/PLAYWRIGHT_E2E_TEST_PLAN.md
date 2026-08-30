@@ -24,7 +24,26 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_XXX.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_YYY.md` for the latest
+cycle** — closes Milestone XXX's coverage-gap review's own top
+recommendation: three straight cycles (UUU/VVV/WWW) gave every
+HEAVY-tier parser real, dedicated E2E coverage and left FAST-tier
+parsers (the platform's actual highest-volume real-world path)
+comparatively unverified. New `evidence-upload-fast-parsers.spec.ts`
+(4 tests: evtx-rs, nginx, suricata-eve, chrome-history, all real
+fixtures) closes that gap — CloudTrail was already covered. New fixture
+`tests/fixtures/samples/real/chrome_history/History`, extracted
+byte-for-byte from the already-committed `kape_triage.zip`'s own Chrome
+History member (the one FAST-tier parser with no existing standalone
+real fixture). Also restated the `timeout-minutes: 70` justification
+comment to cite the archive spec's real 330s worst-case ceiling instead
+of its ~35s typical-case figure (Milestone XXX CI-reliability finding
+#1). Verified against the live dev stack (not a fresh isolated
+test-stack build) given genuinely tight host memory headroom going into
+this cycle — the same judgment call Milestone WWW already established;
+all 4 new tests plus 2 adjacent specs passed clean, back to back.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_XXX.md` for the prior
 cycle** — the fourth multi-scenario subagent assessment (security/
 CI-reliability/coverage-gap), against Milestones UUU-WWW. Security:
 clean. One HIGH-severity, concrete fix: `docker-compose.prod.yml` had no
