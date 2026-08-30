@@ -935,6 +935,96 @@ services:
         limits:
           memory: 1g
 
+  # Gap Audit Milestone WWW (2026-08-30, docs/GAP_AUDIT_2026-08-28_MILESTONE_WWW.md):
+  # real, previously-unfound gap -- this service did not exist anywhere in
+  # this file. ParserType.HEAVY (PlasoParser, ZipArchiveParser/TarArchiveParser's
+  # container recursion, VolatilityModule) always routes to q.parse.plaso
+  # (src/external/celery_app.py), and celery-worker above only consumes
+  # `-Q q.parse.fast,q.index,q.intake` -- so in this file, PRODUCTION, any
+  # real HEAVY-tier upload would have sat in RECEIVED/PARSING forever,
+  # silently, with zero error. This is the exact same class of bug Gap
+  # Audit Milestone MMM found for q.intake in docker-compose.test.yml and
+  # Milestone UUU found (and fixed) for q.parse.plaso in that same
+  # test-profile file -- it was never carried through to this file, the
+  # one profile that actually matters for a real deployment. Caught by a
+  # CI-reliability assessment subagent cross-checking Milestones UUU/VVV/
+  # WWW's own "every HEAVY-tier parser now has CI coverage" claim against
+  # every compose profile, not just test/dev.
+  #
+  # Mirrors celery-worker's own field-for-field required-Settings set
+  # above (celery_app.py instantiates Settings() at import, so this worker
+  # needs the identical required fields or it crashes on boot, exactly
+  # like celery-worker's own top comment already documents) -- CLAMD_HOST/
+  # PORT included for the same reason celery-worker needs it despite never
+  # itself running process_intake's scan step: configure_clamav_from_settings()
+  # (src/external/dependencies.py) runs unconditionally at every celery
+  # worker's startup and hard-fails boot in production if clamd is
+  # unreachable (EVID-6) -- confirmed by reading that function directly,
+  # not assumed from celery-worker's own precedent alone. TSA_URL
+  # deliberately omitted, matching celery-worker's own choice immediately
+  # above (confirmed via grep: no RFC3161/TSA usage anywhere in
+  # src/application/parsing_orchestration.py -- execute_parse never needs
+  # it). Uses the SAME published image family as celery-worker's `image:`
+  # line, but from the dedicated `docker/Dockerfile.plaso-worker` build
+  # (Plaso 20260512 + volatility3 2.28.0, real external tools this base
+  # backend image does not carry) -- .github/workflows/build.yml's
+  # trivy-scan/push-image jobs now build+scan+sign both images via a
+  # matrix (previously only ever built docker/Dockerfile -> the plain
+  # backend image, so no image existed for this service to reference at
+  # all until that same fix).
+  celery-worker-plaso:
+    image: ghcr.io/${GITHUB_REPOSITORY:-kron-os/kronos}/plaso-worker:${IMAGE_TAG:-latest}
+    environment:
+      KRONOS_SECRETS_DIR: ${KRONOS_SECRETS_DIR:-/run/secrets}
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+      MAX_UPLOAD_BYTES: "${KRONOS_MAX_UPLOAD_BYTES:-5368709120}"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_TLS: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      OPENSEARCH_URL: https://opensearch:9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-kronos_backend}
+      OPENSEARCH_SECURITY_ENABLED: "true"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: kronos
+      KEYCLOAK_CLIENT_ID: kronos-backend
+      VAULT_URL: http://vault:8200
+      PLASO_WORKER_PATH: /app/plaso-worker/kronos-plaso-worker.py
+      VOLATILITY_WORKER_PATH: /app/volatility-worker/kronos-volatility-worker.py
+    secrets:
+      - source: database_url
+        target: database_url
+      - source: redis_auth_streams_url
+        target: redis_url
+      - source: celery_broker_url
+        target: celery_broker_url
+      - source: celery_result_backend_url
+        target: celery_result_backend
+      - source: minio_secret_key
+        target: minio_secret_key
+      - source: opensearch_password
+        target: opensearch_password
+      - source: keycloak_client_secret
+        target: keycloak_client_secret
+      - source: vault_token
+        target: vault_token
+    depends_on:
+      redis-auth-streams: { condition: service_healthy }
+      redis-celery: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
+    # -c 1: Plaso's own real memory footprint per job, matching
+    # docker-compose.dev.yml/.test.yml's identical, already-proven choice
+    # for this exact worker (see either file's own comment for why -- one
+    # real Plaso/Volatility invocation at a time, not an arbitrary limit).
+    command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 2g
+
 secrets:
   # Gap Audit Milestone DDD: every secret below used to be declared
   # `external: true`. Real, reproduced finding: plain (non-Swarm) `docker
