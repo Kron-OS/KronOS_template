@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -125,6 +125,7 @@ class PaginatedAuditLog(BaseModel):
 @router.post("", response_model=CaseOut, status_code=status.HTTP_201_CREATED)
 async def create_case(
     body: CreateCaseIn,
+    background_tasks: BackgroundTasks,
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
@@ -167,17 +168,38 @@ async def create_case(
     # first" empty state (poc/opensearch_dashboards_dls/README.md). Failures
     # are logged, not raised — a transient Dashboards outage must not block
     # case creation.
+    #
+    # Genuinely real, verified-live finding (Milestone VVV): these two calls
+    # used to be `await`ed directly here, which contradicted the "must not
+    # block case creation" comment above -- both provisioners only swallow
+    # ERRORS, not SLOWNESS, and a real run against a freshly-started
+    # OpenSearch showed the "windows" detector's own real
+    # POST /_plugins/_security_analytics/detectors call (its prepackaged
+    # Sigma rule set is far larger than cloudtrail/network's) can genuinely
+    # take longer than SecurityAnalyticsDetectorProvisioner's own 15s httpx
+    # client timeout, so the awaited call really did make the whole
+    # POST /api/cases response hang for 15+ seconds -- confirmed via real
+    # backend logs (a 15s gap between the rules search and the timeout being
+    # logged, `error: ""` matching a bare httpx.TimeoutException's empty
+    # message) surfaced by a real browser E2E run, not a hypothetical.
+    # BackgroundTasks (runs after the response is sent, not a Celery queue --
+    # both provisioners are self-contained, own httpx.AsyncClient per call,
+    # no request-scoped resource is used after the response) is what
+    # actually fulfils the comment's own stated contract for the first time.
     if dashboards_provisioner is not None:
-        await dashboards_provisioner.ensure_case_index_pattern(tenant.org_alias, case.case_id)
+        background_tasks.add_task(
+            dashboards_provisioner.ensure_case_index_pattern, tenant.org_alias, case.case_id
+        )
 
     # Best-effort (roadmap M2/C2): idempotent, so this is cheap after the
     # first case for an org (existence check only) and real detector
     # creation only happens once, the first time. A transient Security
     # Analytics outage must not block case creation -- the provisioner
     # itself already swallows per-log-type failures; the next case
-    # creation for this org will simply retry.
+    # creation for this org will simply retry. See the dashboards_provisioner
+    # comment above for why this is now a background task, not awaited.
     if detector_provisioner is not None:
-        await detector_provisioner.ensure_org_detectors(tenant.org_alias)
+        background_tasks.add_task(detector_provisioner.ensure_org_detectors, tenant.org_alias)
 
     return _to_case_out(case)
 

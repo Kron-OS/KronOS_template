@@ -316,6 +316,20 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/evidence-upload-heavy-parser.spec.ts
 
+      # Milestone VVV: closes Milestone UUU's own recommendation #1 --
+      # the ZipArchiveParser (real container recursion, 4 real inner
+      # parsers) and PlasoParser's EWF/E01 whole-image routing were the
+      # remaining HEAVY-tier (q.parse.plaso) paths with zero real browser
+      # E2E coverage. Both fixtures (tests/fixtures/samples/real/kape/)
+      # already verified backend-only against the dev stack
+      # (poc/kape_ingestion_test/, 631 real OpenSearch documents, zero
+      # flagged parsing errors) -- this is the first time either has run
+      # through a real upload against this test-stack profile.
+      - name: "E2E: evidence-upload-heavy-parser-archive"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-upload-heavy-parser-archive.spec.ts
+
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
         # is NOT "failure" in GitHub Actions -- if: failure() alone would
