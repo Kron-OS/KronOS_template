@@ -136,8 +136,27 @@ jobs:
     # host with an already-warm Chainguard base-image cache (no measured
     # upper bound taken; the local run was backgrounded past that point).
     # Raised 55->70 to fold this in with real margin, not just because
-    # a new step was added. First real GHA run is still the actual
-    # confirmation -- see docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
+    # a new step was added.
+    #
+    # Milestone XXX (CI-reliability review's own finding): the comment
+    # above never accounted for evidence-upload-heavy-parser-archive.spec.ts's
+    # (Milestone VVV) own declared worst-case ceilings --
+    # test.setTimeout(150000) + test.setTimeout(180000) = 330s combined --
+    # a real methodology regression from this comment's own established
+    # practice (cite declared worst case, not typical-case measurement) for
+    # the two fault-injection specs above. Restated here rather than left
+    # implicit: 70min still has real margin even folding this in (330s is
+    # ~5.5min against a budget already at 70, on top of the ~29min
+    # pessimistic-bounded-slow baseline + 9min fault-spec ceiling +
+    # >5min Plaso/Volatility build already accounted for). The new
+    # evidence-upload-fast-parsers.spec.ts (Milestone XXX) needs no
+    # comparable adjustment -- all 4 of its tests are real FAST-tier
+    # parsers with no custom test.setTimeout, so each is bounded by
+    # Playwright's own 30s per-test default, and measured live at ~7s
+    # each (~28s total) against the dev stack.
+    #
+    # First real GHA run is still the actual confirmation -- see
+    # docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
     timeout-minutes: 70
     defaults:
       run:
@@ -230,6 +249,26 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/evidence-upload.spec.ts
+
+      # evidence-upload-fast-parsers.spec.ts (Gap Audit Milestone XXX's own
+      # coverage-gap finding): three straight cycles (UUU/VVV/WWW) gave
+      # every HEAVY-tier (q.parse.plaso) parser real, dedicated E2E
+      # coverage and left the FAST tier (q.parse.fast) -- the platform's
+      # actual highest-volume real-world path -- comparatively
+      # unverified. Before this, only evidence-upload.spec.ts's own
+      # synthetic CloudTrail fixture had ever been driven through a real
+      # top-level upload; evtx/nginx/suricata/chrome-history had either
+      # never been uploaded standalone, or only ever been exercised
+      # indirectly as recursively-unpacked members inside
+      # kape_triage.zip (Milestone VVV), never through their own
+      # independent top-level supports()/magic-byte detection. All four
+      # fixtures here are real (tests/fixtures/samples/real/), same
+      # celery-worker-only dependency as evidence-upload.spec.ts above
+      # (all four route to q.parse.fast, never q.parse.plaso).
+      - name: "E2E: evidence-upload-fast-parsers"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/evidence-upload-fast-parsers.spec.ts
 
       # detection-triage.spec.ts/detection-triage-race.spec.ts/
       # cross-tenant-isolation.spec.ts (Milestones NNN/OOO) need no extra
