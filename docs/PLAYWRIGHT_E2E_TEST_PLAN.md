@@ -24,7 +24,26 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSS.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTT.md` for the latest
+cycle** — third multi-scenario subagent assessment (security/
+CI-reliability/coverage-gap), against Milestones QQQ-SSS. Two real fixes:
+`ContainerFaultInjector.ensureRunning()` never actually waited for
+health before returning (only checked `.State.Status`), a genuine gap
+in the shared restore-safety mechanism every fault-injection spec
+relies on — fixed and verified by running the exact declared CI step
+order (`evidence-upload-storage-outage` immediately followed by
+`evidence-parse-retry`) back-to-back for real. Also committed
+`docker/docker-compose.test.local-verify.override.yml`, a documented,
+reusable local-verification override — closing the exact recurring
+process risk that caused Milestone OOO's incident and recurred in
+Milestone SSS (a fresh throwaway override each cycle, missing a port
+publish). `timeout-minutes` re-derived (not just re-bumped) from the two
+fault specs' own real worst-case ceilings. Security: clean. Two new
+real coverage gaps documented (intake-stage retry has zero E2E coverage;
+no spec covers two simultaneous dependency failures or a degraded-not-down
+dependency) for the next cycle.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSS.md` for the prior
 spec-coverage cycle** — `frontend-e2e-smoke` now runs all 7
 `frontend/e2e/` specs. New `evidence-parse-retry.spec.ts` (test-stack
 profile, via new `TestStackOpenSearchFaultInjector`) is the test-stack
