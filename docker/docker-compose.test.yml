@@ -452,12 +452,38 @@ services:
       VAULT_TOKEN: unused-placeholder-no-real-vault-service-in-this-file
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Gap Audit Milestone FFFF: real, previously-undiscovered gap -- this
+      # worker (not kronos-backend, which HAS had CLAMD_HOST since Gap
+      # Audit HHH) is the one that actually calls AntivirusScanner.scan_stream()
+      # (kronos.process_intake, src/application/evidence_intake.py's
+      # _run_scan). Left unset, Settings.clamd_host defaults to "localhost"
+      # (src/config.py) -- unreachable from inside this container --
+      # configure_clamav_from_settings()'s dev/test-mode fallback then
+      # silently downgrades to the permissive NoOpScanner for this worker's
+      # entire process lifetime (src/external/dependencies.py). This means
+      # every real upload through this profile has NEVER been genuinely
+      # ClamAV-scanned, matching the exact class of gap
+      # poc/evidence_intake_async/README.md already found and fixed for
+      # docker-compose.dev.yml/.prod.yml -- this file was missed. Mirrors
+      # docker-compose.dev.yml's own celery-worker CLAMD_HOST/CLAMD_PORT
+      # values exactly.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
       db-migrate: { condition: service_completed_successfully }
+      # Gap Audit Milestone FFFF: without this, celery-worker can start
+      # (and run configure_clamav_from_settings()'s one-shot startup probe)
+      # before clamav itself has finished loading its virus database --
+      # confirmed via poc/evidence_intake_async/run_poc.py's own real
+      # finding that clamd's DB reload alone took ~15s, well past a naive
+      # fixed-sleep guess. A probe that races clamd's own startup would
+      # silently fall back to NoOpScanner for this worker's whole
+      # lifetime, exactly the failure mode this fix exists to close.
+      clamav: { condition: service_healthy }
     # Milestone MMM: real, previously-undiscovered bug -- this worker never
     # consumed `q.intake`, so `kronos.process_intake` (the current
     # validate/scan/hash/promote step every real upload goes through

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
@@ -187,7 +188,7 @@ class TestSSEStream:
         )
         assert resp.status_code == 401
 
-    def test_valid_ticket_consumed_once(self, sse_client):
+    def test_valid_ticket_consumed_once(self, sse_client, monkeypatch):
         client, org_id, _, evidence_repo, _ = sse_client
         case_id = uuid.uuid4()
         ticket = str(uuid.uuid4())
@@ -215,6 +216,20 @@ class TestSSEStream:
         # without ever sleeping -- this exercises the endpoint's real,
         # documented "stream closes ... when all evidence reaches a
         # terminal state" behavior instead of sidestepping it.
+        #
+        # Gap Audit Milestone FFFF: the early-exit above is now
+        # deliberately NEVER allowed to fire on a connection's first
+        # observation (see sse.py's own `first_iteration` comment -- a
+        # real, reproduced race where a `kronos:sse-reconnect`'d stream's
+        # first poll could still see the pre-retry terminal ERROR and
+        # close itself before ever observing the retry's real recovery).
+        # That means this specific evidence (terminal from the very start,
+        # no in-flight retry) now needs a genuine SECOND poll cycle before
+        # the generator returns -- `_POLL_INTERVAL_SECONDS` (5s real
+        # seconds) is patched down here so this still respects this
+        # project's own <5s-per-suite unit test budget (CLAUDE.md B.6)
+        # rather than reintroducing a real sleep.
+        monkeypatch.setattr(sse_module, "_POLL_INTERVAL_SECONDS", 0.01)
         asyncio.run(
             evidence_repo.save(
                 Evidence(
@@ -230,3 +245,74 @@ class TestSSEStream:
             headers={"Accept": "text/event-stream"},
         )
         assert ticket not in sse_module._tickets
+
+    def test_does_not_close_on_first_observation_even_if_already_terminal(
+        self, sse_client, monkeypatch
+    ):
+        """Gap Audit Milestone FFFF: real, reproduced race (confirmed live via
+        frontend/e2e/evidence-intake-retry-dev-stack.spec.ts against the real
+        dev stack, cross-checked against real celery-worker logs and a
+        captured Playwright trace). `useEvidenceSSE.ts`'s `kronos:sse-reconnect`
+        opens a BRAND NEW stream (fresh `last_states = {}`) the instant a
+        retry-intake/retry-parse mutation's HTTP response lands -- but the
+        retried Celery task can genuinely not have made its first
+        state-changing write yet by the time this new connection's first
+        poll runs (observed live: the reconnect's own SSE GET landed while
+        `process_intake`'s retried task was still mid-dispatch). Before the
+        fix, the "stop once terminal" check ran on that very first
+        observation, saw the still-ERROR state, concluded nothing was left
+        to watch, sent `done`, and closed permanently -- even though the
+        evidence went on to genuinely reach COMPLETE ~2.4s later with
+        nothing left listening (`done`, unlike `onerror`, never starts the
+        client's polling fallback).
+
+        This directly exercises `event_generator()`'s real, unmocked
+        control flow (not a description of intent) via a small
+        `EvidenceRepository` double whose `stream_by_case` returns a
+        different real state on each successive call -- ERROR first (as if
+        this connection just reconnected onto an evidence row a retry
+        hasn't touched yet), then COMPLETE (the retry landing one poll
+        cycle later) -- asserting the stream emits BOTH status events
+        (proving it kept watching past the first, still-terminal
+        observation) before finally closing.
+        """
+        client, org_id, _, _, _ = sse_client
+        case_id = uuid.uuid4()
+        evidence_id = uuid.uuid4()
+        ticket = str(uuid.uuid4())
+        sse_module._tickets[ticket] = {
+            "case_id": str(case_id),
+            "org_id": str(org_id),
+            "expires": time.time() + 60,
+        }
+        monkeypatch.setattr(sse_module, "_POLL_INTERVAL_SECONDS", 0.01)
+
+        metadata = make_evidence_metadata(org_id=org_id, case_id=case_id)
+        states = [EvidenceState.ERROR, EvidenceState.COMPLETE]
+
+        class _SequencedEvidenceRepo:
+            """Returns a different real state on each successive poll --
+            simulates a retry landing one poll cycle after this connection
+            opened, without any real sleeping/threading."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def stream_by_case(self, case_id, org_id):  # noqa: ANN001, ARG002
+                idx = min(self.calls, len(states) - 1)
+                self.calls += 1
+                yield Evidence(evidence_id=evidence_id, metadata=metadata, state=states[idx])
+
+        app = client.app
+        app.dependency_overrides[get_evidence_repository] = _SequencedEvidenceRepo
+
+        resp = client.get(
+            f"/api/sse/cases/{case_id}/evidence?ticket={ticket}",
+            headers={"Accept": "text/event-stream"},
+        )
+        body = resp.text
+        error_payload = json.dumps({"evidenceId": str(evidence_id), "state": "ERROR"})
+        complete_payload = json.dumps({"evidenceId": str(evidence_id), "state": "COMPLETE"})
+        assert f"data: {error_payload}" in body, body
+        assert f"data: {complete_payload}" in body, body
+        assert "event: done" in body

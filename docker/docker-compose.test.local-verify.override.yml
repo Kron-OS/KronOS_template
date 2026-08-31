@@ -92,6 +92,17 @@ services:
     ports: !override []
   opensearch:
     ports: !override []
+  # Gap Audit Milestone FFFF: real, reproduced collision -- this host's
+  # live dev stack already holds 3310 unremapped (docker-clamav-1), the
+  # same class of conflict this override file's own postgres/keycloak
+  # remaps already exist to prevent, just not previously hit because no
+  # earlier local-verify run ever needed clamav in its service list. No
+  # spec's own host-side script touches clamav directly (unlike
+  # postgres/keycloak) -- only kronos-backend/celery-worker do, over the
+  # compose network -- so unpublishing entirely (like minio/redis/opensearch)
+  # is correct, not a remap.
+  clamav:
+    ports: !override []
   keycloak:
     ports: !override ["18080:8080"]
   kronos-backend:

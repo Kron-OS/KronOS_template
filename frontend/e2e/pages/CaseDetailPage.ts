@@ -98,4 +98,21 @@ export class CaseDetailPage extends KronosPage {
   async clickRetry(): Promise<void> {
     await this.page.click("button:has-text('Retry')");
   }
+
+  /**
+   * Fresh, independent `GET /api/cases/{id}/evidence`, filtered to the
+   * named file -- mirrors `CasesPage.fetchCaseById()`'s own "not trusted
+   * from the same page load" pattern (docs/PLAYWRIGHT_E2E_TEST_PLAN.md
+   * §3.3). Used to confirm `errorReason`/`retryAction` server-side rather
+   * than only trusting the rendered `StatusPill` text.
+   */
+  async fetchEvidenceByFilename(
+    caseId: string,
+    fileName: string,
+  ): Promise<{ state: string; errorReason: string | null; retryAction: string | null } | undefined> {
+    const page = await this.fetchJson<{
+      items: { filename: string; state: string; errorReason: string | null; retryAction: string | null }[];
+    }>(`/api/cases/${caseId}/evidence`);
+    return page.items.find((item) => item.filename === fileName);
+  }
 }

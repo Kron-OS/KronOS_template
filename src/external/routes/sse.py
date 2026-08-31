@@ -110,6 +110,35 @@ async def evidence_sse_stream(
     async def event_generator() -> AsyncIterator[str]:
         last_states: dict[str, str] = {}
         deadline = time.time() + _MAX_STREAM_SECONDS
+        # Gap Audit Milestone FFFF: real, reproduced race found via a real
+        # browser run of evidence-intake-retry-dev-stack.spec.ts, confirmed
+        # against real celery-worker/kronos-backend logs and the
+        # Playwright trace's own captured network timing. useEvidenceSSE.ts's
+        # `kronos:sse-reconnect` (fired the instant a retry-intake/
+        # retry-parse mutation's HTTP response lands) opens a BRAND NEW
+        # connection -- `last_states` above starts empty every time -- so
+        # this loop's first iteration always emits whatever the CURRENT
+        # state is, even if that's still the pre-retry ERROR (Celery's own
+        # task-dispatch latency means the retried process_intake/
+        # parse_artefact_fast task can genuinely not have landed its first
+        # state-changing write yet by the time this brand new connection's
+        # first poll runs -- observed live: retry-intake POST returned,
+        # this connection opened at T+22ms, but the retried Celery task's
+        # own "Task received" log landed at T+~0ms to T+~700ms later,
+        # i.e. genuinely still racing). Before this fix: the "stop once
+        # terminal" check ran on THAT SAME first iteration, saw ERROR
+        # (still technically a terminal state), concluded nothing left to
+        # watch, sent `done`, and closed -- permanently, since the one-shot
+        # ticket is already consumed and `done` (unlike `onerror`) never
+        # starts the client's polling fallback. The evidence went on to
+        # genuinely reach COMPLETE ~2.4s later (observed live,
+        # celery-worker logs), but nothing was left listening. Fix: never
+        # conclude "done" on a connection's very first observation --
+        # every connection must see a state persist across at least one
+        # full _POLL_INTERVAL_SECONDS cycle before it's treated as stably
+        # terminal, giving an in-flight retry dispatched moments before
+        # this exact connection opened a real chance to be observed.
+        first_iteration = True
         try:
             while time.time() < deadline:
                 current: dict[str, str] = {}
@@ -126,11 +155,18 @@ async def evidence_sse_stream(
 
                 last_states = current
 
-                # Stop streaming once all evidence is terminal.
-                if current and all(s in _TERMINAL_STATES for s in current.values()):
+                # Stop streaming once all evidence is terminal -- but never
+                # on this connection's first-ever observation (see the
+                # comment above this loop for the real race this guards).
+                if (
+                    not first_iteration
+                    and current
+                    and all(s in _TERMINAL_STATES for s in current.values())
+                ):
                     yield "event: done\ndata: {}\n\n"
                     return
 
+                first_iteration = False
                 yield "event: ping\ndata: {}\n\n"
                 await asyncio.sleep(_POLL_INTERVAL_SECONDS)
         except asyncio.CancelledError:

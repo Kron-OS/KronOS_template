@@ -223,8 +223,23 @@ jobs:
         # to avoid clobbering a real host's own /etc/hosts entry).
         run: echo "127.0.0.1 kronos.local" | sudo tee -a /etc/hosts
 
-      - name: Bring up postgres/redis/minio/opensearch/keycloak
-        run: docker compose -f docker-compose.test.yml up -d --wait postgres redis minio opensearch keycloak
+      # Gap Audit Milestone FFFF: clamav added -- real, previously-undiscovered
+      # gap found investigating intake-stage retry coverage: celery-worker
+      # (the service that actually calls AntivirusScanner.scan_stream(), NOT
+      # kronos-backend) never set CLAMD_HOST/CLAMD_PORT in this file at all,
+      # so configure_clamav_from_settings()'s dev/test-mode fallback silently
+      # downgraded to the permissive NoOpScanner for this worker's whole
+      # process lifetime -- meaning no file uploaded through ANY spec in this
+      # job (evidence-upload.spec.ts included) was ever genuinely AV-scanned
+      # before this fix, regardless of whether clamav itself was even
+      # running. Fixed in docker-compose.test.yml (mirrors
+      # docker-compose.dev.yml's own already-correct celery-worker values);
+      # clamav listed explicitly here for the same fail-fast clarity as
+      # every other base service, even though celery-worker's own new
+      # `depends_on: clamav: service_healthy` would already pull it in
+      # transitively.
+      - name: Bring up postgres/redis/minio/opensearch/keycloak/clamav
+        run: docker compose -f docker-compose.test.yml up -d --wait postgres redis minio opensearch keycloak clamav
 
       - name: Run opensearch-init + keycloak-init + db-migrate (real production provisioning/migration)
         run: docker compose -f docker-compose.test.yml up opensearch-init keycloak-init db-migrate
