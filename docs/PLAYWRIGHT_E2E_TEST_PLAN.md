@@ -24,7 +24,33 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAA.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBB.md` for the latest
+cycle** — the fifth multi-scenario subagent assessment (security/
+CI-reliability/coverage-gap), against Milestones YYY-AAAA. One real
+security regression fixed: Milestone AAAA's own `source.address` field
+had no `ignore_above` length guard, unlike `event.original`'s deliberate
+truncation — a crafted oversized value could reproduce the exact
+"permanent ERROR sink" failure that fix was meant to eliminate, just via
+string length instead of type mismatch; fixed with `ignore_above: 256`,
+verified live with a real 40,000-byte value against the dev OpenSearch
+(`errors: False`, value still stored, just not indexed past 256 chars).
+Added a disk/memory headroom diagnostic step to
+`security-integration-tests.yml` (cheap CI-reliability improvement — no
+prior real-runner measurement existed for this, unlike every other
+margin claim in that job). **Main event**: closed RBAC/authz
+access-denial E2E coverage, carried unclosed across five straight
+milestones (OOO→AAAA) — the only remaining gap that's a real security
+boundary. New `rbac-access-denial.spec.ts` + `casesPageAsAnalyst`
+fixture confirms a real, deliberately-less-privileged `analyst` user
+gets a genuine 403 attempting case creation, and that the frontend
+surfaces it visibly (confirmed along the way: `CasesPage.tsx` has NO
+frontend-side role gate at all — the security boundary is 100%
+server-side, now actually proven end-to-end). Caught and fixed a real
+assumption error before shipping: the JWT role claim isn't Keycloak's
+default nested `realm_access.roles`, it's a flat top-level `roles` claim
+(AUTH-006) — caught by reading backend source, not a failed test run.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAA.md` for the prior
 cycle** (first 4-letter milestone slug, `AAA`-`ZZZ` exhausted) — closes
 Milestone ZZZ's recommendation #1: swap `evidence-upload.spec.ts`'s
 synthetic CloudTrail fixture for the real
