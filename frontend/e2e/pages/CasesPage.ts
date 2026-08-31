@@ -45,6 +45,17 @@ export class CasesPage extends KronosPage {
     return el.innerText();
   }
 
+  /**
+   * Real `POST /api/cases/{id}/members` call, issued directly (no
+   * frontend UI drives this action yet) -- for `assert_case_lead_or_admin`
+   * RBAC coverage. Returns the real HTTP status; callers assert on it
+   * rather than the response body, since a real 403 body isn't the
+   * `CaseOut` shape a success response would be.
+   */
+  async attemptAddMember(caseId: string, userId: string): Promise<number> {
+    return this.postJsonWithStatus(`/api/cases/${caseId}/members`, { userId });
+  }
+
   async headerText(): Promise<string> {
     return this.page.locator("header").innerText();
   }

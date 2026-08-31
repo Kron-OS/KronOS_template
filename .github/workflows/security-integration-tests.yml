@@ -359,6 +359,22 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/case-membership-access-denial.spec.ts
 
+      # Gap Audit Milestone DDDD: closes Milestone CCCC's own
+      # recommendation #2 -- assert_case_lead_or_admin ("of case"/"own")
+      # is a THIRD, distinct RBAC boundary from both rbac-access-denial's
+      # pure role check and case-membership-access-denial's weaker
+      # owner-OR-member check. Provisions a real, second, throwaway
+      # case-lead account in the same org (SecondCaseLeadSeeder ->
+      # seed_second_case_lead.py, Keycloak Admin API, same proven pattern
+      # as SecondOrgSeeder) since the single static case-lead dev user
+      # can't exercise this alone -- whatever case it creates, it owns.
+      - name: "E2E: case-lead-ownership-access-denial"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/case-lead-ownership-access-denial.spec.ts
+
       # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
       # recommendation #1), test-stack profile only -- uses
       # TestStackFaultInjector (frontend/e2e/TestStackFaultInjector.ts),

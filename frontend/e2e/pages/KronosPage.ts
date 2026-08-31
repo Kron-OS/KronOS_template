@@ -54,6 +54,28 @@ export abstract class KronosPage {
   }
 
   /**
+   * Fresh, independent `POST <path>` using a freshly-fetched bearer
+   * token, returning the real HTTP status code -- for RBAC-denial specs
+   * that need to assert on the exact status (403 vs 404 vs 200), not
+   * just parse a success body. No frontend UI drives some of the actions
+   * this exercises (e.g. add-case-member has no page yet), so this is
+   * the real API call a future UI would make, issued directly.
+   */
+  protected async postJsonWithStatus(path: string, body: unknown): Promise<number> {
+    return this.page.evaluate(
+      async ({ path: p, token, b }) => {
+        const res = await fetch(p, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(b),
+        });
+        return res.status;
+      },
+      { path, token: await this.getFreshAccessToken(), b: body },
+    );
+  }
+
+  /**
    * Polls `locator`'s own live text WITHOUT reloading the page -- what
    * actually proves a live push path (SSE, etc.) works, not just that a
    * value is eventually correct after a fresh GET. Generalizes the
