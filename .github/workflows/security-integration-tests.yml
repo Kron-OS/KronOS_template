@@ -375,6 +375,18 @@ jobs:
           KRONOS_E2E_PYTHON: "python3"
         run: npx playwright test e2e/case-lead-ownership-access-denial.spec.ts
 
+      # Gap Audit Milestone EEEE: the positive counterpart every prior RBAC
+      # spec deferred -- rbac-access-denial/case-membership-access-denial/
+      # case-lead-ownership-access-denial each prove a real DENIAL, but
+      # none proves assert_case_access's own ALLOW branch (owner OR
+      # member) actually grants real read access once a real, successful
+      # POST /api/cases/{id}/members grant lands. No extra services/env
+      # needed beyond what login.spec.ts already requires.
+      - name: "E2E: case-membership-access-grant"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-membership-access-grant.spec.ts
+
       # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
       # recommendation #1), test-stack profile only -- uses
       # TestStackFaultInjector (frontend/e2e/TestStackFaultInjector.ts),

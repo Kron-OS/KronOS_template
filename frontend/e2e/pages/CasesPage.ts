@@ -56,6 +56,16 @@ export class CasesPage extends KronosPage {
     return this.postJsonWithStatus(`/api/cases/${caseId}/members`, { userId });
   }
 
+  /**
+   * Fresh, independent `GET /api/cases/{id}` (docs/PLAYWRIGHT_E2E_TEST_PLAN.md
+   * §3.3's own "not trusted from the same page load" requirement) --
+   * for a caller confirming a real membership grant's effect persisted
+   * server-side, not just that the page that rendered it looked right.
+   */
+  async fetchCaseById(caseId: string): Promise<{ id: string; title: string }> {
+    return this.fetchJson<{ id: string; title: string }>(`/api/cases/${caseId}`);
+  }
+
   async headerText(): Promise<string> {
     return this.page.locator("header").innerText();
   }
