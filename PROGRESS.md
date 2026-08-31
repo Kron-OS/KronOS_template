@@ -124,6 +124,7 @@ version, with captured output — not inferred from source reading alone.
 - [x] Wired into both `ParsingOrchestrationService.execute_parse()` and the real Celery per-task path (`celery_runtime.py`) — the fix for a silent-no-op-in-production bug caught before shipping
 - [x] CLAUDE.md §G — module-authoring rules and checklist
 - [x] First module built end-to-end under the new process: `SuricataEveParser` — [`poc/suricata/`](poc/suricata/README.md), commit `476706a`
+- [x] **Second module, `VolatilityModule` (real memory-forensics via `volatility3==2.28.0`)** — `extract_artifacts()`-only (its `parse()` is a documented no-op; every plugin it wraps produces non-timeline output). Real, twice-verified: `poc/volatility_memory_module/` (parser in isolation, real `cridex.vmem`) and `poc/volatility_pipeline_ingest/` (full real pipeline: upload → Celery `q.parse.plaso` → `ArtifactIngestService` → Postgres `structured_artifacts` rows, verified by querying Postgres directly). No frontend read API/UI exists for `StructuredArtifact` yet — intentional per §G.2 ("capture and store safely now, design presentation/analysis later"), see §3.7.
 
 ### 2.5 Chain of Custody & Attestation
 - [x] RFC 3161 timestamping wired to real transitions — [`poc/rfc3161/`](poc/rfc3161/README.md), [`poc/chain_of_custody/`](poc/chain_of_custody/README.md)
@@ -178,8 +179,8 @@ version, with captured output — not inferred from source reading alone.
 
 ## Part 3 — Remaining / Known Gaps (checklist, sourced)
 
-### 3.1 Paused by explicit user instruction
-- [ ] **Volatility3 memory-forensics module** — research complete (version `volatility3==2.28.0` pinned, sample source found, detection strategy scoped as open question), zero code written. **Paused: wait for the account Claude spend limit to reset/be raised before resuming** — [`reviews/DFIR_Artifact_Landscape.md`](reviews/DFIR_Artifact_Landscape.md) §2
+### 3.1 (Closed — moved to §2.4) Volatility3 memory-forensics module
+- [x] **Correction 2026-08-31** — this row previously read "paused, zero code written, waiting on spend limit." That's stale: `VolatilityModule` (`src/external/parsers/volatility.py`) shipped, is registered last in `get_parser_registry()`, and has been verified twice for real — `poc/volatility_memory_module/` (real `cridex.vmem`, real `volatility3` subprocess, `windows.pstree`→`windows.psscan` fallback confirmed) and `poc/volatility_pipeline_ingest/` (the full real upload→Celery→`ArtifactIngestService`→Postgres pipeline, not just the parser in isolation). See §2.4 below for the now-current entry. **Not wired into CI** — the real `.vmem` fixture is 512 MiB and deliberately never committed; verification is a real, human-triggerable `poc/` script, not an automated test.
 
 ### 3.2 Verification work still open (not bugs — unfinished PoCs)
 - [x] **Correction 2026-08-28 (Milestone JJJ)** — `poc/frontend_browser` (as named here) never existed as its own directory; this item was already superseded by `poc/dashboards_embed/autoload_verification/` (real Playwright pass: keycloak-js login + React app + Dashboards iframe embed, resolving the embed index-pattern question from flag E above) and, for CI-wired login coverage specifically, the new `frontend-e2e-smoke` CI job (§2.8).
