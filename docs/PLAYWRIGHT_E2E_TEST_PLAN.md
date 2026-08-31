@@ -24,7 +24,26 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBB.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_CCCC.md` for the latest
+cycle** — closes Milestone BBBB's recommendation #1: broadens RBAC
+coverage beyond the pure role check `rbac-access-denial.spec.ts` proved,
+to `assert_case_access`'s ownership/membership qualifier (AUTH-007) — a
+real, distinct security boundary from both the role check AND
+`cross-tenant-isolation.spec.ts`'s different-org 404 (confirmed directly
+from the route source: an org-scoped repository lookup runs first, only
+THEN `assert_case_access`, so a same-org non-member gets a genuinely
+different code path and status than a cross-org caller). New
+`case-membership-access-denial.spec.ts`: `case-lead` creates a case,
+`analyst` (same org, never added as a member) navigates directly to its
+URL, asserts every real response is `403` (not `404`, not `200`) and no
+leak of the case title into the denied caller's DOM — mirroring
+`cross-tenant-isolation.spec.ts`'s own established network-watching
+pattern. Verified live alongside 3 related specs, no interference. The
+positive-membership-grants-access counterpart was investigated and
+deliberately deferred (no existing UI surface to drive it, would need
+new setup machinery) rather than built as a rushed stretch addition.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBB.md` for the prior
 cycle** — the fifth multi-scenario subagent assessment (security/
 CI-reliability/coverage-gap), against Milestones YYY-AAAA. One real
 security regression fixed: Milestone AAAA's own `source.address` field
