@@ -24,7 +24,28 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_CCCC.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDD.md` for the latest
+cycle** — closes Milestone CCCC's recommendation #2:
+`assert_case_lead_or_admin`'s stricter "of case"/"own" qualifier, the
+third distinct RBAC boundary this initiative has closed (after the pure
+role check, Milestone BBBB, and the weaker owner-OR-member read-access
+check, Milestone CCCC). The single static `case-lead` dev user can't
+exercise this alone (whatever case it creates, it owns), so a new
+`SecondCaseLeadSeeder`/`seed_second_case_lead.py` provisions a real,
+second, throwaway case-lead account in the SAME org via the Keycloak
+Admin API (reusing `seed_second_org.py`'s proven building blocks). New
+`case-lead-ownership-access-denial.spec.ts`: the second case-lead
+attempts `POST /api/cases/{id}/members` (no frontend UI exists yet — a
+new `KronosPage.postJsonWithStatus()`/`CasesPage.attemptAddMember()`
+issues the real API call directly) on a case owned by the FIRST
+case-lead, and gets a real 403 — first confirming via the decoded JWT
+that the second account genuinely carries `case-lead`, so the 403 is
+provably `assert_case_lead_or_admin` rejecting, not `requires_role`
+rejecting for lack of the role entirely. Verified live alongside 4
+related specs, no interference; self-cleanup confirmed across two
+consecutive runs.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_CCCC.md` for the prior
 cycle** — closes Milestone BBBB's recommendation #1: broadens RBAC
 coverage beyond the pure role check `rbac-access-denial.spec.ts` proved,
 to `assert_case_access`'s ownership/membership qualifier (AUTH-007) — a
