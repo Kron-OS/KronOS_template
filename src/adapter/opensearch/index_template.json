@@ -88,7 +88,7 @@
         "source": {
           "properties": {
             "ip":      { "type": "ip" },
-            "address": { "type": "keyword" },
+            "address": { "type": "keyword", "ignore_above": 256 },
             "port":    { "type": "long" },
             "bytes":   { "type": "long" }
           }

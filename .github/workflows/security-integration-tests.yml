@@ -210,6 +210,24 @@ jobs:
         # timeout-minutes below explicitly rather than left implicit.
         run: docker compose -f docker-compose.test.yml up -d --build kronos-backend celery-worker celery-worker-plaso tls-init opensearch-dashboards nginx
 
+      # Gap Audit Milestone BBBB (CI-reliability review's own finding):
+      # every other real-margin claim in this job (timeout-minutes, the
+      # >5min Plaso/Volatility build time) is backed by an actual local
+      # measurement; disk/memory headroom on a real GHA runner never has
+      # been -- this job now does 4 image builds plus pulls 5+ more
+      # (OpenSearch alone is ~2.3GB) with zero data point confirming it
+      # fits. Not a fix (can't measure a real runner from here), but
+      # makes sure the FIRST real GHA run captures this instead of
+      # failing opaquely on ENOSPC/OOM with no diagnostic trail.
+      - name: Disk/memory headroom snapshot (real GHA runner data point)
+        if: always()
+        run: |
+          df -h
+          echo "---"
+          docker system df
+          echo "---"
+          free -h || true
+
       - name: Wait for nginx to serve the real frontend over HTTPS
         run: |
           for i in $(seq 1 30); do
@@ -314,6 +332,18 @@ jobs:
         env:
           KRONOS_E2E_PYTHON: "python3"
         run: npx playwright test e2e/cross-tenant-isolation.spec.ts
+
+      # Gap Audit Milestone BBBB: RBAC/authz access-denial coverage --
+      # carried unclosed as an open gap across five straight milestones
+      # (OOO through AAAA) before this. Uses the dev-seeded "analyst"
+      # account (Role.ANALYST only) against POST /api/cases
+      # (requires_role(ORG_ADMIN, CASE_LEAD)) -- a real, deterministic 403
+      # case, not synthetic. No extra services/env needed beyond what
+      # login.spec.ts/evidence-upload.spec.ts already require.
+      - name: "E2E: rbac-access-denial"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/rbac-access-denial.spec.ts
 
       # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
       # recommendation #1), test-stack profile only -- uses

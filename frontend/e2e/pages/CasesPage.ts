@@ -22,6 +22,29 @@ export class CasesPage extends KronosPage {
     return detail;
   }
 
+  /**
+   * Same real UI flow as createCase(), but does NOT assume success --
+   * for a caller (e.g. an RBAC-denial spec) expecting the real backend to
+   * reject the request. Real 403s land inside CreateCaseModal's own
+   * mutation.isError branch (frontend/src/pages/CasesPage.tsx), rendered
+   * via ErrorBanner with the still-open modal, not a redirect -- so this
+   * waits for that banner rather than a new case row.
+   */
+  async attemptCreateCase(title: string, ref: string): Promise<void> {
+    await this.page.click("text=New Case");
+    await this.page.waitForSelector("#case-title", { timeout: 10000 });
+    await this.page.fill("#case-title", title);
+    await this.page.fill("#case-ref", ref);
+    await this.page.click("button:has-text('Create')");
+  }
+
+  /** The real inline error banner CreateCaseModal renders on a failed mutation. */
+  async waitForCreateCaseError(timeoutMs = 15000): Promise<string> {
+    const el = this.page.locator("text=/Failed to create case/");
+    await el.waitFor({ timeout: timeoutMs });
+    return el.innerText();
+  }
+
   async headerText(): Promise<string> {
     return this.page.locator("header").innerText();
   }

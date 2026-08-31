@@ -17,6 +17,7 @@ export const DEV_USERS = {
 
 type Fixtures = {
   casesPageAsCaseLead: CasesPage;
+  casesPageAsAnalyst: CasesPage;
 };
 
 export const test = base.extend<Fixtures>({
@@ -25,6 +26,20 @@ export const test = base.extend<Fixtures>({
     const login = await LoginPage.open(page);
     await login.waitUntilReady();
     const cases = await login.loginWithSso(DEV_USERS.caseLead.username, DEV_USERS.caseLead.password);
+    await use(cases);
+  },
+  // Gap Audit Milestone BBBB: first use of the real dev-seeded "analyst"
+  // account (docker/keycloak/kronos-realm.json) -- it existed in
+  // DEV_USERS since this file's own creation but had never actually been
+  // logged in with by any spec until RBAC access-denial coverage needed a
+  // real, deliberately LESS-privileged user (Role.ANALYST, lacking
+  // Role.CASE_LEAD/Role.ORG_ADMIN) distinct from the case-lead fixture
+  // every other spec in this suite uses.
+  // eslint-disable-next-line no-empty-pattern
+  casesPageAsAnalyst: async ({ page }, use) => {
+    const login = await LoginPage.open(page);
+    await login.waitUntilReady();
+    const cases = await login.loginWithSso(DEV_USERS.analyst.username, DEV_USERS.analyst.password);
     await use(cases);
   },
 });
