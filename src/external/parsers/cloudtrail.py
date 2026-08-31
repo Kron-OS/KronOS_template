@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -14,6 +15,31 @@ from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
 
 logger = logging.getLogger(__name__)
+
+
+def _is_ip_literal(value: str | None) -> bool:
+    """True if *value* parses as a real IPv4/IPv6 address.
+
+    Real, reproduced bug (Gap Audit Milestone AAAA): AWS CloudTrail's own
+    ``sourceIPAddress`` field is documented to hold the calling AWS
+    service's hostname (e.g. ``"ec2.amazonaws.com"``) instead of an actual
+    IP address for AWS-service-initiated events (confirmed against a real
+    CloudTrail log, tests/fixtures/samples/real/aws_cloudtrail.jsonl's own
+    "SharedSnapshotVolumeCreated" row) -- blindly mapping it straight to
+    ECS's strictly ``ip``-typed ``source.ip`` field made a real bulk-index
+    call fail outright (``mapper_parsing_exception``: "'ec2.amazonaws.com'
+    is not an IP string literal"), permanently sinking the evidence to
+    ERROR after Celery's retries exhausted. This is not a synthetic edge
+    case -- AWS-service-linked CloudTrail events are common in real
+    production logs.
+    """
+    if not value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _ext(filename: str) -> str:
@@ -132,13 +158,22 @@ class CloudTrailParser(ForensicParser):
         except (ValueError, AttributeError):
             ts = datetime.now(UTC)
 
+        source_ip_raw = ct.get("sourceIPAddress")
         extra: dict[str, Any] = {
             "event.action": event_name,
             "event.module": "aws",
             "event.dataset": "aws.cloudtrail",
             "cloud.service.name": event_source,
             "cloud.region": ct.get("awsRegion"),
-            "source.ip": ct.get("sourceIPAddress"),
+            # ECS's own convention for an ambiguous source address (real
+            # IP or hostname, per ECS's "source.address" field docs):
+            # always keep the raw value here (index_template.json maps it
+            # `keyword`, no type constraint), and only additionally
+            # populate the strictly `ip`-typed source.ip when it actually
+            # parses as one -- see _is_ip_literal()'s own docstring for
+            # the real bug this closes.
+            "source.address": source_ip_raw,
+            "source.ip": source_ip_raw if _is_ip_literal(source_ip_raw) else None,
         }
         if ct.get("errorCode"):
             extra["error.code"] = ct["errorCode"]

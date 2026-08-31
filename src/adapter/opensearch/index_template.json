@@ -87,9 +87,10 @@
         },
         "source": {
           "properties": {
-            "ip":    { "type": "ip" },
-            "port":  { "type": "long" },
-            "bytes": { "type": "long" }
+            "ip":      { "type": "ip" },
+            "address": { "type": "keyword" },
+            "port":    { "type": "long" },
+            "bytes":   { "type": "long" }
           }
         },
         "destination": {

@@ -25,6 +25,17 @@ src/external/parsers/nginx.py, cloudtrail.py, plaso.py):
   3. PlasoParser only recognized MAM-compressed prefetch containers, not
      the also-common uncompressed SCCA-format prefetch files. Rejected a
      real Windows 10 .pf file outright.
+  4. CloudTrailParser mapped AWS's own "sourceIPAddress" field straight to
+     ECS's strictly ip-typed "source.ip" -- real, unremarkable for most
+     rows, but AWS-service-initiated events (e.g. this file's own
+     "SharedSnapshotVolumeCreated" row) document that field as the calling
+     service's own hostname ("ec2.amazonaws.com"), not an IP. A real
+     OpenSearch bulk-index call against this exact file failed outright
+     (mapper_parsing_exception) the first time this fixture was ever
+     driven through the real ingest pipeline end-to-end (Gap Audit
+     Milestone AAAA) rather than just parsed in isolation -- this repo's
+     own unit tests only ever exercised parse(), never the OpenSearch
+     write path, so the bug had been latent since CloudTrailParser shipped.
 """
 
 from __future__ import annotations
@@ -172,6 +183,33 @@ class TestRealCloudTrailLog:
         assert first.extra.get("cloud.service.name") == "ec2.amazonaws.com"
         assert first.timestamp.year == 2022
         assert "DescribeInstances" in (first.message or "")
+
+    @pytest.mark.asyncio
+    async def test_service_linked_row_gets_source_address_not_a_bad_source_ip(self) -> None:
+        # Real bug #4 above: this fixture's own "SharedSnapshotVolumeCreated"
+        # row has sourceIPAddress="ec2.amazonaws.com" (AWS's own documented
+        # behaviour for service-initiated events, not malformed data) --
+        # asserting on the actual real row rather than a synthetic one,
+        # matching this module's own real-bytes-only convention.
+        evidence = make_evidence()
+        tenant = make_tenant_context()
+        records = await _drain(
+            CloudTrailParser().parse(_bytes_stream(self.FIXTURE.read_bytes()), evidence, tenant)
+        )
+        service_linked = next(
+            r for r in records if r.extra.get("event.action") == "SharedSnapshotVolumeCreated"
+        )
+        assert service_linked.extra.get("source.address") == "ec2.amazonaws.com"
+        assert service_linked.extra.get("source.ip") is None
+
+        # A row with a real IP still gets both fields populated, and
+        # source.ip is never a bare hostname string that would fail
+        # OpenSearch's strictly ip-typed mapping.
+        ip_addressed = next(
+            r for r in records if r.extra.get("event.action") == "DescribeInstances"
+        )
+        assert ip_addressed.extra.get("source.ip") == "1.2.3.4"
+        assert ip_addressed.extra.get("source.address") == "1.2.3.4"
 
 
 # ---------------------------------------------------------------------------
