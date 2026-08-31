@@ -24,7 +24,26 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_EEEE.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_GGGG.md` for the latest
+cycle** — closes a gap named since Milestone LLL: `security-stack` never
+booted `kronos-backend`, so "both real Keycloak consumers coexist" was
+never continuously re-proven in one stack instance. Now boots it for
+real, then runs a new, honestly-scoped verification
+(`poc/ci_security_enabled_stack/verify_backend_keycloak_coexistence.py`):
+a real `client_credentials` grant for `kronos-backend`'s own service
+account, then a real authenticated call to `kronos-backend` itself,
+asserting on the *specific* `"JWT audience claim missing..."` 401 —
+confirmed (by reading `keycloak_auth.py`) that this exact message only
+fires after JWKS fetch + signature + issuer checks all succeed, so it's
+genuine proof the two Keycloak consumers' configs are compatible, not a
+generic pass. Real design pivot along the way: password grant (the
+original plan, mirroring an older PoC) turned out to be disabled
+realm-wide; PKCE would have needed nginx/TLS scaffolding duplicating
+`frontend-e2e-smoke`'s own setup — landed on the service-account
+approach instead, verified both its positive AND negative path live
+(a malformed token produces a different, correctly-rejected message).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_EEEE.md` for the prior
 cycle** — closes the positive counterpart every prior RBAC spec deferred:
 `rbac-access-denial`/`case-membership-access-denial`/
 `case-lead-ownership-access-denial` each prove a real DENIAL; none
