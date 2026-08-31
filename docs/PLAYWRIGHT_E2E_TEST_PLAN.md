@@ -1,5 +1,34 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_FFFF.md` for the latest
+cycle** — closes the gap named since Milestone QQQ/TTT: real, deterministic
+E2E coverage of a dependency failing *during the intake stage* (after
+`finalize_upload`, before `process_intake` completes). QQQ investigated
+forcing MinIO down mid-intake and explicitly declined it as too racy
+(MinIO's own synchronous `object_exists` check in `finalize_upload` means
+stopping it before upload fails the request itself, never producing a
+retryable evidence row). This cycle found a genuinely different, real
+dependency with the right shape: ClamAV — invoked only from inside the
+Celery `process_intake` task (`_run_scan`), never synchronously from the
+finalize route, so stopping it before upload is exactly as deterministic
+as `DevStackFaultInjector`'s existing OpenSearch target, no race. New
+`evidence-intake-retry-dev-stack.spec.ts` (dev stack, live-verified twice)
+and `evidence-intake-retry.spec.ts` (test-stack, CI-wired twin, code-complete
+but not yet live-run — see the milestone doc's own honest "not completed
+this cycle" section, a real host memory constraint hit standing up the
+isolated stack). Found and fixed two real, previously-unknown bugs along
+the way: `docker-compose.test.yml`'s `celery-worker` never had
+`CLAMD_HOST` set at all (no file uploaded through that profile was ever
+genuinely AV-scanned, independent of this milestone), and a real,
+reproduced-live SSE race in `src/external/routes/sse.py` — a freshly
+reconnected stream (opened the instant a retry mutation succeeds) could
+observe the pre-retry terminal `ERROR` on its own first poll and close
+itself permanently before the retry's real recovery ever lands, since
+`process_intake`'s error handling (unlike the parse stage's
+`is_final_attempt`-gated version) shows `ERROR` after *every* failed
+attempt, not just the final one. Fixed by never allowing the "stop once
+terminal" check to fire on a connection's first-ever observation.
+
 **Correction 2026-08-29 (Milestone RRR) — read before trusting any
 "nightly CI"/"CI-wired" claim below or in Milestones KKK-QQQ's own
 docs.** `.github/workflows/security-integration-tests.yml` has never
