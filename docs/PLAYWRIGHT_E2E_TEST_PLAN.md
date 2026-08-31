@@ -24,7 +24,25 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDD.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_EEEE.md` for the latest
+cycle** — closes the positive counterpart every prior RBAC spec deferred:
+`rbac-access-denial`/`case-membership-access-denial`/
+`case-lead-ownership-access-denial` each prove a real DENIAL; none
+proves `assert_case_access`'s own ALLOW branch actually grants real
+access once a real, successful `POST /api/cases/{id}/members` grant
+lands. New `case-membership-access-grant.spec.ts`: `case-lead` grants
+`analyst` (its real Keycloak `sub`, read off a fresh access token, not a
+placeholder — confirmed from `keycloak_auth.py` that `add_case_member`
+never does a server-side lookup) real membership, then a **fresh**
+analyst session confirms genuine access — every response a real `200`,
+the case title visible in the DOM, and a fresh independent `GET`
+(new `CasesPage.fetchCaseById()`) confirming the grant persisted
+server-side, not just within the granting session. Verified live
+alongside 4 related RBAC specs, no interference. Every RBAC boundary
+this initiative has named now has proof on both the denial AND the
+grant side.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDD.md` for the prior
 cycle** — closes Milestone CCCC's recommendation #2:
 `assert_case_lead_or_admin`'s stricter "of case"/"own" qualifier, the
 third distinct RBAC boundary this initiative has closed (after the pure
