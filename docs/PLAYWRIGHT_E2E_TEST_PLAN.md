@@ -24,7 +24,32 @@ and what would actually close this (a manual `workflow_dispatch` against
 this branch, or a merge to `main` — both outside this initiative's
 current tooling/authority).
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_ZZZ.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAA.md` for the latest
+cycle** (first 4-letter milestone slug, `AAA`-`ZZZ` exhausted) — closes
+Milestone ZZZ's recommendation #1: swap `evidence-upload.spec.ts`'s
+synthetic CloudTrail fixture for the real
+`tests/fixtures/samples/real/aws_cloudtrail.jsonl` sample, flagged as a
+cheap rigor-only follow-up. It surfaced a real, previously-unknown,
+previously-latent bug instead: `CloudTrailParser` mapped AWS's own
+`sourceIPAddress` straight to ECS's strictly `ip`-typed `source.ip`, but
+AWS-service-initiated CloudTrail events (this fixture's own real
+`SharedSnapshotVolumeCreated` row) document that field as the calling
+service's *hostname*, not an IP — a real `mapper_parsing_exception`
+permanently sank the evidence to `ERROR` after Celery's retries
+exhausted, confirmed via direct reproduction against the live dev
+OpenSearch. Fixed per ECS's own convention for this exact ambiguity:
+always populate `source.address` (new `keyword` field in
+`index_template.json`) with the raw value, only additionally populate
+`source.ip` when it actually parses as a real IP (`ipaddress` stdlib).
+Verified at every step (direct bulk-index reproduction before AND after
+the fix, a targeted null-value-safety check against the live cluster
+before relying on it, worker restart + real E2E re-run, a 6-test FAST-tier
+regression, plus a new permanent regression test against the fixture's
+real row). This bug had been latent since `CloudTrailParser` shipped —
+existing unit tests only ever exercised `parse()`, never the real
+OpenSearch write path.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_ZZZ.md` for the prior
 cycle** — closes Milestone YYY's recommendation #1: `TarArchiveParser`
 CI-wired coverage. `poc/tar_container_unwrapping/`'s own real,
 reproduced-incident fixture (`forensic2.E01` — actually a tar archive,
