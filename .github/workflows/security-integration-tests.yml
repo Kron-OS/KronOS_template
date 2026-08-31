@@ -345,6 +345,20 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/rbac-access-denial.spec.ts
 
+      # Gap Audit Milestone CCCC: closes Milestone BBBB's own
+      # recommendation #1 -- the ownership/membership qualifier
+      # (assert_case_access, AUTH-007) is a real, DIFFERENT security
+      # boundary from rbac-access-denial.spec.ts's pure role check above
+      # and from cross-tenant-isolation.spec.ts's different-org 404 --
+      # both real, same-org, same-tenant users (case-lead owns the case,
+      # analyst is never added as a member), so it's genuinely
+      # assert_case_access rejecting (403), not the org-scoping repository
+      # query (404). No extra services/env needed.
+      - name: "E2E: case-membership-access-denial"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-membership-access-denial.spec.ts
+
       # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
       # recommendation #1), test-stack profile only -- uses
       # TestStackFaultInjector (frontend/e2e/TestStackFaultInjector.ts),
