@@ -85,6 +85,36 @@ jobs:
           KRONOS_SECURITY_STACK_OS_ADMIN_PASSWORD: "KronOSCiTest#2026"
         run: pytest tests/integration/test_security_enabled_stack.py -v --no-cov
 
+      # Gap Audit Milestone GGGG (docs/GAP_AUDIT_2026-08-28_MILESTONE_GGGG.md):
+      # this job never booted kronos-backend, so "both real Keycloak
+      # consumers coexist" was asserted by two separate job definitions
+      # that never ran against the same stack instance. db-migrate is a
+      # real prerequisite (kronos-backend's own startup needs the schema
+      # applied); kronos-backend itself has no compose healthcheck in this
+      # file, so polled directly below (same pattern
+      # frontend-e2e-smoke's own "Wait for nginx" step already uses).
+      - name: Run db-migrate, then build and start kronos-backend
+        run: docker compose -f docker-compose.test.yml up -d --build db-migrate kronos-backend
+
+      - name: Wait for kronos-backend to report healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/healthz > /dev/null; then
+              echo "kronos-backend is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "kronos-backend never became healthy" >&2
+          exit 1
+
+      - name: Verify kronos-backend's own Keycloak config coexists with this job's real realm (poc-local, not shipped)
+        working-directory: poc/ci_security_enabled_stack
+        env:
+          KC_BASE: http://localhost:8080
+          BACKEND_BASE: http://localhost:8000
+        run: python3 verify_backend_keycloak_coexistence.py
+
       - name: Dump service logs on failure
         # Milestone KKK: cancelled(), not just failure() -- a
         # timeout-minutes cancellation isn't "failure" in GHA, so
