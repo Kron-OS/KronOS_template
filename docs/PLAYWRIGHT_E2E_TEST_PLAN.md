@@ -1,6 +1,41 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHHH.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_IIII.md` for the latest
+cycle** — closes §3.7 (resilience/error states), both named scenarios.
+Investigated the real frontend error-handling code (`src/api/client.ts`'s
+axios interceptor, `CasesPage.tsx`/`DetectionsPage.tsx`'s existing
+`ErrorBanner` usage) and the real SSE reconnect mechanism
+(`useEvidenceSSE.ts`, `src/external/routes/sse.py`) before writing
+anything, per this doc's own verification-first requirement. New
+`frontend/e2e/resilience-backend-unreachable.spec.ts`: a real
+`page.route("**/api/**", route => route.abort(...))` against an
+already-loaded, already-authenticated page, then a real mutation and a
+real fresh query, both confirmed to surface their already-shipped
+`ErrorBanner` live with zero `page.on("pageerror")` firing and the app
+shell still rendered (not a blank screen). New
+`frontend/e2e/resilience-sse-drop.spec.ts` + `SseDropInjector.ts`: two
+other approaches were tried live and rejected first —
+`browserContext.setOffline(true)` was confirmed NOT to error an
+already-open `EventSource` within any deterministic window (Chromium's
+offline emulation blocks new connections, not bytes already flowing on an
+established one), and the real 60s ticket expiry was already known to be
+too slow — landed on a real-proxy-then-cut technique: `page.route()`
+proxies the real SSE connection through a genuine `https.get()` against
+the real backend (the app's own one-shot ticket, real bytes), then
+deliberately severs it the moment a genuine non-terminal evidence state is
+observed. Confirms the evidence still reaches `Complete` live via
+`useEvidenceSSE.ts`'s existing polling fallback (`sseConnectionCount`
+asserted `== 1` for the whole test — proving recovery came from polling,
+not a reconnect), no reload. **No new bug found this cycle** — an honest
+negative result: both scenarios were already handled correctly, the
+second one specifically because Milestone FFFF's own SSE-race fix already
+generalizes to this genuinely different drop shape. Both specs wired into
+`security-integration-tests.yml`'s `frontend-e2e-smoke` job at no added
+service cost. Verified live together with `login`/`evidence-upload`/
+`evidence-retry` (6/6 passed, no interference), plus a clean `tsc`/`lint`/
+`build`/`vitest` (104/104) pass.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHHH.md` for the prior
 cycle** — closes §3.6 (dashboards embed): the one open question
 `poc/dashboards_embed/README.md` flagged as needing "a live browser to
 observe" and never got, per its own text (a follow-on PoC,
@@ -1007,9 +1042,11 @@ recommendation for adding them incrementally.
    ships (see the note in §3.4).
 6. **[DONE 2026-09-01, Milestone HHHH]** §3.6 dashboards embed — see the
    top pointer above for the full account (real bug found and fixed:
-   `now-30d` default time range hid every real case's data). §3.7
-   resilience, §3.8 a11y/visual remain — lower urgency, pick up
-   opportunistically.
+   `now-30d` default time range hid every real case's data).
+6b. **[DONE 2026-09-01, Milestone IIII]** §3.7 resilience/error states —
+   see the top pointer above for the full account (both named scenarios
+   closed; no new bug found, an honest negative result). §3.8 a11y/visual
+   remains — lower urgency, pick up opportunistically.
 7. §4's CI-wiring prerequisite can be tackled in parallel with 1-3 (it's a
    disjoint infra surface) so the suite isn't blocked waiting on it to
    start being written, only on it to start running unattended.
