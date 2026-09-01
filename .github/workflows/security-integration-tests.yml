@@ -279,6 +279,11 @@ jobs:
     # also gained one new test (Settings tab scan) -- no separate CI step
     # needed, that whole file already runs as one step; real measured cost
     # for all 7 a11y tests together: ~16.2s.
+    #
+    # Milestone SSSS: no new step (extended case-delete-archive-ui's
+    # existing assertions rather than adding a new one -- a real,
+    # found-live cache-invalidation bug, not a new scenario). No change to
+    # this number's real margin.
     timeout-minutes: 70
     defaults:
       run:

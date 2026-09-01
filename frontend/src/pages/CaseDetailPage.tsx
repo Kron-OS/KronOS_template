@@ -396,10 +396,17 @@ function CaseMembersSection({ caseId, memberUserIds }: { caseId: string; memberU
  * both survive it untouched. */
 function DeleteCaseSection({ caseId, status }: { caseId: string; status: Case['status'] }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const mutation = useMutation({
     mutationFn: () => deleteCase(caseId),
-    onSuccess: () => {
+    onSuccess: async () => {
+      // Real, found-live bug (Milestone SSSS): the cases list's own
+      // useQuery has a 30s staleTime, so without this the /cases page
+      // this navigate() lands on kept serving its pre-archive cached
+      // data -- the real archive succeeded server-side, but the list a
+      // user actually saw right after confirming didn't reflect it.
+      await queryClient.invalidateQueries({ queryKey: ['cases'] })
       void navigate({ to: '/cases' })
     },
   })

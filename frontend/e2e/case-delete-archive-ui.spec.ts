@@ -20,10 +20,8 @@ test("a case-lead can archive their case through the real Settings UI, with a re
   await login.waitUntilReady();
   const cases = await login.loginWithSso(DEV_USERS.caseLead.username, DEV_USERS.caseLead.password);
 
-  const detail = await cases.createCase(
-    `E2E Delete-Archive-UI Case ${Date.now()}`,
-    `E2E-DEL-UI-${Date.now()}`,
-  );
+  const caseTitle = `E2E Delete-Archive-UI Case ${Date.now()}`;
+  const detail = await cases.createCase(caseTitle, `E2E-DEL-UI-${Date.now()}`);
   const caseId = page.url().split("/cases/")[1];
 
   await detail.openSettingsTab();
@@ -40,6 +38,17 @@ test("a case-lead can archive their case through the real Settings UI, with a re
 
   // Real navigation back to the cases list on success.
   await page.waitForURL("**/cases", { timeout: 15000 });
+
+  // Milestone SSSS: the cases LIST view (CasesPage.tsx's CaseCard) also
+  // shows a real "Archived" badge, not just the detail page -- this is
+  // the very page the redirect above just landed on, so the badge must
+  // already be visible without any extra navigation. Scoped to THIS
+  // case's own card (by its unique title) -- the dev stack's /cases list
+  // already has other archived cases from unrelated prior spec runs, so a
+  // bare page-wide "Archived" text match wouldn't actually prove this
+  // card's own badge rendered.
+  const thisCaseCard = page.locator("a", { hasText: caseTitle });
+  await thisCaseCard.getByText("Archived", { exact: true }).waitFor({ timeout: 10000 });
 
   // Fresh, independent GET confirms the archive genuinely persisted.
   const afterConfirm = await cases.fetchCaseById(caseId);

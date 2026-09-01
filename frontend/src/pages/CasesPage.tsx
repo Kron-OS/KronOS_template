@@ -20,9 +20,16 @@ function CaseCard({ c }: { c: Case }) {
       className="block rounded-lg border border-gray-200 bg-white p-5 transition-colors hover:border-indigo-300 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-indigo-700 dark:hover:bg-gray-800/60"
     >
       <div className="mb-1 flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold leading-tight text-gray-900 dark:text-gray-100">
-          {c.title}
-        </h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold leading-tight text-gray-900 dark:text-gray-100">
+            {c.title}
+          </h3>
+          {c.status === 'archived' && (
+            <span className="shrink-0 rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-400">
+              Archived
+            </span>
+          )}
+        </div>
         <span className="shrink-0 rounded bg-gray-200 px-2 py-0.5 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
           {c.reference}
         </span>
