@@ -1,6 +1,23 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_RRRR.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSSS.md` for the latest
+cycle** — small follow-up to Milestone RRRR: the cases LIST view
+(`CasesPage.tsx`) never showed the "Archived" badge the detail page just
+gained. Extending `case-delete-archive-ui.spec.ts`'s own assertions to
+check it surfaced a real, previously-unknown bug: `DeleteCaseSection`'s
+mutation never invalidated the `['cases']` query cache, so the list
+(`staleTime: 30_000`) kept showing pre-archive data right after a
+successful archive — the archive itself always worked correctly
+server-side; only the UI's own cache was stale. Fixed with
+`queryClient.invalidateQueries({queryKey: ['cases']})` before the
+navigate call. First live run of the new assertion failed for this real
+reason (a prior test run's own archived card, outside the 30s window,
+showed the badge correctly in the same page snapshot — isolating the
+cause to caching, not the feature); fixed, rebuilt/redeployed
+`docker-nginx-1`, re-ran clean. Broader 13-spec regression check: no
+interference.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_RRRR.md` for the prior
 cycle** — not another RBAC-boundary spec, a real product gap: `add_case_member`/
 `remove_case_member`/`delete_case` were all fully built, tested (every
 branch, both directions), and audited across Milestones CCCC–QQQQ, but
