@@ -1,6 +1,27 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOOO.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQQ.md` for the latest
+cycle** — closes Milestone KKKK's own security finding: `add_case_member`
+took a caller-supplied `userId` with no existence/org check at all. Fixed
+by reusing the already-DI-wired `KeycloakAdminClient.is_org_member` (the
+same real Admin API check `admin.py`'s own `_assert_user_in_org` already
+relies on) rather than inventing a second implementation — a real `403`
+now rejects a `userId` that isn't confirmed as a member of the caller's
+org. `remove_case_member` deliberately left unchanged (its idempotent
+no-op-on-non-member design already makes an invalid id harmless). New
+`case-member-add-userid-validation.spec.ts` proves this live against the
+real dev stack's real Keycloak (`crypto.randomUUID()`, a real-nowhere id,
+correctly rejected); new `TestAddCaseMemberOrgValidation` (backend unit,
+`FakeKeycloakAdminClient`) covers both branches. A real, caught-live
+regression fixed along the way: `case-lead-ownership-access-grant.spec.ts`'s
+own placeholder UUID legitimately started failing once this landed — every
+`attemptAddMember` call site across `frontend/e2e/` was grepped and
+checked before concluding only that one needed fixing. Wired into CI;
+verified live standalone (2.7s), inside the full 10-spec RBAC/membership
+cluster (32.1s, no interference), and against `login`/`cross-tenant-isolation`
+for a wider regression check.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOOO.md` for the prior
 cycle** — closes Milestone KKKK/NNNN's own named feature gap: case
 membership was add-only, `DELETE /api/cases/{id}/members/{user_id}` did
 not exist at all. New `Case.without_member()` (domain), `remove_case_member`
