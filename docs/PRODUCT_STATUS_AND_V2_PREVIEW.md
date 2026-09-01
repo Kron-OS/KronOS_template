@@ -215,15 +215,25 @@ oversight, per `roadmap.md` §9:
 
 ### Tooling/environment gaps on the current verification host
 
-- This host only has Python 3.14 available; the project's own CI and
-  every prior verification pass pin Python 3.11, and a 3.14 venv
-  deadlocks inside native `asyncpg`/`greenlet` code during test
-  collection. A proper 3.11 toolchain would be needed to independently
-  re-confirm the exact current backend test count locally.
-- The `helm` binary is not installed on this host, so the Helm chart's
-  `lint` result hasn't been independently re-confirmed in the most
-  recent verification passes (the last real run, some sessions ago, did
-  pass).
+- This host only has Python 3.14 available; the project's own CI still
+  pins Python 3.11. A 3.14 venv on this host *used to* deadlock inside
+  native `asyncpg`/`greenlet` code during test collection (a real,
+  observed `SIGABRT`) — that is **no longer reproducible**: re-verified
+  2026-09-01 (Milestone PPPP) with a fresh full-suite run,
+  `2056 passed, 2 skipped in 29.87s`, coverage gate passed at 90.39%.
+  Whatever native-wheel mismatch caused the original deadlock was
+  evidently resolved by a later `pip install`/venv rebuild between
+  sessions. A real Python 3.11 toolchain is still not installed on this
+  host, so CI's own pinned-version behavior can't be independently
+  reproduced locally, but a fresh local `pytest` run is no longer blocked.
+- ~~The `helm` binary is not installed on this host~~ — corrected
+  2026-09-01 (Milestone PPPP): it IS installed (`/usr/local/bin/helm`,
+  `v3.16.4`); the prior claim was stale. Re-confirmed both `helm lint
+  charts/kronos` (clean, one informational note only) and `helm template
+  kronos charts/kronos` (real, clean render, 57 resources across 11
+  kinds) live on this host. What's still genuinely true: a real `helm
+  install` against a real Kubernetes cluster remains unattempted — no
+  cluster is available in this verification environment.
 
 ### Explicitly out of scope by prior product/user decision
 
