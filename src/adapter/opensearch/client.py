@@ -160,6 +160,43 @@ class OpenSearchClient(AbstractTimelineIndex):
         return len(documents)
 
     async def ensure_index_template(self) -> None:
+        """Create/update the ``kronos-template`` composable index template,
+        then push its ``dynamic``/``dynamic_templates`` settings onto every
+        already-existing ``kronos-*`` index too.
+
+        Gap Audit Milestone UUUU: an index template only ever applies to
+        indices created *after* the template changes -- a real, previously
+        acknowledged gap (``poc/ecs_schema_hardening/README.md``'s own
+        "Existing indices... no reindex was performed... out of scope").
+        Since this platform's own index names are keyed to each record's
+        *event* timestamp, not wall-clock time
+        (``timeline_normalization.build_index_name``), a case's index for a
+        given month is typically created exactly once and never rotates
+        again — a template-only fix would silently never reach almost all
+        real (historical, forensic) data. The live ``_mapping`` PUT below is
+        a real, verified-live (``poc/opensearch_auto_index_fields/``) fix:
+        changing an index's ``dynamic``/``dynamic_templates`` settings (not
+        an existing field's type) is a supported, non-reindexing mapping
+        update, so this runs automatically on every ingest — no manual
+        admin step, no reindex, and it only affects *future* writes into
+        that index. Documents already indexed under the old, stricter
+        mapping keep whatever was dropped from the index at write time
+        (still present in ``_source``, per the deliberate `dynamic: false`→
+        `true` design) until something re-processes them — a real, targeted
+        ``_update_by_query`` against the affected index(es) is the
+        verified-live way to do that retroactively (same PoC, step 4);
+        not run automatically here since it is a real, potentially
+        large/slow operation against already-live data, not appropriate to
+        fire unattended on every ingest task.
+
+        Tolerates a cluster with zero ``kronos-*`` indices yet (a fresh
+        stack): OpenSearch 404s a wildcard ``_mapping`` PUT that matches
+        nothing (confirmed live), which is a real no-op here, not a
+        failure — new indices get the fixed mapping from the template at
+        creation time regardless.
+        """
+        from opensearchpy.exceptions import NotFoundError  # noqa: PLC0415
+
         template_path = Path(__file__).parent / "index_template.json"
         with template_path.open() as fh:
             template = json.load(fh)
@@ -167,6 +204,18 @@ class OpenSearchClient(AbstractTimelineIndex):
             name="kronos-template",
             body=template,
         )
+
+        mappings = template["template"]["mappings"]
+        try:
+            await self._client.indices.put_mapping(
+                index="kronos-*",
+                body={
+                    "dynamic": mappings["dynamic"],
+                    "dynamic_templates": mappings["dynamic_templates"],
+                },
+            )
+        except NotFoundError:
+            pass
 
     async def ensure_ism_policy(self) -> None:
         """Create the ISM rollover policy, tolerating "already exists".

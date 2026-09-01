@@ -7,15 +7,14 @@
     },
     "mappings": {
       "_meta": {
-        "dynamic_policy": "false -- unmapped fields are stored in _source but NOT indexed. This is a deliberate, conservative choice over 'strict': parser `extra` fields vary per format and per parser, and 'strict' would REJECT the whole document (write failure, ingestion breaks) the moment any record carries a field not listed here. 'false' instead means an unknown field is safe-but-unsearchable rather than wrongly dynamic-mapped as text+keyword (the original bug: a Sigma term query against the un-suffixed name silently matched nothing even though the field existed and was populated). Every field a Sigma rule is expected to reference must be added here explicitly, as keyword/long/date as appropriate -- see docs/NEXTGEN_SOC_ROADMAP.md A1/A2."
+        "dynamic_policy": "true (Gap Audit Milestone UUUU) -- was 'false' (see git history for the original _meta string): that policy meant any field not explicitly listed below -- including a whole other parser's own extra[] output, or any genuinely new field -- was stored in _source but silently NEVER indexed, unfilterable, with no error anywhere (confirmed live, poc/opensearch_auto_index_fields/). 'strict' was never viable either: parser `extra` fields vary per format/parser, and 'strict' REJECTS the whole document the instant any record carries an unlisted field. The real fix is 'true' PLUS the 'strings_as_keyword' catch-all dynamic_template below: every unmapped string field now auto-indexes as a real keyword field (not OpenSearch's own default text+'.keyword' multi-field split, which is what caused the ORIGINAL bug this template already fixed once -- a Sigma term query against the bare field name silently matching nothing). Explicit entries below still take precedence over the catch-all for every field this platform's own Sigma rules/queries are known to depend on -- this is additive auto-indexing, not a replacement for curating the well-known ECS taxonomy. See docs/NEXTGEN_SOC_ROADMAP.md A1/A2 and poc/opensearch_auto_index_fields/README.md."
       },
-      "dynamic": false,
+      "dynamic": true,
       "dynamic_templates": [
         {
-          "winlog_event_data_strings": {
-            "path_match": "winlog.event_data.*",
+          "strings_as_keyword": {
             "match_mapping_type": "string",
-            "mapping": { "type": "keyword" }
+            "mapping": { "type": "keyword", "ignore_above": 1024 }
           }
         }
       ],
@@ -24,10 +23,9 @@
         "message": { "type": "text" },
         "data_type": { "type": "keyword" },
         "winlog": {
-          "dynamic": true,
           "properties": {
             "provider_name": { "type": "keyword" },
-            "event_data": { "dynamic": true, "properties": {} }
+            "event_data": { "properties": {} }
           }
         },
         "cloud": {

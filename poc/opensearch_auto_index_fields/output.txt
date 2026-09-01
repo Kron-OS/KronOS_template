@@ -1,0 +1,30 @@
+[PASS] index created with the OLD (dynamic:false) mapping -- status=200 body={"acknowledged":true,"shards_acknowledged":true,"index":"kronos-poc-dynfield-old-000000"}
+[PASS] doc with unmapped 'event_identifier' field accepted (201) -- status=201 body={"_index":"kronos-poc-dynfield-old-000000","_id":"doc-before-fix","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":2,"successful":1,"failed":0},"_seq_no":0,"_primary_term":1}
+[PASS] 'event_identifier' NOT in the real mapping (the bug) -- properties keys=['@timestamp', 'alert', 'chrome', 'cloud', 'cloudtrail', 'data_type', 'destination', 'dns', 'enrichment', 'error', 'event', 'file', 'host', 'http', 'kronos', 'log', 'message', 'network', 'process', 'registry', 'rule', 'source', 'tls', 'url', 'user', 'user_agent', 'winlog']
+[PASS] term query on unmapped field returns ZERO hits despite the doc existing (the bug, reproduced live) -- hits=0
+[PASS] the value IS still present in _source (not silently dropped, as designed)
+[PASS] index_template.json now sets dynamic: true at root -- dynamic=True
+[PASS] live _mapping PUT on the EXISTING (old-mapping) index accepted -- no reindex needed for this step -- status=200 body={"acknowledged":true}
+[PASS] second doc (different unmapped fields) accepted -- status=201
+[PASS] 'event_identifier' now appears in the live mapping as keyword -- event_identifier mapping={'type': 'keyword', 'ignore_above': 1024}
+[PASS] 'another_new_field' (never seen before, no hardcoded rule) also auto-mapped as keyword -- another_new_field mapping={'type': 'keyword', 'ignore_above': 1024}
+[PASS] term query on the NEW doc's field now returns a real hit -- hits=1
+[PASS] _update_by_query against the whole index succeeded -- status=200 body={"took":17,"timed_out":false,"total":2,"updated":2,"deleted":0,"batches":1,"version_conflicts":0,"noops":0,"retries":{"bulk":0,"search":0},"throttled_millis":0,"requests_per_second":-1.0,"throttled_until_millis":0,"failures":[]}
+[PASS] _update_by_query reports real documents updated -- updated=2
+[PASS] term query on the FIRST doc's field (written BEFORE the fix) now returns a real hit -- retroactive fix confirmed live -- hits=1
+[PASS] fresh index created directly with the NEW mapping content -- status=200 body={"acknowledged":true,"shards_acknowledged":true,"index":"kronos-poc-dynfield-new-000000"}
+[PASS] doc accepted into the fresh index
+[PASS] fresh index auto-indexes an unmapped field with zero extra steps
+[PASS] doc with an explicitly-mapped kronos.org_id accepted
+[PASS] explicitly-mapped field still a real term-queryable keyword (original Sigma bug NOT reintroduced)
+
+19 passed, 0 failed
+---
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+[INFO] real index's dynamic setting before this run: 'true' (false the very first time this PoC ever ran; true on every re-run since -- this script is idempotent, confirmed by re-running it)
+[PASS] real ensure_index_template() flipped the EXISTING index to dynamic:true -- dynamic='true'
+[PASS] real index now carries the general strings_as_keyword catch-all -- dynamic_templates=[{'strings_as_keyword': {'match_mapping_type': 'string', 'mapping': {'ignore_above': 1024, 'type': 'keyword'}}}]
+[PASS] a real doc's real 'event_identifier' field is term-queryable via the real client code path -- hits=1
+
+3 passed, 0 failed

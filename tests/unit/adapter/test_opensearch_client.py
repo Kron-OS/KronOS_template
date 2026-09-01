@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from opensearchpy.exceptions import ConflictError
+from opensearchpy.exceptions import ConflictError, NotFoundError
 
 from src.adapter.opensearch.client import OpenSearchClient
 
@@ -61,6 +61,55 @@ async def test_ensure_ism_policy_reraises_other_errors() -> None:
 
     with pytest.raises(OSConnectionError):
         await client.ensure_ism_policy()
+
+
+async def test_ensure_index_template_also_syncs_live_index_mapping() -> None:
+    """Gap Audit Milestone UUUU: ensure_index_template() must push the
+    template's dynamic/dynamic_templates settings onto already-existing
+    kronos-* indices too, not just register the template for future ones
+    -- confirmed live in poc/opensearch_auto_index_fields/, this is the
+    unit-level regression guard."""
+    client = _make_client()
+    client._client.indices.put_index_template = AsyncMock(return_value={})  # type: ignore[method-assign]
+    client._client.indices.put_mapping = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await client.ensure_index_template()
+
+    client._client.indices.put_index_template.assert_awaited_once()
+    client._client.indices.put_mapping.assert_awaited_once()
+    _, kwargs = client._client.indices.put_mapping.call_args
+    assert kwargs["index"] == "kronos-*"
+    assert kwargs["body"]["dynamic"] is True
+    assert any(
+        "strings_as_keyword" in t for t in kwargs["body"]["dynamic_templates"]
+    ), kwargs["body"]["dynamic_templates"]
+
+
+async def test_ensure_index_template_tolerates_no_matching_indices() -> None:
+    """A fresh cluster with zero kronos-* indices yet: OpenSearch 404s a
+    wildcard _mapping PUT that matches nothing (confirmed live) -- a real
+    no-op here, not a failure."""
+    client = _make_client()
+    client._client.indices.put_index_template = AsyncMock(return_value={})  # type: ignore[method-assign]
+    client._client.indices.put_mapping = AsyncMock(  # type: ignore[method-assign]
+        side_effect=NotFoundError(404, "index_not_found_exception", {"error": "no such index"})
+    )
+
+    # Must not raise.
+    await client.ensure_index_template()
+
+
+async def test_ensure_index_template_reraises_other_mapping_sync_errors() -> None:
+    from opensearchpy.exceptions import ConnectionError as OSConnectionError
+
+    client = _make_client()
+    client._client.indices.put_index_template = AsyncMock(return_value={})  # type: ignore[method-assign]
+    client._client.indices.put_mapping = AsyncMock(  # type: ignore[method-assign]
+        side_effect=OSConnectionError("N/A", "connection refused", None)
+    )
+
+    with pytest.raises(OSConnectionError):
+        await client.ensure_index_template()
 
 
 async def test_ensure_generic_tenant_role_creates_one_role_and_one_mapping() -> None:
