@@ -212,6 +212,34 @@ jobs:
     # invocations). visual-regression-pills.spec.ts (this milestone's other
     # new spec) is deliberately NOT wired into this job -- see that spec's
     # own file docstring -- so it adds no CI time at all.
+    #
+    # Milestone KKKK (CI-reliability review's own finding, re-derived
+    # against the actual compose file rather than accepted as stated):
+    # "4 image build[s]" (Milestone UUU, above) only ever counted the
+    # LATER "Build and start kronos-backend, celery-worker,
+    # celery-worker-plaso, ..., nginx" step. The EARLIER "opensearch-init +
+    # keycloak-init + db-migrate" step also has real `build:` stanzas --
+    # keycloak-init (docker/init/Dockerfile.keycloak-init, its own
+    # Dockerfile, never itemized anywhere in this comment chain before
+    # now) and db-migrate (docker/Dockerfile -- same Dockerfile+context as
+    # kronos-backend/celery-worker, so it pays the first real cold-build
+    # cost of that image; the later --build calls for kronos-backend and
+    # celery-worker are then cache hits within the same job, not 3
+    # independent cold builds of the same Dockerfile). Correct inventory:
+    # 6 `build:` stanzas invoked in the job, across 4 distinct Dockerfiles
+    # (docker/Dockerfile x3 call sites/1 real cold cost, docker/init/
+    # Dockerfile.keycloak-init x1, docker/Dockerfile.plaso-worker x1 --
+    # still the single slowest per Milestone UUU, docker/Dockerfile.frontend
+    # x1). keycloak-init's own image has never been measured in isolation;
+    # given it only installs curl/jq/bash on a slim base (see that
+    # Dockerfile) it is expected to be fast relative to the app image and
+    # Plaso/Volatility builds, but that is an expectation, not a
+    # measurement -- flagged here rather than asserted. This does not
+    # change the 70 number itself (the dominant unbounded variable was
+    # already, correctly, called out above as unmeasured GHA cold-build
+    # time in general, not a specific per-image count); it corrects the
+    # inventory so a future reader doesn't undercount real build steps
+    # when re-deriving this number.
     timeout-minutes: 70
     defaults:
       run:
