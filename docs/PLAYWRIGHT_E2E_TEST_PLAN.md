@@ -1,6 +1,26 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSSS.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTTT.md` for the latest
+cycle** — same real-product-gap pattern as RRRR: `GET`/`PATCH
+/api/admin/org/quota` is a mature, already-tested backend feature with
+zero frontend UI (confirmed via `grep`). New `QuotaSection`
+(`AdminPage.tsx`). Also the **first spec in this whole suite to drive a
+real step-up (MFA) re-authentication through a real browser** — confirmed
+via `grep` that `inviteUser`/`updateUserRole` share this same
+`_assert_aal2` gating but neither had ever been UI-tested either. Real,
+live findings: `admin`'s normal login is `acr=aal1` (TOTP-at-login and
+step-up-to-aal2 are different flows); the step-up redirect is a full page
+navigation that abandons the original mutation *and* the form's local
+React state — a real, pre-existing UX rough edge affecting all three
+step-up actions equally, named but not fixed (a bigger architectural
+question). Found and fixed real TOTP-timing flakiness in the test's own
+retry helper (not the app): a short fixed retry wait doesn't reliably
+cross the real 30s TOTP window, producing an identical, replay-rejected
+code — fixed by waiting out the actual window remainder, confirmed across
+4 repeated live runs including two that took the retry path and still
+passed. Wired into CI.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_SSSS.md` for the prior
 cycle** — small follow-up to Milestone RRRR: the cases LIST view
 (`CasesPage.tsx`) never showed the "Archived" badge the detail page just
 gained. Extending `case-delete-archive-ui.spec.ts`'s own assertions to
