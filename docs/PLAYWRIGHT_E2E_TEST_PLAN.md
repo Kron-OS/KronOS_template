@@ -1,6 +1,32 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLLL.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMMM.md` for the latest
+cycle** — closes Milestone LLLL's own recommendation: `delete_case`
+(`src/external/routes/cases.py`) was the one remaining call site of
+`assert_case_lead_or_admin` with zero E2E coverage on either branch. New
+`case-delete-ownership-denial.spec.ts` (a second, real, freshly-seeded
+case-lead is denied deleting a case it doesn't own — `403`) and
+`case-delete-ownership-grant.spec.ts` (the owning case-lead deletes/archives
+its own case — real `204`, then a fresh independent `GET` confirms
+`status: "archived"` genuinely persisted, since `delete_case` is a soft
+archive, not a row deletion, confirmed by reading the route first). A
+real, found-live test-design bug fixed along the way: the denial spec's
+first run failed for a genuine reason — its own "confirm the case wasn't
+archived" check tried to read the case using the *denied* second
+case-lead's own session, but that account is blocked from reading the
+case at all by a *separate* boundary (`assert_case_access`), so there was
+no body to read an `id` off; fixed by using the owner's session for that
+confirmation instead. New shared infra: `KronosPage.deleteWithStatus()`,
+`CasesPage.attemptDeleteCase()`, and `fetchCaseById()`'s return type
+extended with a real `status` field. Wired into
+`security-integration-tests.yml`; verified live (both specs, then the
+full 7-spec RBAC cluster together, 21.8s, no interference). This closes
+out the `assert_case_lead_or_admin` ownership-RBAC coverage-gap thread
+Milestones CCCC → DDDD → EEEE → KKKK → LLLL → MMMM has worked through
+incrementally — all three call sites now have real, explicit ALLOW and
+DENY coverage.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLLL.md` for the prior
 cycle** — closes Milestone KKKK's own coverage-gap finding:
 `assert_case_lead_or_admin`'s ALLOW branch was only ever asserted as a
 side effect of `case-membership-access-grant.spec.ts`'s own setup step
