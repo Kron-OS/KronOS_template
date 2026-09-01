@@ -11,6 +11,7 @@ OpenSearch, and isolates every tenant via Keycloak Organizations + RBAC.
 - **Design authority:** [`Project_Specifications.md`](./Project_Specifications.md) + [`reviews/Part_*.md`](./reviews)
 - **Backend implementation guide:** [`CLAUDE.md`](./CLAUDE.md)
 - **Roadmap & progress:** [`roadmap.md`](./roadmap.md), [`PROGRESS.md`](./PROGRESS.md)
+- **Product status & v2 preview (start here for a quick, honest overview):** [`docs/PRODUCT_STATUS_AND_V2_PREVIEW.md`](./docs/PRODUCT_STATUS_AND_V2_PREVIEW.md)
 - **Security & deployment audit:** [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md) ⚠️ read before deploying
 
 > ⚠️ **Pre-deployment notice.** A 2026-06 audit found a small number of
