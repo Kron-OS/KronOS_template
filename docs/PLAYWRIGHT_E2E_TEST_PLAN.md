@@ -1,6 +1,30 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKKK.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_LLLL.md` for the latest
+cycle** — closes Milestone KKKK's own coverage-gap finding:
+`assert_case_lead_or_admin`'s ALLOW branch was only ever asserted as a
+side effect of `case-membership-access-grant.spec.ts`'s own setup step
+(that spec's real, named purpose is a different boundary,
+`assert_case_access`'s ALLOW branch). Checked the finding's own framing
+before acting on it — a spec re-asserting exactly what EEEE's setup
+already asserts would be near-duplicate work — and found via `grep` that
+`list_case_audit_events` (the audit-log tab's own endpoint, also gated by
+`assert_case_lead_or_admin`) had **zero** E2E coverage on either branch,
+redirecting scope there instead. New
+`frontend/e2e/case-lead-ownership-access-grant.spec.ts`: a real case-lead
+creates a case (already has real audit content — `create_case` itself
+logs `case.created`), reads its own Audit Log tab (`list_case_audit_events`'s
+ALLOW branch, first-ever exercise), performs a real `add_case_member`
+grant (`200`, `add_case_member`'s ALLOW branch, now its own named
+scenario), then reloads and re-reads the audit log confirming a
+`case.updated` row and `2 total events` — proving the mutation genuinely
+persisted through the same case-lead-gated read path. Wired into
+`security-integration-tests.yml`; verified live standalone (3.4s) and
+together with the full RBAC spec cluster (5/5, 16.9s, no interference).
+`delete_case`'s ALLOW/DENY branches remain the one still-uncovered call
+site of this boundary — named for a future cycle.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKKK.md` for the prior
 cycle** — not a new-spec milestone, a multi-scenario assessment cycle
 (security / CI-reliability / coverage-gap, run via lighter `haiku`
 subagents per the project owner's instruction, decisions retained by the
