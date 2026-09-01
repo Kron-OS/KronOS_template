@@ -142,4 +142,24 @@ export class CaseDetailPage extends KronosPage {
   async getDashboardsIframeSrc(): Promise<string | null> {
     return this.page.locator('iframe[title="Timeline Analysis"]').getAttribute("src");
   }
+
+  /** Clicks the real "Audit Log" tab button (renders AuditLogTab -> GET /api/cases/{id}/audit). */
+  async openAuditLogTab(): Promise<void> {
+    await this.page.getByRole("button", { name: "Audit Log", exact: true }).click();
+  }
+
+  /**
+   * Waits for a real audit-log table row whose Event column shows the
+   * given `AuditEventType` value (e.g. `"case.created"`, `"case.updated"`)
+   * -- confirms `list_case_audit_events` returned real, specific content
+   * for this case, not just a 200 with an empty page.
+   */
+  async waitForAuditEventRow(eventType: string, timeoutMs = 10000): Promise<void> {
+    await this.page.locator(`td:has-text("${eventType}")`).first().waitFor({ timeout: timeoutMs });
+  }
+
+  /** Real "N total events" footer text rendered under the Audit Log table. */
+  async getAuditLogTotalText(): Promise<string> {
+    return this.page.locator("text=/\\d+ total events/").innerText();
+  }
 }

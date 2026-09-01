@@ -240,6 +240,11 @@ jobs:
     # time in general, not a specific per-image count); it corrects the
     # inventory so a future reader doesn't undercount real build steps
     # when re-deriving this number.
+    #
+    # Milestone LLLL: one new step (case-lead-ownership-access-grant, 1
+    # test, no custom test.setTimeout -- bounded by Playwright's own 30s
+    # default). Real measured cost against the dev stack: ~3.4s standalone.
+    # Negligible against the existing margin.
     timeout-minutes: 70
     defaults:
       run:
@@ -477,6 +482,19 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-membership-access-grant.spec.ts
+
+      # Gap Audit Milestone LLLL: closes Milestone KKKK's own coverage-gap
+      # finding -- assert_case_lead_or_admin's ALLOW branch was only ever
+      # asserted as a side effect of case-membership-access-grant's own
+      # setup step (that spec's real, named purpose is assert_case_access's
+      # separate ALLOW branch), and list_case_audit_events (the audit-log
+      # tab's own endpoint, also gated by assert_case_lead_or_admin) had
+      # never been exercised by any spec, on either branch, before this
+      # one. No extra services/env needed.
+      - name: "E2E: case-lead-ownership-access-grant"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-lead-ownership-access-grant.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure
