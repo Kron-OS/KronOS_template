@@ -259,6 +259,13 @@ jobs:
     # against this job's own margin). Real measured cost against the dev
     # stack: ~3.8s standalone, confirmed again inside a 6-spec RBAC-cluster
     # run (14.9s total). Negligible against the existing margin.
+    #
+    # Milestone OOOO: two new steps (case-member-removal-revokes-access,
+    # case-member-removal-ownership-denial, 1 test each, no custom
+    # test.setTimeout). Real measured cost against the dev stack: ~8.3s
+    # for both together standalone, confirmed again inside a 10-spec
+    # RBAC-cluster run (30.1s total). Negligible against the existing
+    # margin.
     timeout-minutes: 70
     defaults:
       run:
@@ -551,6 +558,29 @@ jobs:
         env:
           KRONOS_E2E_PYTHON: "python3"
         run: npx playwright test e2e/role-change-mid-session.spec.ts
+
+      # Gap Audit Milestone OOOO: closes Milestone KKKK/NNNN's own named
+      # feature gap -- membership was add-only; DELETE
+      # /api/cases/{id}/members/{user_id} (remove_case_member) did not
+      # exist at all before this cycle. New Case.without_member() mirrors
+      # with_member() exactly; the route mirrors add_case_member's own
+      # assert_case_lead_or_admin gating and CASE_UPDATED audit event.
+      # case-member-removal-revokes-access proves the full real lifecycle
+      # (grant -> real access -> removal -> real access genuinely revoked,
+      # not just that DELETE returns 200); case-member-removal-ownership-denial
+      # is the DENY-branch mirror of case-lead-ownership-access-denial for
+      # this new route.
+      - name: "E2E: case-member-removal-revokes-access"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-member-removal-revokes-access.spec.ts
+
+      - name: "E2E: case-member-removal-ownership-denial"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/case-member-removal-ownership-denial.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure

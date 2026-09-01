@@ -69,6 +69,18 @@ export class CasesPage extends KronosPage {
   }
 
   /**
+   * Real `DELETE /api/cases/{id}/members/{userId}` call (Milestone OOOO,
+   * `remove_case_member` -- the mirror image `add_case_member` never had),
+   * issued directly, same reasoning as `attemptAddMember`/`attemptDeleteCase`.
+   * Returns the real HTTP status; a success is a real `200` with a
+   * `CaseOut` body (idempotent -- removing a non-member also returns 200,
+   * confirmed by reading the route before writing this).
+   */
+  async attemptRemoveMember(caseId: string, userId: string): Promise<number> {
+    return this.deleteWithStatus(`/api/cases/${caseId}/members/${userId}`);
+  }
+
+  /**
    * Fresh, independent `GET /api/cases/{id}` (docs/PLAYWRIGHT_E2E_TEST_PLAN.md
    * §3.3's own "not trusted from the same page load" requirement) --
    * for a caller confirming a real membership grant's effect persisted

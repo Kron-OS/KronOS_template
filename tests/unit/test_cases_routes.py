@@ -134,6 +134,33 @@ class TestDeleteCase:
         assert resp.status_code == 404
 
 
+class TestRemoveCaseMember:
+    def test_remove_member_persists(self, cases_client):
+        client, repo, org_id, _, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Membership Case"}).json()
+        case_id = created["id"]
+        member_id = str(uuid.uuid4())
+        client.post(f"/api/cases/{case_id}/members", json={"userId": member_id})
+
+        resp = client.delete(f"/api/cases/{case_id}/members/{member_id}")
+        assert resp.status_code == 200
+
+        stored = asyncio.run(repo.get_by_id(uuid.UUID(case_id), org_id))
+        assert uuid.UUID(member_id) not in stored.member_user_ids
+
+    def test_remove_missing_case_returns_404(self, cases_client):
+        client, _, _, _, _ = cases_client
+        resp = client.delete(f"/api/cases/{uuid.uuid4()}/members/{uuid.uuid4()}")
+        assert resp.status_code == 404
+
+    def test_remove_non_member_is_idempotent_success(self, cases_client):
+        client, _, _, _, _ = cases_client
+        created = client.post("/api/cases", json={"title": "No-Op Removal Case"}).json()
+        case_id = created["id"]
+        resp = client.delete(f"/api/cases/{case_id}/members/{uuid.uuid4()}")
+        assert resp.status_code == 200
+
+
 class TestListCaseEvidence:
     def test_empty_evidence_list(self, cases_client):
         client, _, _, _, _ = cases_client

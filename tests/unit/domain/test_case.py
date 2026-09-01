@@ -26,6 +26,20 @@ class TestCase:
         assert member_id in case2.member_user_ids
         assert member_id not in case.member_user_ids
 
+    def test_without_member(self) -> None:
+        case = make_case()
+        member_id = uuid.uuid4()
+        with_member = case.with_member(member_id)
+        without_member = with_member.without_member(member_id)
+        assert member_id not in without_member.member_user_ids
+        assert member_id in with_member.member_user_ids  # original immutable
+
+    def test_without_member_idempotent_for_non_member(self) -> None:
+        case = make_case()
+        stranger_id = uuid.uuid4()
+        result = case.without_member(stranger_id)
+        assert stranger_id not in result.member_user_ids
+
     def test_case_id_auto_generated(self) -> None:
         case = make_case()
         assert isinstance(case.case_id, uuid.UUID)

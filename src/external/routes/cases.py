@@ -265,6 +265,40 @@ async def add_case_member(
     return _to_case_out(updated)
 
 
+@router.delete("/{case_id}/members/{user_id}", response_model=CaseOut)
+async def remove_case_member(
+    case_id: uuid.UUID,
+    user_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> CaseOut:
+    """Revoke a user's membership of a case (AUTH-007).
+
+    Same gating as ``add_case_member`` (`assert_case_lead_or_admin` — a
+    case-lead may only remove members from a case they lead), the mirror
+    image the platform never had: membership was add-only until now.
+    Idempotent, same as ``add_case_member``'s own union semantics —
+    removing a user who isn't currently a member is a no-op success, not
+    a 404, since the caller's intent ("this user should not be a member")
+    is already satisfied either way.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
+
+    updated = await case_repo.update(case.without_member(user_id))
+    await audit_svc.log(
+        AuditEventType.CASE_UPDATED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        actor_user_id=tenant.user_id,
+        details={"action": "case.member_removed", "member_user_id": str(user_id)},
+    )
+    return _to_case_out(updated)
+
+
 @router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_case(
     case_id: uuid.UUID,

@@ -51,3 +51,11 @@ class Case(BaseModel):
                 "updated_at": datetime.now(UTC),
             }
         )
+
+    def without_member(self, user_id: uuid.UUID) -> Case:
+        return self.model_copy(
+            update={
+                "member_user_ids": self.member_user_ids - {user_id},
+                "updated_at": datetime.now(UTC),
+            }
+        )
