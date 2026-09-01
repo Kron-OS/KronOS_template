@@ -115,4 +115,31 @@ export class CaseDetailPage extends KronosPage {
     }>(`/api/cases/${caseId}/evidence`);
     return page.items.find((item) => item.filename === fileName);
   }
+
+  /** Clicks the real "Timeline" tab button (renders TimelineTab -> the Dashboards iframe embed). */
+  async openTimelineTab(): Promise<void> {
+    await this.page.getByRole("button", { name: "Timeline", exact: true }).click();
+  }
+
+  /**
+   * The real, live OpenSearch Dashboards iframe (`title="Timeline
+   * Analysis"`, `TimelineTab` in `frontend/src/pages/CaseDetailPage.tsx`).
+   * `frameLocator()` (not a plain `Locator`) is required to assert on
+   * content INSIDE the iframe's own document, not just its `src`
+   * attribute -- see `dashboards-embed.spec.ts` for why that distinction
+   * is the entire point of this spec (the `_a`/`_g`/`_q` RISON state
+   * lives in the URL fragment; only a real page load inside the frame,
+   * driven by data-explorer's own client-side router, proves it actually
+   * applied -- `poc/dashboards_embed/autoload_verification/README.md`
+   * found a top-level-query-string version of this same URL gets
+   * silently discarded by that same router).
+   */
+  getDashboardsFrame() {
+    return this.page.frameLocator('iframe[title="Timeline Analysis"]');
+  }
+
+  /** Real `src` of the Dashboards iframe -- asserted on before trusting anything rendered inside it. */
+  async getDashboardsIframeSrc(): Promise<string | null> {
+    return this.page.locator('iframe[title="Timeline Analysis"]').getAttribute("src");
+  }
 }

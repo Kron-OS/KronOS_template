@@ -439,7 +439,26 @@ async def get_dashboard_url(
         f"query:(match_phrase:(kronos.case_id:'{case_id}')))),"
         f"query:(language:kuery,query:''))"
     )
-    g_state = "(filters:!(),refreshInterval:(pause:!t,value:0),time:(from:now-30d,to:now))"
+    # Real finding (frontend/e2e/dashboards-embed.spec.ts, Gap Audit
+    # Milestone HHHH): `now-30d` was copied from a generic Discover-embed
+    # example without checking it against what this platform actually
+    # ingests. Real forensic evidence is virtually never inside the last
+    # 30 days -- every committed real fixture under
+    # tests/fixtures/samples/real/ is from 2015-2024 (confirmed directly,
+    # e.g. system.evtx's own real event timestamps span 2015-08-08 to
+    # 2015-08-09) -- so the case's own `kronos.case_id` filter was correct
+    # but the DEFAULT view showed "0 hits"/an empty chart on every real
+    # case, silently, no error. Widened to a fixed absolute start far
+    # enough back to cover any real-world evidence date; the case filter
+    # above is what actually scopes the data, this only controls what's
+    # visible without the analyst manually widening the picker. Verified
+    # live, both ways: reverting just this line to `now-30d` and re-running
+    # the spec reproduces a real timeout waiting for "N hits" inside the
+    # frame (the exact pre-fix bug), not a hypothetical.
+    g_state = (
+        "(filters:!(),refreshInterval:(pause:!t,value:0),"
+        "time:(from:'2000-01-01T00:00:00.000Z',to:now))"
+    )
     a_state = (
         f"(discover:(columns:!(_source),isDirty:!f,sort:!()),"
         f"metadata:(indexPattern:'{pattern_id}',view:discover))"
