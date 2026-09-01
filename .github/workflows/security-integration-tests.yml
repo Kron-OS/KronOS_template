@@ -194,6 +194,16 @@ jobs:
     #
     # First real GHA run is still the actual confirmation -- see
     # docs/GAP_AUDIT_2026-08-28_MILESTONE_RRR.md.
+    #
+    # Milestone IIII: two new steps added (resilience-backend-unreachable,
+    # resilience-sse-drop). Combined declared worst-case ceiling: ~60s
+    # (resilience-backend-unreachable, two tests at Playwright's own 30s
+    # default each, no custom test.setTimeout) + 150s
+    # (resilience-sse-drop's testInfo.setTimeout(150000)) = 210s (3.5min).
+    # Real measured cost against the dev stack: ~5s + ~11.6s (~17s total)
+    # -- well under the declared ceiling, consistent with every other
+    # fault-injection spec in this job. Still comfortably inside the ~5.5min
+    # headroom Milestone ZZZ's own accounting already established.
     timeout-minutes: 70
     defaults:
       run:
@@ -432,6 +442,19 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/case-membership-access-grant.spec.ts
 
+      # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
+      # scenario 1 ("backend temporarily unreachable"). Pure
+      # page.route()-level network interception (`**/api/**` aborted) --
+      # no extra services/env needed beyond what login.spec.ts already
+      # requires, same reasoning as the RBAC specs above. Two real, already-
+      # shipped ErrorBanner surfaces confirmed live (CasesPage.tsx's
+      # mutation-error banner, DetectionsPage.tsx's query-error banner),
+      # plus a `page.on("pageerror")` assertion staying empty across both.
+      - name: "E2E: resilience-backend-unreachable"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/resilience-backend-unreachable.spec.ts
+
       # Milestone QQQ: real error/retry-path coverage (Milestone PPP's own
       # recommendation #1), test-stack profile only -- uses
       # TestStackFaultInjector (frontend/e2e/TestStackFaultInjector.ts),
@@ -492,6 +515,25 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/evidence-upload-heavy-parser-archive.spec.ts
+
+      # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
+      # scenario 2 ("SSE connection drop mid-upload"). Reuses the same real
+      # Windows prefetch fixture (and therefore the same celery-worker-plaso
+      # dependency) as evidence-upload-heavy-parser.spec.ts above -- placed
+      # after it in this job so no new service requirement is introduced by
+      # this step. Forces a real, deterministic drop of the one real SSE
+      # connection this spec's case ever opens (SseDropInjector.ts -- see
+      # its own docstring for two other approaches investigated live and
+      # rejected: context.setOffline() was confirmed NOT to error an
+      # already-open EventSource within any deterministic window, and the
+      # real 60s ticket-expiry path is already documented as too slow),
+      # then confirms recovery to Complete via useEvidenceSSE.ts's existing
+      # polling fallback -- not a page reload, not a new SSE connection
+      # (sseConnectionCount asserted == 1 for the whole test).
+      - name: "E2E: resilience-sse-drop"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/resilience-sse-drop.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation
