@@ -1,6 +1,33 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQQ.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_RRRR.md` for the latest
+cycle** — not another RBAC-boundary spec, a real product gap: `add_case_member`/
+`remove_case_member`/`delete_case` were all fully built, tested (every
+branch, both directions), and audited across Milestones CCCC–QQQQ, but
+every one of those specs drove the route via a raw `fetch()` — confirmed
+via `grep` that `CaseDetailPage.tsx` had **zero** member/delete/archive
+references. A real user has never had any UI to add a teammate, remove
+one, or archive a case. Also found: `CaseOut` never exposed `member_user_ids`
+at all, and case `status` was never surfaced anywhere in the frontend.
+Fixed: `CaseOut.memberUserIds` (new, additive), `Case.status`/`memberUserIds`
+(frontend type), new `CaseMembersSection`/`DeleteCaseSection` in the
+Settings tab (previously 100% org-admin-gated with no case-specific
+content at all), an "Archived" badge on the detail header. Manual
+Keycloak-user-id entry for Add is a deliberate scope decision — a
+case-lead has no org-user-listing access today
+(`GET /api/admin/users` is org-admin-only), and expanding that RBAC
+boundary is a separate design question. New `case-members-ui.spec.ts`/
+`case-delete-archive-ui.spec.ts` drive the real UI (not raw fetches);
+both passed on the first live run against a real, freshly rebuilt
+`docker-nginx-1` (`docker compose build nginx && up -d nginx` — a live
+browser check, not just `npm run build`, per CLAUDE.md's own
+UI-verification requirement). Also found the existing `a11y.spec.ts`
+case-detail scan never exercised the Settings tab at all — added a
+genuinely separate new scan for it (clean, no violations). Verified
+against the full 15-spec RBAC/membership/UI cluster (46.0s, no
+interference).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_QQQQ.md` for the prior
 cycle** — closes Milestone KKKK's own security finding: `add_case_member`
 took a caller-supplied `userId` with no existence/org check at all. Fixed
 by reusing the already-DI-wired `KeycloakAdminClient.is_org_member` (the
