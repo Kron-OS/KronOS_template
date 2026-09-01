@@ -57,13 +57,25 @@ export class CasesPage extends KronosPage {
   }
 
   /**
+   * Real `DELETE /api/cases/{id}` call, issued directly (no frontend UI
+   * drives this action yet, same reasoning as `attemptAddMember`) -- for
+   * `assert_case_lead_or_admin` RBAC coverage of the delete/archive route.
+   * Returns the real HTTP status; a success is a real `204 No Content`
+   * (`DeleteCase`'s own `status_code=status.HTTP_204_NO_CONTENT`), not a
+   * `CaseOut` body.
+   */
+  async attemptDeleteCase(caseId: string): Promise<number> {
+    return this.deleteWithStatus(`/api/cases/${caseId}`);
+  }
+
+  /**
    * Fresh, independent `GET /api/cases/{id}` (docs/PLAYWRIGHT_E2E_TEST_PLAN.md
    * §3.3's own "not trusted from the same page load" requirement) --
    * for a caller confirming a real membership grant's effect persisted
    * server-side, not just that the page that rendered it looked right.
    */
-  async fetchCaseById(caseId: string): Promise<{ id: string; title: string }> {
-    return this.fetchJson<{ id: string; title: string }>(`/api/cases/${caseId}`);
+  async fetchCaseById(caseId: string): Promise<{ id: string; title: string; status: string }> {
+    return this.fetchJson<{ id: string; title: string; status: string }>(`/api/cases/${caseId}`);
   }
 
   async headerText(): Promise<string> {

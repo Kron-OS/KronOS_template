@@ -76,6 +76,25 @@ export abstract class KronosPage {
   }
 
   /**
+   * Fresh, independent `DELETE <path>` using a freshly-fetched bearer
+   * token, returning the real HTTP status code -- same reasoning as
+   * `postJsonWithStatus`, for RBAC-denial/grant specs exercising a route
+   * with no frontend UI yet (e.g. case delete/archive has no button).
+   */
+  protected async deleteWithStatus(path: string): Promise<number> {
+    return this.page.evaluate(
+      async ({ path: p, token }) => {
+        const res = await fetch(p, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        return res.status;
+      },
+      { path, token: await this.getFreshAccessToken() },
+    );
+  }
+
+  /**
    * Polls `locator`'s own live text WITHOUT reloading the page -- what
    * actually proves a live push path (SSE, etc.) works, not just that a
    * value is eventually correct after a fresh GET. Generalizes the
