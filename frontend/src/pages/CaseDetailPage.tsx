@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { useParams } from '@tanstack/react-router'
+import { useParams, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getCase } from '../api/cases'
+import { getCase, addCaseMember, removeCaseMember, deleteCase } from '../api/cases'
 import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
 import { StatusPill } from '../components/StatusPill'
@@ -12,7 +12,7 @@ import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
 import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
-import type { Evidence, AuditEvent, SSEStatusEvent } from '../types'
+import type { Case, Evidence, AuditEvent, SSEStatusEvent } from '../types'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -306,9 +306,160 @@ function AuditLogTab({ caseId }: { caseId: string }) {
   )
 }
 
-function SettingsTab({ caseId }: { caseId: string }) {
+/**
+ * Case-lead-gated (assert_case_lead_or_admin) member management --
+ * add_case_member/remove_case_member (Gap Audit Milestones CCCC-QQQQ)
+ * were fully built, tested, and audited on the backend with no frontend
+ * UI ever reaching them until now (Milestone RRRR). Adding a member
+ * takes a raw Keycloak user id, not a name/email picker -- a case-lead
+ * has no org-user-listing access today (GET /api/admin/users is
+ * org-admin-only), so this deliberately matches what the API itself has
+ * always required rather than opening a new RBAC boundary as part of a
+ * UI pass. An org-admin can find a user's id on the Admin page.
+ */
+function CaseMembersSection({ caseId, memberUserIds }: { caseId: string; memberUserIds: string[] }) {
+  const queryClient = useQueryClient()
+  const [newMemberId, setNewMemberId] = useState('')
+
+  const addMutation = useMutation({
+    mutationFn: (userId: string) => addCaseMember(caseId, userId),
+    onSuccess: async () => {
+      setNewMemberId('')
+      await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+    },
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (userId: string) => removeCaseMember(caseId, userId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+    },
+  })
+
+  return (
+    <div className="mb-8 max-w-md">
+      <h3 className="mb-4 text-sm font-semibold text-gray-800 dark:text-gray-200">Case Members</h3>
+      {memberUserIds.length === 0 ? (
+        <p className="mb-3 text-sm text-gray-500">No members added yet.</p>
+      ) : (
+        <ul className="mb-4 divide-y divide-gray-200 rounded border border-gray-200 dark:divide-gray-800 dark:border-gray-800">
+          {memberUserIds.map((userId) => (
+            <li key={userId} className="flex items-center justify-between px-3 py-2 text-sm">
+              <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{userId}</span>
+              <button
+                type="button"
+                onClick={() => removeMutation.mutate(userId)}
+                disabled={removeMutation.isPending}
+                className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (newMemberId.trim()) addMutation.mutate(newMemberId.trim())
+        }}
+        className="flex items-center gap-2"
+      >
+        <label htmlFor={`add-member-${caseId}`} className="sr-only">
+          User ID to add
+        </label>
+        <input
+          id={`add-member-${caseId}`}
+          type="text"
+          value={newMemberId}
+          onChange={(e) => setNewMemberId(e.target.value)}
+          placeholder="Keycloak user ID (see Admin > Org Users)"
+          className="flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+        />
+        <button
+          type="submit"
+          disabled={addMutation.isPending || !newMemberId.trim()}
+          className="flex items-center gap-2 rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+        >
+          {addMutation.isPending && <Spinner size="sm" />}
+          Add
+        </button>
+      </form>
+      {addMutation.isError && <ErrorBanner message="Failed to add member." />}
+      {removeMutation.isError && <ErrorBanner message="Failed to remove member." />}
+    </div>
+  )
+}
+
+/** Case-lead-gated (assert_case_lead_or_admin) archive -- delete_case is a soft
+ * archive (CaseStatus.ARCHIVED), not a row deletion; evidence/audit history
+ * both survive it untouched. */
+function DeleteCaseSection({ caseId, status }: { caseId: string; status: Case['status'] }) {
+  const navigate = useNavigate()
+  const [confirming, setConfirming] = useState(false)
+  const mutation = useMutation({
+    mutationFn: () => deleteCase(caseId),
+    onSuccess: () => {
+      void navigate({ to: '/cases' })
+    },
+  })
+
+  if (status === 'archived') {
+    return (
+      <div className="mb-8 max-w-md">
+        <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">Case Status</h3>
+        <p className="text-sm text-gray-500">This case has been archived.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-8 max-w-md">
+      <h3 className="mb-2 text-sm font-semibold text-red-700 dark:text-red-400">Danger Zone</h3>
+      {!confirming ? (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="rounded border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+        >
+          Delete / Archive Case
+        </button>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            Are you sure? This archives the case; evidence and audit history are preserved.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending}
+              className="flex items-center gap-2 rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-60"
+            >
+              {mutation.isPending && <Spinner size="sm" />}
+              Confirm Delete
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="rounded px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+            >
+              Cancel
+            </button>
+          </div>
+          {mutation.isError && <ErrorBanner message="Failed to delete case." />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SettingsTab({ caseData }: { caseData: Case }) {
+  const caseId = caseData.id
   const user = useAuthStore((s) => s.user)
-  const isAdmin = user?.roles.includes('org-admin')
+  const isAdmin = user?.roles.includes('org-admin') ?? false
+  const isOwner = user?.userId === caseData.createdBy
+  const canManageCase = isAdmin || isOwner
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
@@ -325,19 +476,25 @@ function SettingsTab({ caseId }: { caseId: string }) {
     },
   })
 
-  if (!isAdmin) {
+  if (!canManageCase) {
     return (
       <p className="py-8 text-center text-sm text-gray-500">
-        Only org-admins can view settings.
+        Only this case's lead or an org-admin can manage its settings.
       </p>
     )
   }
 
-  if (isLoading) return <Spinner className="mx-auto mt-8" />
-
   return (
-    <div className="max-w-md">
-      <h3 className="mb-4 text-sm font-semibold text-gray-800 dark:text-gray-200">Retention Settings</h3>
+    <div>
+      <CaseMembersSection caseId={caseId} memberUserIds={caseData.memberUserIds} />
+      <DeleteCaseSection caseId={caseId} status={caseData.status} />
+      {isAdmin && (
+        <div className="max-w-md">
+          {isLoading ? (
+            <Spinner className="mt-4" />
+          ) : (
+            <>
+              <h3 className="mb-4 text-sm font-semibold text-gray-800 dark:text-gray-200">Retention Settings</h3>
       {data && (
         <form
           onSubmit={(e) => {
@@ -394,6 +551,10 @@ function SettingsTab({ caseId }: { caseId: string }) {
           )}
         </form>
       )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -433,7 +594,14 @@ export function CaseDetailPage() {
     <div>
       <div className="mb-6">
         <div className="flex items-start justify-between gap-2">
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">{caseData.title}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">{caseData.title}</h1>
+            {caseData.status === 'archived' && (
+              <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-400">
+                Archived
+              </span>
+            )}
+          </div>
           <span className="rounded bg-gray-200 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
             {caseData.reference}
           </span>
@@ -465,7 +633,7 @@ export function CaseDetailPage() {
       {activeTab === 'evidence' && <EvidenceTab caseId={caseId} />}
       {activeTab === 'timeline' && <TimelineTab caseId={caseId} />}
       {activeTab === 'auditlog' && <AuditLogTab caseId={caseId} />}
-      {activeTab === 'settings' && <SettingsTab caseId={caseId} />}
+      {activeTab === 'settings' && <SettingsTab caseData={caseData} />}
     </div>
   )
 }

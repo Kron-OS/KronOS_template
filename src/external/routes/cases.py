@@ -71,6 +71,14 @@ class CaseOut(BaseModel):
     updatedAt: str
     createdBy: str
     evidenceCount: int = 0
+    # Gap Audit Milestone RRRR: was silently absent -- every membership
+    # mutation (add_case_member/remove_case_member) already existed and
+    # was already tested, but no response DTO ever exposed the resulting
+    # member list, so no UI could ever be built to show it. Real Keycloak
+    # user ids, not resolved usernames -- resolving those needs a real
+    # Admin API round trip the frontend does per-row (out of scope for
+    # this DTO; the current UI shows raw ids, same as the API already did).
+    memberUserIds: list[str] = Field(default_factory=list)
 
 
 class PaginatedCases(BaseModel):
@@ -615,6 +623,7 @@ def _to_case_out(case: Case) -> CaseOut:
         createdAt=case.created_at.isoformat(),
         updatedAt=case.updated_at.isoformat(),
         createdBy=str(case.owner_user_id),
+        memberUserIds=[str(uid) for uid in case.member_user_ids],
     )
 
 

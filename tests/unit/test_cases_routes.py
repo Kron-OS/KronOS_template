@@ -150,6 +150,19 @@ class TestGetCase:
         resp = client.get(f"/api/cases/{uuid.uuid4()}")
         assert resp.status_code == 404
 
+    def test_get_case_includes_empty_member_list(self, cases_client):
+        client, _, _, _, _ = cases_client
+        created = client.post("/api/cases", json={"title": "No Members Yet"}).json()
+        assert created["memberUserIds"] == []
+
+    def test_get_case_includes_real_member_ids(self, cases_client):
+        client, _, _, _, _ = cases_client
+        created = client.post("/api/cases", json={"title": "Has Members"}).json()
+        member_id = str(uuid.uuid4())
+        client.post(f"/api/cases/{created['id']}/members", json={"userId": member_id})
+        resp = client.get(f"/api/cases/{created['id']}")
+        assert resp.json()["memberUserIds"] == [member_id]
+
 
 class TestDeleteCase:
     def test_delete_archives_case(self, cases_client):

@@ -270,6 +270,15 @@ jobs:
     # Milestone QQQQ: one new step (case-member-add-userid-validation, 1
     # test, no custom test.setTimeout). Real measured cost against the dev
     # stack: ~2.7s standalone. Negligible against the existing margin.
+    #
+    # Milestone RRRR: two new steps (case-members-ui, case-delete-archive-ui,
+    # 1 test each, no custom test.setTimeout). Real measured cost against
+    # the dev stack: both together took ~6.6s standalone, confirmed again
+    # inside a 15-spec RBAC/membership/UI regression run (46.0s total).
+    # Negligible against the existing margin. The a11y.spec.ts step above
+    # also gained one new test (Settings tab scan) -- no separate CI step
+    # needed, that whole file already runs as one step; real measured cost
+    # for all 7 a11y tests together: ~16.2s.
     timeout-minutes: 70
     defaults:
       run:
@@ -607,6 +616,31 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-member-add-userid-validation.spec.ts
+
+      # Gap Audit Milestone RRRR: real product gap found -- add_case_member/
+      # remove_case_member/delete_case had all been fully built, tested,
+      # and audited on the backend (Milestones CCCC-QQQQ) with ZERO
+      # frontend UI ever reaching them (confirmed via grep across
+      # CaseDetailPage.tsx before writing anything). CaseOut gained a real
+      # memberUserIds field (was silently absent); new "Case Members" and
+      # "Danger Zone" sections in the Settings tab. Manual Keycloak-user-id
+      # entry for Add (not a picker) is a deliberate scope decision -- a
+      # case-lead has no org-user-listing access today
+      # (GET /api/admin/users is org-admin-only), and expanding that RBAC
+      # boundary is a separate design question, not bundled into this UI
+      # pass. Verified in a real browser against the actual dev stack
+      # (docker-nginx-1 rebuilt from the new frontend bundle, not just
+      # `npm run build`'s local output) before being called done, per
+      # CLAUDE.md's own UI-verification requirement.
+      - name: "E2E: case-members-ui"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-members-ui.spec.ts
+
+      - name: "E2E: case-delete-archive-ui"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-delete-archive-ui.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure

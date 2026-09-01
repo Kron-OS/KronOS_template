@@ -21,16 +21,20 @@ export interface TenantContext {
   acr: 'aal1' | 'aal2'
 }
 
+export type CaseStatus = 'open' | 'closed' | 'archived'
+
 export interface Case {
   id: string
   title: string
   description: string
   reference: string
+  status: CaseStatus
   createdAt: string
   updatedAt: string
   createdBy: string
   orgId: string
   evidenceCount: number
+  memberUserIds: string[]
 }
 
 export interface Evidence {

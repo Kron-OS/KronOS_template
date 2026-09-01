@@ -162,4 +162,39 @@ export class CaseDetailPage extends KronosPage {
   async getAuditLogTotalText(): Promise<string> {
     return this.page.locator("text=/\\d+ total events/").innerText();
   }
+
+  /** Clicks the real "Settings" tab button (renders SettingsTab -- Milestone RRRR's new member/delete UI). */
+  async openSettingsTab(): Promise<void> {
+    await this.page.getByRole("button", { name: "Settings", exact: true }).click();
+  }
+
+  /** Real UI flow: fills the Members section's userId input and clicks Add (CaseMembersSection). */
+  async addMemberViaUI(userId: string): Promise<void> {
+    await this.page.getByPlaceholder("Keycloak user ID (see Admin > Org Users)").fill(userId);
+    await this.page.getByRole("button", { name: "Add", exact: true }).click();
+  }
+
+  /** Waits for *userId* to appear as a real member row in the Members list. */
+  async waitForMemberRow(userId: string, timeoutMs = 10000): Promise<void> {
+    await this.page.locator(`li:has-text("${userId}")`).waitFor({ timeout: timeoutMs });
+  }
+
+  /** Clicks the real per-row "Remove" button for *userId* (CaseMembersSection). */
+  async removeMemberViaUI(userId: string): Promise<void> {
+    await this.page
+      .locator(`li:has-text("${userId}")`)
+      .getByRole("button", { name: "Remove", exact: true })
+      .click();
+  }
+
+  /** Waits for *userId*'s member row to be gone (real removal reflected in the UI). */
+  async waitForMemberRowGone(userId: string, timeoutMs = 10000): Promise<void> {
+    await this.page.locator(`li:has-text("${userId}")`).waitFor({ state: "detached", timeout: timeoutMs });
+  }
+
+  /** Real UI flow: clicks "Delete / Archive Case" then "Confirm Delete" (DeleteCaseSection). */
+  async deleteCaseViaUI(): Promise<void> {
+    await this.page.getByRole("button", { name: "Delete / Archive Case", exact: true }).click();
+    await this.page.getByRole("button", { name: "Confirm Delete", exact: true }).click();
+  }
 }

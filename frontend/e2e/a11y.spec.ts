@@ -49,6 +49,22 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
     expect(results.violations, formatViolations(results)).toEqual([]);
   });
 
+  // Milestone RRRR: the case detail page's Settings tab gained real new
+  // interactive UI (Case Members form, Danger Zone) -- the test above only
+  // ever scans the default Evidence tab, so this is a genuinely separate
+  // scan, not redundant with it.
+  test("case detail page's Settings tab has no real WCAG violations", async ({
+    casesPageAsCaseLead,
+    page,
+  }) => {
+    const title = `E2E a11y settings case ${Date.now()}`;
+    const detail = await casesPageAsCaseLead.createCase(title, `E2E-A11Y-SETTINGS-${Date.now()}`);
+    await detail.waitUntilReady();
+    await detail.openSettingsTab();
+    const results = await scan(page);
+    expect(results.violations, formatViolations(results)).toEqual([]);
+  });
+
   test("detections page has no real WCAG violations", async ({ casesPageAsCaseLead, page }) => {
     // Seed a real detection first so the list renders real row content
     // (pills, tags, links), not just the empty-state copy -- a scan of an

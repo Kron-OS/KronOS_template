@@ -19,3 +19,17 @@ export async function createCase(data: {
   const res = await apiClient.post<Case>('/api/cases', data)
   return res.data
 }
+
+export async function addCaseMember(caseId: string, userId: string): Promise<Case> {
+  const res = await apiClient.post<Case>(`/api/cases/${caseId}/members`, { userId })
+  return res.data
+}
+
+export async function removeCaseMember(caseId: string, userId: string): Promise<Case> {
+  const res = await apiClient.delete<Case>(`/api/cases/${caseId}/members/${userId}`)
+  return res.data
+}
+
+export async function deleteCase(caseId: string): Promise<void> {
+  await apiClient.delete(`/api/cases/${caseId}`)
+}
