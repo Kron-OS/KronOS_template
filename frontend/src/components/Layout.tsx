@@ -56,8 +56,15 @@ export function Layout({ children }: LayoutProps) {
             {user && (
               <span className="text-gray-600 dark:text-gray-400">
                 {user.username}
+                {/* Milestone JJJJ: a real axe-core color-contrast (AA) failure --
+                    text-gray-400-on-white was 2.6:1, well under the 4.5:1
+                    minimum; text-gray-600-on-gray-900 (the old dark: value)
+                    was also under threshold (2.35:1). Swapped to match this
+                    file's own established light/dark muted-text convention
+                    (line 57 above), which passes both (7.56:1 light, 6.82:1
+                    dark). */}
                 {user.orgAlias && (
-                  <span className="ml-1 text-gray-400 dark:text-gray-600">/ {user.orgAlias}</span>
+                  <span className="ml-1 text-gray-600 dark:text-gray-400">/ {user.orgAlias}</span>
                 )}
               </span>
             )}

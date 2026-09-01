@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from src.adapter.repository.postgres_detection import PostgresDetectionRepository  # noqa: E402
 from src.application.risk_scoring import DetectionRiskScorer  # noqa: E402
-from src.domain.detection import Detection, DetectionRuleMatch  # noqa: E402
+from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState  # noqa: E402
 
 KEYCLOAK_REALM = "kronos"
 KEYCLOAK_ADMIN_CLIENT_ID = "kronos-backend"
@@ -79,7 +79,7 @@ def get_org_id(client: httpx.Client, token: str, alias: str) -> str:
     raise RuntimeError(f"org alias {alias} not found")
 
 
-async def seed(org_id: str, org_alias: str, rule_name: str) -> Detection:
+async def seed(org_id: str, org_alias: str, rule_name: str, triage_state: str = "NEW") -> Detection:
     engine = create_async_engine(POSTGRES_DSN)
     repo = PostgresDetectionRepository(engine)
     await PostgresDetectionRepository.create_tables(engine)
@@ -87,6 +87,14 @@ async def seed(org_id: str, org_alias: str, rule_name: str) -> Detection:
     scorer = DetectionRiskScorer()
     breakdown = scorer.score(rule_severity="critical", ioc_confidence=85, asset_criticality="high")
 
+    # `triage_state` defaults to NEW (Detection's own Pydantic default) --
+    # `repo.save()` is a plain initial insert, not a `with_triage_state()`
+    # FSM transition, so setting it directly here to seed a detection that
+    # already sits at a non-NEW state (e.g. for visual-regression coverage
+    # of every real TriageStatePill color, Milestone JJJJ) is not bypassing
+    # any real transition validation -- there is none to bypass at insert
+    # time, the same way a real detector sync could plausibly (if rarely)
+    # observe a detection already resolved elsewhere.
     detection = Detection(
         org_id=uuid.UUID(org_id),
         org_alias=org_alias,
@@ -104,6 +112,7 @@ async def seed(org_id: str, org_alias: str, rule_name: str) -> Detection:
         finding_timestamp=datetime.now(UTC),
         risk_score=breakdown.score,
         risk_factors=breakdown.factors,
+        triage_state=DetectionTriageState(triage_state),
     )
     saved = await repo.save(detection)
     await engine.dispose()
@@ -114,6 +123,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--org-alias", default="kronos-dev")
     parser.add_argument("--rule-name", default="E2E Suspicious Outbound Connection")
+    parser.add_argument(
+        "--triage-state",
+        default="NEW",
+        choices=[s.value for s in DetectionTriageState],
+        help="Seed the detection already at this triage state (Milestone JJJJ: visual-regression "
+        "coverage of every real TriageStatePill color needs detections at all 4 states, not just NEW).",
+    )
     args = parser.parse_args()
 
     with httpx.Client(timeout=15) as client:
@@ -121,8 +137,9 @@ def main() -> None:
         org_id = get_org_id(client, token, args.org_alias)
         log(f"resolved live org_id={org_id} for alias={args.org_alias}")
 
-    saved = asyncio.run(seed(org_id, args.org_alias, args.rule_name))
-    log(f"seeded real detection {saved.detection_id} org={saved.org_id} risk_score={saved.risk_score}")
+    saved = asyncio.run(seed(org_id, args.org_alias, args.rule_name, args.triage_state))
+    log(f"seeded real detection {saved.detection_id} org={saved.org_id} risk_score={saved.risk_score} "
+        f"triage_state={saved.triage_state}")
 
     print(json.dumps({"detectionId": str(saved.detection_id), "orgId": str(saved.org_id), "ruleName": args.rule_name}))
 

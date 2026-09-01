@@ -193,7 +193,11 @@ export function DetectionDetailPage() {
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">
                       {f.normalizedValue === null ? (
-                        <span className="text-gray-400 dark:text-gray-600">not present</span>
+                        // Milestone JJJJ: same real axe-core color-contrast (AA)
+                        // failure/fix as Layout.tsx's org-alias span -- swapped
+                        // to the light-600/dark-400 convention this file's own
+                        // sibling <td> classes already use two lines above.
+                        <span className="text-gray-600 dark:text-gray-400">not present</span>
                       ) : (
                         f.normalizedValue.toFixed(2)
                       )}

@@ -204,6 +204,14 @@ jobs:
     # -- well under the declared ceiling, consistent with every other
     # fault-injection spec in this job. Still comfortably inside the ~5.5min
     # headroom Milestone ZZZ's own accounting already established.
+    #
+    # Milestone JJJJ: one new step (E2E: a11y, 6 tests, no custom
+    # test.setTimeout -- bounded by Playwright's own 30s-per-test default,
+    # 180s worst case). Real measured cost against the dev stack: ~13s
+    # total (6 real page loads + axe-core scans + 2 real DetectionSeeder
+    # invocations). visual-regression-pills.spec.ts (this milestone's other
+    # new spec) is deliberately NOT wired into this job -- see that spec's
+    # own file docstring -- so it adds no CI time at all.
     timeout-minutes: 70
     defaults:
       run:
@@ -534,6 +542,38 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/resilience-sse-drop.spec.ts
+
+      # Gap Audit Milestone JJJJ: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.8's
+      # real, automated `@axe-core/playwright` WCAG scan (wcag2a/wcag2aa/
+      # wcag21a/wcag21aa) across all 6 real pages (login, cases, case
+      # detail, detections, detection detail, admin/org). CI-appropriate
+      # unlike this milestone's OTHER new spec (visual-regression-pills.spec.ts,
+      # deliberately NOT wired here -- see that spec's own file docstring
+      # and the milestone doc for the real font-rendering cross-environment
+      # risk that motivated leaving it local-only for now): a11y rule
+      # checks are DOM/ARIA/computed-CSS-color assertions, not pixel
+      # comparisons, so they carry none of that risk. Needs the same
+      # DetectionSeeder env vars as detection-triage above (this spec
+      # seeds real detections for the two detections-area scans) and a
+      # real login as the dev-seeded `admin` account for the last scan --
+      # `LoginPage.ts`'s `completeConfigureTotpIfPresented()` (new this
+      # milestone) transparently drives Keycloak's real one-time
+      # CONFIGURE_TOTP enrollment `admin` needs on a freshly-provisioned
+      # realm (confirmed live: this profile's `keycloak-init` imports the
+      # same `kronos-realm.json` as the dev stack, so `admin` needs this on
+      # every fresh CI stack too, not just once ever) -- no special-casing
+      # needed here as a result. Found and fixed two real WCAG AA
+      # color-contrast violations and one real `select-name` violation
+      # while building this spec against the dev stack -- see the
+      # milestone doc for detail.
+      - name: "E2E: a11y"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
+          KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/a11y.spec.ts
 
       - name: Upload Playwright report + traces on failure or cancellation
         # cancelled(), not just failure(): a timeout-minutes cancellation

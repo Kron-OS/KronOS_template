@@ -26,4 +26,28 @@ export class DetectionSeeder {
   seed(ruleName: string, orgAlias = process.env.KRONOS_E2E_SEED_ORG_ALIAS ?? "kronos-dev"): SeededDetection {
     return runPythonFixture<SeededDetection>(SEED_SCRIPT, ["--org-alias", orgAlias, "--rule-name", ruleName]);
   }
+
+  /**
+   * Milestone JJJJ: seeds a detection already sitting at a non-default
+   * triage state -- `seed_detection.py --triage-state` is a real insert via
+   * the real domain code, not a simulated FSM transition (see that
+   * script's own comment for why that's fine at insert time). Used by
+   * `visual-regression-pills.spec.ts` to get all 4 real `TriageStatePill`
+   * colors on screen without needing to click through the UI's own
+   * transition rules for every state.
+   */
+  seedAtTriageState(
+    ruleName: string,
+    triageState: "NEW" | "INVESTIGATING" | "TRUE_POSITIVE" | "FALSE_POSITIVE",
+    orgAlias = process.env.KRONOS_E2E_SEED_ORG_ALIAS ?? "kronos-dev",
+  ): SeededDetection {
+    return runPythonFixture<SeededDetection>(SEED_SCRIPT, [
+      "--org-alias",
+      orgAlias,
+      "--rule-name",
+      ruleName,
+      "--triage-state",
+      triageState,
+    ]);
+  }
 }

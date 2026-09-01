@@ -38,6 +38,22 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
+  // Milestone JJJJ (§3.8 visual regression, `visual-regression-pills.spec.ts`):
+  // a small per-pixel color tolerance + pixel-ratio budget, not zero-diff.
+  // These are tiny (badge-sized) element screenshots of flat Tailwind
+  // background/border/text colors -- not full pages -- so genuine
+  // sub-pixel anti-aliasing/font-hinting variance between two runs on the
+  // *same* environment is the only realistic source of noise this is
+  // meant to absorb; a real color-coding regression (a different Tailwind
+  // color class entirely) changes far more than 1% of pixels and still
+  // fails loudly. See that spec's own file docstring, and this repo's
+  // GAP_AUDIT_2026-08-28_MILESTONE_JJJJ.md, for why this suite does NOT
+  // assume these baselines are valid cross-environment (local host vs. a
+  // GitHub Actions runner's different default system font) -- that's
+  // exactly why the visual spec is not wired into CI this cycle.
+  expect: {
+    toHaveScreenshot: { maxDiffPixelRatio: 0.01 },
+  },
   projects: [
     {
       name: "chromium",

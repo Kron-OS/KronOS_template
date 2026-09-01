@@ -1,0 +1,7 @@
+mfa_path=setup
+new_secret=JB3US4TBJNBEO32BOJJTSZCEI5WGYMKG
+preferred_username=admin
+roles=['org-admin', 'offline_access', 'default-roles-kronos', 'uma_authorization']
+replogin_mfa_path=none
+replogin_new_secret=None
+OK: admin TOTP enrolled once; subsequent plain password logins need no OTP step.

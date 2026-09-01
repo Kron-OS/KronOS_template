@@ -234,9 +234,18 @@ function UserRow({ user }: { user: OrgUser }) {
         <td className="px-4 py-3 text-gray-800 dark:text-gray-200">{user.username}</td>
         <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{user.email}</td>
         <td className="px-4 py-3">
+          {/* Milestone JJJJ: a real axe-core `select-name` violation
+              (critical impact) -- this role select had no accessible name
+              at all (no <label>, no aria-label), so a screen-reader user
+              landing on it had no way to know what it controlled beyond
+              "combo box". `aria-label` (not a visible <label>, to avoid
+              disturbing this table's existing compact layout) names it
+              per-row using the real username already rendered in the
+              first <td>. */}
           <select
             value={user.roles[0] ?? 'read-only'}
             onChange={(e) => roleMutation.mutate(e.target.value as Role)}
+            aria-label={`Role for ${user.username}`}
             className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
           >
             {ROLES.map((r) => (
