@@ -266,6 +266,10 @@ jobs:
     # for both together standalone, confirmed again inside a 10-spec
     # RBAC-cluster run (30.1s total). Negligible against the existing
     # margin.
+    #
+    # Milestone QQQQ: one new step (case-member-add-userid-validation, 1
+    # test, no custom test.setTimeout). Real measured cost against the dev
+    # stack: ~2.7s standalone. Negligible against the existing margin.
     timeout-minutes: 70
     defaults:
       run:
@@ -581,6 +585,28 @@ jobs:
         env:
           KRONOS_E2E_PYTHON: "python3"
         run: npx playwright test e2e/case-member-removal-ownership-denial.spec.ts
+
+      # Gap Audit Milestone QQQQ: add_case_member (and, by the same
+      # is_org_member call, remove_case_member's own future callers) used
+      # to accept ANY UUID as body.userId with no existence/org check --
+      # named in Milestone KKKK's security assessment as a real,
+      # low-severity gap (low exploitability because CaseRepository.get_by_id
+      # is itself org-scoped, but still a real data-hygiene/feedback gap).
+      # Fixed by reusing the already-DI-wired KeycloakAdminClient.is_org_member
+      # (the same real Admin API check admin.py's own _assert_user_in_org
+      # already relies on) rather than inventing a second implementation.
+      # This is a real, live proof against the actual dev stack's real
+      # Keycloak, not just the mocked unit-test coverage
+      # (TestAddCaseMemberOrgValidation, tests/unit/test_cases_routes.py).
+      # A real, caught-live regression was fixed along the way:
+      # case-lead-ownership-access-grant.spec.ts's own placeholder UUID
+      # legitimately started failing once this landed -- fixed to use a
+      # real, in-org userId, same pattern case-membership-access-grant.spec.ts
+      # already established.
+      - name: "E2E: case-member-add-userid-validation"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-member-add-userid-validation.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure

@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.adapter.keycloak.admin_client import KeycloakAdminClient
 from src.adapter.opensearch.dashboards_client import (
     DashboardsIndexPatternProvisioner,
     case_index_pattern_id,
@@ -30,6 +31,7 @@ from src.external.dependencies import (
     get_detector_provisioner,
     get_evidence_repository,
     get_evidence_storage,
+    get_keycloak_admin_client,
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
@@ -242,17 +244,44 @@ async def add_case_member(
     tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    admin_client: Annotated[KeycloakAdminClient | None, Depends(get_keycloak_admin_client)],
 ) -> CaseOut:
     """Assign a user as a member of a case (AUTH-007).
 
     Per the §1 permission matrix ("Assign members": org-admin all, case-lead
     of case only), a case-lead may only assign members to a case they lead —
     enforced via ``assert_case_lead_or_admin``.
+
+    Gap Audit Milestone QQQQ: ``body.userId`` is now validated against the
+    caller's own org before being accepted — previously any UUID was
+    accepted with no existence/org check at all (a real, low-severity gap
+    named in Milestone KKKK's security assessment; low exploitability
+    because ``CaseRepository.get_by_id`` is itself org-scoped, so a
+    member id belonging to a different org's user still can't reach this
+    case through that org's own query path, but an unvalidated id could
+    still add dead/garbage membership rows with no feedback to the
+    caller). Reuses the already-DI-wired ``KeycloakAdminClient.is_org_member``
+    (the same real Admin API check ``admin.py``'s own ``_assert_user_in_org``
+    already relies on for its own, route-local org-scoping guard) rather
+    than inventing a second implementation. Honestly skipped (not silently
+    bypassed — see the module-level dependency's own "None means not
+    configured" contract) when no ``KeycloakAdminClient`` is configured,
+    matching every other optional-Keycloak-Admin-API feature in this
+    codebase (e.g. ``get_revoke_keycloak_session_action``).
     """
     case = await case_repo.get_by_id(case_id, tenant.org_id)
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     assert_case_lead_or_admin(tenant, case)
+
+    target_is_org_member = (
+        admin_client is None or await admin_client.is_org_member(tenant.org_id, body.userId)
+    )
+    if not target_is_org_member:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Target user is not a member of your organization",
+        )
 
     updated = await case_repo.update(case.with_member(body.userId))
     await audit_svc.log(

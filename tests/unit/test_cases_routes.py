@@ -11,6 +11,11 @@ from typing import TypeVar
 import pytest
 from fastapi.testclient import TestClient
 
+from src.adapter.keycloak.admin_client import (
+    KeycloakAdminClient,
+    KeycloakOrganization,
+    KeycloakSession,
+)
 from src.adapter.repository.case_repository import InMemoryCaseRepository
 from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.audit_log import AuditLogService
@@ -22,11 +27,37 @@ from src.external.dependencies import (
     get_case_repository,
     get_evidence_repository,
     get_evidence_storage,
+    get_keycloak_admin_client,
     get_opensearch_dashboards_url,
     get_tenant_context,
 )
 from src.external.fastapi_app import create_app
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
+
+
+class FakeKeycloakAdminClient(KeycloakAdminClient):
+    """Minimal fake for Milestone QQQQ's ``is_org_member`` validation --
+    mocks the external Keycloak dependency (CLAUDE.md §B.5), not a domain
+    object. Only ``is_org_member`` is meaningfully implemented; the other
+    abstract methods aren't reachable from `add_case_member`."""
+
+    def __init__(self, *, org_members: set[uuid.UUID]) -> None:
+        self._org_members = org_members
+
+    async def list_user_sessions(self, user_id: uuid.UUID) -> tuple[KeycloakSession, ...]:
+        raise NotImplementedError
+
+    async def revoke_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    async def is_org_member(self, org_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        return user_id in self._org_members
+
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        raise NotImplementedError
+
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        raise NotImplementedError
 
 
 @pytest.fixture
@@ -132,6 +163,61 @@ class TestDeleteCase:
         client, _, _, _, _ = cases_client
         resp = client.delete(f"/api/cases/{uuid.uuid4()}")
         assert resp.status_code == 404
+
+
+class TestAddCaseMemberOrgValidation:
+    """Milestone QQQQ: add_case_member now validates body.userId against
+    the caller's own org via KeycloakAdminClient.is_org_member when one is
+    configured. cases_client (above) leaves get_keycloak_admin_client at
+    its default None, exercising the "honestly skipped" path already --
+    these tests exercise the CONFIGURED path, both branches."""
+
+    def _client_with_admin(self, *, org_members: set[uuid.UUID]):
+        case_repo = InMemoryCaseRepository()
+        audit_repo = InMemoryAuditLogRepository()
+        audit_svc = AuditLogService(audit_repo)
+        fixed_org = uuid.uuid4()
+        fixed_user = uuid.uuid4()
+
+        def _admin_tenant() -> TenantContext:
+            return TenantContext(
+                org_id=fixed_org,
+                org_alias="testorg",
+                user_id=fixed_user,
+                username="admin",
+                roles=frozenset({Role.ORG_ADMIN}),
+                correlation_id=str(uuid.uuid4()),
+                acr="aal2",
+            )
+
+        app = create_app()
+        app.dependency_overrides[get_tenant_context] = _admin_tenant
+        app.dependency_overrides[get_case_repository] = lambda: case_repo
+        app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
+        app.dependency_overrides[get_keycloak_admin_client] = lambda: FakeKeycloakAdminClient(
+            org_members=org_members
+        )
+        return TestClient(app), case_repo, fixed_org
+
+    def test_rejects_userid_not_in_caller_org(self):
+        client, _, _ = self._client_with_admin(org_members=set())
+        created = client.post("/api/cases", json={"title": "Validated Case"}).json()
+        resp = client.post(
+            f"/api/cases/{created['id']}/members", json={"userId": str(uuid.uuid4())}
+        )
+        assert resp.status_code == 403
+        assert "not a member of your organization" in resp.json()["detail"]
+
+    def test_accepts_userid_confirmed_in_caller_org(self):
+        real_member_id = uuid.uuid4()
+        client, repo, org_id = self._client_with_admin(org_members={real_member_id})
+        created = client.post("/api/cases", json={"title": "Validated Case 2"}).json()
+        resp = client.post(
+            f"/api/cases/{created['id']}/members", json={"userId": str(real_member_id)}
+        )
+        assert resp.status_code == 200
+        stored = asyncio.run(repo.get_by_id(uuid.UUID(created["id"]), org_id))
+        assert real_member_id in stored.member_user_ids
 
 
 class TestRemoveCaseMember:
