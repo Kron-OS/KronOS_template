@@ -1,6 +1,23 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNNN.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_OOOO.md` for the latest
+cycle** — closes Milestone KKKK/NNNN's own named feature gap: case
+membership was add-only, `DELETE /api/cases/{id}/members/{user_id}` did
+not exist at all. New `Case.without_member()` (domain), `remove_case_member`
+route (mirrors `add_case_member`'s `assert_case_lead_or_admin` gating,
+`CASE_UPDATED` audit event, and idempotent-on-non-member semantics). New
+`case-member-removal-revokes-access.spec.ts` proves the full real
+lifecycle (grant → real access → removal → access genuinely revoked in a
+fresh session, not just that `DELETE` returns `200`) and
+`case-member-removal-ownership-denial.spec.ts` is the DENY-branch mirror
+of `case-lead-ownership-access-denial.spec.ts` for the new route. 5 new
+backend unit tests (domain + route), all passing. Wired into CI; verified
+live standalone (8.3s) and inside a 10-spec RBAC-cluster run (30.1s, no
+interference). Closes both coverage/feature gaps Milestone KKKK's
+coverage-gap assessment surfaced (mid-session role change closed by
+Milestone NNNN, member removal closed here).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNNN.md` for the prior
 cycle** — closes Milestone KKKK's own coverage-gap finding: no spec had
 ever covered a role changing mid-session. Answered the real design
 question first (`keycloak_auth.py`/`keycloak.ts`, not guessed): role auth
