@@ -1,6 +1,23 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJJ.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_KKKK.md` for the latest
+cycle** — not a new-spec milestone, a multi-scenario assessment cycle
+(security / CI-reliability / coverage-gap, run via lighter `haiku`
+subagents per the project owner's instruction, decisions retained by the
+supervising agent) reviewing Milestones CCCC–JJJJ. No auth-bypass/
+privilege-escalation/cross-tenant findings. Fixed a real HIGH CI-reliability
+finding (`timeout-minutes: 70`'s build-step inventory undercounted —
+`keycloak-init`'s own Dockerfile was never itemized). Empirically
+dismissed a MEDIUM claim (TOTP-check per-login latency) after a live timed
+run (`e2e/login.spec.ts`: 2.7s) showed no real cost. Re-confirmed the
+intake-retry test-stack twin is still blocked by real, re-measured host
+memory (both this cycle's CI-reliability and coverage-gap assessments
+independently named it the top remaining item). `docs/PRODUCT_STATUS_AND_V2_PREVIEW.md`
+independently re-checked, no inaccuracies found. Two new gaps named for a
+future cycle: mid-session role-change coverage, and case-member removal
+(no `DELETE /cases/{id}/members/{user_id}` endpoint exists at all).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJJ.md` for the prior
 cycle** — closes §3.8 (accessibility & visual regression), the last item
 in §3's scenario catalogue. New `frontend/e2e/a11y.spec.ts`: a real,
 automated `@axe-core/playwright` (`^4.13.0`) WCAG scan (wcag2a/wcag2aa/
