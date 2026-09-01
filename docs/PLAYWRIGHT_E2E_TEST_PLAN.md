@@ -1,6 +1,34 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_FFFF.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_HHHH.md` for the latest
+cycle** — closes §3.6 (dashboards embed): the one open question
+`poc/dashboards_embed/README.md` flagged as needing "a live browser to
+observe" and never got, per its own text (a follow-on PoC,
+`poc/dashboards_embed/autoload_verification/`, later answered it by hand
+with a one-off script and a screenshot, but that was never promoted into
+the maintained suite). New `frontend/e2e/dashboards-embed.spec.ts`: real
+login → real case → real `system.evtx` upload to `Complete` → clicks the
+real "Timeline" tab → asserts on genuine content **inside** the real
+Dashboards iframe via `page.frameLocator()` (the case-scoped filter pill
+text, a real non-zero hit count, no tenant dialog) — not just that an
+`<iframe>` element exists in the DOM. The first real run against the live
+dev stack found a real, previously-unknown, previously-silent bug:
+`get_dashboard_url()`'s embed URL hardcoded a `now-30d` default time
+range, but every real fixture this repo ships (`system.evtx` is real
+2015 data, confirmed by parsing it directly — every other real fixture is
+2016-2022) predates that window by years, so every real case's Timeline
+tab silently showed an empty chart by default. Fixed in
+`src/external/routes/cases.py` (`g_state` now floors at a fixed
+`2000-01-01`); verified in both directions — reverting just that one line
+back to `now-30d` reproduces the exact real timeout the fix resolves, not
+a hypothetical. Deliberately **not** wired into
+`security-integration-tests.yml`: `docker-compose.test.yml`'s own
+`opensearch-dashboards` service is an already-documented `nginx:alpine`
+DNS-only stub with no real Dashboards content to assert on — see the
+milestone doc for the full account and what closing that gap for real
+would take.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_FFFF.md` for the prior
 cycle** — closes the gap named since Milestone QQQ/TTT: real, deterministic
 E2E coverage of a dependency failing *during the intake stage* (after
 `finalize_upload`, before `process_intake` completes). QQQ investigated
@@ -977,8 +1005,11 @@ recommendation for adding them incrementally.
    closes item 4 completely.
 5. §3.4 admin/org-settings — sequenced after real settings persistence
    ships (see the note in §3.4).
-6. §3.6 dashboards embed, §3.7 resilience, §3.8 a11y/visual — lower
-   urgency, pick up opportunistically.
+6. **[DONE 2026-09-01, Milestone HHHH]** §3.6 dashboards embed — see the
+   top pointer above for the full account (real bug found and fixed:
+   `now-30d` default time range hid every real case's data). §3.7
+   resilience, §3.8 a11y/visual remain — lower urgency, pick up
+   opportunistically.
 7. §4's CI-wiring prerequisite can be tackled in parallel with 1-3 (it's a
    disjoint infra surface) so the suite isn't blocked waiting on it to
    start being written, only on it to start running unattended.
