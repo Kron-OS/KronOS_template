@@ -1,6 +1,44 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_IIII.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_JJJJ.md` for the latest
+cycle** — closes §3.8 (accessibility & visual regression), the last item
+in §3's scenario catalogue. New `frontend/e2e/a11y.spec.ts`: a real,
+automated `@axe-core/playwright` (`^4.13.0`) WCAG scan (wcag2a/wcag2aa/
+wcag21a/wcag21aa) across all 6 real pages (`LoginPage`/`CasesPage`/
+`CaseDetailPage`/`DetectionsPage`/`DetectionDetailPage`/`AdminPage`,
+cross-checked against `App.tsx`'s real route tree, not guessed). Found and
+fixed 3 real violations: two WCAG-AA color-contrast failures
+(`Layout.tsx`'s org-alias span, `DetectionDetailPage.tsx`'s "not present"
+placeholder — both `text-gray-400`-on-light measuring 2.5-2.6:1 against a
+4.5:1 minimum, fixed by swapping to each file's own existing
+`text-gray-600 dark:text-gray-400` convention) and one critical
+`select-name` violation (`AdminPage.tsx`'s 4 per-row role `<select>`s had
+no accessible name at all, fixed with a real per-row `aria-label`). Along
+the way, found the dev-seeded `admin` account (the only `Role.ORG_ADMIN`
+user) had never completed Keycloak's real `CONFIGURE_TOTP` enrollment,
+and — since `docker-compose.test.yml`'s CI profile provisions the same
+realm fresh every run — built a real, general, CI-portable fix rather than
+a one-off: `frontend/e2e/totp.ts` (RFC 6238 TOTP, Node `crypto` only) +
+`LoginPage.ts`'s new `completeConfigureTotpIfPresented()`, verified
+end-to-end twice with disposable throwaway accounts. New
+`frontend/e2e/visual-regression-pills.spec.ts`: real `toHaveScreenshot()`
+on the `StatusPill`/`TriageStatePill` elements themselves (not full-page)
+— all 4 real `TriageStatePill` states (via a new
+`DetectionSeeder.seedAtTriageState()`) and 2 of 9 `StatusPill` states
+(`Complete`, `Error` — the other 7 are a documented scope decision, not an
+oversight; see the milestone doc). Proved the assertion load-bearing both
+directions: a real injected color-class change (38 pixels, 4% diff) fails
+it; reverting passes it again. `a11y.spec.ts` is wired into
+`security-integration-tests.yml`'s `frontend-e2e-smoke` job (a11y checks
+are DOM/ARIA/computed-CSS assertions, environment-independent);
+`visual-regression-pills.spec.ts` is deliberately **not** wired in this
+cycle — a real, reasoned font-rendering cross-environment risk (Tailwind's
+default font stack depends on the host OS's installed system font, and no
+workflow in this repo has ever actually run on GitHub's own
+infrastructure yet to validate against, per Milestone RRR), not an
+assumption that local success transfers to CI.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_IIII.md` for the prior
 cycle** — closes §3.7 (resilience/error states), both named scenarios.
 Investigated the real frontend error-handling code (`src/api/client.ts`'s
 axios interceptor, `CasesPage.tsx`/`DetectionsPage.tsx`'s existing
