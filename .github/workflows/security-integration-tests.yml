@@ -252,6 +252,13 @@ jobs:
     # of the RBAC cluster: ~21.8s total for all 7 specs in that cluster
     # (this pair's own share is a small fraction of that). Negligible
     # against the existing margin.
+    #
+    # Milestone NNNN: one new step (role-change-mid-session, 1 test,
+    # test.setTimeout(60000) -- 3 case creations + 2 client-side navs + a
+    # real reload + a denied attempt, still a small worst-case ceiling
+    # against this job's own margin). Real measured cost against the dev
+    # stack: ~3.8s standalone, confirmed again inside a 6-spec RBAC-cluster
+    # run (14.9s total). Negligible against the existing margin.
     timeout-minutes: 70
     defaults:
       run:
@@ -525,6 +532,25 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-delete-ownership-grant.spec.ts
+
+      # Gap Audit Milestone NNNN: closes Milestone KKKK's own coverage-gap
+      # finding -- no spec had ever covered a role changing mid-session.
+      # Answered the real design question first by reading
+      # keycloak_auth.py/keycloak.ts (role auth is 100% stateless JWT
+      # claims, no per-request re-check; the frontend's own token store
+      # only refreshes reactively on 401 or a real page reload) rather
+      # than guessing, then verified it live. Reuses SecondCaseLeadSeeder
+      # (gained a real userId field this cycle) + new UserRoleUpdater
+      # (Admin API realm-role swap on an EXISTING user, unlike every other
+      # seed_*.py which provisions a fresh one). Two real, found-live test
+      # bugs fixed along the way before landing on the final assertion
+      # shape -- see the spec's own docstring.
+      - name: "E2E: role-change-mid-session"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_PYTHON: "python3"
+        run: npx playwright test e2e/role-change-mid-session.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure

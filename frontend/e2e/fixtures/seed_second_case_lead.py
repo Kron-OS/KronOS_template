@@ -180,7 +180,12 @@ def main() -> None:
         assign_realm_role(client, token, user_id, "case-lead")
         log(f"user {username} is now a real case-lead member of org {args.org_alias}")
 
-    print(json.dumps({"orgAlias": args.org_alias, "username": username, "password": password}))
+    print(json.dumps({
+        "orgAlias": args.org_alias,
+        "username": username,
+        "password": password,
+        "userId": user_id,
+    }))
 
 
 if __name__ == "__main__":
