@@ -1,6 +1,26 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMMM.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_NNNN.md` for the latest
+cycle** — closes Milestone KKKK's own coverage-gap finding: no spec had
+ever covered a role changing mid-session. Answered the real design
+question first (`keycloak_auth.py`/`keycloak.ts`, not guessed): role auth
+is 100% stateless JWT claims with no per-request re-check, and the
+frontend's own token store only refreshes reactively on a `401` or a real
+page reload — so a role change takes effect on the session's next
+refresh, not instantly. New `role-change-mid-session.spec.ts` (+ new
+`UserRoleUpdater`/`update_user_realm_role.py`, a real Admin API realm-role
+swap on an *existing*, already-logged-in user — unlike every other
+`seed_*` fixture, which provisions a fresh account) verifies this live:
+demotes a seeded case-lead mid-session, confirms a direct token refresh
+already reflects the new role (proving Keycloak 26.2's real behavior, not
+assumed), confirms the SAME session still creates a case successfully
+*without* a reload (the real "not instant" proof), then confirms a real
+reload closes it. Two real, found-live test bugs fixed along the way
+before landing on this shape — see the spec's own docstring. Wired into
+CI; verified live standalone (3.8s) and inside a 6-spec RBAC-cluster run
+(14.9s, no interference).
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_MMMM.md` for the prior
 cycle** — closes Milestone LLLL's own recommendation: `delete_case`
 (`src/external/routes/cases.py`) was the one remaining call site of
 `assert_case_lead_or_admin` with zero E2E coverage on either branch. New
