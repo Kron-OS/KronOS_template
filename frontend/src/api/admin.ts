@@ -1,5 +1,5 @@
 import apiClient from './client'
-import type { OrgUser, OrgSettings, Role, InviteUserInput, InviteUserResult } from '../types'
+import type { OrgUser, OrgSettings, OrgQuota, Role, InviteUserInput, InviteUserResult } from '../types'
 
 export async function getOrgUsers(): Promise<OrgUser[]> {
   const res = await apiClient.get<{ items: OrgUser[]; total: number }>('/api/admin/org/users')
@@ -27,5 +27,17 @@ export async function getOrgSettings(): Promise<OrgSettings> {
 
 export async function updateOrgSettings(settings: Partial<OrgSettings>): Promise<OrgSettings> {
   const res = await apiClient.patch<OrgSettings>('/api/admin/org/settings', settings)
+  return res.data
+}
+
+export async function getOrgQuota(): Promise<OrgQuota> {
+  const res = await apiClient.get<OrgQuota>('/api/admin/org/quota')
+  return res.data
+}
+
+/** `storageQuotaBytes: null` clears the quota (unlimited) -- a real, valid
+ * value per UpdateQuotaIn's own docstring, not "field omitted". */
+export async function updateOrgQuota(storageQuotaBytes: number | null): Promise<OrgQuota> {
+  const res = await apiClient.patch<OrgQuota>('/api/admin/org/quota', { storageQuotaBytes })
   return res.data
 }

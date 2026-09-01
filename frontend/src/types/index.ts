@@ -108,6 +108,12 @@ export interface OrgSettings {
   legalHoldDefault: boolean
 }
 
+export interface OrgQuota {
+  storageQuotaBytes: number | null
+  currentUsageBytes: number
+  updatedAt: string | null
+}
+
 export interface SSETicket {
   ticket: string
   expiresIn: number

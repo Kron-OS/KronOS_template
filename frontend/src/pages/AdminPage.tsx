@@ -1,13 +1,118 @@
 import { useState } from 'react'
 import axios from 'axios'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getOrgUsers, inviteUser, updateUserRole, removeUser } from '../api/admin'
+import { getOrgUsers, inviteUser, updateUserRole, removeUser, getOrgQuota, updateOrgQuota } from '../api/admin'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { Role, OrgUser, InviteUserInput } from '../types'
 
 const ROLES: Role[] = ['org-admin', 'case-lead', 'analyst', 'read-only']
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`
+}
+
+/**
+ * `GET`/`PATCH /api/admin/org/quota` (`src/external/routes/admin.py`,
+ * `docs/TENANT_USAGE_QUOTA.md`) had zero frontend UI before this --
+ * confirmed via `grep -rn "Quota\|quota" frontend/src/pages/*.tsx` before
+ * writing this. Setting a quota is `_assert_aal2`-gated (step-up MFA),
+ * same as `updateUserRole`/`inviteUser` above -- `apiClient`'s own global
+ * axios interceptor (`api/client.ts`) already transparently handles the
+ * real `401` + `WWW-Authenticate: ...acr_values="aal2"` challenge for
+ * every request through it, so this reuses that proven path rather than
+ * building any new step-up handling.
+ */
+function QuotaSection() {
+  const queryClient = useQueryClient()
+  const [gbInput, setGbInput] = useState('')
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['orgQuota'],
+    queryFn: getOrgQuota,
+    staleTime: 30_000,
+  })
+
+  const mutation = useMutation({
+    mutationFn: (storageQuotaBytes: number | null) => updateOrgQuota(storageQuotaBytes),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData(['orgQuota'], updated)
+      setGbInput('')
+    },
+  })
+
+  if (isLoading) return <Spinner className="mt-4" />
+  if (error || !data) return <ErrorBanner message="Failed to load storage quota." />
+
+  const percentUsed =
+    data.storageQuotaBytes && data.storageQuotaBytes > 0
+      ? Math.min(100, Math.round((data.currentUsageBytes / data.storageQuotaBytes) * 100))
+      : null
+
+  return (
+    <div className="mb-8 max-w-md">
+      <h3 className="mb-3 text-sm font-semibold text-gray-800 dark:text-gray-200">Storage Quota</h3>
+      <p className="mb-1 text-sm text-gray-700 dark:text-gray-300">
+        {formatBytes(data.currentUsageBytes)} used
+        {data.storageQuotaBytes !== null && <> of {formatBytes(data.storageQuotaBytes)}</>}
+        {data.storageQuotaBytes === null && <span className="text-gray-500"> (unlimited)</span>}
+      </p>
+      {percentUsed !== null && (
+        <div className="mb-4 h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-800">
+          <div
+            className={`h-full ${percentUsed >= 90 ? 'bg-red-600' : 'bg-indigo-600'}`}
+            style={{ width: `${percentUsed}%` }}
+          />
+        </div>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          const gb = Number(gbInput)
+          if (gb > 0) mutation.mutate(Math.round(gb * 1024 * 1024 * 1024))
+        }}
+        className="flex items-center gap-2"
+      >
+        <label htmlFor="quota-gb-input" className="sr-only">
+          New quota (GB)
+        </label>
+        <input
+          id="quota-gb-input"
+          type="number"
+          min={1}
+          step="any"
+          value={gbInput}
+          onChange={(e) => setGbInput(e.target.value)}
+          placeholder="New limit (GB)"
+          className="w-40 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+        />
+        <button
+          type="submit"
+          disabled={mutation.isPending || !(Number(gbInput) > 0)}
+          className="flex items-center gap-2 rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+        >
+          {mutation.isPending && <Spinner size="sm" />}
+          Save
+        </button>
+        {data.storageQuotaBytes !== null && (
+          <button
+            type="button"
+            onClick={() => mutation.mutate(null)}
+            disabled={mutation.isPending}
+            className="rounded px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800"
+          >
+            Clear (unlimited)
+          </button>
+        )}
+      </form>
+      {mutation.isError && <ErrorBanner message="Failed to update storage quota." />}
+    </div>
+  )
+}
 
 const MIN_PASSWORD_LENGTH = 12
 
@@ -301,6 +406,8 @@ export function AdminPage() {
           Create User
         </button>
       </div>
+
+      <QuotaSection />
 
       {isLoading && <div className="flex justify-center py-12"><Spinner size="lg" /></div>}
       {error && <ErrorBanner message="Failed to load users." />}

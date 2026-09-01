@@ -284,6 +284,16 @@ jobs:
     # existing assertions rather than adding a new one -- a real,
     # found-live cache-invalidation bug, not a new scenario). No change to
     # this number's real margin.
+    #
+    # Milestone TTTT: one new step (admin-quota-ui, 1 test). Unlike every
+    # other step so far, its own real, demonstrated worst case is a full
+    # ~30s TOTP-window wait inside a bounded retry (completeStepUpReauth's
+    # own real fix for a demonstrated flakiness cause -- see the step's
+    # own comment above), not just Playwright's 30s per-test default.
+    # test.setTimeout(90000) reflects that explicitly. Real measured cost
+    # across 4 repeated live runs: 7.3s/11.8s/28.6s/28.6s (the last two
+    # took the retry path and still passed) -- still comfortably inside
+    # this job's own margin even at the worst observed case.
     timeout-minutes: 70
     defaults:
       run:
@@ -646,6 +656,32 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-delete-archive-ui.spec.ts
+
+      # Gap Audit Milestone TTTT: same pattern as RRRR -- GET/PATCH
+      # /api/admin/org/quota (docs/TENANT_USAGE_QUOTA.md) had zero
+      # frontend UI (confirmed via grep across frontend/src/pages/*.tsx
+      # before writing anything). New QuotaSection (AdminPage.tsx). This
+      # is also the FIRST spec in this whole suite to drive a real
+      # step-up (_assert_aal2) re-auth through a real browser (confirmed
+      # via grep across frontend/e2e/*.spec.ts -- inviteUser/updateUserRole
+      # share this same gating but neither had ever been UI-tested
+      # either). A real, live investigation found the redirect-based
+      # step-up abandons the original in-flight mutation and the form's
+      # own local React state (a full page navigation, not an in-page
+      # refresh) -- the user must retry the action after returning; a
+      # real, pre-existing UX rough edge affecting all three step-up
+      # actions equally, named rather than silently worked around, not
+      # fixed in this pass. Also found and fixed real TOTP-timing
+      # flakiness in the test's own step-up helper (not the app): a fixed
+      # short retry wait usually doesn't cross the real 30s TOTP window,
+      # producing an identical (and Keycloak-replay-rejected) code:
+      # completeStepUpReauth now waits out the actual remaining window
+      # time before retrying, confirmed live across repeated runs
+      # including the retry path itself succeeding.
+      - name: "E2E: admin-quota-ui"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/admin-quota-ui.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure
