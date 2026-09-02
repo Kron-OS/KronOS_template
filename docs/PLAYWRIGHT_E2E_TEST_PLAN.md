@@ -1,6 +1,26 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAAA.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBBB.md` for the latest
+cycle** — the project owner's chosen follow-up to AAAAA: Detections tab
+filtering (severity + free-text, real backend query params over the org's
+full detection history) and "why did this rule trigger" (the real
+compiled SA query DSL string per matched rule, plus the real matched
+OpenSearch document content via a new `GET /{id}/matched-events` route
+reusing `AbstractTimelineIndex.get_documents_by_id`). New
+`detection-filtering.spec.ts`/`detection-why-triggered.spec.ts`;
+`seed_detection.py` now also indexes one real OpenSearch document per
+seeded detection (previously Postgres-only), gated behind a real
+`OpenSearchClient` call, not a hand-rolled HTTP PUT. Also folds in a real
+user-reported bug fixed the same cycle: a real memory dump (`ch2.dmp`)
+that finished processing with zero recoverable artifacts (volatility3
+genuinely can't identify this sample's OS/kernel structures) showed the
+same generic "Upload a memory dump" empty state as a case with nothing
+uploaded at all — fixed with an honest, evidence-state-aware empty state,
+plus a real, separately-found worker bug (`kronos-volatility-worker.py`'s
+fallback plugin was never attempted when the primary plugin's own exit
+code was non-zero, only when it exited 0 with empty rows). Wired into CI.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAAA.md` for the prior
 cycle** — scenario 4 of a Volatility-memory-forensics UI design
 conversation (project owner's explicit choice): a dedicated case-level
 Artifacts tab (kind-aware rendering — a real tree for `volatility.pstree`,
