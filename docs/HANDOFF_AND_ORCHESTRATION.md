@@ -77,10 +77,18 @@ changes rather than letting it go stale.
 
 8. **`evidence-intake-retry.spec.ts`'s test-stack-profile twin never run
    against a real isolated stack** — blocked on host memory every single
-   time it's been checked this session (most recently: 307Mi free, 2.9Gi
-   swapped, dev stack alone ~2.9-5GB). Re-check `free -h` before assuming
-   this is still blocked; it may become feasible on a host with more
-   headroom, or if the dev stack is temporarily stopped first.
+   time it's been checked (most recently 2026-09-02: 791Mi free, 2.6Gi
+   available, 2.5Gi swapped, dev stack alone ~2.9-5GB) — somewhat better
+   than the previous 307Mi-free reading but still tight enough that
+   spinning up a second full isolated stack (`docker-compose.test.yml`)
+   alongside the already-running dev stack risks destabilizing this
+   shared host (CLAUDE.md's own caution about not disrupting things this
+   agent didn't start). Re-check `free -h` before assuming this is still
+   blocked; genuinely feasible options are a host with more headroom, or
+   deliberately stopping the dev stack first (a bigger, disruptive action
+   — needs the project owner's go-ahead, not an agent's unilateral call,
+   since it interrupts every other live-verification capability this
+   initiative depends on).
 9. **No workflow in this repo has ever executed on GitHub's own
    infrastructure** — every CI job is real and locally verified, but
    GitHub only evaluates `schedule:`/`push`/`pull_request` triggers from
