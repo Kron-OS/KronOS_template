@@ -34,10 +34,13 @@ class TestPlasoParser:
         magic = b"SQLite format 3\x00"
         assert parser.supports("srum.db", "application/octet-stream", magic)
 
-    def test_rejects_evtx(self) -> None:
+    def test_supports_evtx(self) -> None:
+        """Gap Audit Milestone VVVV: Plaso is now the sole EVTX claimant
+        (see plaso.py's class docstring) -- FastEvtxParser is no longer
+        registered in the production registry, so this must be True."""
         parser = PlasoParser()
         magic = b"ElfFile\x00" + b"\x00" * 30
-        assert not parser.supports("system.evtx", "application/octet-stream", magic)
+        assert parser.supports("system.evtx", "application/octet-stream", magic)
 
     def test_supports_by_extension(self) -> None:
         parser = PlasoParser()

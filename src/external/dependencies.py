@@ -1079,12 +1079,26 @@ def get_parser_registry() -> ParserRegistry:
         # (fast, in-process, real browsing-timeline data) while every other
         # SQLite artifact still falls through to the heavy Plaso path.
         registry.register(ChromeHistoryParser())
-        try:
-            from src.external.parsers.evtx import FastEvtxParser  # noqa: PLC0415
-
-            registry.register(FastEvtxParser())
-        except ImportError:
-            pass
+        # FastEvtxParser is deliberately NOT registered here (Gap Audit
+        # Milestone VVVV): a real KAPE triage produced two evidence files
+        # covering the SAME machine -- a zip of loose .evtx files (routed
+        # to FastEvtxParser) and an E01 image containing those same event
+        # logs (routed to PlasoParser, since Plaso is the only parser that
+        # opens a whole disk image) -- and the two parsers emit genuinely
+        # different field shapes for identical Windows Event Log records
+        # (FastEvtxParser's own ECS-flattened `event.code`/
+        # `winlog.event_data.*` vs Plaso's raw `event_identifier`/
+        # `xml_string`/`source_name`/etc., see plaso.py's own docstring).
+        # That inconsistency, not a mapping bug, was the real cause of a
+        # live report that filtering "looked broken" for one of the two
+        # uploads. The class and its own unit tests are left in place
+        # (`src/external/parsers/evtx.py`) -- this only removes it from
+        # the live selection path so every .evtx-bearing upload, loose or
+        # inside an image, now goes through the one parser (Plaso) that
+        # can handle both shapes, keeping results consistent. Verified for
+        # real (poc/plaso_evtx_direct/) that plaso==20260512 parses a
+        # standalone .evtx file directly, not just one embedded in an
+        # image, before this was flipped.
         try:
             from src.external.parsers.plaso import PlasoParser  # noqa: PLC0415
 

@@ -1,0 +1,4 @@
+INFO Starting Plaso parse: /tmp/system.evtx
+INFO Running log2timeline: /opt/venv/bin/log2timeline --quiet --status_view none --storage-file /tmp/tmp6allch94.plaso /tmp/system.evtx
+INFO Running psort: /opt/venv/bin/psort --quiet -o json_line -w /tmp/tmp2vbf3sve.jsonl /tmp/tmp6allch94.plaso
+INFO Plaso parse complete: 391 events

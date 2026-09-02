@@ -34,7 +34,9 @@ _PREFETCH_MAM_MAGIC = b"MAM"  # MAM-compressed prefetch: starts with MAM\x04 or 
 # tests/fixtures/samples/real/, sourced from Plaso's own test corpus).
 _PREFETCH_SCCA_MAGIC = b"SCCA"
 _SQLITE_MAGIC = b"SQLite format 3"
-_EVTX_MAGIC = b"ElfFile\x00"  # Already handled by FastEvtxParser
+_EVTX_MAGIC = b"ElfFile\x00"  # Windows Event Log -- see supports() docstring
+# (Gap Audit Milestone VVVV) for why this is now claimed here directly
+# rather than deferred to FastEvtxParser.
 # EWF (E01/Ex01) disk image signature. Verified against a real image built
 # with ewfacquirestream 20140816 (see tests/fixtures/samples/real/kape/
 # NOTICE.md): log2timeline auto-detects an EWF path argument as a "storage
@@ -78,7 +80,23 @@ class PlasoParser(ForensicParser):
     """Heavy forensic parser delegating to Plaso via Firecracker sandbox.
 
     Plaso can handle: Windows Registry, Prefetch, SRUM, SQLite, Amcache,
-    journald, EML. EVTX is explicitly excluded — FastEvtxParser is faster.
+    journald, EML, and Windows Event Log (EVTX) -- including both a loose
+    .evtx file and one embedded inside a disk image (E01/raw/etc).
+
+    Gap Audit Milestone VVVV: EVTX used to be explicitly excluded here (a
+    separate, faster `FastEvtxParser` handled loose .evtx uploads while any
+    .evtx found *inside* a disk image still had to come through this class,
+    since Plaso is the only parser that opens a whole image). That split
+    meant the exact same artifact type -- a Windows Event Log -- produced
+    two incompatible field shapes depending only on which container it
+    happened to arrive in, a real, reported point of confusion when a KAPE
+    zip (fast path) and its E01 twin (Plaso path) were compared side by
+    side. `src/external/dependencies.py.get_parser_registry()` no longer
+    registers `FastEvtxParser` at all, so this class's own `supports()` is
+    now the sole EVTX claimant -- confirmed for real
+    (`poc/plaso_evtx_direct/`) that plaso==20260512's log2timeline handles
+    a standalone .evtx path exactly the same way it already handled one
+    embedded in an image, no extra flags needed.
     """
 
     # Extensions that Plaso handles better than generic parsers.
@@ -106,10 +124,11 @@ class PlasoParser(ForensicParser):
         return ParserType.HEAVY
 
     def supports(self, filename: str, content_type: str, header_bytes: bytes) -> bool:
-        """Return True for formats Plaso handles exclusively."""
-        # Never claim EVTX — FastEvtxParser is faster and registered first.
+        """Return True for formats Plaso handles."""
+        # Windows Event Log -- see class docstring (Gap Audit Milestone
+        # VVVV) for why this is claimed here and not by FastEvtxParser.
         if header_bytes.startswith(_EVTX_MAGIC):
-            return False
+            return True
 
         # Registry hive
         if header_bytes.startswith(_REGF_MAGIC):
