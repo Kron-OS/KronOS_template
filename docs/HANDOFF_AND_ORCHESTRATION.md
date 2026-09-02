@@ -53,12 +53,17 @@ changes rather than letting it go stale.
    the id up on the Admin page (zero new surface, worse UX)? **This is a
    decision for the project owner, not something to build unilaterally**
    — it's a real RBAC boundary question, not just a UI gap.
-7. **Spot-check that OpenSearch Dashboards' field list actually reflects
-   Milestone UUUU's fix** — the Discover/Timeline tab derives its field
-   list from the same live index mapping; a quick manual check (or a
-   `dashboards-embed.spec.ts` extension) that a newly-auto-indexed field
-   shows up there too, not just via a raw OpenSearch query, would close
-   the loop completely.
+7. ~~**Spot-check that OpenSearch Dashboards' field list actually reflects
+   Milestone UUUU's fix**~~ — **Done, Milestone VVVV (2026-09-02)**: a
+   real, authenticated headless-browser session confirmed the real
+   Discover UI (sidebar, "+ Add filter" picker, and typed KQL) all
+   correctly surface a Plaso-only dynamic field
+   (`poc/opensearch_dashboards_ui_verification/`). That same cycle found
+   the *actual* remaining bug behind the report that prompted this item —
+   not a Dashboards caching issue, but `FastEvtxParser` and `PlasoParser`
+   emitting different field names for the same Windows Event Log content
+   — and fixed it by making Plaso the sole EVTX handler
+   (`docs/GAP_AUDIT_2026-08-28_MILESTONE_VVVV.md`).
 
 ### Tier 2 — blocked on something outside this session's control
 
