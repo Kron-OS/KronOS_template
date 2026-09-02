@@ -7,6 +7,7 @@ import {
   removeCaseMember,
   deleteCase,
   searchCaseMemberCandidates,
+  getCaseArtifacts,
 } from '../api/cases'
 import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
@@ -15,6 +16,7 @@ import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
+import { ArtifactContent } from '../components/ArtifactViews'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
 import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
@@ -32,7 +34,13 @@ function truncateHash(hash: string | null): string {
   return `${hash.slice(0, 8)}…`
 }
 
-function EvidenceTab({ caseId }: { caseId: string }) {
+function EvidenceTab({
+  caseId,
+  onViewArtifacts,
+}: {
+  caseId: string
+  onViewArtifacts: (evidenceId: string) => void
+}) {
   const queryClient = useQueryClient()
   const [showUpload, setShowUpload] = useState(false)
   const [selectedEvidence, setSelectedEvidence] = useState<Evidence | null>(null)
@@ -41,6 +49,16 @@ function EvidenceTab({ caseId }: { caseId: string }) {
     queryFn: () => getEvidence(caseId),
     staleTime: 15_000,
   })
+  // Same query key ArtifactsTab uses -- a real cache hit there (or here,
+  // whichever mounts/refetches first), not a second independent fetch.
+  const { data: artifacts } = useQuery({
+    queryKey: ['artifacts', caseId],
+    queryFn: () => getCaseArtifacts(caseId),
+    staleTime: 15_000,
+  })
+  const selectedEvidenceArtifactCount = selectedEvidence
+    ? (artifacts ?? []).filter((a) => a.evidenceId === selectedEvidence.id).length
+    : 0
 
   const handleSSEEvent = (event: SSEStatusEvent) => {
     // Optimistic patch for an instant status-pill flip, immediately
@@ -58,6 +76,16 @@ function EvidenceTab({ caseId }: { caseId: string }) {
       }
     })
     void queryClient.invalidateQueries({ queryKey: ['evidence', caseId] })
+    // Gap Audit Milestone AAAAA: the artifacts query has its own 15s
+    // staleTime -- without this, a user who already had the Evidence tab
+    // open before a memory-dump's parse finished would see a stale,
+    // artifact-free drawer/tab for up to 15s after the real pipeline
+    // actually finished (found live: a fast, compressed real E2E run hit
+    // this exact window). Any SSE event for this case is a real signal
+    // evidence state changed, cheap enough to invalidate on every one
+    // rather than trying to detect "this one specifically produced new
+    // artifacts."
+    void queryClient.invalidateQueries({ queryKey: ['artifacts', caseId] })
   }
 
   useEvidenceSSE(caseId, handleSSEEvent)
@@ -158,6 +186,12 @@ function EvidenceTab({ caseId }: { caseId: string }) {
       <EvidenceDetailDrawer
         evidence={selectedEvidence}
         onClose={() => setSelectedEvidence(null)}
+        artifactCount={selectedEvidenceArtifactCount}
+        onViewArtifacts={() => {
+          if (!selectedEvidence) return
+          onViewArtifacts(selectedEvidence.id)
+          setSelectedEvidence(null)
+        }}
       />
     </div>
   )
@@ -216,6 +250,118 @@ function TimelineTab({ caseId }: { caseId: string }) {
         className="w-full rounded-lg border border-gray-200 dark:border-gray-800"
         style={{ height: '70vh' }}
       />
+    </div>
+  )
+}
+
+/**
+ * Gap Audit Milestone AAAAA: case-level Artifacts view ("scenario 4" of
+ * the Volatility-UI design conversation). Groups real StructuredArtifacts
+ * by evidence file first (a real, distinct memory dump per evidence_id --
+ * never flattened together, see ArtifactRepository.list_by_case's own
+ * docstring on why this is case-scoped, not per-evidence), then by kind
+ * within a file (e.g. a real pstree tree next to a real psscan table).
+ * `focusEvidenceId` (set by EvidenceDetailDrawer's "Open full analysis"
+ * link) pre-selects that evidence file's group on arrival.
+ */
+function ArtifactsTab({
+  caseId,
+  focusEvidenceId,
+}: {
+  caseId: string
+  focusEvidenceId: string | null
+}) {
+  const { data: artifacts, isLoading, error } = useQuery({
+    queryKey: ['artifacts', caseId],
+    queryFn: () => getCaseArtifacts(caseId),
+    staleTime: 15_000,
+  })
+  const { data: evidenceData } = useQuery({
+    queryKey: ['evidence', caseId],
+    queryFn: () => getEvidence(caseId),
+    staleTime: 15_000,
+  })
+
+  const evidenceIdsWithArtifacts = Array.from(new Set((artifacts ?? []).map((a) => a.evidenceId)))
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null)
+
+  // Real, live re-selection whenever the drawer's link sends a new focus
+  // target -- not just on first mount (a user can open the drawer for a
+  // second file, jump again, without leaving this tab in between).
+  useEffect(() => {
+    if (focusEvidenceId && evidenceIdsWithArtifacts.includes(focusEvidenceId)) {
+      setSelectedEvidenceId(focusEvidenceId)
+    } else if (!selectedEvidenceId && evidenceIdsWithArtifacts.length > 0) {
+      setSelectedEvidenceId(evidenceIdsWithArtifacts[0])
+    }
+    // Deliberately keyed on focusEvidenceId/artifacts only, not
+    // selectedEvidenceId -- this should run once per real focus-target or
+    // data change, not fight a user's own manual re-selection below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEvidenceId, artifacts])
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size="lg" />
+      </div>
+    )
+  }
+  if (error) return <ErrorBanner message="Failed to load artifacts." />
+
+  if (evidenceIdsWithArtifacts.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
+        <p>No forensic artifacts yet.</p>
+        <p className="text-xs text-gray-400 dark:text-gray-600">
+          Upload a memory dump (.vmem/.mem/.raw/.dmp/.lime) to see process analysis here.
+        </p>
+      </div>
+    )
+  }
+
+  const filenameFor = (evidenceId: string): string =>
+    evidenceData?.items.find((e) => e.id === evidenceId)?.filename ?? evidenceId
+
+  const selectedArtifacts = (artifacts ?? []).filter((a) => a.evidenceId === selectedEvidenceId)
+
+  return (
+    <div className="flex gap-6">
+      <nav className="w-56 shrink-0">
+        <ul className="flex flex-col gap-1">
+          {evidenceIdsWithArtifacts.map((evidenceId) => (
+            <li key={evidenceId}>
+              <button
+                type="button"
+                onClick={() => setSelectedEvidenceId(evidenceId)}
+                className={`w-full truncate rounded px-3 py-2 text-left text-sm ${
+                  selectedEvidenceId === evidenceId
+                    ? 'bg-indigo-100 font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
+                    : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+                title={filenameFor(evidenceId)}
+              >
+                {filenameFor(evidenceId)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <div className="min-w-0 flex-1 space-y-6">
+        {selectedArtifacts.map((artifact) => (
+          <div key={artifact.id}>
+            <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+              {artifact.kind}
+              {typeof artifact.content.plugin === 'string' && (
+                <span className="ml-2 font-mono text-xs font-normal text-gray-500">
+                  ({artifact.content.plugin})
+                </span>
+              )}
+            </h3>
+            <ArtifactContent artifact={artifact} />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -611,10 +757,11 @@ function SettingsTab({ caseData }: { caseData: Case }) {
   )
 }
 
-type Tab = 'evidence' | 'timeline' | 'auditlog' | 'settings'
+type Tab = 'evidence' | 'artifacts' | 'timeline' | 'auditlog' | 'settings'
 
 const tabs: { id: Tab; label: string }[] = [
   { id: 'evidence', label: 'Evidence' },
+  { id: 'artifacts', label: 'Artifacts' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'auditlog', label: 'Audit Log' },
   { id: 'settings', label: 'Settings' },
@@ -623,6 +770,10 @@ const tabs: { id: Tab; label: string }[] = [
 export function CaseDetailPage() {
   const { caseId } = useParams({ from: '/cases/$caseId' })
   const [activeTab, setActiveTab] = useState<Tab>('evidence')
+  // Gap Audit Milestone AAAAA: set by EvidenceDetailDrawer's "Open full
+  // analysis" link (via EvidenceTab's onViewArtifacts callback) so
+  // ArtifactsTab arrives pre-selected to that evidence file.
+  const [artifactsFocusEvidenceId, setArtifactsFocusEvidenceId] = useState<string | null>(null)
 
   const { data: caseData, isLoading, error } = useQuery({
     queryKey: ['case', caseId],
@@ -682,7 +833,18 @@ export function CaseDetailPage() {
         </nav>
       </div>
 
-      {activeTab === 'evidence' && <EvidenceTab caseId={caseId} />}
+      {activeTab === 'evidence' && (
+        <EvidenceTab
+          caseId={caseId}
+          onViewArtifacts={(evidenceId) => {
+            setArtifactsFocusEvidenceId(evidenceId)
+            setActiveTab('artifacts')
+          }}
+        />
+      )}
+      {activeTab === 'artifacts' && (
+        <ArtifactsTab caseId={caseId} focusEvidenceId={artifactsFocusEvidenceId} />
+      )}
       {activeTab === 'timeline' && <TimelineTab caseId={caseId} />}
       {activeTab === 'auditlog' && <AuditLogTab caseId={caseId} />}
       {activeTab === 'settings' && <SettingsTab caseData={caseData} />}

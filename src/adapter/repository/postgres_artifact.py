@@ -81,6 +81,20 @@ class PostgresArtifactRepository(ArtifactRepository):
             ).all()
         return [self._from_row(row._asdict()) for row in rows]
 
+    async def list_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[StructuredArtifact]:
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    structured_artifacts_table.select().where(
+                        structured_artifacts_table.c.case_id == case_id,
+                        structured_artifacts_table.c.org_id == org_id,
+                    )
+                )
+            ).all()
+        return [self._from_row(row._asdict()) for row in rows]
+
     @staticmethod
     def _to_row(artifact: StructuredArtifact) -> dict[str, Any]:
         k = artifact.kronos

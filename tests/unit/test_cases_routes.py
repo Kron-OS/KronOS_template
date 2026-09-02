@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -17,13 +18,17 @@ from src.adapter.keycloak.admin_client import (
     KeycloakSession,
     OrgMember,
 )
+from src.adapter.repository.artifact_repository import InMemoryArtifactRepository
 from src.adapter.repository.case_repository import InMemoryCaseRepository
 from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.audit_log import AuditLogService
+from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
+from src.domain.timeline import KronosProvenance
 from src.domain.user import Role, TenantContext
 from src.external.dependencies import (
+    get_artifact_repository,
     get_audit_log_service,
     get_case_repository,
     get_evidence_repository,
@@ -419,6 +424,109 @@ class TestListCaseEvidence:
         data = resp.json()
         assert data["items"] == []
         assert data["total"] == 0
+
+
+class TestListCaseArtifacts:
+    """Gap Audit Milestone AAAAA: GET /{case_id}/artifacts, the new
+    case-scoped StructuredArtifact listing backing the Artifacts view.
+
+    Uses its own local fixture (not the shared ``cases_client``) because
+    ``get_artifact_repository``'s DI default is a module-level singleton
+    (``src/external/dependencies.py``'s ``_artifact_repository``) --
+    reusing it unoverridden across tests would leak artifacts between
+    them, unlike ``case_repo``/``evidence_repo``, which ``cases_client``
+    already creates fresh and overrides per test.
+    """
+
+    def _client_with_artifacts(self):
+        case_repo = InMemoryCaseRepository()
+        artifact_repo = InMemoryArtifactRepository()
+        audit_svc = AuditLogService(InMemoryAuditLogRepository())
+        fixed_org = uuid.uuid4()
+        fixed_user = uuid.uuid4()
+
+        def _tenant_ctx() -> TenantContext:
+            # ORG_ADMIN (not READ_ONLY): this fixture's own tests need to
+            # both create the case (requires_role(ORG_ADMIN, CASE_LEAD))
+            # and read it back -- assert_case_access's own READ_ONLY-can-read
+            # behavior already has dedicated coverage elsewhere
+            # (TestCaseAccessScoping), not this route's own focus.
+            return TenantContext(
+                org_id=fixed_org,
+                org_alias="testorg",
+                user_id=fixed_user,
+                username="admin",
+                roles=frozenset({Role.ORG_ADMIN}),
+                correlation_id=str(uuid.uuid4()),
+                acr="aal2",
+            )
+
+        app = create_app()
+        app.dependency_overrides[get_tenant_context] = _tenant_ctx
+        app.dependency_overrides[get_case_repository] = lambda: case_repo
+        app.dependency_overrides[get_artifact_repository] = lambda: artifact_repo
+        app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
+        return TestClient(app), case_repo, artifact_repo, fixed_org, fixed_user
+
+    def test_empty_artifact_list(self):
+        client, _, _, _, _ = self._client_with_artifacts()
+        created = client.post("/api/cases", json={"title": "Artifact Case"}).json()
+        resp = client.get(f"/api/cases/{created['id']}/artifacts")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_unknown_case_returns_404(self):
+        client, _, _, _, _ = self._client_with_artifacts()
+        resp = client.get(f"/api/cases/{uuid.uuid4()}/artifacts")
+        assert resp.status_code == 404
+
+    def test_returns_real_artifacts_scoped_to_the_case(self):
+        client, case_repo, artifact_repo, org_id, user_id = self._client_with_artifacts()
+        created = client.post("/api/cases", json={"title": "Artifact Case 2"}).json()
+        case_id = uuid.UUID(created["id"])
+        other_case_id = uuid.uuid4()
+        evidence_id = uuid.uuid4()
+
+        matching = StructuredArtifact(
+            kind="volatility.psscan",
+            content={
+                "plugin": "windows.psscan",
+                "rows": [{"PID": 908, "ImageFileName": "svchost.exe"}],
+            },
+            kronos=KronosProvenance(
+                evidence_id=evidence_id,
+                case_id=case_id,
+                org_id=org_id,
+                org_alias="testorg",
+                sha256="a" * 64,
+                parser="volatility3",
+                parser_version="2.28.0",
+                record_index=0,
+                ingest_timestamp=datetime.now(UTC),
+            ),
+        )
+        # artifact_id must be distinct too -- model_copy() does not
+        # re-trigger the default_factory, so without this the second
+        # save() below would silently overwrite the first in
+        # InMemoryArtifactRepository's own artifact_id-keyed dict.
+        other_case_artifact = matching.model_copy(
+            update={
+                "artifact_id": uuid.uuid4(),
+                "kronos": matching.kronos.model_copy(update={"case_id": other_case_id}),
+            }
+        )
+        asyncio.run(artifact_repo.save(matching))
+        asyncio.run(artifact_repo.save(other_case_artifact))
+
+        resp = client.get(f"/api/cases/{case_id}/artifacts")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["kind"] == "volatility.psscan"
+        assert items[0]["content"]["rows"][0]["ImageFileName"] == "svchost.exe"
+        assert items[0]["evidenceId"] == str(evidence_id)
+        assert items[0]["caseId"] == str(case_id)
+        assert items[0]["parser"] == "volatility3"
 
 
 class TestDashboardUrl:

@@ -37,6 +37,23 @@ export interface Case {
   memberUserIds: string[]
 }
 
+// Gap Audit Milestone AAAAA: a non-timeline forensic artifact (e.g. a
+// Volatility pstree/psscan snapshot) -- `content` is intentionally opaque
+// (matches src/domain/artifact.py's own docstring, no per-kind schema
+// exists), kind-aware components (ProcessTreeView/ProcessTableView) give
+// it shape client-side.
+export interface Artifact {
+  id: string
+  kind: string
+  content: Record<string, unknown>
+  evidenceId: string
+  caseId: string
+  parser: string
+  parserVersion: string
+  sourcePath: string | null
+  createdAt: string
+}
+
 export interface Evidence {
   id: string
   caseId: string

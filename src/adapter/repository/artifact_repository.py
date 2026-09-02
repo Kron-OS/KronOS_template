@@ -25,6 +25,20 @@ class ArtifactRepository(ABC):
     ) -> list[StructuredArtifact]:
         """Return every artifact captured from a given evidence file, org-scoped."""
 
+    @abstractmethod
+    async def list_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[StructuredArtifact]:
+        """Return every artifact captured across a whole case, org-scoped.
+
+        Backs the case-level Artifacts view (Gap Audit Milestone AAAAA):
+        a case can hold several evidence files each with their own
+        artifacts (e.g. two memory dumps), and the view needs to know
+        which evidence files have any before a user picks one -- fetching
+        per-evidence via list_by_evidence for every evidence row in the
+        case would be an N+1 call pattern for that.
+        """
+
 
 class InMemoryArtifactRepository(ArtifactRepository):
     """Process-local artifact store for tests and the DI default (mirrors
@@ -45,4 +59,13 @@ class InMemoryArtifactRepository(ArtifactRepository):
             a
             for a in self._artifacts.values()
             if a.kronos.evidence_id == evidence_id and a.kronos.org_id == org_id
+        ]
+
+    async def list_by_case(
+        self, case_id: uuid.UUID, org_id: uuid.UUID
+    ) -> list[StructuredArtifact]:
+        return [
+            a
+            for a in self._artifacts.values()
+            if a.kronos.case_id == case_id and a.kronos.org_id == org_id
         ]

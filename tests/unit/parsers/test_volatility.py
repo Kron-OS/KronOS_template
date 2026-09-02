@@ -23,6 +23,7 @@ import pytest
 
 from src.application.parsing import ParserType
 from src.domain.artifact import StructuredArtifact
+from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.exceptions import VolatilityScanError
 from src.external.parsers import volatility as volatility_module
 from src.external.parsers.volatility import VolatilityModule, _plugin_to_kind
@@ -291,16 +292,178 @@ class TestExtractArtifacts:
         assert _FakeLauncher.last_kwargs["plugin"] == "windows.pstree"
         assert _FakeLauncher.last_kwargs["fallback_plugin"] == "windows.psscan"
 
-    async def test_parse_yields_nothing_by_default(self) -> None:
-        """VolatilityModule deliberately does not override parse() -- every
-        plugin it wraps today is non-timeline output (see this module's own
-        docstring); the inherited ForensicParser default applies unchanged.
-        """
-        parser = VolatilityModule()
-        evidence = make_evidence()
+async def _drain_records(it: AsyncIterator[TimelineRecord]) -> list[TimelineRecord]:
+    return [r async for r in it]
 
-        records = [
-            r async for r in parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
-        ]
+
+class TestParseDualEmit:
+    """Gap Audit Milestone AAAAA: parse() now derives a real
+    process-creation TimelineRecord for every row carrying a parseable
+    CreateTime, and caches the scan result for extract_artifacts() to
+    reuse -- see volatility.py's own module docstring for the full
+    "one scan, not two" design.
+    """
+
+    async def test_parse_yields_one_record_per_row_with_create_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = (
+            {
+                "PID": 908,
+                "PPID": 652,
+                "ImageFileName": "svchost.exe",
+                "CreateTime": "2012-07-22T02:42:33+00:00",
+                "Threads": 9,
+                "SessionId": None,
+                "Offset(V)": 33725112,
+            },
+            {
+                "PID": 664,
+                "PPID": 608,
+                "ImageFileName": "lsass.exe",
+                "CreateTime": None,  # real shape: some rows carry no CreateTime
+            },
+        )
+        _install_fake_launcher(monkeypatch, result=_FakeResult(plugin="windows.psscan", rows=rows))
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.process_pid == 908
+        assert record.process_name == "svchost.exe"
+        assert record.event_category == ["process"]
+        assert record.event_type == ["start"]
+        assert record.extra["process.parent.pid"] == 652
+        assert record.extra["process.thread.count"] == 9
+        assert record.extra["volatility.offset_v"] == 33725112
+        assert "volatility.session_id" not in record.extra  # None values omitted
+        assert record.timestamp.isoformat() == "2012-07-22T02:42:33+00:00"
+        assert isinstance(record.kronos, EvidenceProvenance)
+        assert record.kronos.evidence_id == evidence.evidence_id
+        assert record.kronos.parser == "volatility3"
+
+    async def test_parse_yields_nothing_when_no_row_has_create_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = ({"PID": 1, "PPID": 0, "ImageFileName": "System"},)
+        _install_fake_launcher(monkeypatch, result=_FakeResult(plugin="windows.pstree", rows=rows))
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
 
         assert records == []
+
+    async def test_parse_covers_fallback_rows_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fallback_rows = (
+            {
+                "PID": 908,
+                "PPID": 652,
+                "ImageFileName": "svchost.exe",
+                "CreateTime": "2012-07-22T02:42:33+00:00",
+            },
+        )
+        _install_fake_launcher(
+            monkeypatch,
+            result=_FakeResult(
+                plugin="windows.pstree",
+                rows=(),
+                fallback_plugin="windows.psscan",
+                fallback_rows=fallback_rows,
+            ),
+        )
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert len(records) == 1
+        assert records[0].extra["volatility.plugin"] == "windows.psscan"
+
+    async def test_scan_error_yields_no_records_and_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_fake_launcher(
+            monkeypatch, error=VolatilityScanError("vol CLI not found in worker runtime")
+        )
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert records == []
+
+    async def test_parse_then_extract_artifacts_only_runs_volatility_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real, load-bearing claim: calling parse() then
+        extract_artifacts() for the same evidence file (exactly how
+        ParsingOrchestrationService.execute_parse() calls a dual-implementing
+        parser) invokes VolatilityLauncher.run() exactly once, not twice --
+        see volatility.py's own "one scan, not two" docstring section.
+        """
+        run_call_count = 0
+        rows = (
+            {
+                "PID": 908,
+                "PPID": 652,
+                "ImageFileName": "svchost.exe",
+                "CreateTime": "2012-07-22T02:42:33+00:00",
+            },
+        )
+
+        class _CountingLauncher(_FakeLauncher):
+            async def run(self, **kwargs: Any) -> _FakeResult:
+                nonlocal run_call_count
+                run_call_count += 1
+                return await super().run(**kwargs)
+
+        monkeypatch.setattr("src.config.Settings", _FakeSettings)
+        monkeypatch.setattr(
+            "src.external.sandbox.volatility_launcher.VolatilityLauncher",
+            lambda **kw: _CountingLauncher(result=_FakeResult(plugin="windows.psscan", rows=rows)),
+        )
+
+        evidence = make_evidence()
+        parser = VolatilityModule()
+        tenant = make_tenant_context()
+
+        records = await _drain_records(parser.parse(_bytes_stream(b"fake"), evidence, tenant))
+        artifacts = await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), evidence, tenant)
+        )
+
+        assert run_call_count == 1
+        assert len(records) == 1
+        assert len(artifacts) == 1
+        assert artifacts[0].content["rows"] == list(rows)
+
+    async def test_extract_artifacts_still_runs_volatility_when_called_standalone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same "still independently callable" contract every other
+        extract_artifacts() override honours -- no cached scan present
+        (parse() was never called first) falls back to a real scan.
+        """
+        rows = ({"PID": 1, "PPID": 0, "ImageFileName": "System"},)
+        _install_fake_launcher(monkeypatch, result=_FakeResult(plugin="windows.psscan", rows=rows))
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        artifacts = await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert len(artifacts) == 1
+        assert artifacts[0].content["rows"] == list(rows)

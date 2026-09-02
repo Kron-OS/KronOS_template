@@ -16,15 +16,18 @@ from src.adapter.opensearch.dashboards_client import (
     case_index_pattern_id,
 )
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
+from src.adapter.repository.artifact_repository import ArtifactRepository
 from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
+from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEvent, AuditEventType
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.domain.user import Role, TenantContext
 from src.exceptions import KronOSException
 from src.external.dependencies import (
+    get_artifact_repository,
     get_audit_log_service,
     get_case_repository,
     get_dashboards_index_pattern_provisioner,
@@ -93,6 +96,46 @@ class PaginatedEvidence(BaseModel):
     total: int
     page: int
     pageSize: int
+
+
+class ArtifactOut(BaseModel):
+    """API response DTO for a non-timeline StructuredArtifact (Gap Audit
+    Milestone AAAAA) -- field names match the frontend TypeScript
+    Artifact interface. ``content`` is passed through opaque, exactly as
+    ``StructuredArtifact`` itself stores it (no per-kind schema exists,
+    see ``src/domain/artifact.py``'s own docstring) -- the frontend's own
+    kind-aware components (a real tree for ``volatility.pstree``, a real
+    table for ``volatility.psscan``, a generic fallback for anything else)
+    are what give it shape, not this DTO.
+    """
+
+    id: uuid.UUID
+    kind: str
+    content: dict[str, Any]
+    evidenceId: uuid.UUID
+    caseId: uuid.UUID
+    parser: str
+    parserVersion: str
+    sourcePath: str | None
+    createdAt: str
+
+
+class ArtifactsResponse(BaseModel):
+    items: list[ArtifactOut]
+
+
+def _to_artifact_out(artifact: StructuredArtifact) -> ArtifactOut:
+    return ArtifactOut(
+        id=artifact.artifact_id,
+        kind=artifact.kind,
+        content=artifact.content,
+        evidenceId=artifact.kronos.evidence_id,
+        caseId=artifact.kronos.case_id,
+        parser=artifact.kronos.parser,
+        parserVersion=artifact.kronos.parser_version,
+        sourcePath=artifact.kronos.source_path,
+        createdAt=artifact.kronos.ingest_timestamp.isoformat(),
+    )
 
 
 class DashboardUrlOut(BaseModel):
@@ -471,6 +514,37 @@ async def list_case_evidence(
         page=page,
         pageSize=page_size,
     )
+
+
+@router.get("/{case_id}/artifacts", response_model=ArtifactsResponse)
+async def list_case_artifacts(
+    case_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    artifact_repo: Annotated[ArtifactRepository, Depends(get_artifact_repository)],
+) -> ArtifactsResponse:
+    """Return every real StructuredArtifact captured across this case's
+    evidence (Gap Audit Milestone AAAAA) -- e.g. every Volatility
+    ``pstree``/``psscan`` snapshot from every memory-dump evidence file in
+    the case, not paginated (real artifact counts per case are modest --
+    one or two per plugin per evidence file, see
+    ``VolatilityModule._rows_to_artifacts``'s own batching cap).
+
+    Case-scoped, not per-evidence, so the frontend's Artifacts tab can
+    show which evidence files have any without an N+1 per-evidence-file
+    lookup (see ``ArtifactRepository.list_by_case``'s own docstring).
+    Gated identically to ``list_case_evidence``/``download_evidence``
+    (read access, any real case member, all four roles including
+    READ_ONLY) -- artifacts are evidence content, not case-lead-gated
+    metadata.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    artifacts = await artifact_repo.list_by_case(case_id, tenant.org_id)
+    return ArtifactsResponse(items=[_to_artifact_out(a) for a in artifacts])
 
 
 @router.get("/{case_id}/evidence/{evidence_id}/download")

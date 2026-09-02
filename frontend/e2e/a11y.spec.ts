@@ -1,9 +1,15 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { test, expect, DEV_USERS } from "./fixtures";
 import { LoginPage } from "./pages/LoginPage";
 import { DetectionSeeder } from "./DetectionSeeder";
 import { DetectionDetailPage } from "./pages/DetectionDetailPage";
+import { VolatilityArtifactSeeder } from "./VolatilityArtifactSeeder";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REAL_DIR = path.resolve(__dirname, "../../tests/fixtures/samples/real");
 
 /**
  * §3.8 (docs/PLAYWRIGHT_E2E_TEST_PLAN.md): a real, automated WCAG scan via
@@ -19,6 +25,12 @@ const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
 async function scan(page: Page) {
   return new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+}
+
+function caseIdFromUrl(url: string): string {
+  const id = url.split("/cases/")[1]?.split(/[/?#]/)[0];
+  if (!id) throw new Error(`expected a real case id in the URL, got: ${url}`);
+  return id;
 }
 
 function formatViolations(results: Awaited<ReturnType<typeof scan>>): string {
@@ -61,6 +73,33 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
     const detail = await casesPageAsCaseLead.createCase(title, `E2E-A11Y-SETTINGS-${Date.now()}`);
     await detail.waitUntilReady();
     await detail.openSettingsTab();
+    const results = await scan(page);
+    expect(results.violations, formatViolations(results)).toEqual([]);
+  });
+
+  // Gap Audit Milestone AAAAA: the Artifacts tab is genuinely new UI
+  // (kind-aware table/tree renderers, ArtifactViews.tsx) the scans above
+  // never touch -- scanned WITH real seeded content (not just the empty
+  // state), since a real process table/tree is exactly where a missing
+  // header association or contrast issue would actually show up.
+  test("case detail page's Artifacts tab has no real WCAG violations", async ({
+    casesPageAsCaseLead,
+    page,
+  }) => {
+    const title = `E2E a11y artifacts case ${Date.now()}`;
+    const detail = await casesPageAsCaseLead.createCase(title, `E2E-A11Y-ARTIFACTS-${Date.now()}`);
+    await detail.uploadEvidence(path.join(REAL_DIR, "apache_access.log"));
+    const { terminal } = await detail.watchEvidenceStateLive("apache_access.log");
+    expect(terminal).toBe("Complete");
+    const caseId = caseIdFromUrl(detail.url);
+    const evidenceId = await detail.fetchFirstEvidenceId(caseId);
+    new VolatilityArtifactSeeder().seed(caseId, evidenceId);
+
+    await page.reload();
+    await page.waitForSelector("text=apache_access.log", { timeout: 10000 });
+    await detail.openArtifactsTab();
+    await page.waitForSelector("text=svchost.exe", { timeout: 10000 });
+
     const results = await scan(page);
     expect(results.violations, formatViolations(results)).toEqual([]);
   });

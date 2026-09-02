@@ -26,6 +26,22 @@ export class CaseDetailPage extends KronosPage {
   }
 
   /**
+   * Real, independent `GET /{case_id}/evidence`, fresh bearer token --
+   * for a caller (e.g. an Artifacts-seeding spec) that needs a REAL
+   * evidence_id belonging to a REAL evidence row it just uploaded through
+   * the UI above, not a fabricated one -- mirrors CasesPage.fetchCaseById's
+   * own "never trust the same page load" reasoning.
+   */
+  async fetchFirstEvidenceId(caseId: string): Promise<string> {
+    const result = await this.fetchJson<{ items: { id: string }[] }>(
+      `/api/cases/${caseId}/evidence`,
+    );
+    const id = result.items[0]?.id;
+    if (!id) throw new Error(`No evidence found for case ${caseId}`);
+    return id;
+  }
+
+  /**
    * Polls the real evidence row's own text WITHOUT reloading the page --
    * this is what actually proves the live SSE push path works, not just
    * that the terminal state is eventually correct after a fresh GET.
@@ -119,6 +135,10 @@ export class CaseDetailPage extends KronosPage {
   /** Clicks the real "Timeline" tab button (renders TimelineTab -> the Dashboards iframe embed). */
   async openTimelineTab(): Promise<void> {
     await this.page.getByRole("button", { name: "Timeline", exact: true }).click();
+  }
+
+  async openArtifactsTab(): Promise<void> {
+    await this.page.getByRole("button", { name: "Artifacts", exact: true }).click();
   }
 
   /**

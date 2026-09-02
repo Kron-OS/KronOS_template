@@ -1,0 +1,34 @@
+/home/reca/venv/lib/python3.14/site-packages/opensearchpy/_async/http_aiohttp.py:205: UserWarning: Connecting to https://localhost:9200 using SSL with verify_certs=False is insecure.
+  warnings.warn(
+--- Real run 1: parse() alone (real volatility3 subprocess) ---
+parse() elapsed: 7.66s, 16 TimelineRecord(s)
+[PASS] parse() yields at least one real TimelineRecord -- 16 records
+[PASS] record has a real process_pid -- 908
+[PASS] record has a real process_name -- svchost.exe
+[PASS] event_category is ['process']
+[PASS] event_type is ['start']
+[PASS] extra carries volatility.plugin -- windows.psscan
+[PASS] kronos.evidence_id matches this evidence
+[PASS] records are attributed to the real psscan fallback plugin
+
+--- Real run 2: extract_artifacts() reusing the cached scan (should NOT re-run volatility3) ---
+extract_artifacts() elapsed: 0.00s, 2 StructuredArtifact(s)
+[PASS] extract_artifacts() yields real StructuredArtifacts -- 2 artifacts
+[PASS] extract_artifacts() reused the cache (did not re-run the ~subprocess-cost scan) -- parse=7.66s extract=0.00s
+[PASS] a real volatility.psscan artifact was emitted
+[PASS] TimelineRecord count <= total psscan artifact rows (only rows with real CreateTime emit) -- records=16 artifact_rows=17
+
+--- Real run 3: extract_artifacts() called standalone (no parse() first) still works ---
+standalone extract_artifacts() elapsed: 6.38s
+[PASS] standalone extract_artifacts() (no prior parse()) re-runs the real scan -- cached=0.00s standalone=6.38s
+[PASS] standalone extract_artifacts() still produces the same real data
+
+--- Real OpenSearch ingestion of the dual-emitted TimelineRecords ---
+[PASS] at least one real document indexed -- indexed_count=16
+[PASS] real term query on process.pid=908 returns a hit -- 1 hit(s)
+[PASS] real term query on event.category='process' returns every dual-emitted record -- 16 hit(s), expected 16
+[PASS] indexed document's kronos.evidence_id round-trips correctly
+[PASS] indexed document carries a real volatility.plugin field (dotted extra -> nested)
+
+======================================================================
+RESULT: 19/19 checks passed

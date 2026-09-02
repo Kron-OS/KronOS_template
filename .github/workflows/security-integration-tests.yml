@@ -309,6 +309,11 @@ jobs:
     # Milestone ZZZZ: one new step (case-member-search, 2 tests -- no
     # step-up involved, cheap). Real measured cost: 9.3s standalone;
     # 39.2s alongside the other 9 case-membership/RBAC specs together.
+    #
+    # Milestone AAAAA: one new step (case-artifacts-ui, 1 test -- a real
+    # upload + watchEvidenceStateLive wait, not a step-up). Real measured
+    # cost: ~9s standalone; also added one new a11y.spec.ts test (already
+    # covered by that job's own existing step, no separate CI wiring).
     timeout-minutes: 70
     defaults:
       run:
@@ -687,6 +692,21 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-member-search.spec.ts
+
+      # Gap Audit Milestone AAAAA: project owner's chosen "scenario 4" for
+      # surfacing Volatility memory-forensics output -- a dedicated
+      # case-level Artifacts tab (kind-aware rendering) plus a hybrid
+      # summary/link in EvidenceDetailDrawer. The real end-to-end
+      # volatility3 pipeline (real subprocess, real dual-emit into
+      # OpenSearch) is verified separately in
+      # poc/volatility_timeline_dual_emit/ (not CI, needs a real 512 MiB
+      # sample + scratch venv) -- this spec seeds real captured row shapes
+      # via VolatilityArtifactSeeder against a real evidence_id from a
+      # real small upload instead.
+      - name: "E2E: case-artifacts-ui"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-artifacts-ui.spec.ts
 
       - name: "E2E: case-delete-archive-ui"
         if: always()

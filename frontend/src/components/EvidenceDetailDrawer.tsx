@@ -40,9 +40,21 @@ function FieldRow({ label, value }: FieldRowProps) {
 interface EvidenceDetailDrawerProps {
   evidence: Evidence | null
   onClose: () => void
+  // Gap Audit Milestone AAAAA: the "hybrid" scenario -- a compact summary
+  // here, a link to the full case-level Artifacts tab (pre-filtered to
+  // this evidence file) rather than trying to render a real process
+  // tree/table inside this narrow (max-w-md) drawer. Both optional so
+  // every existing caller (none currently pass them) keeps working.
+  artifactCount?: number
+  onViewArtifacts?: () => void
 }
 
-export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawerProps) {
+export function EvidenceDetailDrawer({
+  evidence,
+  onClose,
+  artifactCount = 0,
+  onViewArtifacts,
+}: EvidenceDetailDrawerProps) {
   const [copied, setCopied] = useState(false)
   const queryClient = useQueryClient()
 
@@ -178,6 +190,26 @@ export function EvidenceDetailDrawer({ evidence, onClose }: EvidenceDetailDrawer
               )
             }
           />
+
+          {artifactCount > 0 && onViewArtifacts && (
+            <FieldRow
+              label="Forensic artifacts"
+              value={
+                <div className="flex items-center justify-between gap-2">
+                  <span>
+                    {artifactCount} artifact{artifactCount === 1 ? '' : 's'} found
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onViewArtifacts}
+                    className="shrink-0 text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                  >
+                    Open full analysis →
+                  </button>
+                </div>
+              }
+            />
+          )}
 
           {evidence.errorReason && (
             <div className="mt-4 flex flex-col gap-2">
