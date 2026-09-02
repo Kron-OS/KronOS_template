@@ -7,6 +7,15 @@ const ALLOWED_EXTENSIONS = new Set([
   'sqlite', 'sqlite3', 'db', 'dat', 'hve', 'hiv', 'pf', 'e01', 'ex01', 'tar',
 ])
 
+// Raw physical memory dumps (VolatilityModule, src/external/parsers/volatility.py)
+// -- no standard magic bytes at a fixed offset (verified against the real
+// cridex.vmem sample, see validation.py's own _MEMORY_DUMP_EXTENSIONS
+// comment for the same finding on the backend side). This client-side list
+// never got the corresponding entry when Volatility support shipped, so a
+// real .vmem upload was rejected here as "Unsupported extension: .vmem"
+// before ever reaching the server's own (correct) MagicByteValidator.
+const MEMORY_DUMP_EXTENSIONS = new Set(['vmem', 'mem', 'raw', 'dmp', 'lime'])
+
 export const BLOCKED_EXTENSIONS = new Set([
   'exe', 'dll', 'scr', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'jar', 'msi', 'com',
 ])
@@ -101,6 +110,14 @@ export async function validateFileMagic(file: File): Promise<{ ok: boolean; reas
     const isText = bytes.slice(0, 8).every((b) => b >= 0x09 && b <= 0x7e)
     if (isText) return { ok: true }
   }
+
+  // Raw memory dumps -- no verified magic bytes exist for this format
+  // family (see MEMORY_DUMP_EXTENSIONS's own comment above); accept on
+  // extension alone, same bypass shape as the text-format check above.
+  // Checked BEFORE the MZ-header reject below: raw physical memory is
+  // arbitrary content at offset 0 and can coincidentally start with
+  // 0x4d 0x5a without being a Windows executable at all.
+  if (MEMORY_DUMP_EXTENSIONS.has(ext)) return { ok: true }
 
   // MZ header (Windows PE) — always reject
   if (bytes[0] === 0x4d && bytes[1] === 0x5a) {

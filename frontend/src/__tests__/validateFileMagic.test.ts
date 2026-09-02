@@ -79,3 +79,41 @@ describe('validateFileMagic (Gap Audit Milestone TT: tar/ustar support)', () => 
     expect(result.ok).toBe(true)
   })
 })
+
+/**
+ * Gap Audit Milestone BBBBB: raw physical memory dumps (VolatilityModule)
+ * have no standard magic bytes -- the backend's own
+ * MagicByteValidator/_MEMORY_DUMP_EXTENSIONS already accepts .vmem/.mem/
+ * .raw/.dmp/.lime on extension alone, but this client-side pre-check never
+ * got the matching entry, so a real .vmem upload was rejected here before
+ * ever reaching the server.
+ */
+describe('validateFileMagic (Gap Audit Milestone BBBBB: memory dump support)', () => {
+  it('accepts a .vmem file with arbitrary (non-magic) content', async () => {
+    const bytes = new Array(262).fill(0).map((_, i) => i % 256)
+    const file = fileWithBytes('cridex.vmem', bytes)
+
+    const result = await validateFileMagic(file)
+
+    expect(result.ok).toBe(true)
+  })
+
+  it.each(['mem', 'raw', 'dmp', 'lime'])('accepts a .%s memory dump extension', async (ext) => {
+    const file = fileWithBytes(`evidence.${ext}`, new Array(262).fill(0))
+
+    const result = await validateFileMagic(file)
+
+    expect(result.ok).toBe(true)
+  })
+
+  it('accepts a .vmem file even if it coincidentally starts with an MZ header', async () => {
+    const bytes = new Array(262).fill(0)
+    bytes[0] = 0x4d
+    bytes[1] = 0x5a
+    const file = fileWithBytes('memory.dmp', bytes)
+
+    const result = await validateFileMagic(file)
+
+    expect(result.ok).toBe(true)
+  })
+})
