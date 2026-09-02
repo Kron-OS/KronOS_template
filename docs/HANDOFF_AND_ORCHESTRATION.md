@@ -19,11 +19,14 @@ changes rather than letting it go stale.
    first, then for real, if you want already-parsed evidence's previously-dropped
    fields to become searchable. Deliberately not run automatically; a
    real operator decision, not a bug.
-2. **`admin.py`'s `_is_org_member`/`_assert_user_in_org` vs
-   `KeycloakAdminClient.is_org_member`** — two separate, parallel
-   implementations of the same real Admin API check, in two different
-   parts of the codebase (named in Milestone QQQQ). A real, contained
-   refactor — good candidate for a maintainability-focused cycle.
+2. ~~**`admin.py`'s `_is_org_member`/`_assert_user_in_org` vs
+   `KeycloakAdminClient.is_org_member`**~~ — **Done, Milestone WWWW
+   (2026-09-02)**: `_is_org_member` now prefers the DI-wired,
+   token-caching `KeycloakAdminClient`, falling back to the original raw
+   Admin REST call only when unconfigured (this guards a mandatory
+   boundary, so it never silently skips). Verified live against real
+   Keycloak (`tests/integration/test_admin_routes_real_keycloak.py`, 6/6).
+   `docs/GAP_AUDIT_2026-08-28_MILESTONE_WWWW.md`.
 3. **Persist pending form state across a step-up (MFA) redirect** — named
    in Milestone TTTT. `apiClient`'s step-up flow is a full browser
    redirect to Keycloak; it silently discards whatever the user had typed
