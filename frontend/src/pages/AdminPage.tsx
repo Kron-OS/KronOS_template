@@ -5,6 +5,11 @@ import { getOrgUsers, inviteUser, updateUserRole, removeUser, getOrgQuota, updat
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import {
+  stashPendingStepUpForm,
+  takePendingStepUpForm,
+  clearPendingStepUpForm,
+} from '../lib/stepUpFormPersistence'
 import type { Role, OrgUser, InviteUserInput } from '../types'
 
 const ROLES: Role[] = ['org-admin', 'case-lead', 'analyst', 'read-only']
@@ -27,10 +32,20 @@ function formatBytes(bytes: number): string {
  * real `401` + `WWW-Authenticate: ...acr_values="aal2"` challenge for
  * every request through it, so this reuses that proven path rather than
  * building any new step-up handling.
+ *
+ * Gap Audit Milestone YYYY: the step-up redirect abandons this form's own
+ * local `gbInput` state (a full remount on return, see
+ * `stepUpFormPersistence.ts`'s own docstring for the full account). The
+ * value typed just before submitting is stashed to `sessionStorage` and
+ * restored here on mount -- the user still has to click Save again (this
+ * never auto-submits on their behalf), but no longer has to remember and
+ * retype the number.
  */
 function QuotaSection() {
   const queryClient = useQueryClient()
-  const [gbInput, setGbInput] = useState('')
+  const [gbInput, setGbInput] = useState(
+    () => takePendingStepUpForm<{ gbInput: string }>('quota')?.gbInput ?? '',
+  )
   const { data, isLoading, error } = useQuery({
     queryKey: ['orgQuota'],
     queryFn: getOrgQuota,
@@ -42,6 +57,7 @@ function QuotaSection() {
     onSuccess: async (updated) => {
       queryClient.setQueryData(['orgQuota'], updated)
       setGbInput('')
+      clearPendingStepUpForm('quota')
     },
   })
 
@@ -73,7 +89,13 @@ function QuotaSection() {
         onSubmit={(e) => {
           e.preventDefault()
           const gb = Number(gbInput)
-          if (gb > 0) mutation.mutate(Math.round(gb * 1024 * 1024 * 1024))
+          if (gb > 0) {
+            // Stashed unconditionally before the request goes out -- only
+            // matters if it turns out to need step-up (an aal2 redirect);
+            // otherwise it's cleared again in onSuccess above.
+            stashPendingStepUpForm('quota', { gbInput })
+            mutation.mutate(Math.round(gb * 1024 * 1024 * 1024))
+          }
         }}
         className="flex items-center gap-2"
       >
@@ -163,16 +185,35 @@ const EMPTY_INVITE_FORM: InviteUserInput = {
   role: 'analyst',
 }
 
+// Gap Audit Milestone YYYY: only the non-sensitive fields are persisted
+// across a step-up redirect (see stepUpFormPersistence.ts's own
+// docstring for why this exists at all) -- password is deliberately
+// excluded. It's already shown in the clear in this modal by design (the
+// admin is meant to copy/share it out of band), but there's no reason to
+// widen where a freshly-typed or generated credential also sits at rest,
+// even briefly in sessionStorage, when the rest of the form is a strictly
+// lower sensitivity than that. The user re-enters or regenerates it after
+// returning; everything else is restored.
+type PendingInviteForm = Omit<InviteUserInput, 'password'>
+
 function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState<InviteUserInput>(EMPTY_INVITE_FORM)
+  const [form, setForm] = useState<InviteUserInput>(() => {
+    const pending = takePendingStepUpForm<PendingInviteForm>('invite')
+    return pending ? { ...EMPTY_INVITE_FORM, ...pending } : EMPTY_INVITE_FORM
+  })
   const [showPassword, setShowPassword] = useState(false)
   const mutation = useMutation({
-    mutationFn: () => inviteUser(form),
+    mutationFn: () => {
+      const { password: _password, ...withoutPassword } = form
+      stashPendingStepUpForm<PendingInviteForm>('invite', withoutPassword)
+      return inviteUser(form)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
       setForm(EMPTY_INVITE_FORM)
       setShowPassword(false)
+      clearPendingStepUpForm('invite')
       onClose()
     },
   })
@@ -315,14 +356,34 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   )
 }
 
+// Gap Audit Milestone YYYY: unlike Quota/Invite (a typed value behind an
+// explicit Save button), selecting a role fires the mutation directly --
+// there's no separate "submit" step to defer. Silently pre-selecting the
+// pending role on return would mean the very next unrelated render could
+// look like it already applied (or, worse, a user who then picks a
+// DIFFERENT role first would see no `onChange` fire for what's actually
+// the row's current, already-correct-looking value). So this shows a
+// small, explicit "apply this again?" affordance instead of touching the
+// `<select>`'s own value at all -- consistent with the other two forms'
+// same rule: never auto-submit a security-sensitive mutation on the
+// user's behalf after a redirect.
 function UserRow({ user }: { user: OrgUser }) {
   const queryClient = useQueryClient()
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const pendingRoleKey = `role-change-${user.userId}`
+  const [pendingRole, setPendingRole] = useState(
+    () => takePendingStepUpForm<{ role: Role }>(pendingRoleKey)?.role ?? null,
+  )
 
   const roleMutation = useMutation({
-    mutationFn: (role: Role) => updateUserRole(user.userId, role),
+    mutationFn: (role: Role) => {
+      stashPendingStepUpForm(pendingRoleKey, { role })
+      return updateUserRole(user.userId, role)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
+      clearPendingStepUpForm(pendingRoleKey)
+      setPendingRole(null)
     },
   })
 
@@ -357,6 +418,28 @@ function UserRow({ user }: { user: OrgUser }) {
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
+          {pendingRole && pendingRole !== (user.roles[0] ?? 'read-only') && (
+            <div className="mt-1 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
+              <span>Pending: {pendingRole}</span>
+              <button
+                type="button"
+                onClick={() => roleMutation.mutate(pendingRole)}
+                className="font-medium underline hover:no-underline"
+              >
+                Apply
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearPendingStepUpForm(pendingRoleKey)
+                  setPendingRole(null)
+                }}
+                className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
         </td>
         <td className="px-4 py-3 text-xs text-gray-500">
           {new Date(user.joinedAt).toLocaleDateString()}

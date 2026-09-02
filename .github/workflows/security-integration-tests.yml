@@ -301,6 +301,10 @@ jobs:
     # tests in one file). Real measured cost: 17.1s/28.7s standalone,
     # 1.5m total run alongside admin-quota-ui + role-change-mid-session
     # together (no interference).
+    #
+    # Milestone YYYY: one new step (admin-stepup-form-persistence, 3
+    # tests, each its own real step-up). Real measured cost: 48.7s total
+    # standalone for all 3 together.
     timeout-minutes: 70
     defaults:
       run:
@@ -708,6 +712,21 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/admin-user-management-stepup.spec.ts
+
+      # Gap Audit Milestone YYYY: closes Tier 1 item 3 of
+      # docs/HANDOFF_AND_ORCHESTRATION.md -- the pending-form-state-loss UX
+      # rough edge named (but not fixed) in TTTT/WWWW/XXXX. Proves, in a
+      # real browser against real Keycloak, that all three step-up-gated
+      # forms (quota/invite/role-change) restore their non-sensitive values
+      # after the redirect (frontend/src/lib/stepUpFormPersistence.ts) --
+      # and, just as important, that this never auto-submits on the user's
+      # behalf (invite's password field confirmed still empty; the
+      # role-change <select> confirmed still showing the OLD role until an
+      # explicit "Apply" click).
+      - name: "E2E: admin-stepup-form-persistence"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/admin-stepup-form-persistence.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure
