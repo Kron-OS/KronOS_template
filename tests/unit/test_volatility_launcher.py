@@ -8,13 +8,18 @@ is exercised against a real subprocess boundary without needing volatility3
 installed. `test_real_worker_*` additionally drives the *real*
 docker/volatility/kronos-volatility-worker.py script with the real, pinned
 `volatility3==2.28.0` package against the real, classic `cridex.vmem` sample
--- see poc/volatility_memory_module/README.md for the from-first-principles
-verification of this exact plugin/fallback behaviour. Those tests are gated
-on both the real worker script existing (always true in this repo) and a
-real downloaded sample being present locally (never committed -- see that
-PoC's README for the download instructions) -- mirrors this repo's existing
-`pytest.importorskip("evtx")` pattern for an optional real-artifact
-dependency.
+-- see poc/volatility_multiplugin/README.md (Milestone CCCCC) for the
+from-first-principles verification of the multi-plugin shared-context
+architecture this launcher now drives. Those tests are gated on both the
+real worker script existing (always true in this repo), a real downloaded
+sample being present locally (never committed), and a real volatility3
+install on the interpreter the test itself runs the worker with -- mirrors
+this repo's existing `pytest.importorskip("evtx")` pattern for an optional
+real-artifact/real-dependency combination.
+
+Milestone CCCCC: rewritten for the multi-plugin result shape
+(`VolatilityMultiPluginResult`/`VolatilityPluginOutcome` replace the old
+single-plugin `VolatilityPluginResult` with its primary/fallback pair).
 """
 
 from __future__ import annotations
@@ -35,11 +40,17 @@ _REAL_WORKER_PATH = (
     Path(__file__).parent.parent.parent / "docker" / "volatility" / "kronos-volatility-worker.py"
 )
 
-# Never committed (real cridex.vmem is ~512 MiB uncompressed -- see the PoC's
-# own README for why) -- set this to a local scratch path to exercise the
-# real-sample tests below; skipped, not failed, when unset/missing.
+# Never committed (real cridex.vmem is ~512 MiB uncompressed -- see
+# poc/volatility_multiplugin/README.md for why) -- set this to a local
+# scratch path to exercise the real-sample test below; skipped, not failed,
+# when unset/missing. KRONOS_VOLATILITY_PYTHON_BIN must point at an
+# interpreter with volatility3==2.28.0 actually installed (this repo's own
+# pytest venv deliberately does not carry it -- the real worker's runtime is
+# the celery-worker-plaso container image, docker/Dockerfile.plaso-worker,
+# not this test process).
 _REAL_SAMPLE_PATH = os.environ.get("KRONOS_CRIDEX_VMEM_PATH", "")
-_REAL_VOL_AVAILABLE = _REAL_SAMPLE_PATH and Path(_REAL_SAMPLE_PATH).exists()
+_REAL_VOL_AVAILABLE = bool(_REAL_SAMPLE_PATH) and Path(_REAL_SAMPLE_PATH).exists()
+_REAL_VOL_PYTHON_BIN = os.environ.get("KRONOS_VOLATILITY_PYTHON_BIN", "")
 
 
 def _write_worker(tmp_path: Path, body: str) -> Path:
@@ -52,10 +63,13 @@ async def test_run_returns_rows_from_ok_payload(tmp_path: Path) -> None:
     payload = {
         "status": "ok",
         "error": None,
-        "plugin": "windows.pstree",
-        "rows": [{"PID": 4, "PPID": 0, "ImageFileName": "System"}],
-        "fallback_plugin": None,
-        "fallback_rows": None,
+        "plugins": {
+            "windows.pstree.PsTree": {
+                "status": "ok",
+                "rows": [{"PID": 4, "PPID": 0, "ImageFileName": "System"}],
+                "error": None,
+            }
+        },
     }
     script = _write_worker(
         tmp_path,
@@ -66,23 +80,36 @@ async def test_run_returns_rows_from_ok_payload(tmp_path: Path) -> None:
     )
     launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
 
-    result = await launcher.run("/tmp/fake.vmem", plugin="windows.pstree")
+    result = await launcher.run("/tmp/fake.vmem", plugins=["windows.pstree.PsTree"])
 
-    assert result.plugin == "windows.pstree"
-    assert len(result.rows) == 1
-    assert result.rows[0]["PID"] == 4
-    assert result.used_fallback is False
-    assert result.fallback_plugin is None
+    outcome = result.for_plugin("windows.pstree.PsTree")
+    assert outcome is not None
+    assert outcome.ok is True
+    assert len(outcome.rows) == 1
+    assert outcome.rows[0]["PID"] == 4
 
 
-async def test_run_reports_fallback_when_primary_empty(tmp_path: Path) -> None:
+async def test_run_returns_independent_outcome_per_plugin(tmp_path: Path) -> None:
+    """A mixed run (some plugins ok, one genuinely failed) must not raise --
+    each plugin's own outcome carries its own status, per this module's own
+    "one bad thing doesn't sink the evidence" generalization from the old
+    primary/fallback pair to N plugins."""
     payload = {
         "status": "ok",
         "error": None,
-        "plugin": "windows.pstree",
-        "rows": [],
-        "fallback_plugin": "windows.psscan",
-        "fallback_rows": [{"PID": 908, "PPID": 652, "ImageFileName": "svchost.exe"}],
+        "plugins": {
+            "windows.pstree.PsTree": {"status": "ok", "rows": [{"PID": 4}], "error": None},
+            "windows.psscan.PsScan": {
+                "status": "ok",
+                "rows": [{"PID": 908, "ImageFileName": "svchost.exe"}],
+                "error": None,
+            },
+            "windows.malware.malfind.Malfind": {
+                "status": "scan_error",
+                "rows": [],
+                "error": "Unsatisfied requirement plugins.Malfind.kernel.layer_name",
+            },
+        },
     }
     script = _write_worker(
         tmp_path,
@@ -93,55 +120,60 @@ async def test_run_reports_fallback_when_primary_empty(tmp_path: Path) -> None:
     )
     launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
 
-    result = await launcher.run("/tmp/fake.vmem")
+    result = await launcher.run(
+        "/tmp/fake.vmem",
+        plugins=[
+            "windows.pstree.PsTree",
+            "windows.psscan.PsScan",
+            "windows.malware.malfind.Malfind",
+        ],
+    )
 
-    assert result.rows == ()
-    assert result.used_fallback is True
-    assert result.fallback_plugin == "windows.psscan"
-    assert result.fallback_rows is not None
-    assert result.fallback_rows[0]["ImageFileName"] == "svchost.exe"
+    pstree = result.for_plugin("windows.pstree.PsTree")
+    psscan = result.for_plugin("windows.psscan.PsScan")
+    malfind = result.for_plugin("windows.malware.malfind.Malfind")
+    assert pstree is not None and pstree.ok
+    assert psscan is not None and psscan.ok
+    assert psscan.rows[0]["ImageFileName"] == "svchost.exe"
+    assert malfind is not None and not malfind.ok
+    assert malfind.status == "scan_error"
+    assert "Unsatisfied requirement" in (malfind.error or "")
 
 
-async def test_run_raises_scan_error_on_scan_error_status(tmp_path: Path) -> None:
+async def test_run_raises_when_every_plugin_fails(tmp_path: Path) -> None:
+    """Real, reproduced case: automagic construction itself fails for a
+    genuinely unsupported image (the ch2.dmp finding) -- every plugin
+    sharing that context fails identically. This IS a whole-run failure,
+    not a partial result the caller could build artifacts from."""
+    payload = {
+        "status": "scan_error",
+        "error": "no plugin produced a usable result",
+        "plugins": {
+            "windows.pstree.PsTree": {
+                "status": "scan_error",
+                "rows": [],
+                "error": "Unsatisfied requirement plugins.PsTree.kernel.layer_name",
+            },
+            "windows.psscan.PsScan": {
+                "status": "scan_error",
+                "rows": [],
+                "error": "Unsatisfied requirement plugins.PsScan.kernel.layer_name",
+            },
+        },
+    }
     script = _write_worker(
         tmp_path,
-        """
+        f"""
         import json
-        print(json.dumps({
-            "status": "scan_error",
-            "error": "volatility3 'vol' CLI not found in worker runtime",
-            "plugin": "windows.pstree",
-            "rows": [],
-            "fallback_plugin": None,
-            "fallback_rows": None,
-        }))
+        print(json.dumps({payload!r}))
         """,
     )
     launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
 
-    with pytest.raises(VolatilityScanError, match="vol' CLI not found"):
-        await launcher.run("/tmp/fake.vmem")
-
-
-async def test_run_raises_scan_error_on_timeout_status(tmp_path: Path) -> None:
-    script = _write_worker(
-        tmp_path,
-        """
-        import json
-        print(json.dumps({
-            "status": "timeout",
-            "error": "windows.pstree exceeded 300s",
-            "plugin": "windows.pstree",
-            "rows": [],
-            "fallback_plugin": None,
-            "fallback_rows": None,
-        }))
-        """,
-    )
-    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable, timeout_seconds=1)
-
-    with pytest.raises(VolatilityScanError, match="exceeded 300s"):
-        await launcher.run("/tmp/fake.vmem")
+    with pytest.raises(VolatilityScanError, match="no plugin produced a usable result"):
+        await launcher.run(
+            "/tmp/fake.vmem", plugins=["windows.pstree.PsTree", "windows.psscan.PsScan"]
+        )
 
 
 async def test_run_raises_on_outer_wallclock_timeout(
@@ -208,7 +240,7 @@ async def test_missing_python_binary_raises_scan_error(tmp_path: Path) -> None:
         await launcher.run("/tmp/fake.vmem")
 
 
-async def test_run_raises_on_unrecognized_status(tmp_path: Path) -> None:
+async def test_run_raises_on_unrecognized_shape(tmp_path: Path) -> None:
     script = _write_worker(
         tmp_path,
         """
@@ -218,7 +250,7 @@ async def test_run_raises_on_unrecognized_status(tmp_path: Path) -> None:
     )
     launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
 
-    with pytest.raises(VolatilityScanError, match="unrecognized status"):
+    with pytest.raises(VolatilityScanError, match="unrecognized shape"):
         await launcher.run("/tmp/fake.vmem")
 
 
@@ -232,8 +264,8 @@ async def test_stderr_is_logged_on_success(
         import sys
         sys.stderr.write("No metadata file found alongside VMEM file\\n")
         print(json.dumps({
-            "status": "ok", "error": None, "plugin": "windows.pstree",
-            "rows": [], "fallback_plugin": None, "fallback_rows": None,
+            "status": "ok", "error": None,
+            "plugins": {"windows.pstree.PsTree": {"status": "ok", "rows": [], "error": None}},
         }))
         """,
     )
@@ -252,28 +284,32 @@ async def test_stderr_is_logged_on_success(
 
 @pytest.mark.skipif(not _REAL_WORKER_PATH.exists(), reason="real worker script missing")
 @pytest.mark.skipif(
-    not _REAL_VOL_AVAILABLE,
-    reason="KRONOS_CRIDEX_VMEM_PATH not set or file missing; see poc/volatility_memory_module/",
+    not (_REAL_VOL_AVAILABLE and _REAL_VOL_PYTHON_BIN),
+    reason="KRONOS_CRIDEX_VMEM_PATH/KRONOS_VOLATILITY_PYTHON_BIN not set; "
+    "see poc/volatility_multiplugin/",
 )
-async def test_real_worker_falls_back_to_psscan_on_real_cridex_sample() -> None:
-    """End-to-end against the real, classic cridex.vmem sample.
+async def test_real_worker_runs_full_plugin_set_on_real_cridex_sample() -> None:
+    """End-to-end against the real, classic cridex.vmem sample, real
+    volatility3==2.28.0, the real (rewritten) multi-plugin worker script.
 
-    Real, reproduced finding (poc/volatility_memory_module/README.md):
+    Real, reproduced finding (poc/volatility_multiplugin/output.txt):
     windows.pstree's own linked-list walk returns zero rows for this real
-    sample + volatility3==2.28.0, while windows.psscan (same real file)
-    recovers the real, well-documented process census.
+    sample + volatility3==2.28.0, while windows.psscan (same real file,
+    same shared automagic context) recovers the real, well-documented
+    process census. The five newer plugins also legitimately return zero
+    rows for this specific XP-era sample (a real, already-documented
+    per-process-introspection limitation for cridex.vmem, not a bug).
     """
     launcher = VolatilityLauncher(
-        worker_path=_REAL_WORKER_PATH, python_bin=sys.executable, timeout_seconds=120
+        worker_path=_REAL_WORKER_PATH, python_bin=_REAL_VOL_PYTHON_BIN, timeout_seconds=120
     )
 
     result = await launcher.run(_REAL_SAMPLE_PATH)
 
-    assert result.plugin == "windows.pstree"
-    assert result.rows == ()
-    assert result.used_fallback is True
-    assert result.fallback_plugin == "windows.psscan"
-    assert result.fallback_rows is not None
-    names = {row["ImageFileName"] for row in result.fallback_rows}
+    pstree = result.for_plugin("windows.pstree.PsTree")
+    psscan = result.for_plugin("windows.psscan.PsScan")
+    assert pstree is not None and pstree.ok and pstree.rows == ()
+    assert psscan is not None and psscan.ok
+    names = {row["ImageFileName"] for row in psscan.rows}
     assert "explorer.exe" in names
     assert "services.exe" in names

@@ -1,65 +1,74 @@
 #!/usr/bin/env python3
-"""KronOS Volatility3 worker: run a real volatility3 plugin against a memory
-image and emit one JSON result document to stdout.
+"""KronOS Volatility3 worker: run several real volatility3 plugins against a
+memory image, sharing ONE resolved automagic context, and emit one JSON
+result document to stdout -- the same "small standalone script, JSON in/out,
+everything else on stderr" shape as docker/plaso/kronos-plaso-worker.py and
+docker/yara/kronos-yarax-worker.py. Runs inside this subprocess, never inside
+the caller's (API/Celery worker) process -- CLAUDE.md SSG.3.
 
-Invoked by VolatilityLauncher (src/external/sandbox/volatility_launcher.py);
-the launcher feeds an evidence-file path + plugin name(s) + a per-run timeout
-via CLI args, and reads exactly one JSON object back from stdout -- the same
-"small standalone script, JSON in/out, everything else on stderr" shape as
-docker/plaso/kronos-plaso-worker.py and docker/yara/kronos-yarax-worker.py.
+**Milestone CCCCC rewrite.** The prior version shelled out to the `vol` CLI
+once *per plugin*, redoing the expensive part (DTB/page-table detection +
+kernel symbol table resolution) from scratch every time. Real-verified this
+session (poc/volatility_multiplugin/, volatility3==2.28.0, pinned): building
+ONE ``volatility3.framework.contexts.Context``, resolving automagic once,
+then looping ``plugins.construct_plugin()`` for multiple plugin classes
+against that SAME context lets every plugin after the first construct in
+~0.1-0.5s instead of paying the full automagic cost again (measured up to
+13s for one real sample). This worker now uses volatility3's own framework
+API directly (the exact sequence ``volatility3.cli.CommandLine.run()`` uses
+internally) instead of the `vol` CLI, and reuses
+``volatility3.cli.text_renderer.JsonRenderer``'s own TreeGrid-walking visitor
+for row extraction rather than hand-rolling a second one (also verified live
+in the same PoC).
 
-Uses volatility3's own *stable public CLI* (the ``vol`` console script,
-pinned ``volatility3==2.28.0`` -- see poc/volatility_memory_module/README.md
-for the real, captured verification run), not volatility3's internal Python
-framework API: the CLI + its ``-r json`` renderer is the documented, stable
-contract (mirrors kronos-plaso-worker.py's identical reasoning for using
-log2timeline/psort rather than Plaso's internal classes). Runs inside this
-subprocess, never inside the caller's (API/Celery worker) process --
-CLAUDE.md §G.3.
+**Plugin names are the real, canonical ``module.ClassName`` form**
+(``windows.pstree.PsTree``, not ``windows.pstree``) -- confirmed live this
+session: ``framework.list_plugins()`` only recognises the full form; the
+short form only worked via the `vol` CLI's own argparse prefix-matching,
+which this worker no longer goes through.
 
-**Real, reproduced finding this worker's fallback exists for** (verified
-against the real, classic `cridex.vmem` Windows XP sample -- see
-poc/volatility_memory_module/README.md): ``windows.pstree``/``windows.pslist``
-walk the kernel's ``PsActiveProcessHead`` doubly-linked list, and for this
-specific real sample + volatility3==2.28.0 combination that walk yields
-*zero* processes -- a real, exit-0, no-exception, empty JSON ``[]`` result,
-not a wrapper bug (independently confirmed: correct DTB/kernel-virtual-offset
-detected via ``windows.info``, no exceptions in ``-vvv`` output, ``--pid``
-filtered by a PID confirmed present via the scanner still returns nothing).
-``windows.psscan`` (an independent pool-tag scanner, not a linked-list walk)
-recovers the real, full, well-documented process census from the exact same
-file. Never silently drop recoverable data when the primary (linked-list)
-technique and a real alternative (pool-scan) technique disagree: if the
-primary plugin's own JSON result is an empty list, this worker automatically
-also runs ``--fallback-plugin`` (default ``windows.psscan``) against the same
-evidence file and reports both results in one JSON document.
+**pstree/psscan no longer need a conditional fallback for the
+StructuredArtifact side** -- both are now just two of the several plugins in
+the eager set below and run unconditionally (running psscan is no longer an
+extra ~7s `vol` subprocess, it's ~0.15s of shared-context reuse), so an
+analyst always gets both listings, not just whichever the old fallback logic
+picked. Both real findings that motivated the old fallback logic are still
+true and still handled, just generalized:
 
-**Second real finding, a genuine memory image where automagic construction
-itself fails** (a real ``ch2.dmp`` sample reported by a user, gap-audit
-follow-up to Milestone AAAAA/BBBBB): unlike the ``cridex.vmem`` case above,
-where the primary plugin ran to completion and simply returned zero rows,
-this sample makes volatility3's own automagic layer stacker unable to find
-a valid Windows DTB/kernel at all (``vol -f ch2.dmp -vv windows.info``
-shows ``WindowsIntelStacker hits: []`` and ``No suitable kernels found
-during pdbscan``) -- ``windows.pstree`` exits **non-zero** with
-``Unsatisfied requirement ... kernel.layer_name``, never producing a JSON
-``[]`` at all. The fallback branch below only ever triggered on
-``rows == [] and returncode == 0`` -- a non-zero primary exit skipped the
-fallback attempt entirely, even though a plugin-specific requirement
-failure doesn't guarantee every other plugin fails the same way. Verified
-empirically for this exact file that ``windows.psscan`` *also* fails
-identically (the same automagic construction is shared by every
-``windows.*`` plugin needing a resolved kernel layer, so this particular
-sample's fallback attempt will still legitimately report no rows) -- but
-the fallback must still be *attempted* so a genuinely different sample
-where only the primary plugin's specific requirement chain fails isn't
-silently skipped.
+1. **``cridex.vmem`` wrinkle** (Windows XP + volatility3==2.28.0,
+   verified in ``poc/volatility_memory_module/README.md`` and reconfirmed
+   this session in ``poc/volatility_multiplugin/output.txt``):
+   ``windows.pstree`` legitimately returns zero rows (a real, exit-0,
+   no-exception empty linked-list walk) while ``windows.psscan`` recovers
+   the real process census via pool-tag scanning from the same file. Both
+   still run and both are still reported -- this worker no longer needs to
+   *decide* whether to run the second one, it always does.
+2. **``ch2.dmp`` automagic-construction failure** (a real user-reported
+   sample, Gap Audit Milestone AAAAA/BBBBB follow-up): some images make
+   volatility3's own automagic layer stacker unable to find a valid
+   Windows DTB/kernel at all -- every plugin sharing that context fails
+   identically (all raise inside ``construct_plugin()``), reported
+   per-plugin, never silently dropped, never aborting the whole worker run.
+
+**Per-plugin error isolation, generalized from the old primary/fallback
+pair to a real loop over N plugins**: one plugin's ``construct_plugin()``
+or render failure (e.g. a genuinely unsupported plugin for this OS/build)
+must not prevent the other plugins already sharing the constructed context
+from completing -- each plugin's own result carries its own
+``status``/``error``, independent of every other plugin's outcome.
+
+**Wall-clock budget**: a single ``--timeout-seconds`` bounds the WHOLE run
+(sum of every plugin), checked between plugin iterations (not mid-plugin,
+via a soft elapsed-time guard rather than a signal-based interrupt) --
+malfind/filescan alone measured 24s/11s on a modest 1.6GB image and will be
+worse on larger real-world ones, so this must budget across the set, not
+per-plugin. A plugin skipped for running out of budget is reported honestly
+(``status: "skipped_timeout_budget"``), never silently absent.
 
 Usage:
     python kronos-volatility-worker.py \
         --evidence-path /mnt/evidence/sample.vmem \
-        --plugin windows.pstree \
-        --fallback-plugin windows.psscan \
+        --plugins windows.pstree.PsTree,windows.psscan.PsScan,windows.dlllist.DllList \
         --timeout-seconds 300
 """
 
@@ -68,22 +77,35 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import shutil
-import subprocess
 import sys
+import time
+from typing import Any
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("kronos-volatility-worker")
 
+# The real eager plugin set (Milestone CCCCC's plan): every plugin here runs
+# unconditionally, sharing one context, on every memory-dump parse.
+# `windows.malware.malfind.Malfind` (not the deprecated `windows.malfind.Malfind`
+# -- confirmed live this session) is the "suspicious executables" signal.
+_DEFAULT_PLUGINS = (
+    "windows.pstree.PsTree",
+    "windows.psscan.PsScan",
+    "windows.dlllist.DllList",
+    "windows.cmdline.CmdLine",
+    "windows.malware.malfind.Malfind",
+    "windows.filescan.FileScan",
+    "windows.registry.hivelist.HiveList",
+)
+
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="KronOS volatility3 sandboxed plugin runner")
+    p = argparse.ArgumentParser(description="KronOS volatility3 sandboxed multi-plugin runner")
     p.add_argument("--evidence-path", required=True)
-    p.add_argument("--plugin", default="windows.pstree")
     p.add_argument(
-        "--fallback-plugin",
-        default="windows.psscan",
-        help="Run this plugin too if --plugin's own JSON result is empty. Pass '' to disable.",
+        "--plugins",
+        default=",".join(_DEFAULT_PLUGINS),
+        help="Comma-separated real volatility3 plugin names (module.ClassName form).",
     )
     p.add_argument("--timeout-seconds", type=int, default=300)
     return p.parse_args()
@@ -94,182 +116,181 @@ def _emit(result: dict) -> None:
     print(json.dumps(result, default=str), flush=True)
 
 
-def _run_plugin(
-    vol_bin: str, evidence_path: str, plugin: str, timeout_seconds: int
-) -> tuple[int, list, str]:
-    """Run one volatility3 plugin via the real ``vol`` CLI with ``-r json``.
+def _run_all_plugins(
+    evidence_path: str, plugin_names: list[str], timeout_seconds: int
+) -> dict[str, dict[str, Any]]:
+    """Run every plugin in *plugin_names* against ONE shared Context.
 
-    Returns ``(returncode, rows, stderr)``. ``rows`` is ``[]`` whenever the
-    process didn't exit 0 or its stdout wasn't a JSON list -- callers decide
-    what that means (a genuine zero-result plugin run vs. a real failure is
-    disambiguated by ``returncode``, not by this helper). Lets
-    ``subprocess.TimeoutExpired`` propagate to the caller.
+    Returns ``{plugin_name: {"status": "ok"|"scan_error"|"skipped_timeout_budget",
+    "rows": [...], "error": str|None}}``. Never raises for a single plugin's
+    own failure -- see this module's own docstring for why (each plugin's
+    ``construct_plugin()``/render call is independently wrapped).
     """
-    cmd = [vol_bin, "-q", "-r", "json", "-f", evidence_path, plugin]
-    logger.info("Running volatility3 plugin: %s", " ".join(cmd))
-    completed = subprocess.run(  # noqa: S603  # argv list, shell=False, vol_bin from shutil.which
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
-    rows: list = []
-    if completed.returncode == 0 and completed.stdout.strip():
+    import volatility3
+    import volatility3.plugins
+    from volatility3 import framework
+    from volatility3.cli.text_renderer import JsonRenderer
+    from volatility3.framework import automagic, contexts, interfaces, plugins
+    from volatility3.framework.automagic import stacker
+
+    framework.require_interface_version(2, 0, 0)
+
+    ctx = contexts.Context()
+    import_failures = framework.import_files(volatility3.plugins, True)
+    if import_failures:
+        logger.warning("volatility3 plugin import failures: %s", ", ".join(sorted(import_failures)))
+
+    ctx.config["automagic.LayerStacker.single_location"] = f"file://{evidence_path}"
+    available_automagics = list(automagic.available(ctx))
+    plugin_list = framework.list_plugins()
+
+    results: dict[str, dict[str, Any]] = {}
+    start = time.time()
+
+    for plugin_name in plugin_names:
+        elapsed = time.time() - start
+        if elapsed >= timeout_seconds:
+            logger.warning(
+                "volatility3 worker timeout budget (%ss) exhausted before %s; skipping",
+                timeout_seconds,
+                plugin_name,
+            )
+            results[plugin_name] = {
+                "status": "skipped_timeout_budget",
+                "rows": [],
+                "error": f"skipped: {elapsed:.1f}s of {timeout_seconds}s budget already used",
+            }
+            continue
+
+        if plugin_name not in plugin_list:
+            logger.error("volatility3 plugin %s not found (not registered/importable)", plugin_name)
+            results[plugin_name] = {
+                "status": "scan_error",
+                "rows": [],
+                "error": f"{plugin_name} not found in the real plugin registry",
+            }
+            continue
+
+        plugin_cls = plugin_list[plugin_name]
         try:
-            parsed = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            logger.warning("volatility3 plugin %s produced non-JSON stdout", plugin)
-        else:
-            if isinstance(parsed, list):
-                rows = parsed
-            else:
-                logger.warning(
-                    "volatility3 plugin %s's JSON output was not a list (got %s)",
-                    plugin,
-                    type(parsed).__name__,
+            chosen_automagics = automagic.choose_automagic(available_automagics, plugin_cls)
+            if ctx.config.get("automagic.LayerStacker.stackers", None) is None:
+                ctx.config["automagic.LayerStacker.stackers"] = stacker.choose_os_stackers(
+                    plugin_cls
                 )
-    return completed.returncode, rows, completed.stderr
+            constructed = plugins.construct_plugin(
+                ctx, chosen_automagics, plugin_cls, "plugins", None, None
+            )
+            grid = constructed.run()
+        except Exception as exc:  # noqa: BLE001 -- one plugin's failure must not sink the others
+            logger.warning(
+                "volatility3 plugin %s failed: %s: %s", plugin_name, type(exc).__name__, exc
+            )
+            results[plugin_name] = {
+                "status": "scan_error",
+                "rows": [],
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            continue
+
+        try:
+            renderer = JsonRenderer()
+            ignore_columns = renderer.ignored_columns(grid)
+            tree: list = []
+
+            def visitor(node, accumulator, _grid=grid, _ignore=ignore_columns, _renderer=renderer):
+                acc_map, final_tree = accumulator
+                node_dict: dict[str, Any] = {"__children": []}
+                for column_index, column in enumerate(_grid.columns):
+                    if column in _ignore:
+                        continue
+                    type_renderer = _renderer._type_renderers.get(
+                        column.type, _renderer._type_renderers["default"]
+                    )
+                    data = type_renderer(list(node.values)[column_index])
+                    if isinstance(data, interfaces.renderers.BaseAbsentValue):
+                        data = None
+                    node_dict[column.name] = data
+                if node.parent and node.parent.path in acc_map:
+                    acc_map[node.parent.path]["__children"].append(node_dict)
+                else:
+                    final_tree.append(node_dict)
+                acc_map[node.path] = node_dict
+                return (acc_map, final_tree)
+
+            grid.populate(visitor, ({}, tree))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "volatility3 plugin %s ran but row extraction failed: %s: %s",
+                plugin_name,
+                type(exc).__name__,
+                exc,
+            )
+            results[plugin_name] = {
+                "status": "scan_error",
+                "rows": [],
+                "error": f"row extraction failed: {type(exc).__name__}: {exc}",
+            }
+            continue
+
+        logger.info("volatility3 plugin %s: %d rows", plugin_name, len(tree))
+        results[plugin_name] = {"status": "ok", "rows": tree, "error": None}
+
+    return results
 
 
 def main() -> None:
     args = _parse_args()
+    plugin_names = [p.strip() for p in args.plugins.split(",") if p.strip()]
     logger.info(
-        "Starting volatility3 run: evidence=%s plugin=%s fallback=%s",
+        "Starting volatility3 multi-plugin run: evidence=%s plugins=%s",
         args.evidence_path,
-        args.plugin,
-        args.fallback_plugin or "(disabled)",
+        plugin_names,
     )
 
-    vol_bin = shutil.which("vol")
-    if vol_bin is None:
+    try:
+        import volatility3  # noqa: F401
+    except ImportError:
         # This worker's own runtime is missing the real dependency -- an
         # infrastructure problem (mirrors kronos-yarax-worker.py's identical
         # "yara_x not installed" scan_error path), never a plugin-specific
         # failure.
-        logger.error("volatility3 'vol' CLI not found on PATH in this worker's runtime")
+        logger.error("volatility3 not installed in this worker's runtime")
         _emit(
             {
                 "status": "scan_error",
-                "error": "volatility3 'vol' CLI not found in worker runtime",
-                "plugin": args.plugin,
-                "rows": [],
-                "fallback_plugin": None,
-                "fallback_rows": None,
+                "error": "volatility3 not installed in worker runtime",
+                "plugins": {},
             }
         )
         sys.exit(0)
 
     try:
-        returncode, rows, stderr = _run_plugin(
-            vol_bin, args.evidence_path, args.plugin, args.timeout_seconds
-        )
-    except subprocess.TimeoutExpired:
-        logger.error(
-            "volatility3 plugin %s exceeded its %ss in-worker timeout",
-            args.plugin,
-            args.timeout_seconds,
-        )
-        _emit(
-            {
-                "status": "timeout",
-                "error": f"{args.plugin} exceeded {args.timeout_seconds}s",
-                "plugin": args.plugin,
-                "rows": [],
-                "fallback_plugin": None,
-                "fallback_rows": None,
-            }
-        )
-        sys.exit(0)
-
-    if stderr.strip():
-        # Logged on every run, success or failure -- same Track B1 reasoning
-        # FirecrackerLauncher/kronos-yarax-worker.py already established: a
-        # clean exit can still carry a meaningful diagnostic (e.g. volatility3's
-        # own "No metadata file found alongside VMEM file" warning).
-        logger.info("volatility3 stderr (plugin=%s): %s", args.plugin, stderr[:2000])
-
-    primary_error: str | None = None
-    if returncode != 0:
-        # Real, reproduced finding (this module's own docstring, "second
-        # real finding"): a non-zero primary exit used to short-circuit
-        # straight to scan_error, skipping the fallback plugin entirely --
-        # even though a plugin-specific requirement failure doesn't
-        # guarantee every other plugin fails identically. Record the
-        # reason and fall through to the same fallback attempt an
-        # empty-rows result already gets, instead of returning here.
-        logger.error("volatility3 plugin %s exited %d", args.plugin, returncode)
-        primary_error = f"{args.plugin} exited {returncode}: {stderr[:500]}"
-        rows = []
-
-    fallback_plugin: str | None = None
-    fallback_rows: list | None = None
-    fallback_ran_and_failed = False
-    if not rows and args.fallback_plugin:
-        logger.info(
-            "Primary plugin %s produced no usable rows; trying fallback %s",
-            args.plugin,
-            args.fallback_plugin,
-        )
-        try:
-            fb_returncode, fb_rows, fb_stderr = _run_plugin(
-                vol_bin, args.evidence_path, args.fallback_plugin, args.timeout_seconds
-            )
-        except subprocess.TimeoutExpired:
-            logger.error(
-                "Fallback plugin %s timed out; reporting primary result only", args.fallback_plugin
-            )
-            fallback_ran_and_failed = primary_error is not None
-        else:
-            if fb_stderr.strip():
-                logger.info(
-                    "volatility3 stderr (plugin=%s): %s", args.fallback_plugin, fb_stderr[:2000]
-                )
-            if fb_returncode == 0:
-                fallback_plugin = args.fallback_plugin
-                fallback_rows = fb_rows
-            else:
-                logger.warning(
-                    "Fallback plugin %s exited %d; reporting primary result only",
-                    args.fallback_plugin,
-                    fb_returncode,
-                )
-                fallback_ran_and_failed = primary_error is not None
-
-    # The primary plugin failed outright (not just "ran cleanly, found
-    # nothing") AND either there was no fallback to try or it also failed
-    # -- this is a real scan_error, same as before this fix, just reached
-    # after genuinely trying the fallback first instead of skipping it.
-    if primary_error is not None and fallback_plugin is None:
+        plugin_results = _run_all_plugins(args.evidence_path, plugin_names, args.timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 -- a truly unexpected failure (e.g. can't build a Context)
+        logger.error("volatility3 worker run failed outright: %s: %s", type(exc).__name__, exc)
         _emit(
             {
                 "status": "scan_error",
-                "error": primary_error
-                if not fallback_ran_and_failed
-                else f"{primary_error} (fallback {args.fallback_plugin} also failed)",
-                "plugin": args.plugin,
-                "rows": [],
-                "fallback_plugin": None,
-                "fallback_rows": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "plugins": {
+                    name: {
+                        "status": "scan_error",
+                        "rows": [],
+                        "error": "worker run failed outright",
+                    }
+                    for name in plugin_names
+                },
             }
         )
         sys.exit(0)
 
-    logger.info(
-        "volatility3 run complete: plugin=%s rows=%d fallback_plugin=%s fallback_rows=%s",
-        args.plugin,
-        len(rows),
-        fallback_plugin,
-        len(fallback_rows) if fallback_rows is not None else "n/a",
-    )
+    any_ok = any(r["status"] == "ok" for r in plugin_results.values())
     _emit(
         {
-            "status": "ok",
-            "error": None,
-            "plugin": args.plugin,
-            "rows": rows,
-            "fallback_plugin": fallback_plugin,
-            "fallback_rows": fallback_rows,
+            "status": "ok" if any_ok else "scan_error",
+            "error": None if any_ok else "no plugin produced a usable result",
+            "plugins": plugin_results,
         }
     )
     sys.exit(0)

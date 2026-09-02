@@ -1,4 +1,4 @@
-"""VolatilityLauncher: subprocess-isolated volatility3 plugin execution.
+"""VolatilityLauncher: subprocess-isolated multi-plugin volatility3 execution.
 
 **Why this exists (CLAUDE.md §G.3, roadmap E5).** ``volatility3`` is a real,
 independently-versioned external tool (pinned ``volatility3==2.28.0``, see
@@ -23,20 +23,30 @@ isolation only -- the same, real level of isolation this codebase's Plaso
 and YARA-X paths already provide, not a Firecracker microVM or gVisor
 sandbox of its own.
 
-**Fallback behaviour is real, not a guess.** Verified against the real,
-classic ``cridex.vmem`` Windows XP sample (poc/volatility_memory_module/):
-``windows.pstree``/``windows.pslist`` (linked-list walk) returned a real,
-reproducible zero-row result for this sample + pinned version, while
-``windows.psscan`` (pool-tag scan, same real file) recovered the real,
-full process census. The worker script automatically re-runs a configured
-fallback plugin when the primary plugin's own JSON result is empty and
-reports both -- see the worker script's own module docstring for the full
-account. This class is a thin, honest pass-through of that contract; it
-does not itself decide when to fall back.
+**Milestone CCCCC rewrite: one call now runs several plugins, not one.**
+Real-verified (``poc/volatility_multiplugin/``): the worker script shares a
+single resolved automagic context across every requested plugin, so running
+N plugins costs roughly "one full automagic resolution + N cheap
+constructions," not N full resolutions. ``run()`` now takes a plugin
+*sequence* and returns a ``VolatilityMultiPluginResult`` carrying one
+``VolatilityPluginOutcome`` per requested plugin -- **a single plugin's own
+failure is reported in its own outcome, not raised** (generalizes the old
+primary/fallback pair's "one bad thing doesn't sink the evidence" precedent
+to N plugins). ``VolatilityScanError`` is only raised when the worker run
+fails *outright* (couldn't even launch, produced no parseable output, or
+every single requested plugin failed) -- see ``_payload_to_result``.
+
+**``pstree``/``psscan`` no longer need special fallback handling at this
+layer.** Both are simply two of the caller's requested plugins now and both
+run unconditionally (cheap, shared-context reuse) -- see the worker script's
+own docstring for the full account of the two real findings
+(``cridex.vmem``'s empty pstree; ``ch2.dmp``'s automagic-construction
+failure) that originally motivated a conditional fallback, and why running
+both unconditionally still handles both correctly.
 
 **Deliberately not a ``FirecrackerLauncher`` subclass**, for the same reason
 ``YaraXSandboxRunner`` isn't one: structurally different output shape (a
-list of plugin-rendered rows, not a ``TimelineRecord`` stream) and
+dict of plugin-rendered rows, not a ``TimelineRecord`` stream) and
 ``FirecrackerLauncher``'s constructor is tightly coupled to Plaso specifics
 this class has no analogue for. Same subprocess/JSON-io/timeout *pattern*,
 deliberately a separate class -- mirrors the ``TarArchiveParser``/
@@ -50,6 +60,7 @@ import json
 import logging
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -65,40 +76,75 @@ _VOLATILITY_WORKER_PATH = (
     / "kronos-volatility-worker.py"
 )
 
-# Wall-clock ceiling for the subprocess itself, layered above the worker's own
-# --timeout-seconds passed to each `vol` invocation -- same two-independent-
-# timeouts reasoning as FirecrackerLauncher/YaraXSandboxRunner: if the
-# in-worker timeout somehow fails to fire, this outer one still guarantees
-# the caller gets control back. The worker can run the primary AND a
-# fallback plugin sequentially, so the margin is generous (a single
-# `vol -f <512MB image> windows.psscan` run measured well under 5s against
-# the real cridex.vmem sample -- see poc/volatility_memory_module/README.md
-# -- but a larger real-world image or a heavier plugin can take much longer).
-_SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 30
+# Wall-clock ceiling for the subprocess itself, layered above the worker's
+# own --timeout-seconds -- same two-independent-timeouts reasoning as
+# FirecrackerLauncher/YaraXSandboxRunner: if the in-worker budget guard
+# somehow fails to fire, this outer one still guarantees the caller gets
+# control back. Widened from the single-plugin era's 30s: the worker now
+# runs up to 7 plugins sequentially in one process (malfind/filescan alone
+# measured 24s/11s render time each on a modest 1.6GB real image, per
+# poc/volatility_multiplugin/output.txt) before this margin even starts
+# counting.
+_SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 60
 
-_DEFAULT_PLUGIN = "windows.pstree"
-_DEFAULT_FALLBACK_PLUGIN = "windows.psscan"
-_DEFAULT_TIMEOUT_SECONDS = 300
+# Real eager plugin set (Milestone CCCCC) -- must match
+# kronos-volatility-worker.py's own _DEFAULT_PLUGINS exactly (kept here too,
+# not imported from the worker script, since the worker runs in a different
+# container image with a different Python environment -- see
+# VolatilityModule's own docstring for the same "mirror, don't import
+# across the sandbox boundary" reasoning already established for the
+# fallback-plugin constant).
+DEFAULT_PLUGINS: tuple[str, ...] = (
+    "windows.pstree.PsTree",
+    "windows.psscan.PsScan",
+    "windows.dlllist.DllList",
+    "windows.cmdline.CmdLine",
+    "windows.malware.malfind.Malfind",
+    "windows.filescan.FileScan",
+    "windows.registry.hivelist.HiveList",
+)
+
+# Doubled from the single-plugin era's 300s: 7 plugins now run sequentially
+# in one process instead of 1-2 `vol` subprocess invocations. Real-measured
+# combined cost on a 1.6GB image was ~40s (poc/volatility_multiplugin/); a
+# larger real-world image (multi-GB, common in practice) will take
+# proportionally longer for the pool-scanning plugins (malfind/filescan) in
+# particular, so this is real headroom, not an arbitrary bump.
+_DEFAULT_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
-class VolatilityPluginResult:
-    """The full, real output of one sandboxed volatility3 run (possibly with a fallback)."""
+class VolatilityPluginOutcome:
+    """The real, per-plugin outcome of one requested plugin within a
+    ``VolatilityMultiPluginResult`` -- never raised on its own; a single
+    plugin's failure is reported here, not sunk into the whole run."""
 
     plugin: str
+    status: str
     rows: tuple[dict[str, Any], ...]
-    fallback_plugin: str | None = None
-    fallback_rows: tuple[dict[str, Any], ...] | None = None
+    error: str | None
 
     @property
-    def used_fallback(self) -> bool:
-        """True if the primary plugin came back empty and a fallback ran."""
-        return self.fallback_plugin is not None
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+@dataclass(frozen=True)
+class VolatilityMultiPluginResult:
+    """The full, real output of one sandboxed multi-plugin volatility3 run."""
+
+    outcomes: tuple[VolatilityPluginOutcome, ...]
+
+    def for_plugin(self, plugin: str) -> VolatilityPluginOutcome | None:
+        for outcome in self.outcomes:
+            if outcome.plugin == plugin:
+                return outcome
+        return None
 
 
 class VolatilityLauncher:
-    """Run one volatility3 plugin (with an automatic empty-result fallback)
-    against a real memory image in a sandboxed subprocess.
+    """Run several real volatility3 plugins (sharing one resolved automagic
+    context) against a real memory image in a sandboxed subprocess.
 
     Never imports/calls ``volatility3`` in this (the caller's) process --
     see this module's own docstring and CLAUDE.md §G.3.
@@ -117,10 +163,9 @@ class VolatilityLauncher:
     async def run(
         self,
         evidence_path: str,
-        plugin: str = _DEFAULT_PLUGIN,
-        fallback_plugin: str | None = _DEFAULT_FALLBACK_PLUGIN,
-    ) -> VolatilityPluginResult:
-        """Run *plugin* against *evidence_path*; return the real result.
+        plugins: Sequence[str] = DEFAULT_PLUGINS,
+    ) -> VolatilityMultiPluginResult:
+        """Run *plugins* against *evidence_path*; return the real result.
 
         Runs the blocking subprocess call in a worker thread
         (``asyncio.to_thread``) so this never blocks the caller's event loop
@@ -128,28 +173,28 @@ class VolatilityLauncher:
 
         Raises:
             VolatilityScanError: the sandbox subprocess failed to launch,
-                exited non-zero, produced unparseable output, or the plugin
-                run itself timed out or errored inside the worker.
+                exited non-zero, produced unparseable output, or every
+                single requested plugin failed inside the worker (an
+                individual plugin's own failure among a mixed-success run
+                is reported in its ``VolatilityPluginOutcome`` instead).
         """
-        return await asyncio.to_thread(self._run_sync, evidence_path, plugin, fallback_plugin)
+        return await asyncio.to_thread(self._run_sync, evidence_path, plugins)
 
-    def _run_sync(
-        self, evidence_path: str, plugin: str, fallback_plugin: str | None
-    ) -> VolatilityPluginResult:
+    def _run_sync(self, evidence_path: str, plugins: Sequence[str]) -> VolatilityMultiPluginResult:
         cmd = [
             self._python_bin,
             str(self._worker_path),
             "--evidence-path",
             evidence_path,
-            "--plugin",
-            plugin,
-            "--fallback-plugin",
-            fallback_plugin or "",
+            "--plugins",
+            ",".join(plugins),
             "--timeout-seconds",
             str(self._timeout),
         ]
 
-        logger.info("volatility_launch", extra={"worker": str(self._worker_path), "plugin": plugin})
+        logger.info(
+            "volatility_launch", extra={"worker": str(self._worker_path), "plugins": list(plugins)}
+        )
 
         try:
             completed = subprocess.run(  # noqa: S603
@@ -202,30 +247,38 @@ class VolatilityLauncher:
         return self._payload_to_result(payload)
 
     @staticmethod
-    def _payload_to_result(payload: dict[str, Any]) -> VolatilityPluginResult:
+    def _payload_to_result(payload: dict[str, Any]) -> VolatilityMultiPluginResult:
         status = payload.get("status")
-        if status in ("scan_error", "timeout"):
+        plugins_payload = payload.get("plugins")
+        if not isinstance(plugins_payload, dict):
             raise VolatilityScanError(
-                payload.get("error") or f"Volatility worker reported status={status}",
-                context={"status": status},
-            )
-        if status != "ok":
-            raise VolatilityScanError(
-                f"Volatility worker returned an unrecognized status: {status!r}"
+                payload.get("error")
+                or f"Volatility worker returned an unrecognized shape: {payload!r}"
             )
 
-        fallback_rows = payload.get("fallback_rows")
+        outcomes = tuple(
+            VolatilityPluginOutcome(
+                plugin=name,
+                status=entry.get("status", "scan_error"),
+                rows=tuple(entry.get("rows", [])),
+                error=entry.get("error"),
+            )
+            for name, entry in plugins_payload.items()
+        )
+
+        if status == "scan_error" and not any(o.ok for o in outcomes):
+            # Every requested plugin genuinely failed (or none were even
+            # attempted) -- this is a real, whole-run failure, not a partial
+            # result the caller could still usefully build artifacts from.
+            raise VolatilityScanError(
+                payload.get("error") or "Volatility worker: no plugin produced a usable result",
+                context={"status": status},
+            )
+
         logger.info(
             "volatility_run_complete",
             extra={
-                "plugin": payload.get("plugin"),
-                "rows": len(payload.get("rows", [])),
-                "fallback_plugin": payload.get("fallback_plugin"),
+                "plugins": {o.plugin: {"status": o.status, "rows": len(o.rows)} for o in outcomes},
             },
         )
-        return VolatilityPluginResult(
-            plugin=payload["plugin"],
-            rows=tuple(payload.get("rows", [])),
-            fallback_plugin=payload.get("fallback_plugin"),
-            fallback_rows=tuple(fallback_rows) if fallback_rows is not None else None,
-        )
+        return VolatilityMultiPluginResult(outcomes=outcomes)

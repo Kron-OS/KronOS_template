@@ -1,12 +1,17 @@
 {
   "summary": {
-    "case_id": "99ccd04f-775e-495e-b089-0f17f032a043",
-    "evidence_id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf",
+    "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+    "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
     "final_evidence_state": "COMPLETE",
-    "structured_artifact_row_count": 2,
+    "structured_artifact_row_count": 7,
     "by_kind": {
       "volatility.pstree": 1,
-      "volatility.psscan": 1
+      "volatility.psscan": 1,
+      "volatility.dlllist": 1,
+      "volatility.cmdline": 1,
+      "volatility.malfind": 1,
+      "volatility.filescan": 1,
+      "volatility.registry.hivelist": 1
     },
     "psscan_process_count": 17,
     "all_rows_evidence_id_matches": true,
@@ -16,9 +21,9 @@
   },
   "rows": [
     {
-      "artifact_id": "9925570f-d904-43b1-8719-bf2a834507cb",
-      "evidence_id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf",
-      "case_id": "99ccd04f-775e-495e-b089-0f17f032a043",
+      "artifact_id": "88bede39-ca65-4ff5-a017-7dfc2edbfcb5",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
       "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
       "kind": "volatility.pstree",
       "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
@@ -29,14 +34,14 @@
       "record_index": 0,
       "content": {
         "rows": [],
-        "plugin": "windows.pstree"
+        "plugin": "windows.pstree.PsTree"
       },
-      "created_at": "2026-08-30T14:01:10.403798+00:00"
+      "created_at": "2026-09-02T21:34:50.014045+00:00"
     },
     {
-      "artifact_id": "fd307565-4289-483e-b3be-9121c853a342",
-      "evidence_id": "eab213ad-a70a-4593-97cc-c9a41b0afbdf",
-      "case_id": "99ccd04f-775e-495e-b089-0f17f032a043",
+      "artifact_id": "31f4337a-51c7-4252-8c78-4d843a52b755",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
       "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
       "kind": "volatility.psscan",
       "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
@@ -286,9 +291,99 @@
             "ImageFileName": "System"
           }
         ],
-        "plugin": "windows.psscan"
+        "plugin": "windows.psscan.PsScan"
       },
-      "created_at": "2026-08-30T14:01:10.486949+00:00"
+      "created_at": "2026-09-02T21:34:50.099283+00:00"
+    },
+    {
+      "artifact_id": "c12cdd60-d8ec-4a5f-ad51-0c966d2c150a",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+      "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
+      "kind": "volatility.dlllist",
+      "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+      "parser": "volatility3",
+      "parser_version": "2.28.0",
+      "source_path": null,
+      "container_sha256": null,
+      "record_index": 2,
+      "content": {
+        "rows": [],
+        "plugin": "windows.dlllist.DllList"
+      },
+      "created_at": "2026-09-02T21:34:50.135870+00:00"
+    },
+    {
+      "artifact_id": "86a8b683-27d5-47f2-b5ec-db02fb1af89a",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+      "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
+      "kind": "volatility.cmdline",
+      "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+      "parser": "volatility3",
+      "parser_version": "2.28.0",
+      "source_path": null,
+      "container_sha256": null,
+      "record_index": 3,
+      "content": {
+        "rows": [],
+        "plugin": "windows.cmdline.CmdLine"
+      },
+      "created_at": "2026-09-02T21:34:50.173696+00:00"
+    },
+    {
+      "artifact_id": "83756f8a-3822-4945-acc4-06ad2aa6234b",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+      "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
+      "kind": "volatility.malfind",
+      "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+      "parser": "volatility3",
+      "parser_version": "2.28.0",
+      "source_path": null,
+      "container_sha256": null,
+      "record_index": 4,
+      "content": {
+        "rows": [],
+        "plugin": "windows.malware.malfind.Malfind"
+      },
+      "created_at": "2026-09-02T21:34:50.209528+00:00"
+    },
+    {
+      "artifact_id": "c9c21e06-0c20-47fe-a1a2-8379b665d02d",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+      "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
+      "kind": "volatility.filescan",
+      "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+      "parser": "volatility3",
+      "parser_version": "2.28.0",
+      "source_path": null,
+      "container_sha256": null,
+      "record_index": 5,
+      "content": {
+        "rows": [],
+        "plugin": "windows.filescan.FileScan"
+      },
+      "created_at": "2026-09-02T21:34:50.245565+00:00"
+    },
+    {
+      "artifact_id": "70f1fa27-63f5-4fe7-ab84-c894cc868171",
+      "evidence_id": "a5a39339-2183-4f94-9250-99ebdab19809",
+      "case_id": "15305375-2821-41ac-b2d8-75f804690553",
+      "org_id": "7a2d50db-f1bf-496e-8aff-16435cef14b1",
+      "kind": "volatility.registry.hivelist",
+      "sha256": "02a63be2fcf3a63446c3c8ca9151aff963f888204d141e46c6be60ddde7c3e8d",
+      "parser": "volatility3",
+      "parser_version": "2.28.0",
+      "source_path": null,
+      "container_sha256": null,
+      "record_index": 6,
+      "content": {
+        "rows": [],
+        "plugin": "windows.registry.hivelist.HiveList"
+      },
+      "created_at": "2026-09-02T21:34:50.289937+00:00"
     }
   ]
 }

@@ -146,6 +146,32 @@ whether that's a *timeline* depends entirely on the plugin.
 >   judged sufficient for this item's own gate (Windows XP `pstree`/`psscan`
 >   coverage); real Linux `pslist`/`pstree` coverage remains a follow-up.
 
+> **Status (2026-09-02, Milestone CCCCC): expanded to real, multi-plugin
+> CERT-analyst coverage.** `pstree`/`psscan` were the only plugins run;
+> `docker/volatility/kronos-volatility-worker.py` shelled out to the `vol`
+> CLI once per plugin. Real-verified (`poc/volatility_multiplugin/`) that
+> volatility3's own framework API lets one resolved automagic context serve
+> many plugins cheaply (every plugin after the first constructs in
+> ~0.1-0.5s instead of redoing the full DTB/symbol-table resolution) — the
+> worker now runs a real eager set every time: `pstree`/`psscan`
+> (unconditional now, not a conditional fallback), `dlllist`, `cmdline`,
+> `windows.malware.malfind.Malfind` (**suspicious/injected memory
+> regions** — the `malfind`/`vadinfo` "fundamentally non-timeline" row this
+> section named above is now real, shipped output, not a plan), `filescan`,
+> `registry.hivelist`. Verified live against a real 1.6GB user-uploaded
+> Windows 7 image: a real 4-region `malfind` hit (one in `explorer.exe`,
+> `PAGE_EXECUTE_READWRITE`), 2547 real DLL rows, 3232 real file objects, 12
+> real registry hives. Full real autonomous-pipeline re-verification (real
+> upload → real Celery → real Postgres) against `cridex.vmem` confirmed 7
+> real `structured_artifacts` rows landed (up from 2). `handles`/
+> `ldrmodules`/`envars` (remaining per-process attribute listings, same
+> section) and `dumpfiles` (this section's own `filescan`/`dumpfiles`
+> pairing — byte-level extraction, needs new derived-artifact storage) are
+> named, real follow-up work per the approved plan
+> (`docs/GAP_AUDIT_2026-08-28_MILESTONE_CCCCC.md`), not built this pass.
+> `netscan`/`timeliner` remain explicitly out of scope (timeline-shaped, a
+> `parse()` dual-emit follow-up, not this artifact-focused work).
+
 **Timeline-shaped (map directly to `TimelineRecord`):**
 - `timeliner` — Volatility's own timeline plugin; aggregates timestamps
   (process create, thread, handle, registry) across other plugins into

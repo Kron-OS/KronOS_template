@@ -1,0 +1,159 @@
+=== cridex.vmem (/tmp/cridex.vmem) ===
+No metadata file found alongside VMEM file. A VMSS or VMSN file may be required to correctly process a VMEM file. These should be placed in the same directory with the same file name, e.g. cridex.vmem and cridex.vmss.
+{
+  "plugin_import_failures": [
+    "volatility3.plugins.windows.hashdump",
+    "volatility3.plugins.windows.lsadump",
+    "volatility3.plugins.windows.cachedump",
+    "volatility3.plugins.windows.registry.hashdump",
+    "volatility3.plugins.windows.registry.lsadump",
+    "volatility3.plugins.windows.registry.cachedump"
+  ],
+  "plugins": {
+    "windows.pstree.PsTree": {
+      "rows": 0,
+      "construct_seconds": 13.248,
+      "render_seconds": 0.173,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.psscan.PsScan": {
+      "rows": 17,
+      "construct_seconds": 0.154,
+      "render_seconds": 0.827,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 908, \"PPID\": 652, \"ImageFileName\": \"svchost.exe\", \"Offset(V)\": 33725112, \"Threads\": 9, \"Handles\": null, \"SessionId\": null, \"Wow64\": false, \"CreateTime\": \"2012-07-22T02:42:33+00:00\", \"ExitTime\": null, \"File output\": \"Disabled\"}"
+    },
+    "windows.dlllist.DllList": {
+      "rows": 0,
+      "construct_seconds": 0.092,
+      "render_seconds": 0.032,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.cmdline.CmdLine": {
+      "rows": 0,
+      "construct_seconds": 0.086,
+      "render_seconds": 0.027,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.malware.malfind.Malfind": {
+      "rows": 0,
+      "construct_seconds": 0.084,
+      "render_seconds": 0.026,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.filescan.FileScan": {
+      "rows": 0,
+      "construct_seconds": 0.085,
+      "render_seconds": 1.888,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.registry.hivelist.HiveList": {
+      "rows": 0,
+      "construct_seconds": 0.093,
+      "render_seconds": 0.028,
+      "error": null,
+      "sample_row": null
+    }
+  }
+}
+
+=== challenge.raw (real user upload, not redistributed) (/tmp/challenge.raw) ===
+{
+  "plugin_import_failures": [
+    "volatility3.plugins.windows.hashdump",
+    "volatility3.plugins.windows.lsadump",
+    "volatility3.plugins.windows.cachedump",
+    "volatility3.plugins.windows.registry.hashdump",
+    "volatility3.plugins.windows.registry.lsadump",
+    "volatility3.plugins.windows.registry.cachedump"
+  ],
+  "plugins": {
+    "windows.pstree.PsTree": {
+      "rows": 10,
+      "construct_seconds": 0.307,
+      "render_seconds": 0.654,
+      "error": null,
+      "sample_row": "{\"__children\": [{\"__children\": [], \"PID\": 264, \"PPID\": 4, \"ImageFileName\": \"smss.exe\", \"Offset(V)\": 275427706213488, \"Threads\": 2, \"Handles\": 29, \"SessionId\": null, \"Wow64\": false, \"CreateTime\": \"2019-08-19T14:40:07+00:00\", \"ExitTime\": null, \"Audit\": \"\\\\Device\\\\HarddiskVolume2\\\\Windows\\\\System32\\\\sm"
+    },
+    "windows.psscan.PsScan": {
+      "rows": 53,
+      "construct_seconds": 0.161,
+      "render_seconds": 7.805,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 2080, \"PPID\": 3060, \"ImageFileName\": \"firefox.exe\", \"Offset(V)\": 1569741616, \"Threads\": 59, \"Handles\": 970, \"SessionId\": 1, \"Wow64\": true, \"CreateTime\": \"2019-08-19T14:41:08+00:00\", \"ExitTime\": null, \"File output\": \"Disabled\"}"
+    },
+    "windows.dlllist.DllList": {
+      "rows": 2547,
+      "construct_seconds": 0.16,
+      "render_seconds": 3.438,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 264, \"Process\": \"smss.exe\", \"Base\": 1202782208, \"Size\": 131072, \"Name\": \"smss.exe\", \"Path\": \"\\\\SystemRoot\\\\System32\\\\smss.exe\", \"LoadCount\": -1, \"LoadTime\": null, \"File output\": \"Disabled\"}"
+    },
+    "windows.cmdline.CmdLine": {
+      "rows": 53,
+      "construct_seconds": 0.153,
+      "render_seconds": 0.119,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 4, \"Process\": \"System\", \"Args\": null}"
+    },
+    "windows.malware.malfind.Malfind": {
+      "rows": 4,
+      "construct_seconds": 0.151,
+      "render_seconds": 24.637,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 1944, \"Process\": \"explorer.exe\", \"Start VPN\": 63832064, \"End VPN\": 63836159, \"Tag\": \"VadS\", \"Protection\": \"PAGE_EXECUTE_READWRITE\", \"CommitCharge\": 1, \"PrivateMemory\": 1, \"File output\": \"Disabled\", \"Notes\": null, \"Hexdump\": \"00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0"
+    },
+    "windows.filescan.FileScan": {
+      "rows": 3232,
+      "construct_seconds": 0.162,
+      "render_seconds": 17.384,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"Offset\": 88024720, \"Name\": \"\\\\Endpoint\"}"
+    },
+    "windows.registry.hivelist.HiveList": {
+      "rows": 12,
+      "construct_seconds": 0.472,
+      "render_seconds": 0.132,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"Offset\": 273366078509072, \"FileFullPath\": \"\", \"File output\": \"Disabled\"}"
+    }
+  }
+}
+
+
+=== Real worker script verification (docker/volatility/kronos-volatility-worker.py, rewritten) ===
+
+Run 1: cridex.vmem, default plugin set -- matches PoC numbers exactly:
+  windows.pstree.PsTree: status=ok rows=0
+  windows.psscan.PsScan: status=ok rows=17
+  windows.dlllist.DllList: status=ok rows=0
+  windows.cmdline.CmdLine: status=ok rows=0
+  windows.malware.malfind.Malfind: status=ok rows=0
+  windows.filescan.FileScan: status=ok rows=0
+  windows.registry.hivelist.HiveList: status=ok rows=0
+
+Run 2: challenge.raw, default plugin set + one deliberately invalid plugin name
+(windows.not.a.RealPlugin) -- confirms per-plugin error isolation:
+  windows.pstree.PsTree: status=ok rows=10
+  windows.psscan.PsScan: status=ok rows=53
+  windows.dlllist.DllList: status=ok rows=2547
+  windows.cmdline.CmdLine: status=ok rows=53
+  windows.malware.malfind.Malfind: status=ok rows=4
+  windows.filescan.FileScan: status=ok rows=3232
+  windows.registry.hivelist.HiveList: status=ok rows=12
+  windows.not.a.RealPlugin: status=scan_error rows=0 error="windows.not.a.RealPlugin not found in the real plugin registry"
+(top-level status: "ok" -- one plugin's real failure did not sink the others)
+
+Run 3: challenge.raw, --timeout-seconds 1 (deliberately tiny budget) --
+confirms honest timeout-budget skip reporting:
+  windows.pstree.PsTree: status=ok rows=10
+  windows.malware.malfind.Malfind: status=ok rows=4  (already in-flight when
+    budget was exceeded -- the guard only checks BEFORE starting the next
+    plugin, by design, not a mid-plugin interrupt)
+  windows.filescan.FileScan: status=skipped_timeout_budget rows=0
+    error="skipped: 24.6s of 1s budget already used"

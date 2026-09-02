@@ -2,44 +2,60 @@
 
 Wraps ``VolatilityLauncher`` (``src/external/sandbox/volatility_launcher.py``)
 in the ``ForensicParser`` interface -- see that module's docstring for the
-sandboxing rationale (CLAUDE.md §G.3) and the real, verified
-``windows.pstree`` -> ``windows.psscan`` fallback behaviour.
+sandboxing rationale (CLAUDE.md §G.3).
 
-**Dual-emit (Gap Audit Milestone AAAAA): both ``parse()`` and
-``extract_artifacts()`` are now real.** The structural snapshot as a whole
-(``pstree``/``psscan``, keyed by PID/PPID, not chronology --
-``reviews/DFIR_Artifact_Landscape.md`` §2) still isn't timeline-shaped, so
-it still becomes ``StructuredArtifact``s exactly as before. But a real,
-individual *row* within that snapshot frequently carries its own genuine
-per-process ``CreateTime`` -- a real process-creation event, independently
+**Milestone CCCCC: multi-plugin analyst coverage.** Previously this module
+ran exactly two plugins (``windows.pstree`` with a conditional
+``windows.psscan`` fallback). Real-verified this session
+(``poc/volatility_multiplugin/``, against both the classic public
+``cridex.vmem`` sample and a real 1.6 GB user-uploaded image) that
+volatility3's own framework API lets one resolved automagic context serve
+many plugins cheaply -- so this module now requests a fixed, real,
+CERT-analyst-facing plugin set every time (``DEFAULT_PLUGINS``,
+``volatility_launcher.py``): process tree/listing, loaded DLLs, command
+lines, injected/suspicious memory regions (``malfind``), file objects
+resident in memory, and registry hive enumeration. Each plugin's own
+outcome (``VolatilityPluginOutcome``) is independent -- one plugin failing
+never prevents the others from producing their own ``StructuredArtifact``s
+(CLAUDE.md's "one bad thing doesn't sink the evidence" precedent, now
+applied across N plugins instead of a hardcoded pair).
+
+Deliberately still out of scope this cycle (see
+``docs/GAP_AUDIT_2026-08-28_MILESTONE_CCCCC.md`` for the full reasoning):
+``windows.dumpfiles`` (needs a specific PID/virtual-address target, cannot
+run unconditionally -- becomes a separate, on-demand path, Milestone
+EEEEE), unscoped/recursive ``windows.registry.printkey`` (measured live at
+over 200s with no key filter -- a real, not guessed, reason to keep this
+on-demand and scoped rather than eager), ``windows.netscan``/``timeliner``
+(timeline-shaped, belongs in a future ``parse()`` dual-emit extension, not
+this artifact-focused pass), and ``windows.hashdump``/``lsadump``/
+``cachedump`` (confirmed live: currently fail to even import in the worker
+image, missing ``pycryptodome`` -- a separate infrastructure fix).
+
+**Dual-emit (Gap Audit Milestone AAAAA, preserved): both ``parse()`` and
+``extract_artifacts()`` are real.** The structural snapshots
+(``pstree``/``psscan``/etc, keyed by PID/PPID or offset, not chronology --
+``reviews/DFIR_Artifact_Landscape.md`` §2) are not timeline-shaped, so they
+become ``StructuredArtifact``s. But a real, individual *row* within
+``pstree``/``psscan`` frequently carries its own genuine per-process
+``CreateTime`` -- a real process-creation event, independently
 timeline-shaped even though the plugin's output *as a whole* isn't.
-Confirmed against the real captured ``psscan`` output this module already
-verified against ``cridex.vmem`` (``poc/volatility_pipeline_ingest/``):
-every recovered process row carries a real ISO-8601 ``CreateTime``. So
-``parse()`` now derives one ``TimelineRecord`` per row with a parseable
-``CreateTime`` (any plugin, not hardcoded to ``psscan`` -- the field is
-checked generically, so a future plugin that also renders one keeps
-working without a new special case), letting the existing Timeline tab
-correlate process starts against every other evidence source in the same
-case -- while ``extract_artifacts()`` still emits the full structural
-snapshot for the dedicated Artifacts view. Real volatility3 CLI/plugin
-invocations documented elsewhere in this module still apply unchanged
-(fallback behaviour, timeouts, sandboxing).
+Confirmed live this session that none of the five NEW plugins'
+(dlllist/cmdline/malfind/filescan/hivelist) rows carry a ``CreateTime``
+field at all, so the dual-emit logic itself is unchanged: it still only
+looks at ``pstree``/``psscan`` rows, now selected from the multi-plugin
+result rather than a primary/fallback pair (see ``_timeline_rows`` below).
 
-**One scan, not two.** ``ParsingOrchestrationService.execute_parse()``
-calls ``parse()`` then ``extract_artifacts()`` as two independent passes
-for every parser that implements both (``reviews/Data_Source_Module_System.md``
-§5/§9's own documented v1 tradeoff) -- fine for e.g. ``ZipArchiveParser``,
-whose own ``parse()`` is a true no-op, but wrong here: a real volatility3
-subprocess run is comparatively expensive (a single real
-`vol -f <512MB image> windows.psscan` run against ``cridex.vmem`` measured
-well under 5s, per ``volatility_launcher.py``'s own docstring, but a
-larger real-world image or a heavier plugin can take much longer), and
-running it twice for the same evidence file would silently double a real
-memory-forensics job's cost for no benefit. Both methods are always
-invoked back-to-back within the same ``execute_parse()`` async call for a
-given evidence file (confirmed by reading that method before writing
-this), and Celery invokes it via a fresh ``asyncio.run()`` per task
+**One scan, not N.** ``ParsingOrchestrationService.execute_parse()`` calls
+``parse()`` then ``extract_artifacts()`` as two independent passes for
+every parser that implements both (``reviews/Data_Source_Module_System.md``
+§5/§9's own documented v1 tradeoff) -- a real multi-plugin volatility3 run
+is comparatively expensive (~40s measured for the full 7-plugin set against
+a 1.6GB real image, heavier plugins/larger images cost more), so running it
+twice for the same evidence file would double a real memory-forensics job's
+cost for no benefit. Both methods are always invoked back-to-back within
+the same ``execute_parse()`` async call for a given evidence file, and
+Celery invokes it via a fresh ``asyncio.run()`` per task
 (``celery_runtime.run_evidence_coro``) -- so a plain module-level
 ``ContextVar``, set once inside ``parse()`` and read once inside
 ``extract_artifacts()``, is naturally isolated per task with zero risk of
@@ -49,17 +65,6 @@ seam (``yara_scan_org_var``, ``src/application/yara_rules.py``).
 ``extract_artifacts()`` still falls back to running the scan itself if
 called standalone (no cached result present) -- same "still independently
 callable" contract every other ``extract_artifacts()`` override honours.
-
-Every plugin this module runs today (``windows.pstree``, ``windows.psscan``)
-is fundamentally non-timeline output *as a whole* -- a process tree/listing
-keyed by PID/PPID, not a stream of timestamped events (see
-``reviews/DFIR_Artifact_Landscape.md`` §2's own classification) -- the
-per-row ``CreateTime`` dual-emit above is additive to that, not a
-reclassification of it. Plugins whose *primary* output is itself
-timeline-shaped (``timeliner``, ``windows.netscan``) remain explicitly out
-of scope for this item -- verifying those against a real sample is a
-separate, follow-up unit of work, not something to bolt on speculatively
-(CLAUDE.md §G.5).
 
 **Detection is extension-only, verified for real, not guessed.** Raw
 physical memory dumps have no standard magic bytes the way EWF/ustar do.
@@ -91,7 +96,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,20 +108,23 @@ from src.domain.evidence import Evidence
 from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import VolatilityScanError
+from src.external.sandbox.volatility_launcher import DEFAULT_PLUGINS
 
 if TYPE_CHECKING:
-    from src.external.sandbox.volatility_launcher import VolatilityPluginResult
+    from src.external.sandbox.volatility_launcher import (
+        VolatilityMultiPluginResult,
+    )
 
 logger = logging.getLogger(__name__)
 
-# Gap Audit Milestone AAAAA: carries one real VolatilityPluginResult from
-# parse() to extract_artifacts() within the same execute_parse() call, so
-# the (comparatively expensive) real volatility3 subprocess only runs
-# once per evidence file -- see this module's own docstring for the full
-# "one scan, not two" account, including why a plain ContextVar is safe
-# here (mirrors yara_scan_org_var's identical orchestration-seam
-# precedent, src/application/yara_rules.py).
-_cached_scan_result: ContextVar[VolatilityPluginResult | None] = ContextVar(
+# Gap Audit Milestone AAAAA (extended CCCCC): carries one real
+# VolatilityMultiPluginResult from parse() to extract_artifacts() within the
+# same execute_parse() call, so the (comparatively expensive) real
+# volatility3 subprocess only runs once per evidence file -- see this
+# module's own docstring for the full "one scan, not N" account, including
+# why a plain ContextVar is safe here (mirrors yara_scan_org_var's identical
+# orchestration-seam precedent, src/application/yara_rules.py).
+_cached_scan_result: ContextVar[VolatilityMultiPluginResult | None] = ContextVar(
     "_kronos_volatility_cached_scan_result", default=None
 )
 
@@ -124,9 +132,18 @@ _cached_scan_result: ContextVar[VolatilityPluginResult | None] = ContextVar(
 # format family, so extension is the only honest signal.
 _MEMORY_DUMP_EXTENSIONS: frozenset[str] = frozenset({".vmem", ".mem", ".raw", ".dmp", ".lime"})
 
-_DEFAULT_PLUGIN = "windows.pstree"
-_DEFAULT_FALLBACK_PLUGIN = "windows.psscan"
-_DEFAULT_TIMEOUT_SECONDS = 300
+# Real plugin names that carry a per-row CreateTime (verified live this
+# session for the full current plugin set: only these two do). Checked in
+# this preference order -- pstree first, psscan only if pstree contributed
+# nothing -- to avoid double-emitting the same real process-creation event
+# from both a linked-list walk and a pool-tag scan when both plugins
+# recover the same process (the common case once pstree succeeds; see the
+# worker script's own docstring for the cridex.vmem case where pstree is
+# legitimately empty and psscan is the only real source).
+_PSTREE_PLUGIN = "windows.pstree.PsTree"
+_PSSCAN_PLUGIN = "windows.psscan.PsScan"
+
+_DEFAULT_TIMEOUT_SECONDS = 600
 
 # The real, pinned external tool version (see
 # poc/volatility_memory_module/README.md) -- a module constant (not just a
@@ -143,25 +160,36 @@ _PARSER_VERSION = "2.28.0"
 # batch that measured just under the *content* cap over the real limit.
 _MAX_ROWS_CONTENT_BYTES = 7 * 1024 * 1024
 
+# volatility3's own plugin-tree reorganizations must never silently change a
+# kind name a case's already-stored artifacts (and any frontend kind-dispatch
+# built against it) rely on. Real, observed case: malfind's canonical import
+# path moved from `windows.malfind.Malfind` to `windows.malware.malfind.Malfind`
+# in this pinned version (deprecation warning confirmed live) -- naive
+# path-derivation would produce `volatility.malware.malfind`, a worse, less
+# stable name than the intended `volatility.malfind`. Explicit, curated
+# overrides for the (small, fixed) plugin set this module actually runs,
+# checked before the generic derivation in _plugin_to_kind.
+_PLUGIN_KIND_OVERRIDES: dict[str, str] = {
+    "windows.malware.malfind.Malfind": "volatility.malfind",
+}
+
 
 class VolatilityModule(ForensicParser):
     """Runs real volatility3 plugins against a memory image via VolatilityLauncher.
 
-    Yields one or more ``StructuredArtifact``s per plugin that produced
-    output -- ``kind`` is the plugin name mapped onto this module's
-    namespace (e.g. ``windows.pstree`` -> ``volatility.pstree``,
-    ``windows.psscan`` -> ``volatility.psscan``) so a future ``linux.pslist``
-    lands under the same ``volatility.pslist`` kind a Windows run would use.
+    Yields one ``StructuredArtifact`` (or several, split by content size)
+    per plugin that ran successfully -- ``kind`` is the plugin name mapped
+    onto this module's namespace (e.g. ``windows.pstree.PsTree`` ->
+    ``volatility.pstree``) so a future ``linux.pslist`` lands under the
+    same ``volatility.pslist`` kind a Windows run would use.
     """
 
     def __init__(
         self,
-        plugin: str = _DEFAULT_PLUGIN,
-        fallback_plugin: str | None = _DEFAULT_FALLBACK_PLUGIN,
+        plugins: Sequence[str] = DEFAULT_PLUGINS,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._plugin = plugin
-        self._fallback_plugin = fallback_plugin
+        self._plugins = tuple(plugins)
         self._timeout_seconds = timeout_seconds
 
     @property
@@ -191,37 +219,29 @@ class VolatilityModule(ForensicParser):
         evidence: Evidence,
         tenant: TenantContext,
     ) -> AsyncIterator[TimelineRecord]:
-        """Runs the real volatility3 scan and yields one TimelineRecord per
-        row that carries a real, parseable ``CreateTime`` -- see this
-        module's own docstring for the dual-emit design and why this is
-        the ONE place the scan actually runs (cached for
-        ``extract_artifacts()`` via ``_cached_scan_result``).
+        """Runs the real multi-plugin volatility3 scan and yields one
+        TimelineRecord per pstree/psscan row that carries a real, parseable
+        ``CreateTime`` -- see this module's own docstring for the dual-emit
+        design and why this is the ONE place the scan actually runs (cached
+        for ``extract_artifacts()`` via ``_cached_scan_result``).
         """
         result = await self._run_volatility(stream, evidence)
         _cached_scan_result.set(result)
         if result is None:
             return
 
+        plugin, rows = _timeline_rows(result)
+        if plugin is None:
+            return
+
         record_index = 0
-        for row in result.rows:
+        for row in rows:
             record = _row_to_timeline_record(
-                row, plugin=result.plugin, evidence=evidence, record_index=record_index
+                row, plugin=plugin, evidence=evidence, record_index=record_index
             )
             if record is not None:
                 yield record
                 record_index += 1
-
-        if result.used_fallback and result.fallback_rows is not None:
-            for row in result.fallback_rows:
-                record = _row_to_timeline_record(
-                    row,
-                    plugin=result.fallback_plugin or "",
-                    evidence=evidence,
-                    record_index=record_index,
-                )
-                if record is not None:
-                    yield record
-                    record_index += 1
 
     async def extract_artifacts(
         self,
@@ -229,7 +249,8 @@ class VolatilityModule(ForensicParser):
         evidence: Evidence,
         tenant: TenantContext,
     ) -> AsyncIterator[StructuredArtifact]:
-        """Emit the full structural snapshot as StructuredArtifacts.
+        """Emit the full structural snapshot as StructuredArtifacts, one
+        (or more, split by size) per plugin that ran successfully.
 
         Reuses the scan result ``parse()`` already cached for this same
         evidence file within this same ``execute_parse()`` call (the
@@ -239,7 +260,7 @@ class VolatilityModule(ForensicParser):
         ``extract_artifacts()`` override honours.
         """
         cached = _cached_scan_result.get()
-        result: VolatilityPluginResult
+        result: VolatilityMultiPluginResult
         if cached is not None:
             _cached_scan_result.set(None)  # consume-once: never reused stale
             result = cached
@@ -250,19 +271,16 @@ class VolatilityModule(ForensicParser):
             result = maybe_result
 
         record_index = 0
-        for artifact in self._rows_to_artifacts(
-            result.rows,
-            plugin=result.plugin,
-            evidence=evidence,
-            record_index_start=record_index,
-        ):
-            yield artifact
-            record_index += 1
-
-        if result.used_fallback and result.fallback_rows is not None:
+        for outcome in result.outcomes:
+            if not outcome.ok:
+                # A genuine plugin failure (scan_error/skipped_timeout_budget)
+                # is honestly different from "ran cleanly and found nothing" --
+                # no artifact at all, not a fabricated empty one. Logged by
+                # the worker/launcher already; nothing further to do here.
+                continue
             for artifact in self._rows_to_artifacts(
-                result.fallback_rows,
-                plugin=result.fallback_plugin or "",
+                outcome.rows,
+                plugin=outcome.plugin,
                 evidence=evidence,
                 record_index_start=record_index,
             ):
@@ -275,14 +293,19 @@ class VolatilityModule(ForensicParser):
 
     async def _run_volatility(
         self, stream: AsyncIterator[bytes], evidence: Evidence
-    ) -> VolatilityPluginResult | None:
-        """Write the memory image to a temp file and run volatility3 once.
+    ) -> VolatilityMultiPluginResult | None:
+        """Write the memory image to a temp file and run the full,
+        real multi-plugin volatility3 scan once.
 
-        Returns ``None`` on a real scan failure (logged, never raised --
-        mirrors TarArchiveParser's "one bad thing doesn't sink the
-        evidence" precedent, ``yara_ruleset_compile_failed``): a
+        Returns ``None`` on a real whole-run failure (logged, never
+        raised -- mirrors TarArchiveParser's "one bad thing doesn't sink
+        the evidence" precedent, ``yara_ruleset_compile_failed``): a
         volatility3 failure must never abort this evidence file's
-        parse()/completion, only skip this module's own output.
+        parse()/completion, only skip this module's own output. A
+        *partial* failure (some plugins ok, some not) is NOT this case --
+        that's a normal ``VolatilityMultiPluginResult`` with mixed
+        ``VolatilityPluginOutcome.status`` values, handled by the callers
+        above.
         """
         from src.external.sandbox.volatility_launcher import VolatilityLauncher  # noqa: PLC0415
 
@@ -311,11 +334,7 @@ class VolatilityModule(ForensicParser):
                 worker_path=worker_path, timeout_seconds=self._timeout_seconds
             )
             try:
-                return await launcher.run(
-                    evidence_path=tmp_path,
-                    plugin=self._plugin,
-                    fallback_plugin=self._fallback_plugin,
-                )
+                return await launcher.run(evidence_path=tmp_path, plugins=self._plugins)
             except VolatilityScanError as exc:
                 logger.warning(
                     "volatility_scan_failed",
@@ -364,17 +383,49 @@ class VolatilityModule(ForensicParser):
             yield _build_artifact(tuple(batch), kind, plugin, evidence, self, index)
 
 
-def _plugin_to_kind(plugin: str) -> str:
-    """Map a volatility3 plugin name onto this module's namespaced artifact kind.
-
-    e.g. ``"windows.pstree"`` -> ``"volatility.pstree"``,
-    ``"windows.psscan"`` -> ``"volatility.psscan"``. Strips the OS-family
-    prefix (windows./linux./mac.) -- the kind describes *what the data is*,
-    not which OS build produced it, so a future ``linux.pslist`` run lands
-    under the same ``volatility.pslist`` kind a Windows run would use.
+def _timeline_rows(
+    result: VolatilityMultiPluginResult,
+) -> tuple[str | None, tuple[dict[str, Any], ...]]:
+    """Pick the one real source of CreateTime-bearing rows for the
+    TimelineRecord dual-emit -- pstree preferred, psscan only if pstree
+    contributed nothing (real, verified: this avoids double-emitting the
+    same process-creation event when both plugins recover the same
+    process, the common case once pstree succeeds; see this module's own
+    docstring). Neither present/ok, or both empty, returns (None, ()).
     """
-    suffix = plugin.split(".", 1)[-1] if "." in plugin else plugin
-    return f"volatility.{suffix}"
+    pstree = result.for_plugin(_PSTREE_PLUGIN)
+    if pstree is not None and pstree.ok and pstree.rows:
+        return _PSTREE_PLUGIN, pstree.rows
+    psscan = result.for_plugin(_PSSCAN_PLUGIN)
+    if psscan is not None and psscan.ok and psscan.rows:
+        return _PSSCAN_PLUGIN, psscan.rows
+    return None, ()
+
+
+def _plugin_to_kind(plugin: str) -> str:
+    """Map a real volatility3 plugin name (``module.path.ClassName`` form)
+    onto this module's namespaced artifact kind.
+
+    e.g. ``"windows.pstree.PsTree"`` -> ``"volatility.pstree"``,
+    ``"windows.registry.hivelist.HiveList"`` -> ``"volatility.registry.hivelist"``.
+    Strips the OS-family prefix (windows./linux./mac.) and the trailing
+    class-name segment (detected by its leading uppercase letter --
+    Python's own module-vs-class naming convention, true for every real
+    plugin this module runs) -- the kind describes *what the data is*, not
+    which OS build or Python class produced it, so a future ``linux.pslist``
+    lands under the same ``volatility.pslist`` kind a Windows run would use.
+    Checks ``_PLUGIN_KIND_OVERRIDES`` first for the rare case where
+    volatility3's own module reorganization would otherwise change a
+    kind name that already-stored artifacts/frontend code depend on.
+    """
+    if plugin in _PLUGIN_KIND_OVERRIDES:
+        return _PLUGIN_KIND_OVERRIDES[plugin]
+    parts = plugin.split(".")
+    if len(parts) >= 2 and parts[-1][:1].isupper():
+        parts = parts[:-1]
+    if len(parts) >= 2:
+        parts = parts[1:]
+    return f"volatility.{'.'.join(parts)}"
 
 
 def _build_artifact(

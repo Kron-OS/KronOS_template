@@ -1,5 +1,21 @@
 # poc/volatility_pipeline_ingest — real full-pipeline VolatilityModule ingestion
 
+**Re-run for Milestone CCCCC (2026-09-02)**: same real pipeline, same real
+`cridex.vmem` sample, now exercising the rewritten multi-plugin worker
+(`docker/volatility/kronos-volatility-worker.py`, shared-context
+architecture, see `poc/volatility_multiplugin/`) instead of the original
+single-plugin/fallback-pair worker. Real result (current
+`evidence_ids.json`/`final_state.json`/`artifact_verification.json`):
+evidence reached `COMPLETE`, **7** real `structured_artifacts` rows landed
+(one per eager plugin: `volatility.pstree`, `volatility.psscan` with the
+real 17-process census, `volatility.dlllist`, `volatility.cmdline`,
+`volatility.malfind`, `volatility.filescan`, `volatility.registry.hivelist`
+— up from 2 rows pre-CCCCC), all provenance fields (`evidence_id`/
+`case_id`/`sha256`) matched the real upload, verdict `PASS`. A
+now-superseded note below ("no HTTP read API for StructuredArtifact yet")
+predates Milestone AAAAA's `GET /{case_id}/artifacts` route — left as
+written for historical accuracy of the original run rather than edited.
+
 Closes the gap `poc/volatility_memory_module/README.md`'s own "Gaps /
 honestly out of scope this pass" section named explicitly: *"Full HTTP
 upload -> validate -> parse -> Postgres pipeline was not driven end-to-end
