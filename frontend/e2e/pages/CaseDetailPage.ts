@@ -169,9 +169,16 @@ export class CaseDetailPage extends KronosPage {
   }
 
   /** Real UI flow: fills the Members section's userId input and clicks Add (CaseMembersSection). */
-  async addMemberViaUI(userId: string): Promise<void> {
-    await this.page.getByPlaceholder("Keycloak user ID (see Admin > Org Users)").fill(userId);
-    await this.page.getByRole("button", { name: "Add", exact: true }).click();
+  /**
+   * Gap Audit Milestone ZZZZ: CaseMembersSection's "Add" flow is now a
+   * real search-as-you-type picker (GET /{case_id}/member-candidates),
+   * not a raw userId text field -- *searchTerm* should match the target
+   * user's real username or email substring, not their id.
+   */
+  async addMemberViaUI(searchTerm: string): Promise<void> {
+    await this.page.getByPlaceholder("Start typing a name or email...").fill(searchTerm);
+    const suggestion = this.page.locator("li", { hasText: searchTerm });
+    await suggestion.getByRole("button", { name: "Add", exact: true }).click();
   }
 
   /** Waits for *userId* to appear as a real member row in the Members list. */

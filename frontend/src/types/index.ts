@@ -89,6 +89,16 @@ export interface OrgUser {
   joinedAt: string
 }
 
+// Gap Audit Milestone ZZZZ: deliberately narrower than OrgUser -- no
+// roles, matching the backend's own CaseMemberCandidateOut (a case-lead
+// searching for someone to add to their own case has no legitimate need
+// to see another member's org role).
+export interface CaseMemberCandidate {
+  userId: string
+  username: string
+  email: string
+}
+
 export interface InviteUserInput {
   email: string
   firstName: string

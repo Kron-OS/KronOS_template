@@ -1,5 +1,5 @@
 import apiClient from './client'
-import type { Case, PaginatedResponse } from '../types'
+import type { Case, CaseMemberCandidate, PaginatedResponse } from '../types'
 
 export async function getCases(): Promise<PaginatedResponse<Case>> {
   const res = await apiClient.get<PaginatedResponse<Case>>('/api/cases')
@@ -28,6 +28,20 @@ export async function addCaseMember(caseId: string, userId: string): Promise<Cas
 export async function removeCaseMember(caseId: string, userId: string): Promise<Case> {
   const res = await apiClient.delete<Case>(`/api/cases/${caseId}/members/${userId}`)
   return res.data
+}
+
+// Gap Audit Milestone ZZZZ: backs CaseMembersSection's search-as-you-type
+// "Add Member" picker. `q` is required by the backend (min_length=1) --
+// callers must not invoke this with an empty/whitespace-only query.
+export async function searchCaseMemberCandidates(
+  caseId: string,
+  q: string,
+): Promise<CaseMemberCandidate[]> {
+  const res = await apiClient.get<{ items: CaseMemberCandidate[] }>(
+    `/api/cases/${caseId}/member-candidates`,
+    { params: { q } },
+  )
+  return res.data.items
 }
 
 export async function deleteCase(caseId: string): Promise<void> {

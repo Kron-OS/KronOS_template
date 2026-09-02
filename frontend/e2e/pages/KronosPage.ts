@@ -95,6 +95,24 @@ export abstract class KronosPage {
   }
 
   /**
+   * Fresh, independent `GET <path>` using a freshly-fetched bearer token,
+   * returning the real HTTP status code -- same reasoning as
+   * `postJsonWithStatus`/`deleteWithStatus` (Gap Audit Milestone ZZZZ,
+   * for `list_case_member_candidates`'s own RBAC-denial coverage).
+   */
+  protected async getWithStatus(path: string): Promise<number> {
+    return this.page.evaluate(
+      async ({ path: p, token }) => {
+        const res = await fetch(p, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        return res.status;
+      },
+      { path, token: await this.getFreshAccessToken() },
+    );
+  }
+
+  /**
    * Polls `locator`'s own live text WITHOUT reloading the page -- what
    * actually proves a live push path (SSE, etc.) works, not just that a
    * value is eventually correct after a fresh GET. Generalizes the

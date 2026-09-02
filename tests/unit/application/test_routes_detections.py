@@ -19,6 +19,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakAdminClient,
     KeycloakOrganization,
     KeycloakSession,
+    OrgMember,
 )
 from src.adapter.repository.detection import InMemoryDetectionRepository
 from src.application.approval_gate import StaticPolicyApprovalGate, StepUpApprovalGate
@@ -533,6 +534,9 @@ class _FakeKeycloakAdminClientForRoute(KeycloakAdminClient):
 
     async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
         return ()
+
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
+        raise NotImplementedError
 
 
 def _build_revoke_session_client(

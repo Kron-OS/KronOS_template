@@ -105,6 +105,20 @@ class AddCaseMemberIn(BaseModel):
     userId: uuid.UUID
 
 
+class CaseMemberCandidateOut(BaseModel):
+    """Gap Audit Milestone ZZZZ — deliberately narrower than admin.py's
+    OrgUserOut: no realm roles, since a case-lead searching for someone to
+    add to their own case has no legitimate need to see it."""
+
+    userId: str
+    username: str
+    email: str
+
+
+class CaseMemberCandidatesResponse(BaseModel):
+    items: list[CaseMemberCandidateOut]
+
+
 class AuditEventOut(BaseModel):
     """API response DTO — field names match the frontend TypeScript AuditEvent interface."""
 
@@ -334,6 +348,68 @@ async def remove_case_member(
         details={"action": "case.member_removed", "member_user_id": str(user_id)},
     )
     return _to_case_out(updated)
+
+
+@router.get("/{case_id}/member-candidates", response_model=CaseMemberCandidatesResponse)
+async def list_case_member_candidates(
+    case_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD))],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    admin_client: Annotated[KeycloakAdminClient | None, Depends(get_keycloak_admin_client)],
+    q: Annotated[str, Query(min_length=1, max_length=256)],
+) -> CaseMemberCandidatesResponse:
+    """Search the caller's own org for a user to add to *this* case (Gap
+    Audit Milestone ZZZZ, Tier 1 item 6 of docs/HANDOFF_AND_ORCHESTRATION.md).
+
+    Before this, `add_case_member` required a case-lead to already know the
+    target's raw Keycloak user id (deliberate v1 scope, Milestone RRRR) --
+    a real UX gap, but also a real RBAC boundary question: a case-lead
+    previously had no visibility into the org's user directory at all
+    (`GET /api/admin/org/users` is org-admin-only). This endpoint grants a
+    narrow, case-scoped slice of that visibility, not the full directory:
+
+    - Gated the same way as `add_case_member` itself
+      (`assert_case_lead_or_admin` -- the caller must lead THIS specific
+      case, or be an org-admin), not by `Role.CASE_LEAD` alone -- a
+      case-lead of a DIFFERENT case cannot use this route to browse the
+      org's directory via a case they don't own.
+    - `q` is REQUIRED (`min_length=1`) -- deliberately does not allow an
+      empty-query "list everyone" call, unlike admin.py's own
+      `list_org_users` (which is fine being unconditional since it's
+      already org-admin-only). Matches substring, case-insensitive, on
+      username or email; capped to 20 results, a search-as-you-type
+      affordance, not a directory browser.
+    - Returns only `userId`/`username`/`email` (`CaseMemberCandidateOut`,
+      not `admin.py`'s `OrgUserOut`) -- no realm roles, which a case-lead
+      has no legitimate need to see here.
+    - Uses the already-DI-wired `KeycloakAdminClient.list_org_members`
+      (new this cycle, mirrors `is_org_member`'s own real-Admin-API
+      pattern) rather than `admin.py`'s private, per-member
+      role-fetching `_list_keycloak_org_users` -- a genuinely lighter,
+      narrower primitive for a narrower need, not a wrapper around the
+      heavier one. Honestly returns an empty list (never an error) when
+      no `KeycloakAdminClient` is configured, matching `add_case_member`'s
+      own "None means not configured" contract.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_lead_or_admin(tenant, case)
+
+    if admin_client is None:
+        return CaseMemberCandidatesResponse(items=[])
+
+    members = await admin_client.list_org_members(tenant.org_id)
+    needle = q.strip().lower()
+    matches = [
+        m for m in members if needle in m.username.lower() or needle in m.email.lower()
+    ][:20]
+    return CaseMemberCandidatesResponse(
+        items=[
+            CaseMemberCandidateOut(userId=str(m.user_id), username=m.username, email=m.email)
+            for m in matches
+        ]
+    )
 
 
 @router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)

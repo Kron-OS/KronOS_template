@@ -57,6 +57,16 @@ export class CasesPage extends KronosPage {
   }
 
   /**
+   * Real `GET /{case_id}/member-candidates` call (Gap Audit Milestone
+   * ZZZZ), issued directly -- for `assert_case_lead_or_admin` RBAC
+   * coverage of the new case-member search endpoint, same reasoning as
+   * `attemptAddMember`.
+   */
+  async attemptListMemberCandidates(caseId: string, q: string): Promise<number> {
+    return this.getWithStatus(`/api/cases/${caseId}/member-candidates?q=${encodeURIComponent(q)}`);
+  }
+
+  /**
    * Real `DELETE /api/cases/{id}` call, issued directly (no frontend UI
    * drives this action yet, same reasoning as `attemptAddMember`) -- for
    * `assert_case_lead_or_admin` RBAC coverage of the delete/archive route.

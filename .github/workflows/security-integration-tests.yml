@@ -305,6 +305,10 @@ jobs:
     # Milestone YYYY: one new step (admin-stepup-form-persistence, 3
     # tests, each its own real step-up). Real measured cost: 48.7s total
     # standalone for all 3 together.
+    #
+    # Milestone ZZZZ: one new step (case-member-search, 2 tests -- no
+    # step-up involved, cheap). Real measured cost: 9.3s standalone;
+    # 39.2s alongside the other 9 case-membership/RBAC specs together.
     timeout-minutes: 70
     defaults:
       run:
@@ -662,6 +666,27 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/case-members-ui.spec.ts
+
+      # Gap Audit Milestone ZZZZ: closes Tier 1 item 6 of
+      # docs/HANDOFF_AND_ORCHESTRATION.md -- add_case_member's own
+      # "how do I find a userId" gap, deliberately left open by RRRR
+      # pending a project-owner decision on the RBAC tradeoff (asked via
+      # AskUserQuestion; answer: build a new, narrow, case-scoped search
+      # endpoint rather than widening admin.py's existing org-admin-only
+      # listing or leaving it UI-guidance-only). New
+      # GET /{case_id}/member-candidates (src/external/routes/cases.py),
+      # gated by the same assert_case_lead_or_admin check add_case_member
+      # already uses, backed by a new KeycloakAdminClient.list_org_members
+      # primitive (mirrors is_org_member's own real-Admin-API pattern,
+      # Milestone WWWW). case-members-ui.spec.ts (above) already updated
+      # for the new search-as-you-type picker replacing the old raw-userId
+      # field; this spec covers the search behavior itself (real matches,
+      # no-match state, already-added members hidden) and the RBAC DENY
+      # branch (a real second case-lead who doesn't own the case).
+      - name: "E2E: case-member-search"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/case-member-search.spec.ts
 
       - name: "E2E: case-delete-archive-ui"
         if: always()

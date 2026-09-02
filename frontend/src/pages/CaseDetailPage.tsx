@@ -1,7 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getCase, addCaseMember, removeCaseMember, deleteCase } from '../api/cases'
+import {
+  getCase,
+  addCaseMember,
+  removeCaseMember,
+  deleteCase,
+  searchCaseMemberCandidates,
+} from '../api/cases'
 import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
 import { StatusPill } from '../components/StatusPill'
@@ -12,7 +18,7 @@ import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
 import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
-import type { Case, Evidence, AuditEvent, SSEStatusEvent } from '../types'
+import type { Case, CaseMemberCandidate, Evidence, AuditEvent, SSEStatusEvent } from '../types'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -310,21 +316,39 @@ function AuditLogTab({ caseId }: { caseId: string }) {
  * Case-lead-gated (assert_case_lead_or_admin) member management --
  * add_case_member/remove_case_member (Gap Audit Milestones CCCC-QQQQ)
  * were fully built, tested, and audited on the backend with no frontend
- * UI ever reaching them until now (Milestone RRRR). Adding a member
- * takes a raw Keycloak user id, not a name/email picker -- a case-lead
- * has no org-user-listing access today (GET /api/admin/users is
- * org-admin-only), so this deliberately matches what the API itself has
- * always required rather than opening a new RBAC boundary as part of a
- * UI pass. An org-admin can find a user's id on the Admin page.
+ * UI ever reaching them until Milestone RRRR, which shipped with a
+ * deliberate v1 gap: adding a member took a raw Keycloak user id, since a
+ * case-lead had no org-user-listing access at all (GET /api/admin/users
+ * is org-admin-only).
+ *
+ * Gap Audit Milestone ZZZZ: closes that gap with a genuinely new, narrow
+ * RBAC surface rather than widening the existing org-admin-only listing
+ * -- GET /{case_id}/member-candidates (src/external/routes/cases.py) is
+ * gated by the exact same assert_case_lead_or_admin check this section's
+ * own Add/Remove actions already use, so a case-lead only ever sees this
+ * slice of the org directory for a case they actually lead.
  */
 function CaseMembersSection({ caseId, memberUserIds }: { caseId: string; memberUserIds: string[] }) {
   const queryClient = useQueryClient()
-  const [newMemberId, setNewMemberId] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchInput.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [searchInput])
+
+  const { data: candidates, isFetching: isSearching } = useQuery({
+    queryKey: ['caseMemberCandidates', caseId, debouncedQuery],
+    queryFn: () => searchCaseMemberCandidates(caseId, debouncedQuery),
+    enabled: debouncedQuery.length > 0,
+  })
 
   const addMutation = useMutation({
     mutationFn: (userId: string) => addCaseMember(caseId, userId),
     onSuccess: async () => {
-      setNewMemberId('')
+      setSearchInput('')
+      setDebouncedQuery('')
       await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
     },
   })
@@ -335,6 +359,13 @@ function CaseMembersSection({ caseId, memberUserIds }: { caseId: string; memberU
       await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
     },
   })
+
+  // Already-added members don't need to be offered again -- the backend
+  // treats a re-add as a harmless no-op, but hiding them keeps the
+  // picker's own list meaningfully "who's left to add."
+  const suggestions: CaseMemberCandidate[] = (candidates ?? []).filter(
+    (c) => !memberUserIds.includes(c.userId),
+  )
 
   return (
     <div className="mb-8 max-w-md">
@@ -358,33 +389,47 @@ function CaseMembersSection({ caseId, memberUserIds }: { caseId: string; memberU
           ))}
         </ul>
       )}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (newMemberId.trim()) addMutation.mutate(newMemberId.trim())
-        }}
-        className="flex items-center gap-2"
-      >
-        <label htmlFor={`add-member-${caseId}`} className="sr-only">
-          User ID to add
-        </label>
+      <label htmlFor={`add-member-search-${caseId}`} className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+        Add a member -- search by name or email
+      </label>
+      <div className="relative">
         <input
-          id={`add-member-${caseId}`}
+          id={`add-member-search-${caseId}`}
           type="text"
-          value={newMemberId}
-          onChange={(e) => setNewMemberId(e.target.value)}
-          placeholder="Keycloak user ID (see Admin > Org Users)"
-          className="flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Start typing a name or email..."
+          className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
         />
-        <button
-          type="submit"
-          disabled={addMutation.isPending || !newMemberId.trim()}
-          className="flex items-center gap-2 rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
-        >
-          {addMutation.isPending && <Spinner size="sm" />}
-          Add
-        </button>
-      </form>
+        {isSearching && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+            <Spinner size="sm" />
+          </div>
+        )}
+        {debouncedQuery.length > 0 && !isSearching && (
+          <ul className="mt-1 max-h-48 divide-y divide-gray-200 overflow-y-auto rounded border border-gray-200 bg-white shadow-sm dark:divide-gray-800 dark:border-gray-800 dark:bg-gray-900">
+            {suggestions.length === 0 && (
+              <li className="px-3 py-2 text-sm text-gray-500">No matching org members found.</li>
+            )}
+            {suggestions.map((candidate) => (
+              <li key={candidate.userId} className="flex items-center justify-between px-3 py-2 text-sm">
+                <span>
+                  <span className="text-gray-800 dark:text-gray-200">{candidate.username}</span>{' '}
+                  <span className="text-xs text-gray-500">{candidate.email}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => addMutation.mutate(candidate.userId)}
+                  disabled={addMutation.isPending}
+                  className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  Add
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {addMutation.isError && <ErrorBanner message="Failed to add member." />}
       {removeMutation.isError && <ErrorBanner message="Failed to remove member." />}
     </div>

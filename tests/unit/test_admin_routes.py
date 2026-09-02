@@ -13,6 +13,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakAdminClient,
     KeycloakOrganization,
     KeycloakSession,
+    OrgMember,
 )
 from src.exceptions import StorageError
 from src.external.routes.admin import (
@@ -53,6 +54,9 @@ class FakeKeycloakAdminClient(KeycloakAdminClient):
         raise NotImplementedError
 
     async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        raise NotImplementedError
+
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
         raise NotImplementedError
 
 

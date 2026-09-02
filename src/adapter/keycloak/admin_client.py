@@ -81,6 +81,21 @@ class KeycloakOrganization:
     alias: str
 
 
+@dataclass(frozen=True)
+class OrgMember:
+    """The minimal fields ``cases.py``'s case-member search endpoint
+    needs (Gap Audit Milestone ZZZZ) -- deliberately not the same shape
+    as ``admin.py``'s own ``OrgUserOut`` (which also carries realm roles,
+    fetched via a separate Admin API call per user): a case-lead picking
+    a user to add to their own case has no legitimate need to see another
+    member's org role, and this endpoint's own real cost stays O(1) Admin
+    API calls regardless of org size, not O(n)."""
+
+    user_id: uuid.UUID
+    username: str
+    email: str
+
+
 class KeycloakAdminClient(ABC):
     """Real Keycloak Admin REST API operations this platform needs for
     containment. New operations = new abstract methods here (small,
@@ -120,6 +135,14 @@ class KeycloakAdminClient(ABC):
         authoritative "list every real tenant" primitive a beat task needs
         to discover which orgs to do per-org work for, without inventing a
         second, locally-drifting tenant list."""
+
+    @abstractmethod
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
+        """Every real member of *org_id* right now (Gap Audit Milestone
+        ZZZZ) -- backs ``cases.py``'s case-member search endpoint. Real,
+        live org membership only (never a caller-supplied or cached list),
+        same trust boundary ``is_org_member`` already enforces for a
+        single user."""
 
 
 class HttpxKeycloakAdminClient(KeycloakAdminClient):
@@ -285,3 +308,31 @@ class HttpxKeycloakAdminClient(KeycloakAdminClient):
                     context={"entry": org, "error": str(exc)},
                 ) from exc
         return tuple(organizations)
+
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
+        # Same real endpoint admin.py's own _list_keycloak_org_users uses
+        # (/organizations/{org_id}/members) -- deliberately without that
+        # function's per-member realm-role fetch, which this caller
+        # (case-member search) doesn't need and shouldn't pay for.
+        resp = await self._admin_request("GET", f"/organizations/{org_id}/members")
+        if resp.status_code != 200:
+            raise KeycloakAdminError(
+                "Failed to list Keycloak org members",
+                context={"org_id": str(org_id), "status": resp.status_code, "body": resp.text},
+            )
+        members: list[OrgMember] = []
+        for entry in resp.json():
+            try:
+                members.append(
+                    OrgMember(
+                        user_id=uuid.UUID(entry["id"]),
+                        username=entry.get("username", ""),
+                        email=entry.get("email", ""),
+                    )
+                )
+            except (KeyError, ValueError) as exc:
+                raise KeycloakAdminError(
+                    "Keycloak org member list entry missing/malformed id",
+                    context={"org_id": str(org_id), "entry": entry, "error": str(exc)},
+                ) from exc
+        return tuple(members)

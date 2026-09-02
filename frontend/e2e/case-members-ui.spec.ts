@@ -7,16 +7,23 @@ import { DEV_USERS } from "./fixtures";
  * been fully built, tested, and audited (Milestones CCCC-QQQQ) with zero
  * frontend UI ever reaching them -- every prior spec exercised these
  * routes via a raw, direct fetch (`CasesPage.attemptAddMember()`/
- * `attemptRemoveMember()`). This spec drives the real UI instead: the new
+ * `attemptRemoveMember()`). This spec drives the real UI instead: the
  * "Case Members" section in the Settings tab (`CaseMembersSection`,
  * `frontend/src/pages/CaseDetailPage.tsx`).
  *
  * The RBAC boundary itself (assert_case_lead_or_admin,
  * add_case_member's own userId-org validation) already has real,
  * dedicated coverage elsewhere -- this spec's own focus is the UI wiring:
- * does typing a real userId and clicking Add actually call the real API
- * and render the result, and does clicking Remove actually call the real
- * DELETE and update the list.
+ * does searching for a real org member and clicking Add actually call the
+ * real API and render the result, and does clicking Remove actually call
+ * the real DELETE and update the list.
+ *
+ * Gap Audit Milestone ZZZZ: `CaseMembersSection` no longer takes a raw
+ * userId -- it's a real search-as-you-type picker backed by
+ * `GET /{case_id}/member-candidates`. This spec now searches by the
+ * analyst's real username ("analyst") rather than typing its id directly
+ * -- the id is still independently confirmed afterward via the member
+ * list row, which is unchanged.
  */
 test("a case-lead can add and remove a case member through the real Settings UI", async ({
   browser,
@@ -48,7 +55,7 @@ test("a case-lead can add and remove a case member through the real Settings UI"
     );
 
     await detail.openSettingsTab();
-    await detail.addMemberViaUI(analystUserId as string);
+    await detail.addMemberViaUI(DEV_USERS.analyst.username);
     await detail.waitForMemberRow(analystUserId as string);
 
     await detail.removeMemberViaUI(analystUserId as string);

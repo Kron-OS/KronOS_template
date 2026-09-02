@@ -16,6 +16,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakAdminClient,
     KeycloakOrganization,
     KeycloakSession,
+    OrgMember,
 )
 from src.application.approval_gate import StaticPolicyApprovalGate
 from src.application.audit_log import AuditLogService
@@ -59,6 +60,9 @@ class _FakeKeycloakAdminClient(KeycloakAdminClient):
             KeycloakOrganization(org_id=org_id, alias=alias)
             for org_id, alias in self.org_aliases.items()
         )
+
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
+        raise NotImplementedError
 
 
 def _approved_gate(tenant: TenantContext) -> StaticPolicyApprovalGate:

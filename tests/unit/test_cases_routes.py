@@ -15,6 +15,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakAdminClient,
     KeycloakOrganization,
     KeycloakSession,
+    OrgMember,
 )
 from src.adapter.repository.case_repository import InMemoryCaseRepository
 from src.adapter.storage.local import LocalEvidenceStorage
@@ -36,13 +37,20 @@ from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepositor
 
 
 class FakeKeycloakAdminClient(KeycloakAdminClient):
-    """Minimal fake for Milestone QQQQ's ``is_org_member`` validation --
-    mocks the external Keycloak dependency (CLAUDE.md §B.5), not a domain
-    object. Only ``is_org_member`` is meaningfully implemented; the other
-    abstract methods aren't reachable from `add_case_member`."""
+    """Fake for Milestone QQQQ's ``is_org_member`` validation and Milestone
+    ZZZZ's case-member search -- mocks the external Keycloak dependency
+    (CLAUDE.md §B.5), not a domain object. Only ``is_org_member``/
+    ``list_org_members`` are meaningfully implemented; the other abstract
+    methods aren't reachable from any ``cases.py`` route."""
 
-    def __init__(self, *, org_members: set[uuid.UUID]) -> None:
+    def __init__(
+        self,
+        *,
+        org_members: set[uuid.UUID],
+        member_directory: tuple[OrgMember, ...] = (),
+    ) -> None:
         self._org_members = org_members
+        self._member_directory = member_directory
 
     async def list_user_sessions(self, user_id: uuid.UUID) -> tuple[KeycloakSession, ...]:
         raise NotImplementedError
@@ -58,6 +66,9 @@ class FakeKeycloakAdminClient(KeycloakAdminClient):
 
     async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
         raise NotImplementedError
+
+    async def list_org_members(self, org_id: uuid.UUID) -> tuple[OrgMember, ...]:
+        return self._member_directory
 
 
 @pytest.fixture
@@ -233,6 +244,145 @@ class TestAddCaseMemberOrgValidation:
         assert real_member_id in stored.member_user_ids
 
 
+class TestListCaseMemberCandidates:
+    """Gap Audit Milestone ZZZZ: GET /{case_id}/member-candidates, the
+    new case-scoped user-search endpoint for add_case_member's own
+    "how do I find a userId" gap (Tier 1 item 6 of
+    docs/HANDOFF_AND_ORCHESTRATION.md)."""
+
+    def _client_with_directory(self, *, directory: tuple[OrgMember, ...]):
+        case_repo = InMemoryCaseRepository()
+        audit_repo = InMemoryAuditLogRepository()
+        audit_svc = AuditLogService(audit_repo)
+        fixed_org = uuid.uuid4()
+        fixed_user = uuid.uuid4()
+
+        def _admin_tenant() -> TenantContext:
+            return TenantContext(
+                org_id=fixed_org,
+                org_alias="testorg",
+                user_id=fixed_user,
+                username="admin",
+                roles=frozenset({Role.ORG_ADMIN}),
+                correlation_id=str(uuid.uuid4()),
+                acr="aal2",
+            )
+
+        app = create_app()
+        app.dependency_overrides[get_tenant_context] = _admin_tenant
+        app.dependency_overrides[get_case_repository] = lambda: case_repo
+        app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
+        app.dependency_overrides[get_keycloak_admin_client] = lambda: FakeKeycloakAdminClient(
+            org_members=set(), member_directory=directory
+        )
+        return TestClient(app), fixed_org
+
+    def test_matches_by_username_substring_case_insensitive(self):
+        alice = OrgMember(
+            user_id=uuid.uuid4(), username="alice-analyst", email="alice@example.invalid"
+        )
+        bob = OrgMember(user_id=uuid.uuid4(), username="bob-lead", email="bob@example.invalid")
+        client, _ = self._client_with_directory(directory=(alice, bob))
+        created = client.post("/api/cases", json={"title": "Search Case"}).json()
+
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": "ALICE"})
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert [i["username"] for i in items] == ["alice-analyst"]
+        assert items[0]["userId"] == str(alice.user_id)
+
+    def test_matches_by_email_substring(self):
+        alice = OrgMember(
+            user_id=uuid.uuid4(), username="alice-analyst", email="alice@example.invalid"
+        )
+        client, _ = self._client_with_directory(directory=(alice,))
+        created = client.post("/api/cases", json={"title": "Search Case 2"}).json()
+
+        resp = client.get(
+            f"/api/cases/{created['id']}/member-candidates", params={"q": "example.invalid"}
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) == 1
+
+    def test_no_match_returns_empty_items_not_error(self):
+        alice = OrgMember(
+            user_id=uuid.uuid4(), username="alice-analyst", email="alice@example.invalid"
+        )
+        client, _ = self._client_with_directory(directory=(alice,))
+        created = client.post("/api/cases", json={"title": "Search Case 3"}).json()
+
+        resp = client.get(
+            f"/api/cases/{created['id']}/member-candidates", params={"q": "nobody-like-this"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_empty_query_is_rejected_422(self):
+        client, _ = self._client_with_directory(directory=())
+        created = client.post("/api/cases", json={"title": "Search Case 4"}).json()
+
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": ""})
+        assert resp.status_code == 422
+
+    def test_results_capped_at_20(self):
+        directory = tuple(
+            OrgMember(user_id=uuid.uuid4(), username=f"user-{i}", email=f"user-{i}@example.invalid")
+            for i in range(30)
+        )
+        client, _ = self._client_with_directory(directory=directory)
+        created = client.post("/api/cases", json={"title": "Search Case 5"}).json()
+
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": "user-"})
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) == 20
+
+    def test_no_admin_client_configured_returns_empty_not_error(self, cases_client):
+        # cases_client (the default fixture) leaves get_keycloak_admin_client
+        # at its default None -- honestly-skipped, matching add_case_member's
+        # own "None means not configured" contract, never a 500.
+        client, _, _, _, _ = cases_client
+        created = client.post("/api/cases", json={"title": "No Admin Client"}).json()
+
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": "anyone"})
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_case_lead_who_does_not_own_case_gets_403(self):
+        alice = OrgMember(
+            user_id=uuid.uuid4(), username="alice-analyst", email="alice@example.invalid"
+        )
+        client, org_id = self._client_with_directory(directory=(alice,))
+        created = client.post("/api/cases", json={"title": "Admin-owned Search Case"}).json()
+
+        other_lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, other_lead_id, frozenset({Role.CASE_LEAD})
+        )
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": "alice"})
+        assert resp.status_code == 403
+
+    def test_case_lead_who_owns_case_can_search(self):
+        alice = OrgMember(
+            user_id=uuid.uuid4(), username="alice-analyst", email="alice@example.invalid"
+        )
+        client, org_id = self._client_with_directory(directory=(alice,))
+
+        lead_id = uuid.uuid4()
+        client.app.dependency_overrides[get_tenant_context] = lambda: _tenant(
+            org_id, lead_id, frozenset({Role.CASE_LEAD})
+        )
+        created = client.post("/api/cases", json={"title": "Lead-owned Search Case"}).json()
+
+        resp = client.get(f"/api/cases/{created['id']}/member-candidates", params={"q": "alice"})
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) == 1
+
+    def test_case_not_found_returns_404(self):
+        client, _ = self._client_with_directory(directory=())
+        resp = client.get(f"/api/cases/{uuid.uuid4()}/member-candidates", params={"q": "anyone"})
+        assert resp.status_code == 404
+
+
 class TestRemoveCaseMember:
     def test_remove_member_persists(self, cases_client):
         client, repo, org_id, _, _ = cases_client
@@ -286,8 +436,8 @@ class TestDashboardUrl:
         # under a subpath (Dashboards' absolute asset URLs like /ui/* and
         # /bootstrap.js only resolve when served from its own root).
         client, _, _, _, _ = cases_client
-        client.app.dependency_overrides[get_opensearch_dashboards_url] = (
-            lambda: "http://localhost:5601"
+        client.app.dependency_overrides[get_opensearch_dashboards_url] = lambda: (
+            "http://localhost:5601"
         )
         created = client.post("/api/cases", json={"title": "Timeline Case"}).json()
         resp = client.get(f"/api/cases/{created['id']}/dashboard-url")
