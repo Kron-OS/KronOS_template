@@ -99,6 +99,22 @@ Two real findings:
   rather than re-declared): still-processing shows a "still in progress"
   message; completed-with-nothing names the file(s) and points at the
   Audit tab for the real underlying error.
+- **Follow-up, same investigation**: the project owner re-checked the
+  real case live after the fix above and reported it *still* showed
+  nothing — the Artifacts tab fix was real but incomplete. The actual
+  first place a user looks is `EvidenceDetailDrawer` (opened via the
+  Evidence tab's own "Details" button, not the separate Artifacts tab),
+  and its "Forensic artifacts" `FieldRow` was gated on
+  `artifactCount > 0` — completely **hidden**, not just unhelpfully
+  worded, whenever a file had zero artifacts, indistinguishable from "not
+  a memory dump at all." Fixed: a `COMPLETE` memory-dump evidence file
+  with `artifactCount === 0` now shows the same honest "No process data
+  could be recovered from this memory image" message inline in the
+  drawer itself, instead of hiding the row. 4 new component tests
+  (`EvidenceDetailDrawer.test.tsx`); re-verified live in the actual
+  drawer (not just the Artifacts tab) via a real, authenticated
+  Playwright script against the real reported case, after a real
+  `docker compose build nginx && up -d nginx` redeploy.
 
 ### 3. Unrelated, smaller fix landed at the start of this cycle
 
