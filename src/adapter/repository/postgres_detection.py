@@ -190,7 +190,12 @@ class PostgresDetectionRepository(DetectionRepository):
             "detector_name": d.detector_name,
             "source_index": d.source_index,
             "rule_matches": [
-                {"rule_id": m.rule_id, "rule_name": m.rule_name, "tags": list(m.tags)}
+                {
+                    "rule_id": m.rule_id,
+                    "rule_name": m.rule_name,
+                    "tags": list(m.tags),
+                    "query": m.query,
+                }
                 for m in d.rule_matches
             ],
             "matched_document_ids": list(d.matched_document_ids),
@@ -226,6 +231,7 @@ class PostgresDetectionRepository(DetectionRepository):
                     rule_id=m["rule_id"],
                     rule_name=m.get("rule_name"),
                     tags=tuple(m.get("tags", [])),
+                    query=m.get("query"),
                 )
                 for m in (row["rule_matches"] or [])
             ),

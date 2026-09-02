@@ -28,6 +28,12 @@ interface ProcessRow {
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
+  // A nested object/array (e.g. a matched event's own ECS-shaped `source`,
+  // Gap Audit Milestone BBBBB) would otherwise stringify to the useless
+  // "[object Object]" -- JSON.stringify gives a real, inspectable value
+  // instead. Existing Volatility rows never hit this branch (their fields
+  // are all primitives already), so this is additive, not a behavior change.
+  if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 

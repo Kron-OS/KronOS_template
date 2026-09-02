@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { getDetections } from '../api/detections'
@@ -15,6 +15,10 @@ const FILTERS: Array<{ id: DetectionTriageState | 'ALL'; label: string }> = [
   { id: 'TRUE_POSITIVE', label: 'True Positive' },
   { id: 'FALSE_POSITIVE', label: 'False Positive' },
 ]
+
+// Matches SIGMA_SEVERITY_LEVELS (src/domain/detection.py) exactly -- the
+// real Sigma `level:` vocabulary, not a made-up UI-only list.
+const SEVERITIES = ['critical', 'high', 'medium', 'low', 'informational'] as const
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -60,14 +64,24 @@ function DetectionRow({ d }: { d: Detection }) {
 
 export function DetectionsPage() {
   const [filter, setFilter] = useState<DetectionTriageState | 'ALL'>('ALL')
+  const [severity, setSeverity] = useState<string>('ALL')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchInput.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [searchInput])
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['detections', filter, page],
+    queryKey: ['detections', filter, severity, debouncedQuery, page],
     queryFn: () =>
       getDetections({
         triageState: filter === 'ALL' ? undefined : filter,
+        severity: severity === 'ALL' ? undefined : severity,
+        q: debouncedQuery || undefined,
         page,
         pageSize,
       }),
@@ -80,21 +94,46 @@ export function DetectionsPage() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Detections</h1>
       </div>
 
-      <div className="mb-4 flex gap-1">
-        {FILTERS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => { setFilter(f.id); setPage(1) }}
-            className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-              filter === f.id
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="flex gap-1">
+          {FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => { setFilter(f.id); setPage(1) }}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+                filter === f.id
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        <select
+          aria-label="Filter by severity"
+          value={severity}
+          onChange={(e) => { setSeverity(e.target.value); setPage(1) }}
+          className="rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        >
+          <option value="ALL">All severities</option>
+          {SEVERITIES.map((s) => (
+            <option key={s} value={s}>
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="search"
+          aria-label="Search detections"
+          placeholder="Search rule or detector name…"
+          value={searchInput}
+          onChange={(e) => { setSearchInput(e.target.value); setPage(1) }}
+          className="w-64 rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        />
       </div>
 
       {isLoading && (
@@ -113,9 +152,9 @@ export function DetectionsPage() {
             ))}
             {data.items.length === 0 && (
               <p className="py-12 text-center text-sm text-gray-500">
-                {filter === 'ALL'
+                {filter === 'ALL' && severity === 'ALL' && !debouncedQuery
                   ? 'No detections yet. Detections appear here once Security Analytics findings are synced for your organization.'
-                  : `No detections in ${FILTERS.find((f) => f.id === filter)?.label} state.`}
+                  : 'No detections match the current filters.'}
               </p>
             )}
           </div>

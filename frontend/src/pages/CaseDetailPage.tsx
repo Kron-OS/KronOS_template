@@ -17,6 +17,7 @@ import { ErrorBanner } from '../components/ErrorBanner'
 import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import { ArtifactContent } from '../components/ArtifactViews'
+import { MEMORY_DUMP_EXTENSIONS } from '../utils/validateFileMagic'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
 import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
@@ -310,6 +311,46 @@ function ArtifactsTab({
   if (error) return <ErrorBanner message="Failed to load artifacts." />
 
   if (evidenceIdsWithArtifacts.length === 0) {
+    // Gap Audit follow-up (Milestones AAAAA/BBBBB): a real user report --
+    // "the volatility analysis result is not available" -- traced to this
+    // generic empty state being shown even for a memory dump that DID
+    // finish processing (state COMPLETE) but produced zero artifacts,
+    // e.g. because volatility3 couldn't identify the image's OS/kernel at
+    // all (a real, honest "unsupported/unrecognized memory image" outcome,
+    // not a bug in the upload or the tab). Distinguish that case from
+    // "nothing uploaded yet" and "still processing" instead of implying
+    // the user forgot to upload anything.
+    const memoryDumpEvidence = (evidenceData?.items ?? []).filter((e) =>
+      MEMORY_DUMP_EXTENSIONS.has(e.filename.split('.').pop()?.toLowerCase() ?? ''),
+    )
+    const completedWithNoArtifacts = memoryDumpEvidence.filter((e) => e.state === 'COMPLETE')
+    const stillProcessing = memoryDumpEvidence.filter(
+      (e) => e.state !== 'COMPLETE' && e.state !== 'ERROR',
+    )
+
+    if (completedWithNoArtifacts.length > 0) {
+      return (
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
+          <p>No process data could be recovered from the uploaded memory dump.</p>
+          <p className="max-w-md text-center text-xs text-gray-400 dark:text-gray-600">
+            {completedWithNoArtifacts.map((e) => e.filename).join(', ')} finished processing, but
+            memory analysis found nothing usable -- the image's OS/kernel structures may be
+            unrecognized or unsupported. Check the Audit tab for this evidence for the real
+            underlying error.
+          </p>
+        </div>
+      )
+    }
+    if (stillProcessing.length > 0) {
+      return (
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
+          <p>Memory analysis is still in progress.</p>
+          <p className="text-xs text-gray-400 dark:text-gray-600">
+            {stillProcessing.map((e) => e.filename).join(', ')} hasn't finished parsing yet.
+          </p>
+        </div>
+      )
+    }
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
         <p>No forensic artifacts yet.</p>

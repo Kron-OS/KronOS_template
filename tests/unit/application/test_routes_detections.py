@@ -21,6 +21,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakSession,
     OrgMember,
 )
+from src.adapter.opensearch.client import AbstractTimelineIndex, InMemoryOpenSearchClient
 from src.adapter.repository.detection import InMemoryDetectionRepository
 from src.application.approval_gate import StaticPolicyApprovalGate, StepUpApprovalGate
 from src.application.audit_log import AuditLogService
@@ -35,6 +36,7 @@ from src.exceptions import PlaybookError
 from src.external.dependencies import (
     get_detection_repository,
     get_detection_triage_service,
+    get_opensearch_client,
     get_playbook_action_registry,
     get_playbook_execution_service,
 )
@@ -99,6 +101,7 @@ def _build_client(
     tenant: TenantContext,
     *,
     playbook_registry: PlaybookActionRegistry | None = None,
+    opensearch_client: AbstractTimelineIndex | None = None,
 ) -> TestClient:
     audit_svc = AuditLogService(InMemoryAuditLogRepository())
     triage_service = DetectionTriageService(detection_repo, audit_svc)
@@ -107,6 +110,11 @@ def _build_client(
     app.dependency_overrides[get_tenant_context] = lambda: tenant
     app.dependency_overrides[get_detection_repository] = lambda: detection_repo
     app.dependency_overrides[get_detection_triage_service] = lambda: triage_service
+    # Gap Audit Milestone BBBBB: always override with a fresh instance (never
+    # the app's real module-global default) so matched-events tests never
+    # leak documents across tests via that shared singleton.
+    resolved_opensearch_client = opensearch_client or InMemoryOpenSearchClient()
+    app.dependency_overrides[get_opensearch_client] = lambda: resolved_opensearch_client
     if playbook_registry is not None:
         app.dependency_overrides[get_playbook_action_registry] = lambda: playbook_registry
         app.dependency_overrides[get_playbook_execution_service] = lambda: PlaybookExecutionService(
@@ -260,6 +268,79 @@ class TestListDetections:
         assert item["riskScore"] is None
         assert item["riskFactors"] == []
 
+    def test_rule_match_query_string_surfaces_for_why_triggered(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = _make_detection(org_id=ORG_A).model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(
+                        rule_id="rule-1",
+                        rule_name="Suspicious Thing",
+                        tags=("attack.t1021.001", "high"),
+                        query="destination.port:3389",
+                    ),
+                )
+            }
+        )
+        asyncio.run(detection_repo.save(detection))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections")
+        assert resp.json()["items"][0]["ruleMatches"][0]["query"] == "destination.port:3389"
+
+    def test_rule_match_query_is_null_for_pre_bbbbb_detections(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """No fabricated query for a Detection synced before this field
+        existed -- an honest None, per DetectionRuleMatch.query's own
+        docstring."""
+        asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections")
+        assert resp.json()["items"][0]["ruleMatches"][0]["query"] is None
+
+    def test_filter_by_severity(self, detection_repo: InMemoryDetectionRepository) -> None:
+        high = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        low = _make_detection(org_id=ORG_A, finding_id="f-2").model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(rule_id="rule-2", rule_name="Minor Thing", tags=("low",)),
+                )
+            }
+        )
+        asyncio.run(detection_repo.save(low))
+
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections", params={"severity": "high"})
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == str(high.detection_id)
+
+    def test_filter_by_free_text_query_matches_detector_name(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        matching = asyncio.run(
+            detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1"))
+        )
+        other = _make_detection(org_id=ORG_A, finding_id="f-2").model_copy(
+            update={"detector_name": "kronos-testorg-endpoint-detector"}
+        )
+        asyncio.run(detection_repo.save(other))
+
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections", params={"q": "NETWORK"})
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == str(matching.detection_id)
+
+    def test_filter_by_free_text_query_matches_rule_name(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections", params={"q": "suspicious"})
+        assert resp.json()["total"] == 1
+
 
 class TestGetDetection:
     def test_returns_detail_for_own_org(self, detection_repo: InMemoryDetectionRepository) -> None:
@@ -281,6 +362,87 @@ class TestGetDetection:
         client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
         resp = client.get(f"/api/detections/{uuid.uuid4()}")
         assert resp.status_code == 404
+
+
+class TestGetMatchedEvents:
+    """Gap Audit Milestone BBBBB: GET /{detection_id}/matched-events -- the
+    "which data" half of "why did this rule trigger"."""
+
+    def test_returns_real_matched_documents(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        opensearch = InMemoryOpenSearchClient()
+        detection = asyncio.run(
+            detection_repo.save(_make_detection(org_id=ORG_A, case_id=CASE_A))
+        )
+        asyncio.run(
+            opensearch.bulk_index(
+                [(detection.source_index, "doc-1", {"message": "RDP login from 10.0.0.5"})]
+            )
+        )
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD), opensearch_client=opensearch
+        )
+        resp = client.get(f"/api/detections/{detection.detection_id}/matched-events")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["truncatedFrom"] is None
+        assert body["items"] == [
+            {"id": "doc-1", "source": {"message": "RDP login from 10.0.0.5"}}
+        ]
+
+    def test_missing_document_is_honestly_absent_not_fabricated(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """The matched doc id was never actually indexed (or has since
+        rolled off ISM retention) -- must simply be missing from the
+        response, never a fake placeholder entry."""
+        detection = asyncio.run(
+            detection_repo.save(_make_detection(org_id=ORG_A, case_id=CASE_A))
+        )
+        client = _build_client(
+            detection_repo,
+            _fixed_tenant(ORG_A, Role.CASE_LEAD),
+            opensearch_client=InMemoryOpenSearchClient(),
+        )
+        resp = client.get(f"/api/detections/{detection.detection_id}/matched-events")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_cross_org_returns_404_not_403(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_B)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get(f"/api/detections/{detection.detection_id}/matched-events")
+        assert resp.status_code == 404
+
+    def test_nonexistent_id_returns_404(self, detection_repo: InMemoryDetectionRepository) -> None:
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get(f"/api/detections/{uuid.uuid4()}/matched-events")
+        assert resp.status_code == 404
+
+    def test_truncates_and_signals_truncation_past_the_cap(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        opensearch = InMemoryOpenSearchClient()
+        many_ids = tuple(f"doc-{i}" for i in range(60))
+        detection = _make_detection(org_id=ORG_A, case_id=CASE_A).model_copy(
+            update={"matched_document_ids": many_ids}
+        )
+        asyncio.run(detection_repo.save(detection))
+        asyncio.run(
+            opensearch.bulk_index(
+                [(detection.source_index, doc_id, {"n": doc_id}) for doc_id in many_ids]
+            )
+        )
+        client = _build_client(
+            detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD), opensearch_client=opensearch
+        )
+        resp = client.get(f"/api/detections/{detection.detection_id}/matched-events")
+        body = resp.json()
+        assert body["truncatedFrom"] == 60
+        assert len(body["items"]) == 50
 
 
 class TestTriageDetection:

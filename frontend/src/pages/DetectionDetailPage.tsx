@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useParams, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getDetection, triageDetection } from '../api/detections'
+import { getDetection, getMatchedEvents, triageDetection } from '../api/detections'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TriageStatePill } from '../components/TriageStatePill'
 import { RiskScorePill } from '../components/RiskScorePill'
 import { ContainmentPanel } from '../components/ContainmentPanel'
+import { GenericArtifactView } from '../components/ArtifactViews'
 import { nextTriageStates, triageActionLabel } from '../utils/triageFsm'
 import { useAuthStore } from '../store/auth'
 import type { DetectionTriageState } from '../types'
@@ -29,6 +30,19 @@ export function DetectionDetailPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['detection', detectionId],
     queryFn: () => getDetection(detectionId),
+    staleTime: 15_000,
+  })
+
+  // Gap Audit Milestone BBBBB: the "which data" half of "why did this rule
+  // trigger" -- its own request/route (see get_matched_events's own
+  // docstring for why this is deliberately not folded into getDetection).
+  const {
+    data: matchedEvents,
+    isLoading: isLoadingMatchedEvents,
+    error: matchedEventsError,
+  } = useQuery({
+    queryKey: ['detectionMatchedEvents', detectionId],
+    queryFn: () => getMatchedEvents(detectionId),
     staleTime: 15_000,
   })
 
@@ -152,6 +166,15 @@ export function DetectionDetailPage() {
             >
               <p className="text-sm text-gray-800 dark:text-gray-200">{m.ruleName ?? m.ruleId}</p>
               <p className="mt-0.5 font-mono text-xs text-gray-500">{m.ruleId}</p>
+              {m.query ? (
+                <pre className="mt-1.5 overflow-x-auto rounded bg-gray-100 px-2 py-1 font-mono text-xs text-gray-700 dark:bg-gray-900/50 dark:text-gray-300">
+                  {m.query}
+                </pre>
+              ) : (
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Query not captured (this detection was synced before this data was recorded).
+                </p>
+              )}
               {m.tags.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {m.tags.map((tag) => (
@@ -167,6 +190,41 @@ export function DetectionDetailPage() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="mb-6">
+        <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+          Matched Events
+        </h2>
+        {isLoadingMatchedEvents && (
+          <div className="flex justify-center py-8">
+            <Spinner size="md" />
+          </div>
+        )}
+        {matchedEventsError && (
+          <ErrorBanner message="Failed to load the real timeline events behind this detection." />
+        )}
+        {matchedEvents && matchedEvents.items.length === 0 && (
+          <p className="text-xs text-gray-500">
+            None of this detection's matched document ids resolve to a document that still exists
+            (source purged, or past its retention window).
+          </p>
+        )}
+        {matchedEvents && matchedEvents.items.length > 0 && (
+          <>
+            {matchedEvents.truncatedFrom !== null && (
+              <p className="mb-2 text-xs text-gray-500">
+                Showing the first {matchedEvents.items.length} of {matchedEvents.truncatedFrom} matched
+                documents.
+              </p>
+            )}
+            <GenericArtifactView
+              content={{
+                rows: matchedEvents.items.map((e) => ({ id: e.id, ...e.source })),
+              }}
+            />
+          </>
+        )}
       </div>
 
       {data.riskFactors.length > 0 && (

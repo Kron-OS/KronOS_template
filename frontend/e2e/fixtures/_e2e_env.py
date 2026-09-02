@@ -50,3 +50,14 @@ POSTGRES_DSN = os.environ.get(
     "KRONOS_E2E_POSTGRES_DSN",
     "postgresql+asyncpg://kronos:kronos_dev_password@localhost:5432/kronos",
 )
+
+# Gap Audit Milestone BBBBB: only meaningful to seed_detection.py's real
+# matched-event indexing (it writes through the real OpenSearchClient, not
+# hand-rolled `requests` calls, same "reuse real code" reasoning as
+# POSTGRES_DSN above). `admin`/`admin` is the real dev-stack credential
+# documented in docs/HANDOFF_AND_ORCHESTRATION.md SS2.3; docker-compose.test.yml
+# uses the same self-signed-cert-with-verify_certs=False setup.
+OPENSEARCH_HOST = os.environ.get("KRONOS_E2E_OPENSEARCH_HOST", "localhost")
+OPENSEARCH_PORT = int(os.environ.get("KRONOS_E2E_OPENSEARCH_PORT", "9200"))
+OPENSEARCH_USERNAME = os.environ.get("KRONOS_E2E_OPENSEARCH_USERNAME", "admin")
+OPENSEARCH_PASSWORD = os.environ.get("KRONOS_E2E_OPENSEARCH_PASSWORD", "admin")

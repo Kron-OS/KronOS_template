@@ -112,6 +112,18 @@ class DetectionRuleMatch(BaseModel):
     rule_id: str
     rule_name: str | None = None
     tags: tuple[str, ...] = Field(default_factory=tuple)
+    # Gap Audit Milestone BBBBB: the real, compiled OpenSearch query string
+    # SA evaluated to fire this rule (e.g. a real captured example,
+    # poc/detection_finding_sync/output.txt: "(NOT ((id.orig_h: 192.168.*)
+    # OR ...))") -- available on the real finding document's own
+    # queries[].query field but previously discarded at sync time. None for
+    # any Detection synced before this field existed (an honest absence,
+    # never fabricated -- mirrors risk_score's own "None in the degenerate
+    # case" contract; Detection rows are frozen-once-created, roadmap
+    # invariant #6, so an already-synced row's rule_matches can never be
+    # retroactively backfilled with this without a real re-sync of that
+    # specific finding, which nothing here attempts automatically).
+    query: str | None = None
 
 
 class Detection(BaseModel):

@@ -34,6 +34,27 @@ primary plugin's own JSON result is an empty list, this worker automatically
 also runs ``--fallback-plugin`` (default ``windows.psscan``) against the same
 evidence file and reports both results in one JSON document.
 
+**Second real finding, a genuine memory image where automagic construction
+itself fails** (a real ``ch2.dmp`` sample reported by a user, gap-audit
+follow-up to Milestone AAAAA/BBBBB): unlike the ``cridex.vmem`` case above,
+where the primary plugin ran to completion and simply returned zero rows,
+this sample makes volatility3's own automagic layer stacker unable to find
+a valid Windows DTB/kernel at all (``vol -f ch2.dmp -vv windows.info``
+shows ``WindowsIntelStacker hits: []`` and ``No suitable kernels found
+during pdbscan``) -- ``windows.pstree`` exits **non-zero** with
+``Unsatisfied requirement ... kernel.layer_name``, never producing a JSON
+``[]`` at all. The fallback branch below only ever triggered on
+``rows == [] and returncode == 0`` -- a non-zero primary exit skipped the
+fallback attempt entirely, even though a plugin-specific requirement
+failure doesn't guarantee every other plugin fails the same way. Verified
+empirically for this exact file that ``windows.psscan`` *also* fails
+identically (the same automagic construction is shared by every
+``windows.*`` plugin needing a resolved kernel layer, so this particular
+sample's fallback attempt will still legitimately report no rows) -- but
+the fallback must still be *attempted* so a genuinely different sample
+where only the primary plugin's specific requirement chain fails isn't
+silently skipped.
+
 Usage:
     python kronos-volatility-worker.py \
         --evidence-path /mnt/evidence/sample.vmem \
@@ -168,25 +189,25 @@ def main() -> None:
         # own "No metadata file found alongside VMEM file" warning).
         logger.info("volatility3 stderr (plugin=%s): %s", args.plugin, stderr[:2000])
 
+    primary_error: str | None = None
     if returncode != 0:
+        # Real, reproduced finding (this module's own docstring, "second
+        # real finding"): a non-zero primary exit used to short-circuit
+        # straight to scan_error, skipping the fallback plugin entirely --
+        # even though a plugin-specific requirement failure doesn't
+        # guarantee every other plugin fails identically. Record the
+        # reason and fall through to the same fallback attempt an
+        # empty-rows result already gets, instead of returning here.
         logger.error("volatility3 plugin %s exited %d", args.plugin, returncode)
-        _emit(
-            {
-                "status": "scan_error",
-                "error": f"{args.plugin} exited {returncode}: {stderr[:500]}",
-                "plugin": args.plugin,
-                "rows": [],
-                "fallback_plugin": None,
-                "fallback_rows": None,
-            }
-        )
-        sys.exit(0)
+        primary_error = f"{args.plugin} exited {returncode}: {stderr[:500]}"
+        rows = []
 
     fallback_plugin: str | None = None
     fallback_rows: list | None = None
+    fallback_ran_and_failed = False
     if not rows and args.fallback_plugin:
         logger.info(
-            "Primary plugin %s returned 0 rows; trying fallback %s",
+            "Primary plugin %s produced no usable rows; trying fallback %s",
             args.plugin,
             args.fallback_plugin,
         )
@@ -198,6 +219,7 @@ def main() -> None:
             logger.error(
                 "Fallback plugin %s timed out; reporting primary result only", args.fallback_plugin
             )
+            fallback_ran_and_failed = primary_error is not None
         else:
             if fb_stderr.strip():
                 logger.info(
@@ -212,6 +234,26 @@ def main() -> None:
                     args.fallback_plugin,
                     fb_returncode,
                 )
+                fallback_ran_and_failed = primary_error is not None
+
+    # The primary plugin failed outright (not just "ran cleanly, found
+    # nothing") AND either there was no fallback to try or it also failed
+    # -- this is a real scan_error, same as before this fix, just reached
+    # after genuinely trying the fallback first instead of skipping it.
+    if primary_error is not None and fallback_plugin is None:
+        _emit(
+            {
+                "status": "scan_error",
+                "error": primary_error
+                if not fallback_ran_and_failed
+                else f"{primary_error} (fallback {args.fallback_plugin} also failed)",
+                "plugin": args.plugin,
+                "rows": [],
+                "fallback_plugin": None,
+                "fallback_rows": None,
+            }
+        )
+        sys.exit(0)
 
     logger.info(
         "volatility3 run complete: plugin=%s rows=%d fallback_plugin=%s fallback_rows=%s",

@@ -28,6 +28,23 @@ export class DetectionSeeder {
   }
 
   /**
+   * Gap Audit Milestone BBBBB: seeds a detection with a real matched
+   * OpenSearch document AND (optionally) a real compiled query DSL string
+   * on its own rule match, plus an overridable severity tag -- for the
+   * "why triggered" detail-page spec and the severity-filter spec.
+   */
+  seedWithQueryAndSeverity(
+    ruleName: string,
+    options: { query?: string; severity?: string } = {},
+    orgAlias = process.env.KRONOS_E2E_SEED_ORG_ALIAS ?? "kronos-dev",
+  ): SeededDetection {
+    const args = ["--org-alias", orgAlias, "--rule-name", ruleName];
+    if (options.query) args.push("--query", options.query);
+    if (options.severity) args.push("--severity", options.severity);
+    return runPythonFixture<SeededDetection>(SEED_SCRIPT, args);
+  }
+
+  /**
    * Milestone JJJJ: seeds a detection already sitting at a non-default
    * triage state -- `seed_detection.py --triage-state` is a real insert via
    * the real domain code, not a simulated FSM transition (see that

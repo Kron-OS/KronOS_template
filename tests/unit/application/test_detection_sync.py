@@ -25,9 +25,22 @@ def _real_finding_hit(
     monitor_name: str = "kronos-testorg-network-detector",
     source_index: str = f"kronos-testorg-case-{_CASE_ID}-202601",
     timestamp_ms: int = 1785423677843,
+    query: str | None = "network.direction:inbound AND destination.port:3389",
 ) -> dict[str, Any]:
     """Shaped exactly like a real SA finding document (verified against a
-    live OpenSearch 2.11.1 cluster -- see poc/detection_finding_sync/)."""
+    live OpenSearch 2.11.1 cluster -- see poc/detection_finding_sync/).
+
+    Gap Audit Milestone BBBBB: real findings also carry a `query` string per
+    entry in `queries[]` -- the compiled OpenSearch query DSL SA evaluated to
+    fire the rule. `query=None` lets callers simulate a pre-BBBBB finding
+    shape (the field simply absent from `_source`)."""
+    query_entry: dict[str, Any] = {
+        "id": "1fc0809e-06bf-4de3-ad52-25e5263b7623",
+        "name": "1fc0809e-06bf-4de3-ad52-25e5263b7623",
+        "tags": ["high", "network", "attack.t1021.001"],
+    }
+    if query is not None:
+        query_entry["query"] = query
     return {
         "_index": ".opensearch-sap-network-findings-2026.07.29-1",
         "_id": finding_id,
@@ -38,13 +51,7 @@ def _real_finding_hit(
             "monitor_id": "S8yIs58BG52zb-VTinMn",
             "monitor_name": monitor_name,
             "index": source_index,
-            "queries": [
-                {
-                    "id": "1fc0809e-06bf-4de3-ad52-25e5263b7623",
-                    "name": "1fc0809e-06bf-4de3-ad52-25e5263b7623",
-                    "tags": ["high", "network", "attack.t1021.001"],
-                }
-            ],
+            "queries": [query_entry],
             "timestamp": timestamp_ms,
             "execution_id": None,
         },
@@ -140,6 +147,33 @@ class TestDetectionSyncService:
         stored = [d async for d in repo.stream_by_org(tenant.org_id)][0]
         assert stored.rule_matches[0].rule_id == "1fc0809e-06bf-4de3-ad52-25e5263b7623"
         assert stored.attack_tags == ("attack.t1021.001",)
+
+    @pytest.mark.asyncio
+    async def test_stores_real_query_string_for_why_triggered_display(self) -> None:
+        hits = [_real_finding_hit("finding-1")]
+        service, repo, _ = _make_service(hits)
+        tenant = make_tenant_context()
+
+        await service.sync_org_findings(tenant)
+
+        stored = [d async for d in repo.stream_by_org(tenant.org_id)][0]
+        assert (
+            stored.rule_matches[0].query == "network.direction:inbound AND destination.port:3389"
+        )
+
+    @pytest.mark.asyncio
+    async def test_query_is_honestly_none_when_finding_predates_the_field(self) -> None:
+        """A finding synced before Milestone BBBBB (or from an SA version
+        that never populates it) has no `query` key in its queries[] entry
+        at all -- must degrade to None, never a fabricated placeholder."""
+        hits = [_real_finding_hit("finding-1", query=None)]
+        service, repo, _ = _make_service(hits)
+        tenant = make_tenant_context()
+
+        await service.sync_org_findings(tenant)
+
+        stored = [d async for d in repo.stream_by_org(tenant.org_id)][0]
+        assert stored.rule_matches[0].query is None
 
     @pytest.mark.asyncio
     async def test_case_id_extracted_from_source_index(self) -> None:

@@ -187,6 +187,16 @@ export interface DetectionRuleMatch {
   ruleId: string
   ruleName: string | null
   tags: string[]
+  // The real, compiled OpenSearch query string SA evaluated to fire this
+  // rule -- null for a Detection synced before this field existed (see
+  // DetectionRuleMatch.query's own docstring, src/domain/detection.py).
+  query: string | null
+}
+
+// Field names match src/external/routes/detections.py's MatchedEventOut DTO.
+export interface MatchedEvent {
+  id: string
+  source: Record<string, unknown>
 }
 
 export interface RiskFactor {

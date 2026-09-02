@@ -713,6 +713,39 @@ jobs:
         working-directory: frontend
         run: npx playwright test e2e/case-delete-archive-ui.spec.ts
 
+      # Gap Audit Milestone BBBBB: Detections tab filtering (severity/free-text,
+      # additive backend query params over the org's own full detection
+      # history, same in-memory-filter-then-paginate idiom
+      # list_detections already used for triageState/caseId) plus "why
+      # triggered" (the real compiled SA query DSL string per matched
+      # rule, DetectionRuleMatch.query, plus the real matched OpenSearch
+      # document content via a new GET /{id}/matched-events route reusing
+      # AbstractTimelineIndex.get_documents_by_id). seed_detection.py now
+      # also indexes one real OpenSearch document per seeded detection
+      # (previously Postgres-only) -- needs the OpenSearch env override
+      # below since docker-compose.test.yml's real admin password differs
+      # from the dev stack's own default the shared _e2e_env.py falls
+      # back to.
+      - name: "E2E: detection-filtering"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
+          KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
+          KRONOS_E2E_PYTHON: "python3"
+          KRONOS_E2E_OPENSEARCH_PASSWORD: "KronOSCiTest#2026"
+        run: npx playwright test e2e/detection-filtering.spec.ts
+
+      - name: "E2E: detection-why-triggered"
+        if: always()
+        working-directory: frontend
+        env:
+          KRONOS_E2E_POSTGRES_DSN: "postgresql+asyncpg://kronos:kronos_test_password@localhost:5432/kronos_test"
+          KRONOS_E2E_SEED_ORG_ALIAS: "kronos-test"
+          KRONOS_E2E_PYTHON: "python3"
+          KRONOS_E2E_OPENSEARCH_PASSWORD: "KronOSCiTest#2026"
+        run: npx playwright test e2e/detection-why-triggered.spec.ts
+
       # Gap Audit Milestone TTTT: same pattern as RRRR -- GET/PATCH
       # /api/admin/org/quota (docs/TENANT_USAGE_QUOTA.md) had zero
       # frontend UI (confirmed via grep across frontend/src/pages/*.tsx

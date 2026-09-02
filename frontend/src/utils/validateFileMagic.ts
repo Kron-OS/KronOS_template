@@ -14,7 +14,7 @@ const ALLOWED_EXTENSIONS = new Set([
 // never got the corresponding entry when Volatility support shipped, so a
 // real .vmem upload was rejected here as "Unsupported extension: .vmem"
 // before ever reaching the server's own (correct) MagicByteValidator.
-const MEMORY_DUMP_EXTENSIONS = new Set(['vmem', 'mem', 'raw', 'dmp', 'lime'])
+export const MEMORY_DUMP_EXTENSIONS = new Set(['vmem', 'mem', 'raw', 'dmp', 'lime'])
 
 export const BLOCKED_EXTENSIONS = new Set([
   'exe', 'dll', 'scr', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'jar', 'msi', 'com',

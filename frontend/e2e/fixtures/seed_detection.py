@@ -38,9 +38,17 @@ import httpx  # noqa: E402
 # _e2e_env.py -- see that module's own docstring for why (Milestone OOO's
 # real incident: this exact override existed here but not yet in the
 # sibling seed_second_org.py, for a whole cycle).
-from _e2e_env import KEYCLOAK_INTERNAL_URL, POSTGRES_DSN  # noqa: E402
+from _e2e_env import (  # noqa: E402
+    KEYCLOAK_INTERNAL_URL,
+    OPENSEARCH_HOST,
+    OPENSEARCH_PASSWORD,
+    OPENSEARCH_PORT,
+    OPENSEARCH_USERNAME,
+    POSTGRES_DSN,
+)
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
+from src.adapter.opensearch.client import OpenSearchClient  # noqa: E402
 from src.adapter.repository.postgres_detection import PostgresDetectionRepository  # noqa: E402
 from src.application.risk_scoring import DetectionRiskScorer  # noqa: E402
 from src.domain.detection import Detection, DetectionRuleMatch, DetectionTriageState  # noqa: E402
@@ -79,13 +87,23 @@ def get_org_id(client: httpx.Client, token: str, alias: str) -> str:
     raise RuntimeError(f"org alias {alias} not found")
 
 
-async def seed(org_id: str, org_alias: str, rule_name: str, triage_state: str = "NEW") -> Detection:
+async def seed(
+    org_id: str,
+    org_alias: str,
+    rule_name: str,
+    triage_state: str = "NEW",
+    query: str | None = None,
+    severity: str = "critical",
+) -> Detection:
     engine = create_async_engine(POSTGRES_DSN)
     repo = PostgresDetectionRepository(engine)
     await PostgresDetectionRepository.create_tables(engine)
 
     scorer = DetectionRiskScorer()
-    breakdown = scorer.score(rule_severity="critical", ioc_confidence=85, asset_criticality="high")
+    breakdown = scorer.score(rule_severity=severity, ioc_confidence=85, asset_criticality="high")
+
+    source_index = f"kronos-{org_alias}-stream-network-e2e"
+    matched_doc_id = f"doc-{uuid.uuid4().hex[:8]}"
 
     # `triage_state` defaults to NEW (Detection's own Pydantic default) --
     # `repo.save()` is a plain initial insert, not a `with_triage_state()`
@@ -100,15 +118,21 @@ async def seed(org_id: str, org_alias: str, rule_name: str, triage_state: str = 
         org_alias=org_alias,
         finding_id=f"e2e-triage-{uuid.uuid4().hex[:8]}",
         detector_name=f"kronos-{org_alias}-network-detector",
-        source_index=f"kronos-{org_alias}-stream-network-e2e",
+        source_index=source_index,
         rule_matches=(
             DetectionRuleMatch(
                 rule_id="rule-e2e-suspicious-outbound",
                 rule_name=rule_name,
-                tags=("attack.t1071.001", "critical"),
+                tags=("attack.t1071.001", severity),
+                # Gap Audit Milestone BBBBB: real findings carry a compiled
+                # OpenSearch query DSL string per matched rule (verified
+                # live -- poc/detection_finding_sync/output.txt). None by
+                # default here mirrors an honestly-pre-BBBBB-shaped row;
+                # callers exercising the "why triggered" UI pass one.
+                query=query,
             ),
         ),
-        matched_document_ids=(f"doc-{uuid.uuid4().hex[:8]}",),
+        matched_document_ids=(matched_doc_id,),
         finding_timestamp=datetime.now(UTC),
         risk_score=breakdown.score,
         risk_factors=breakdown.factors,
@@ -116,6 +140,36 @@ async def seed(org_id: str, org_alias: str, rule_name: str, triage_state: str = 
     )
     saved = await repo.save(detection)
     await engine.dispose()
+
+    # Gap Audit Milestone BBBBB: index one real matching document via the
+    # real OpenSearchClient (not a hand-rolled HTTP PUT) so
+    # GET /{id}/matched-events -- itself a real get_documents_by_id _mget
+    # call -- has genuine content to return; without this the matched
+    # events UI is legitimately, honestly empty for every seeded detection,
+    # which defeats the point of a spec that exercises it.
+    opensearch = OpenSearchClient(
+        hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        http_auth=(OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD),
+        use_ssl=True,
+        verify_certs=False,
+    )
+    await opensearch.bulk_index(
+        [
+            (
+                source_index,
+                matched_doc_id,
+                {
+                    "@timestamp": datetime.now(UTC).isoformat(),
+                    "event": {"kind": "event", "category": ["network"], "type": ["connection"]},
+                    "message": f"E2E seeded matched event for {rule_name}",
+                    "source": {"ip": "203.0.113.7", "port": 51234},
+                    "destination": {"ip": "10.0.0.5", "port": 3389},
+                },
+            )
+        ]
+    )
+    await opensearch.close()
+
     return saved
 
 
@@ -130,6 +184,18 @@ def main() -> None:
         help="Seed the detection already at this triage state (Milestone JJJJ: visual-regression "
         "coverage of every real TriageStatePill color needs detections at all 4 states, not just NEW).",
     )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Gap Audit Milestone BBBBB: real compiled OpenSearch query DSL string for the matched "
+        "rule -- omit to seed an honest pre-BBBBB-shaped row (query=None).",
+    )
+    parser.add_argument(
+        "--severity",
+        default="critical",
+        help="Gap Audit Milestone BBBBB: real Sigma severity tag (SIGMA_SEVERITY_LEVELS) -- for "
+        "exercising the severity filter dropdown.",
+    )
     args = parser.parse_args()
 
     with httpx.Client(timeout=15) as client:
@@ -137,7 +203,16 @@ def main() -> None:
         org_id = get_org_id(client, token, args.org_alias)
         log(f"resolved live org_id={org_id} for alias={args.org_alias}")
 
-    saved = asyncio.run(seed(org_id, args.org_alias, args.rule_name, args.triage_state))
+    saved = asyncio.run(
+        seed(
+            org_id,
+            args.org_alias,
+            args.rule_name,
+            args.triage_state,
+            query=args.query,
+            severity=args.severity,
+        )
+    )
     log(f"seeded real detection {saved.detection_id} org={saved.org_id} risk_score={saved.risk_score} "
         f"triage_state={saved.triage_state}")
 

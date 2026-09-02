@@ -111,6 +111,7 @@ class DetectionSyncService:
                 rule_id=q["id"],
                 rule_name=q.get("name"),
                 tags=tuple(q.get("tags", [])),
+                query=q.get("query"),
             )
             for q in source.get("queries", [])
         )

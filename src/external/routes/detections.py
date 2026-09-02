@@ -11,11 +11,12 @@ native SA Dashboards UI is never linked here either.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from src.adapter.opensearch.client import AbstractTimelineIndex
 from src.adapter.repository.detection import DetectionRepository
 from src.application.detection_triage import DetectionTriageService
 from src.application.playbook import PlaybookActionRegistry
@@ -27,6 +28,7 @@ from src.exceptions import ConcurrentModificationError, DetectionStateError, Val
 from src.external.dependencies import (
     get_detection_repository,
     get_detection_triage_service,
+    get_opensearch_client,
     get_playbook_action_registry,
     get_playbook_execution_service,
     get_tenant_context,
@@ -47,6 +49,33 @@ class DetectionRuleMatchOut(BaseModel):
     ruleId: str
     ruleName: str | None
     tags: list[str]
+    # Gap Audit Milestone BBBBB: the real, compiled OpenSearch query string
+    # that fired -- None for any Detection synced before this field
+    # existed (see DetectionRuleMatch.query's own docstring).
+    query: str | None
+
+
+class MatchedEventOut(BaseModel):
+    """API response DTO for one real matched timeline/stream document
+    (Gap Audit Milestone BBBBB) -- the second half of "why did this rule
+    trigger" (the first half is ``DetectionRuleMatchOut.query``). ``source``
+    is intentionally opaque (real ECS-shaped content, no fixed schema
+    across every possible source index) -- mirrors ``StructuredArtifact.content``'s
+    own "capture safely, render generically" contract
+    (``src/domain/artifact.py``); the frontend reuses the same generic
+    table/JSON renderer already built for that.
+    """
+
+    id: str
+    source: dict[str, Any]
+
+
+class MatchedEventsResponse(BaseModel):
+    items: list[MatchedEventOut]
+    # True if this detection's own matched_document_ids exceeded the real
+    # per-request cap (_MAX_MATCHED_EVENTS below) -- an honest signal, not
+    # a silent truncation, so the UI can say "showing the first N of M".
+    truncatedFrom: int | None = None
 
 
 class RiskFactorOut(BaseModel):
@@ -148,6 +177,8 @@ async def list_detections(
     detection_repo: Annotated[DetectionRepository, Depends(get_detection_repository)],
     triage_state: Annotated[DetectionTriageState | None, Query(alias="triageState")] = None,
     case_id: Annotated[uuid.UUID | None, Query(alias="caseId")] = None,
+    severity: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=256)] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> PaginatedDetections:
@@ -159,18 +190,32 @@ async def list_detections(
     timeline (OS)" row (all four roles may read); mutating via ``/triage``
     is gated separately below.
 
-    ``case_id``/``triage_state`` are additive in-memory filters applied
-    over the org's own repository stream (mirrors ``cases.py``'s
-    ``list_case_evidence`` pagination idiom) — adding a new filter
-    dimension later (e.g. ``attack_tags``) needs only another predicate
-    here, no repository or schema change.
+    ``case_id``/``triage_state``/``severity``/``q`` are all additive
+    in-memory filters applied over the org's own repository stream
+    (mirrors ``cases.py``'s ``list_case_evidence`` pagination idiom) —
+    this docstring's own prior version already anticipated adding a new
+    filter dimension needing only another predicate here, no repository
+    or schema change (Gap Audit Milestone BBBBB adds the first two).
+    ``severity`` matches ``Detection.rule_severity`` (the real Sigma
+    ``level:`` vocabulary, ``SIGMA_SEVERITY_LEVELS``) exactly, not a
+    substring. ``q`` is a case-insensitive substring match against
+    detector name, or any matched rule's name/id — covers "find the
+    detections this rule/detector produced" without needing a dedicated
+    per-field control for each.
     """
     source = (
         detection_repo.stream_by_case(case_id, tenant.org_id)
         if case_id is not None
         else detection_repo.stream_by_org(tenant.org_id)
     )
-    items = [d async for d in source if triage_state is None or d.triage_state == triage_state]
+    needle = q.strip().lower() if q else None
+    items = [
+        d
+        async for d in source
+        if (triage_state is None or d.triage_state == triage_state)
+        and (severity is None or d.rule_severity == severity)
+        and (needle is None or _detection_matches_query(d, needle))
+    ]
 
     total = len(items)
     start = (page - 1) * page_size
@@ -200,6 +245,56 @@ async def get_detection(
     if detection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Detection not found")
     return _to_detection_out(detection)
+
+
+# Real, enforced cap on how many of a detection's own matched_document_ids
+# get fetched/returned per request -- a real SA finding's related_doc_ids
+# list has no upper bound this codebase controls, and this route's own
+# `_mget` call cost (and response size) scales with it. Mirrors
+# ArtifactIngestService._MAX_CONTENT_BYTES's own "real, enforced limit,
+# not advisory" framing.
+_MAX_MATCHED_EVENTS = 50
+
+
+@router.get("/{detection_id}/matched-events", response_model=MatchedEventsResponse)
+async def get_matched_events(
+    detection_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    detection_repo: Annotated[DetectionRepository, Depends(get_detection_repository)],
+    timeline_index: Annotated[AbstractTimelineIndex, Depends(get_opensearch_client)],
+) -> MatchedEventsResponse:
+    """The real timeline/stream documents that caused this detection to
+    fire (Gap Audit Milestone BBBBB) -- the "which data" half of "why did
+    this rule trigger" (the "what logic" half is
+    ``DetectionRuleMatchOut.query``, already on ``GET /{detection_id}``).
+
+    Deliberately its own route, not folded into ``GET /{detection_id}``:
+    fetching real document content is a second real OpenSearch round trip
+    (``AbstractTimelineIndex.get_documents_by_id``, the same real
+    ``_mget`` primitive ``DetectionSyncService._resolve_risk_inputs``
+    already uses and this class's own docstring documents) -- callers that
+    only need the rule/triage summary (e.g. the list view) never pay for
+    it. Org-scoped via the same ``detection_repo.get_by_id`` 404-not-403
+    pattern every other route on this router uses (roadmap invariant #3);
+    this never queries OpenSearch with anything client-supplied beyond the
+    already-org-validated ``detection.source_index``/``matched_document_ids``.
+    An id that no longer resolves (source purged, ISM rollover) is simply
+    absent from the result, mirroring ``get_documents_by_id``'s own
+    honest-partial-result contract -- never an error for the whole request.
+    """
+    detection = await detection_repo.get_by_id(detection_id, tenant.org_id)
+    if detection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Detection not found")
+
+    doc_ids = list(detection.matched_document_ids)
+    truncated_from = len(doc_ids) if len(doc_ids) > _MAX_MATCHED_EVENTS else None
+    doc_ids = doc_ids[:_MAX_MATCHED_EVENTS]
+
+    docs = await timeline_index.get_documents_by_id(detection.source_index, doc_ids)
+    return MatchedEventsResponse(
+        items=[MatchedEventOut(id=doc_id, source=source) for doc_id, source in docs.items()],
+        truncatedFrom=truncated_from,
+    )
 
 
 @router.post("/{detection_id}/triage", response_model=DetectionOut)
@@ -458,6 +553,18 @@ async def revoke_session_for_detection(
 # ---------------------------------------------------------------------------
 
 
+def _detection_matches_query(detection: Detection, needle: str) -> bool:
+    """True if *needle* (already lowercased/stripped) appears in the
+    detector name or any matched rule's name/id -- the ``q`` free-text
+    filter's own predicate (Gap Audit Milestone BBBBB)."""
+    if needle in detection.detector_name.lower():
+        return True
+    return any(
+        needle in (m.rule_name or "").lower() or needle in m.rule_id.lower()
+        for m in detection.rule_matches
+    )
+
+
 def _to_detection_out(detection: Detection) -> DetectionOut:
     return DetectionOut(
         id=detection.detection_id,
@@ -467,7 +574,9 @@ def _to_detection_out(detection: Detection) -> DetectionOut:
         detectorName=detection.detector_name,
         sourceIndex=detection.source_index,
         ruleMatches=[
-            DetectionRuleMatchOut(ruleId=m.rule_id, ruleName=m.rule_name, tags=list(m.tags))
+            DetectionRuleMatchOut(
+                ruleId=m.rule_id, ruleName=m.rule_name, tags=list(m.tags), query=m.query
+            )
             for m in detection.rule_matches
         ],
         matchedDocumentIds=list(detection.matched_document_ids),

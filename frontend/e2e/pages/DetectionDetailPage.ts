@@ -74,4 +74,20 @@ export class DetectionDetailPage extends KronosPage {
   async fetchRealTriageStateFromApi(detectionId: string): Promise<string> {
     return (await this.fetchJson<{ triageState: string }>(`/api/detections/${detectionId}`)).triageState;
   }
+
+  /** Gap Audit Milestone BBBBB: the real compiled query DSL string shown
+   * under a matched rule -- the "what logic" half of "why triggered". */
+  async ruleMatchQueryText(): Promise<string> {
+    return (await this.page.locator("pre").first().innerText()).trim();
+  }
+
+  /** Gap Audit Milestone BBBBB: real matched-event content rendered by
+   * the reused GenericArtifactView table (one row per matched document).
+   * Scoped to the Matched Events section's own parent container (via the
+   * heading's xpath parent) so it can't accidentally count rows from the
+   * separate Risk Score Breakdown table elsewhere on the same page. */
+  async matchedEventRowCount(): Promise<number> {
+    const section = this.page.locator("xpath=//h2[contains(text(),'Matched Events')]/parent::div");
+    return section.locator("tbody tr").count();
+  }
 }
