@@ -35,11 +35,11 @@ changes rather than letting it go stale.
    architectural question (e.g. stash pending form values in
    `sessionStorage` before redirecting, restore on return) spanning three
    existing features — needs a deliberate design pass, not a quick patch.
-4. **Real E2E coverage for `inviteUser`/`updateUserRole`'s own step-up
-   completion** — `completeStepUpReauth()` (the window-aligned-retry TOTP
-   helper, `frontend/e2e/admin-quota-ui.spec.ts`) is proven and reusable;
-   these two actions have never been driven through a real step-up in a
-   browser before, despite having identical `_assert_aal2` gating.
+4. ~~**Real E2E coverage for `inviteUser`/`updateUserRole`'s own step-up
+   completion**~~ — **Done, Milestone XXXX (2026-09-02)**:
+   `completeStepUpReauth` extracted to shared `frontend/e2e/stepup.ts`,
+   reused by new `admin-user-management-stepup.spec.ts` (2 tests, both
+   verified live against real Keycloak). `docs/GAP_AUDIT_2026-08-28_MILESTONE_XXXX.md`.
 5. **`assert_case_lead_or_admin`'s trilogy is done, but two adjacent gaps
    remain named**: mid-session role-change (answered/covered, Milestone
    NNNN) and case-member removal (built, Milestone OOOO) are BOTH closed
