@@ -50,6 +50,7 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 
+from src.adapter.keycloak.admin_client import HttpxKeycloakAdminClient
 from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
 from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEventType
@@ -269,6 +270,27 @@ def admin_api() -> Iterator[_RealAdminApi]:
 
 
 @pytest.fixture(scope="module")
+def real_admin_client() -> HttpxKeycloakAdminClient:
+    """Real ``KeycloakAdminClient`` using the exact same service-account
+    credentials ``admin.py``'s own ``_get_service_account_token`` uses in
+    dev (Gap Audit Milestone VVVV).
+
+    ``invite_user``/``update_user_role`` now prefer this client's own
+    ``is_org_member`` over the module's private raw-HTTP fallback when one
+    is configured (mirrors ``cases.py``'s ``add_case_member``, Milestone
+    QQQQ) -- passing a real instance here, rather than ``None``, is what
+    actually proves that preferred path against live Keycloak, not just
+    the fallback this suite already exercised before VVVV.
+    """
+    return HttpxKeycloakAdminClient(
+        base_url=_KC_BASE,
+        realm=_KC_REALM,
+        client_id="kronos-backend",
+        client_secret=_KC_BACKEND_CLIENT_SECRET,
+    )
+
+
+@pytest.fixture(scope="module")
 def throwaway_orgs(admin_api: _RealAdminApi) -> Iterator[tuple[str, str]]:
     """Create two real, disposable orgs; delete both (and any users this
     module created) on teardown so the shared dev-stack realm is left clean."""
@@ -362,6 +384,7 @@ async def test_invite_user_creates_real_user_linked_only_to_caller_org(
     tenant_a: TenantContext,
     audit_svc: AuditLogService,
     postgres_engine: object,
+    real_admin_client: HttpxKeycloakAdminClient,
 ) -> None:
     org_a_id, org_b_id = throwaway_orgs
     email = f"v5-invitee-{uuid.uuid4().hex[:8]}@kronos-v5.test"
@@ -373,7 +396,7 @@ async def test_invite_user_creates_real_user_linked_only_to_caller_org(
         role="analyst",
     )
 
-    result = await invite_user(body, tenant_a, audit_svc)
+    result = await invite_user(body, tenant_a, audit_svc, real_admin_client)
 
     assert result["created"] is True
     user_id = str(result["userId"])
@@ -403,6 +426,7 @@ async def test_invite_user_rejects_reusing_an_email_that_belongs_to_another_org(
     tenant_a: TenantContext,
     org_b_member: str,
     audit_svc: AuditLogService,
+    real_admin_client: HttpxKeycloakAdminClient,
 ) -> None:
     """AUTH-003/AUTH-011 cross-tenant negative case: org A's admin tries to
     "invite" (i.e. reuse) an email that is a real, existing member of org B."""
@@ -416,7 +440,7 @@ async def test_invite_user_rejects_reusing_an_email_that_belongs_to_another_org(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await invite_user(body, tenant_a, audit_svc)
+        await invite_user(body, tenant_a, audit_svc, real_admin_client)
     assert exc_info.value.status_code == 409, (
         f"expected a real 409 conflict, got {exc_info.value.status_code}: "
         f"{exc_info.value.detail}"
@@ -445,6 +469,7 @@ async def test_update_user_role_persists_in_real_keycloak(
     tenant_a: TenantContext,
     audit_svc: AuditLogService,
     postgres_engine: object,
+    real_admin_client: HttpxKeycloakAdminClient,
 ) -> None:
     org_a_id, _ = throwaway_orgs
     user_id = _track(
@@ -456,7 +481,9 @@ async def test_update_user_role_persists_in_real_keycloak(
     )
     _add_member(admin_api, org_a_id, user_id)
 
-    await update_user_role(user_id, UpdateRoleIn(role="case-lead"), tenant_a, audit_svc)
+    await update_user_role(
+        user_id, UpdateRoleIn(role="case-lead"), tenant_a, audit_svc, real_admin_client
+    )
 
     # Read back via a fresh, independent Admin API call.
     roles_after = _realm_roles(admin_api, user_id)
@@ -477,11 +504,14 @@ async def test_update_user_role_rejects_cross_org_target(
     org_b_member: str,
     audit_svc: AuditLogService,
     postgres_engine: object,
+    real_admin_client: HttpxKeycloakAdminClient,
 ) -> None:
     roles_before = _realm_roles(admin_api, org_b_member)
 
     with pytest.raises(HTTPException) as exc_info:
-        await update_user_role(org_b_member, UpdateRoleIn(role="org-admin"), tenant_a, audit_svc)
+        await update_user_role(
+            org_b_member, UpdateRoleIn(role="org-admin"), tenant_a, audit_svc, real_admin_client
+        )
     assert exc_info.value.status_code == 403
 
     # Real proof the rejection actually prevented the mutation.

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import urllib.parse
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
@@ -13,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.adapter.keycloak.admin_client import KeycloakAdminClient
 from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.quota import OrgQuotaRepository
@@ -25,6 +27,7 @@ from src.exceptions import StorageError
 from src.external.dependencies import (
     get_audit_log_service,
     get_evidence_repository,
+    get_keycloak_admin_client,
     get_org_quota_repository,
     get_storage_quota_gate,
     get_task_queue,
@@ -155,6 +158,7 @@ async def invite_user(
     body: InviteUserIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    admin_client: Annotated[KeycloakAdminClient | None, Depends(get_keycloak_admin_client)],
 ) -> dict[str, Any]:
     """Create a user, add them to the caller's org, and assign their role.
 
@@ -184,10 +188,10 @@ async def invite_user(
     _assert_aal2(tenant)
     try:
         user_id, created = await _create_or_get_user(
-            tenant, body.email, body.firstName, body.lastName, body.password
+            tenant, body.email, body.firstName, body.lastName, body.password, admin_client
         )
         await _add_org_member(tenant, user_id)
-        await _assert_user_in_org(tenant, user_id)
+        await _assert_user_in_org(tenant, user_id, admin_client)
         await _set_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise _to_http_error(exc) from exc
@@ -222,11 +226,12 @@ async def update_user_role(
     body: UpdateRoleIn,
     tenant: Annotated[TenantContext, Depends(requires_role(*_ADMIN_ROLES))],
     audit_svc: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    admin_client: Annotated[KeycloakAdminClient | None, Depends(get_keycloak_admin_client)],
 ) -> OrgUserOut:
     """Change a user's role within the org."""
     _assert_aal2(tenant)
     try:
-        await _assert_user_in_org(tenant, user_id)
+        await _assert_user_in_org(tenant, user_id, admin_client)
         await _set_realm_role(tenant, user_id, body.role)
     except StorageError as exc:
         raise _to_http_error(exc) from exc
@@ -549,7 +554,12 @@ async def _keycloak_admin_request(
 
 
 async def _create_or_get_user(
-    tenant: TenantContext, email: str, first_name: str, last_name: str, password: str
+    tenant: TenantContext,
+    email: str,
+    first_name: str,
+    last_name: str,
+    password: str,
+    admin_client: KeycloakAdminClient | None,
 ) -> tuple[str, bool]:
     """Create a Keycloak user for *email* (idempotent); return (user_id, created).
 
@@ -577,7 +587,7 @@ async def _create_or_get_user(
 
     # 409 Conflict: a user with this email/username already exists somewhere in
     # the realm. Only reuse it if it's already a member of the caller's org.
-    existing = await _find_user_by_email(tenant, email)
+    existing = await _find_user_by_email(tenant, email, admin_client)
     if existing is None:
         raise StorageError(
             "Email already registered to a different account",
@@ -594,7 +604,9 @@ async def _create_or_get_user(
     return str(existing["id"]), False
 
 
-async def _find_user_by_email(tenant: TenantContext, email: str) -> dict[str, Any] | None:
+async def _find_user_by_email(
+    tenant: TenantContext, email: str, admin_client: KeycloakAdminClient | None
+) -> dict[str, Any] | None:
     """Return the Keycloak user with an exact email match, scoped to the caller's org.
 
     A realm-wide email search would let any org-admin discover — and, via
@@ -612,18 +624,41 @@ async def _find_user_by_email(tenant: TenantContext, email: str) -> dict[str, An
         return None
     candidate = users[0]
     user_id = str(candidate.get("id", ""))
-    if not user_id or not await _is_org_member(tenant, user_id):
+    if not user_id or not await _is_org_member(tenant, user_id, admin_client):
         return None
     return candidate
 
 
-async def _is_org_member(tenant: TenantContext, user_id: str) -> bool:
+async def _is_org_member(
+    tenant: TenantContext, user_id: str, admin_client: KeycloakAdminClient | None
+) -> bool:
     """Return True if *user_id* is a member of ``tenant.org_id``.
 
-    Uses the same org-membership endpoint ``remove_user`` already relies on
-    for its (correctly) org-scoped delete, just as a read instead of a
-    DELETE: 200 means the user is a member, 404 means they are not.
+    Gap Audit Milestone VVVV: prefers the already-DI-wired
+    ``KeycloakAdminClient.is_org_member`` (the same real Admin API check
+    ``cases.py``'s own ``add_case_member`` already reuses this way, per
+    Milestone QQQQ) instead of this module's own separate, non-token-caching
+    HTTP round trip — one real implementation of "is this user an org
+    member," not two independently-maintained ones. Falls back to the
+    original raw Admin REST call only when no ``KeycloakAdminClient`` is
+    configured (a bare DI container in some unit tests) — unlike
+    ``add_case_member``'s optional check, this one guards a *mandatory*
+    security boundary (AUTH-003, see ``_assert_user_in_org``), so "no
+    client configured" must still perform the real check via the fallback
+    path, never silently skip it.
     """
+    if admin_client is not None:
+        try:
+            target_id = uuid.UUID(user_id)
+        except ValueError:
+            # Not a real Keycloak id at all -- can't be a member of
+            # anything. Mirrors _find_user_by_email's own "treat as no
+            # such user" framing rather than letting a malformed,
+            # possibly attacker-controlled path parameter (see
+            # update_user_role) raise past this check uncaught.
+            return False
+        return await admin_client.is_org_member(tenant.org_id, target_id)
+
     resp = await _keycloak_admin_request(
         tenant,
         "GET",
@@ -634,7 +669,9 @@ async def _is_org_member(tenant: TenantContext, user_id: str) -> bool:
     return resp.status_code == 200
 
 
-async def _assert_user_in_org(tenant: TenantContext, user_id: str) -> None:
+async def _assert_user_in_org(
+    tenant: TenantContext, user_id: str, admin_client: KeycloakAdminClient | None
+) -> None:
     """Raise 403 unless *user_id* is a member of the caller's org.
 
     This is the mandatory guard before any realm-role-mapping Admin API call
@@ -643,7 +680,7 @@ async def _assert_user_in_org(tenant: TenantContext, user_id: str) -> None:
     realm role — including org-admin itself — on a user in a different
     tenant.
     """
-    if not await _is_org_member(tenant, user_id):
+    if not await _is_org_member(tenant, user_id, admin_client):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Target user is not a member of your organization",

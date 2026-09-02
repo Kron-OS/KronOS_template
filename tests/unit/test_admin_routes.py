@@ -9,6 +9,11 @@ import pytest
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
+from src.adapter.keycloak.admin_client import (
+    KeycloakAdminClient,
+    KeycloakOrganization,
+    KeycloakSession,
+)
 from src.exceptions import StorageError
 from src.external.routes.admin import (
     InviteUserIn,
@@ -22,6 +27,33 @@ from src.external.routes.admin import (
     list_org_users,
 )
 from tests.fixtures.factories import make_tenant_context
+
+
+class FakeKeycloakAdminClient(KeycloakAdminClient):
+    """Minimal fake mirroring test_cases_routes.py's own -- mocks the
+    external Keycloak dependency (CLAUDE.md §B.5), not a domain object.
+    Only ``is_org_member`` is meaningfully implemented; the other abstract
+    methods aren't reachable from the admin.py helpers under test here."""
+
+    def __init__(self, *, org_members: set[uuid.UUID]) -> None:
+        self._org_members = org_members
+        self.calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    async def list_user_sessions(self, user_id: uuid.UUID) -> tuple[KeycloakSession, ...]:
+        raise NotImplementedError
+
+    async def revoke_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    async def is_org_member(self, org_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        self.calls.append((org_id, user_id))
+        return user_id in self._org_members
+
+    async def get_organization_alias(self, org_id: uuid.UUID) -> str | None:
+        raise NotImplementedError
+
+    async def list_organizations(self) -> tuple[KeycloakOrganization, ...]:
+        raise NotImplementedError
 
 
 class _FakeResponse:
@@ -189,13 +221,15 @@ def test_to_http_error_maps_conflict_to_409_without_confirming_other_org() -> No
 async def test_is_org_member_true_when_keycloak_returns_200(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # admin_client=None exercises the raw Admin REST fallback path (Gap
+    # Audit Milestone VVVV) -- unchanged behavior from before that cycle.
     tenant = make_tenant_context()
 
     async def fake_request(*_args: object, **_kwargs: object) -> _FakeResponse:
         return _FakeResponse(200, {"id": "user-1"})
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
-    assert await _is_org_member(tenant, "user-1") is True
+    assert await _is_org_member(tenant, "user-1", None) is True
 
 
 async def test_is_org_member_false_when_keycloak_returns_404(
@@ -207,7 +241,7 @@ async def test_is_org_member_false_when_keycloak_returns_404(
         return _FakeResponse(404, None)
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
-    assert await _is_org_member(tenant, "not-a-member") is False
+    assert await _is_org_member(tenant, "not-a-member", None) is False
 
 
 async def test_assert_user_in_org_raises_403_when_not_a_member(
@@ -220,7 +254,7 @@ async def test_assert_user_in_org_raises_403_when_not_a_member(
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
     with pytest.raises(HTTPException) as exc_info:
-        await _assert_user_in_org(tenant, "attacker-controlled-user-id")
+        await _assert_user_in_org(tenant, "attacker-controlled-user-id", None)
     assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
 
 
@@ -231,7 +265,7 @@ async def test_assert_user_in_org_passes_when_member(monkeypatch: pytest.MonkeyP
         return _FakeResponse(200, {"id": "user-1"})
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
-    await _assert_user_in_org(tenant, "user-1")  # must not raise
+    await _assert_user_in_org(tenant, "user-1", None)  # must not raise
 
 
 async def test_find_user_by_email_returns_none_for_user_in_another_org(
@@ -254,7 +288,7 @@ async def test_find_user_by_email_returns_none_for_user_in_another_org(
         return _FakeResponse(404, None)
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
-    result = await _find_user_by_email(tenant, "someone@other-org.example")
+    result = await _find_user_by_email(tenant, "someone@other-org.example", None)
     assert result is None
 
 
@@ -274,9 +308,63 @@ async def test_find_user_by_email_returns_candidate_when_member_of_caller_org(
         return _FakeResponse(200, {"id": member_user_id})
 
     monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", fake_request)
-    result = await _find_user_by_email(tenant, "teammate@caller-org.example")
+    result = await _find_user_by_email(tenant, "teammate@caller-org.example", None)
     assert result is not None
     assert result["id"] == member_user_id
+
+
+# ---------------------------------------------------------------------------
+# Gap Audit Milestone VVVV: _is_org_member prefers the DI-wired
+# KeycloakAdminClient (mirrors cases.py's add_case_member, Milestone QQQQ)
+# ---------------------------------------------------------------------------
+
+
+async def test_is_org_member_prefers_di_client_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+    member_id = uuid.uuid4()
+    client = FakeKeycloakAdminClient(org_members={member_id})
+
+    async def unreachable(*_args: object, **_kwargs: object) -> _FakeResponse:
+        raise AssertionError("must not fall back to the raw Admin REST path when a client is set")
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", unreachable)
+    non_member_id = uuid.uuid4()
+    assert await _is_org_member(tenant, str(member_id), client) is True
+    assert await _is_org_member(tenant, str(non_member_id), client) is False
+    assert client.calls == [(tenant.org_id, member_id), (tenant.org_id, non_member_id)]
+
+
+async def test_is_org_member_with_di_client_treats_malformed_id_as_not_a_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A route path parameter (update_user_role's user_id) is attacker
+    # controllable and need not be a real UUID at all -- must resolve to
+    # "not a member" (a clean 403 upstream), not an unhandled ValueError.
+    tenant = make_tenant_context()
+    client = FakeKeycloakAdminClient(org_members=set())
+
+    async def unreachable(*_args: object, **_kwargs: object) -> _FakeResponse:
+        raise AssertionError("must not fall back to the raw Admin REST path when a client is set")
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", unreachable)
+    assert await _is_org_member(tenant, "not-a-real-uuid", client) is False
+    assert client.calls == []
+
+
+async def test_assert_user_in_org_with_di_client_passes_when_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = make_tenant_context()
+    member_id = uuid.uuid4()
+    client = FakeKeycloakAdminClient(org_members={member_id})
+
+    async def unreachable(*_args: object, **_kwargs: object) -> _FakeResponse:
+        raise AssertionError("must not fall back to the raw Admin REST path when a client is set")
+
+    monkeypatch.setattr("src.external.routes.admin._keycloak_admin_request", unreachable)
+    await _assert_user_in_org(tenant, str(member_id), client)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +446,7 @@ async def test_invite_user_reuse_path_replaces_role_not_just_adds_it(
         role="read-only",
     )
 
-    result = await invite_user(body, tenant, audit_log)
+    result = await invite_user(body, tenant, audit_log, None)
 
     assert set_realm_role_calls == [("existing-user-1", "read-only")]
     assert result["created"] is False
