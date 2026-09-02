@@ -14,11 +14,16 @@ changes rather than letting it go stale.
 
 ### Tier 1 — real, actionable, small-to-medium scope (do these next)
 
-1. **Retroactively reindex existing evidence for the OpenSearch dynamic-field
-   fix (Milestone UUUU)** — `scripts/reindex_kronos_dynamic_fields.py --dry-run`
-   first, then for real, if you want already-parsed evidence's previously-dropped
-   fields to become searchable. Deliberately not run automatically; a
-   real operator decision, not a bug.
+1. ~~**Retroactively reindex existing evidence for the OpenSearch
+   dynamic-field fix (Milestone UUUU)**~~ — **Done, 2026-09-02**: ran
+   `scripts/reindex_kronos_dynamic_fields.py` for real against every
+   `kronos-*` index on this dev stack — 291 indices reprocessed, 0
+   failures. Spot-checked afterward (`event_identifier:1100` on the
+   201508 case index the original bug report named still returns the
+   correct 8 hits). This was a one-time backfill for data that existed
+   *before* Milestone UUUU shipped; it is not something that needs
+   re-running periodically — every new ingest is already auto-indexed
+   correctly by UUUU's live fix.
 2. ~~**`admin.py`'s `_is_org_member`/`_assert_user_in_org` vs
    `KeycloakAdminClient.is_org_member`**~~ — **Done, Milestone WWWW
    (2026-09-02)**: `_is_org_member` now prefers the DI-wired,
@@ -47,16 +52,15 @@ changes rather than letting it go stale.
    — don't redo these. What's still open: convenient user discovery for
    adding a case member (item 6 below) and the Dashboards field-list
    spot-check (item 7).
-6. **Convenient user discovery for "Add Member"** (named in Milestone
-   RRRR) — a case-lead currently has to know a raw Keycloak user id to
-   add a member (manual text entry, deliberate v1 scope decision — see
-   Part 2's "decisions already made" list). If this becomes a real
-   product ask, the design question is: does a case-lead get a
-   *lightweight*, case-scoped user-search endpoint (new, narrow RBAC
-   surface), or does the UI just guide them to ask an org-admin to look
-   the id up on the Admin page (zero new surface, worse UX)? **This is a
-   decision for the project owner, not something to build unilaterally**
-   — it's a real RBAC boundary question, not just a UI gap.
+6. ~~**Convenient user discovery for "Add Member"**~~ — **Done, Milestone
+   ZZZZ (2026-09-02)**: asked the project owner directly (`AskUserQuestion`)
+   rather than guessing; answer was a new, case-scoped search endpoint.
+   `GET /{case_id}/member-candidates`, gated by the same
+   `assert_case_lead_or_admin` check `add_case_member` uses, backed by a
+   new `KeycloakAdminClient.list_org_members` primitive.
+   `CaseMembersSection` now has a real search-as-you-type picker,
+   verified live against the real dev-stack Keycloak.
+   `docs/GAP_AUDIT_2026-08-28_MILESTONE_ZZZZ.md`.
 7. ~~**Spot-check that OpenSearch Dashboards' field list actually reflects
    Milestone UUUU's fix**~~ — **Done, Milestone VVVV (2026-09-02)**: a
    real, authenticated headless-browser session confirmed the real
