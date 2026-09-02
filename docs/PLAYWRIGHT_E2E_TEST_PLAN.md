@@ -1,6 +1,29 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTTT.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_AAAAA.md` for the latest
+cycle** — scenario 4 of a Volatility-memory-forensics UI design
+conversation (project owner's explicit choice): a dedicated case-level
+Artifacts tab (kind-aware rendering — a real tree for `volatility.pstree`,
+a real table for `volatility.psscan`, a generic fallback for any future
+non-Volatility `kind`), a compact "N artifacts found" summary + link in
+`EvidenceDetailDrawer`, and `VolatilityModule.parse()` now dual-emitting
+real `TimelineRecord`s (process-creation events, one real volatility3
+subprocess run shared with `extract_artifacts()` via a `ContextVar` cache
+— verified live, `poc/volatility_timeline_dual_emit/`, 19/19 checks). Real
+end-to-end volatility3 pipeline already verified for real against
+`cridex.vmem` in that PoC, so the new `case-artifacts-ui.spec.ts` seeds
+real captured row shapes via `VolatilityArtifactSeeder`/
+`seed_volatility_artifacts.py` (real Postgres insert) against a real
+evidence_id from a real small upload, rather than re-uploading a 512 MiB
+memory image through the suite. Real, found-live bug: the artifacts
+query's 15s `staleTime` meant a fast compressed run could show stale,
+artifact-free state with no SSE event to invalidate it — fixed by
+extending the existing per-evidence SSE handler to also invalidate the
+artifacts query on every event. New a11y scan of the Artifacts tab with
+real seeded content (not just the empty state) — 0 violations. Wired
+into CI.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_TTTT.md` for the prior
 cycle** — same real-product-gap pattern as RRRR: `GET`/`PATCH
 /api/admin/org/quota` is a mature, already-tested backend feature with
 zero frontend UI (confirmed via `grep`). New `QuotaSection`
