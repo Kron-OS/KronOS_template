@@ -5,6 +5,7 @@ import { downloadEvidence, retryIntake, retryParse } from '../api/evidence'
 import { ErrorCatalogueChip } from './ErrorCatalogue'
 import { Spinner } from './Spinner'
 import { StatusPill } from './StatusPill'
+import { MEMORY_DUMP_EXTENSIONS } from '../utils/validateFileMagic'
 
 // Mirrors the backend's own "not yet promoted" check
 // (src/external/routes/cases.py::download_evidence -- 404s when
@@ -210,6 +211,26 @@ export function EvidenceDetailDrawer({
               }
             />
           )}
+          {artifactCount === 0 &&
+            evidence.state === 'COMPLETE' &&
+            MEMORY_DUMP_EXTENSIONS.has(evidence.filename.split('.').pop()?.toLowerCase() ?? '') && (
+              // Real user report, Gap Audit Milestone BBBBB follow-up: this
+              // row was previously hidden entirely whenever artifactCount
+              // was 0 -- indistinguishable here from "not a memory dump at
+              // all," even though this evidence file genuinely finished
+              // memory analysis and found nothing. The Artifacts tab
+              // itself already got an honest message for this same case
+              // (CaseDetailPage.tsx's ArtifactsTab); this drawer -- the
+              // first place a user actually looks -- still showed nothing.
+              <FieldRow
+                label="Forensic artifacts"
+                value={
+                  <span className="text-gray-500">
+                    No process data could be recovered from this memory image.
+                  </span>
+                }
+              />
+            )}
 
           {evidence.errorReason && (
             <div className="mt-4 flex flex-col gap-2">

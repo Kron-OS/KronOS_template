@@ -15,11 +15,15 @@ vi.mock('../api/evidence', () => ({
   retryParse: (...args: unknown[]) => retryParseMock(...args),
 }))
 
-function makeEvidence(state: EvidenceState, retryAction: Evidence['retryAction'] = null): Evidence {
+function makeEvidence(
+  state: EvidenceState,
+  retryAction: Evidence['retryAction'] = null,
+  filename = 'sample.log',
+): Evidence {
   return {
     id: 'ev-1',
     caseId: 'case-1',
-    filename: 'sample.log',
+    filename,
     contentType: 'text/plain',
     sizeBytes: 1024,
     sha256: 'abc123',
@@ -37,11 +41,20 @@ function makeEvidence(state: EvidenceState, retryAction: Evidence['retryAction']
   }
 }
 
-function renderDrawer(state: EvidenceState, retryAction: Evidence['retryAction'] = null) {
+function renderDrawer(
+  state: EvidenceState,
+  retryAction: Evidence['retryAction'] = null,
+  options: { filename?: string; artifactCount?: number } = {},
+) {
   const queryClient = new QueryClient()
   return render(
     <QueryClientProvider client={queryClient}>
-      <EvidenceDetailDrawer evidence={makeEvidence(state, retryAction)} onClose={() => {}} />
+      <EvidenceDetailDrawer
+        evidence={makeEvidence(state, retryAction, options.filename)}
+        onClose={() => {}}
+        artifactCount={options.artifactCount ?? 0}
+        onViewArtifacts={() => {}}
+      />
     </QueryClientProvider>,
   )
 }
@@ -76,6 +89,46 @@ describe('EvidenceDetailDrawer download affordance', () => {
     await waitFor(() => {
       expect(downloadEvidenceMock).toHaveBeenCalledWith('case-1', 'ev-1', 'sample.log')
     })
+  })
+})
+
+/**
+ * Real user report follow-up (Gap Audit Milestone BBBBB): the "Forensic
+ * artifacts" row used to be hidden entirely whenever artifactCount was 0
+ * -- indistinguishable from "not a memory dump at all," even for a real
+ * memory dump that genuinely finished analysis and found nothing. This
+ * drawer is the first place a user actually looks (before the separate
+ * Artifacts tab), so it needs its own honest message, not just a silent
+ * empty state.
+ */
+describe('EvidenceDetailDrawer forensic-artifacts honesty', () => {
+  it('shows the honest no-artifacts message for a COMPLETE memory dump with zero artifacts', () => {
+    renderDrawer('COMPLETE', null, { filename: 'ch2.dmp', artifactCount: 0 })
+    expect(
+      screen.getByText('No process data could be recovered from this memory image.'),
+    ).toBeInTheDocument()
+  })
+
+  it('does not show the no-artifacts message while still processing', () => {
+    renderDrawer('PARSING', null, { filename: 'ch2.dmp', artifactCount: 0 })
+    expect(
+      screen.queryByText('No process data could be recovered from this memory image.'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not show the no-artifacts message for a non-memory-dump file', () => {
+    renderDrawer('COMPLETE', null, { filename: 'sample.log', artifactCount: 0 })
+    expect(
+      screen.queryByText('No process data could be recovered from this memory image.'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows the real artifact count (not the honest-zero message) once artifacts exist', () => {
+    renderDrawer('COMPLETE', null, { filename: 'ch2.dmp', artifactCount: 3 })
+    expect(screen.getByText('3 artifacts found')).toBeInTheDocument()
+    expect(
+      screen.queryByText('No process data could be recovered from this memory image.'),
+    ).not.toBeInTheDocument()
   })
 })
 
