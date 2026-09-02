@@ -294,6 +294,13 @@ jobs:
     # across 4 repeated live runs: 7.3s/11.8s/28.6s/28.6s (the last two
     # took the retry path and still passed) -- still comfortably inside
     # this job's own margin even at the worst observed case.
+    #
+    # Milestone XXXX: one new step (admin-user-management-stepup, 2 tests,
+    # each its own real step-up like admin-quota-ui above -- worst-case
+    # budget is the same 90s test.setTimeout reasoning doubled across two
+    # tests in one file). Real measured cost: 17.1s/28.7s standalone,
+    # 1.5m total run alongside admin-quota-ui + role-change-mid-session
+    # together (no interference).
     timeout-minutes: 70
     defaults:
       run:
@@ -682,6 +689,25 @@ jobs:
         if: always()
         working-directory: frontend
         run: npx playwright test e2e/admin-quota-ui.spec.ts
+
+      # Gap Audit Milestone XXXX: closes Tier 1 item 4 of
+      # docs/HANDOFF_AND_ORCHESTRATION.md -- inviteUser/updateUserRole
+      # share admin-quota-ui's own _assert_aal2 step-up gating but had
+      # never been driven through a real browser step-up before this.
+      # completeStepUpReauth extracted to frontend/e2e/stepup.ts and
+      # reused (not duplicated) by these two new specs. Real, live finding:
+      # once one step-up redirect completes, the session's token is aal2
+      # for the rest of that browser context -- the invite spec exploits
+      # this for real cleanup (removing the user it just created needs no
+      # second step-up); the role-change spec deliberately avoids it
+      # (seeds its target user out-of-band via SecondCaseLeadSeeder, a
+      # real Admin API call outside the browser session) so the session
+      # starts genuinely aal1 and actually proves update_user_role's own
+      # redirect trigger, not a reused already-elevated token.
+      - name: "E2E: admin-user-management-stepup"
+        if: always()
+        working-directory: frontend
+        run: npx playwright test e2e/admin-user-management-stepup.spec.ts
 
       # Gap Audit Milestone IIII: docs/PLAYWRIGHT_E2E_TEST_PLAN.md §3.7
       # scenario 1 ("backend temporarily unreachable"). Pure
