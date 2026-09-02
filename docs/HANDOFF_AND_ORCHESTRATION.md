@@ -27,14 +27,15 @@ changes rather than letting it go stale.
    boundary, so it never silently skips). Verified live against real
    Keycloak (`tests/integration/test_admin_routes_real_keycloak.py`, 6/6).
    `docs/GAP_AUDIT_2026-08-28_MILESTONE_WWWW.md`.
-3. **Persist pending form state across a step-up (MFA) redirect** — named
-   in Milestone TTTT. `apiClient`'s step-up flow is a full browser
-   redirect to Keycloak; it silently discards whatever the user had typed
-   (confirmed live for the quota form; equally affects `inviteUser`/
-   `updateUserRole`, which were never even UI-tested before TTTT). Real
-   architectural question (e.g. stash pending form values in
-   `sessionStorage` before redirecting, restore on return) spanning three
-   existing features — needs a deliberate design pass, not a quick patch.
+3. ~~**Persist pending form state across a step-up (MFA) redirect**~~ —
+   **Done, Milestone YYYY (2026-09-02)**: `frontend/src/lib/stepUpFormPersistence.ts`
+   stashes non-sensitive form values before a request that might need
+   step-up, restores on the next mount, never auto-submits. Password
+   excluded from persistence at the type level; the role-change `<select>`
+   gets an explicit "Pending: X — Apply" banner rather than a silent
+   pre-fill (no separate submit step to defer there). Verified live in a
+   real browser against real Keycloak for all three forms.
+   `docs/GAP_AUDIT_2026-08-28_MILESTONE_YYYY.md`.
 4. ~~**Real E2E coverage for `inviteUser`/`updateUserRole`'s own step-up
    completion**~~ — **Done, Milestone XXXX (2026-09-02)**:
    `completeStepUpReauth` extracted to shared `frontend/e2e/stepup.ts`,
