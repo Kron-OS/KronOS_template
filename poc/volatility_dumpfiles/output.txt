@@ -1,0 +1,42 @@
+=== run_poc.py: --pid 2080 (firefox.exe, real process-scoped dump) ===
+construct_seconds: 17.93, render_seconds: 23.185, row_count: 239
+239 real files captured, individual sizes ranging up to 2,063,872 bytes
+(ole32.dll.img). Confirms real bytes ARE genuinely extracted via
+FileHandlerInterface.close() -- but --pid scope is far too broad for a
+single "Extract this file" analyst action (239 files, multiple MB total,
+for clicking one card). See full run_poc.py output for the complete list
+of 239 captured files (module docstring + this file's own README explain
+why this was still a valuable real data point, not the final targeting
+design).
+
+=== run_poc.py: --virtaddr [88024720] (a stale offset from a prior,
+separate scan invocation) ===
+row_count: 0 -- a real negative result, but confounded by re-using an
+offset captured in a DIFFERENT process/scan run than the dumpfiles call
+itself (see run_poc_targeted.py below for the corrected, same-run test).
+
+=== run_poc_targeted.py: fresh filescan rows + immediate --virtaddr AND
+--physaddr against the SAME offset, same automagic context, same run
+(eliminates any staleness) ===
+
+Real candidate filescan rows (real Firefox cache file paths -- genuinely
+useful DFIR content):
+  Offset=88025088  Name=\chrome.2968.1.28264847
+  Offset=88029040  Name=\Users\Jaffa\AppData\Local\Mozilla\Firefox\Profiles\84kisw0a.default-release\cache2\entries\F3A2A55211EE66D36F43F15EFF501E9546680661
+  Offset=88032304  Name=\Users\Jaffa\AppData\Local\Mozilla\Firefox\Profiles\84kisw0a.default-release\cache2\entries\3168C61F89D068684E314E0668C083341C5929A8
+  Offset=88033248  Name=\Users\Jaffa\AppData\Local\Mozilla\Firefox\Profiles\84kisw0a.default-release\cache2\entries\32027373AB514902694BD2F13A8E08513EAF1DF9
+  Offset=88035712  Name=\chrome.2968.2.15970394
+
+Targeted dumpfiles results:
+  offset=0x53f2800 (\chrome.2968.1.28264847)  --virtaddr: 0 rows
+  offset=0x53f2800 (\chrome.2968.1.28264847)  --physaddr: 0 rows
+  offset=0x53f3770 (real Firefox cache file)  --virtaddr: 0 rows
+  offset=0x53f3770 (real Firefox cache file)  --physaddr: 1 ROW, REAL FILE CAPTURED:
+    filename: file.0x53f3770.0xfa80030456c0.DataSectionObject.F3A2A55211EE66D36F43F15EFF501E9546680661.dat
+    size_bytes: 49152
+
+DECISIVE FINDING: windows.filescan's own "Offset" column is a PHYSICAL
+address (pool-tag scanning operates on physical memory, not a virtual-
+address walk) -- the correct targeting mechanism for a real "Extract this
+file" action driven from a filescan row is `--physaddr [offset]`, NOT
+`--virtaddr`. A real 48KB file was successfully extracted this way.

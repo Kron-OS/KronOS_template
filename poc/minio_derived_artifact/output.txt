@@ -1,0 +1,17 @@
+{
+  "pre_cleanup": "nothing to clean (NoSuchBucket)",
+  "bucket_created": "kronos-poc-derived-artifacts",
+  "object_lock_configuration_error": "ObjectLockConfigurationNotFoundError",
+  "put_object": {
+    "key": "poc-org/case-1234/evidence-5678/artifact-9/dumpfiles/example.dat",
+    "size_bytes": 35000,
+    "sha256": "5f8981163f74d103a86b4bc86c0419efda1f6b620f7a6512cdb0e387b2829394"
+  },
+  "get_object": {
+    "size_bytes": 35000,
+    "sha256": "5f8981163f74d103a86b4bc86c0419efda1f6b620f7a6512cdb0e387b2829394",
+    "matches_original_bytes": true
+  },
+  "delete_confirmed": true,
+  "post_cleanup": "PoC bucket removed"
+}

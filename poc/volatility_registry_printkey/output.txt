@@ -1,0 +1,200 @@
+=== windows.registry.hivelist (get real hive offsets) ===
+elapsed=0.322s rows=12
+[
+  {
+    "Offset": 273366078509072,
+    "FileFullPath": "",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366078603280,
+    "FileFullPath": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366078775312,
+    "FileFullPath": "\\REGISTRY\\MACHINE\\HARDWARE",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366085627920,
+    "FileFullPath": "\\SystemRoot\\System32\\Config\\SOFTWARE",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366088290800,
+    "FileFullPath": "\\SystemRoot\\System32\\Config\\SECURITY",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366088664080,
+    "FileFullPath": "\\SystemRoot\\System32\\Config\\SAM",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366089585680,
+    "FileFullPath": "\\??\\C:\\Windows\\ServiceProfiles\\NetworkService\\NTUSER.DAT",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366090572816,
+    "FileFullPath": "\\??\\C:\\Windows\\ServiceProfiles\\LocalService\\NTUSER.DAT",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366093099024,
+    "FileFullPath": "\\??\\C:\\Users\\Jaffa\\ntuser.dat",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366095376400,
+    "FileFullPath": "\\??\\C:\\Users\\Jaffa\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366142058512,
+    "FileFullPath": "\\Device\\HarddiskVolume1\\Boot\\BCD",
+    "File output": "Disabled"
+  },
+  {
+    "Offset": 273366174282768,
+    "FileFullPath": "\\SystemRoot\\System32\\Config\\DEFAULT",
+    "File output": "Disabled"
+  }
+]
+
+=== windows.registry.printkey, offset=0xf8a000024010, no key (hive root), recurse=False ===
+elapsed=0.353s rows=9
+[
+  {
+    "Last Write Time": "2019-08-07T05:05:46+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "ControlSet001",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2009-07-14T05:08:21+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "ControlSet002",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-07T05:03:45+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "MountedDevices",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-19T14:40:02+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "RNG",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2009-07-14T05:08:22+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "Select",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-08T13:51:05+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "Setup",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2010-11-21T03:33:56+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "Software",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-07T05:09:26+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "WPA",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-19T14:40:02+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+    "Name": "CurrentControlSet",
+    "Data": "",
+    "Volatile": true
+  }
+]
+
+=== windows.registry.printkey, offset=0xf8a000024010, key='ControlSet001', recurse=False (fresh Context) ===
+elapsed=0.344s rows=5
+[
+  {
+    "Last Write Time": "2019-08-19T14:40:07+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+    "Name": "Control",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-07T05:07:38+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+    "Name": "Enum",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-19T14:40:02+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+    "Name": "Hardware Profiles",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2009-07-14T04:49:20+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+    "Name": "Policies",
+    "Data": "",
+    "Volatile": false
+  },
+  {
+    "Last Write Time": "2019-08-18T08:47:57+00:00",
+    "Hive Offset": 273366078603280,
+    "Type": "Key",
+    "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+    "Name": "services",
+    "Data": "",
+    "Volatile": false
+  }
+]
