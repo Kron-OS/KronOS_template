@@ -1,6 +1,24 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBBB.md` for the latest
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDDD.md` for the latest
+cycle** — checkpoint 2 of the project owner's real CERT-analyst
+memory-forensics expansion (checkpoint 1: Milestone CCCCC's backend
+multi-plugin rewrite). `ArtifactsTab` (`CaseDetailPage.tsx`) gained a real
+second nav level — a clustered pill strip across the real artifact kinds a
+selected evidence file produced (Process / Suspicious / Files & Registry),
+since Milestone CCCCC's 7-plugin eager set means one file can now produce 7
+real kinds instead of 1-2. New `MalfindView` (`ArtifactViews.tsx`): a
+genuinely different card layout (not a table) for "suspicious" injected
+memory regions, amber/red accent, collapsible hexdump. `case-artifacts-ui.spec.ts`
+rewritten to click through all 7 real seeded kinds (`seed_volatility_artifacts.py`
+extended with real row shapes from `poc/volatility_multiplugin/output.txt`'s
+own captured output against a real 1.6GB user-uploaded image — `cridex.vmem`
+itself legitimately returns 0 rows for the 5 new plugins). `a11y.spec.ts`'s
+Artifacts-tab scan extended to cover the new `MalfindView` state, found and
+fixed a real WCAG AA color-contrast violation in the new cluster-label
+styling. Wired into CI.
+
+**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBBB.md` for the prior
 cycle** — the project owner's chosen follow-up to AAAAA: Detections tab
 filtering (severity + free-text, real backend query params over the org's
 full detection history) and "why did this rule trigger" (the real
