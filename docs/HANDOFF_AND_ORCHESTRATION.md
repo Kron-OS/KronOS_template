@@ -103,6 +103,38 @@ changes rather than letting it go stale.
     installed" claim was simply wrong). A real cluster `helm install` has
     still never been attempted; no cluster is available in this
     environment.
+11. **This dev stack's OpenSearch has hit its real cluster-wide shard
+    limit** — found live 2026-09-03 (Milestone GGGGG) while running a
+    full 39-spec Playwright regression: every `evidence-upload*.spec.ts`/
+    `resilience-sse-drop.spec.ts`/`visual-regression-pills.spec.ts` test
+    that needs real OpenSearch timeline ingestion failed with
+    `StorageError: OpenSearch bulk indexing had N document(s) fail`. Real
+    root cause (confirmed via a direct `_bulk` probe, not guessed):
+    `"this action would add [2] total shards, but this cluster currently
+    has [1000]/[1000] maximum shards open"` — `cluster.max_shards_per_node`'s
+    default (1000 for a single-node cluster) has been exhausted by months
+    of accumulated real E2E-created case indices (this codebase's ISM
+    rollover convention creates a new index per case per month, never
+    deleted). Cluster health is `yellow` (504 active primary shards, 496
+    unassigned replicas — normal/benign for a single-node dev cluster,
+    NOT the cause). Confirmed **not** a regression from any of Milestones
+    CCCCC-GGGGG's own work: `StructuredArtifact`/artifact-tab specs
+    (`case-artifacts-ui.spec.ts`, `case-artifacts-on-demand-ui.spec.ts`,
+    the Artifacts-tab `a11y.spec.ts` scan) all passed in the same run —
+    they persist via Postgres (`PostgresArtifactRepository`), never touch
+    OpenSearch bulk indexing at all, which is exactly why they're immune.
+    **Deliberately not fixed this session**: the real remediation (delete
+    old E2E-created indices, or raise `cluster.max_shards_per_node`) is a
+    genuinely destructive/impactful operational choice on a long-lived
+    shared host this agent didn't provision — needs the project owner's
+    call, not an agent's unilateral decision, per CLAUDE.md's own
+    destructive-action guidance. Also OOM-adjacent: host memory was
+    ~526Mi free / 2GB swap in use during this same investigation (`free
+    -h`), consistent with the already-documented Tier 2 item 8 host
+    constraint. Until resolved, real evidence-upload E2E specs (any of
+    them, not the volatility-specific ones) will keep failing on this
+    specific host — re-run them after cleanup/limit-raise to confirm, not
+    on faith.
 
 ### Tier 3 — deliberately out of scope right now (don't re-litigate without a reason)
 

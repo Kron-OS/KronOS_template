@@ -1,22 +1,26 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDDD.md` for the latest
-cycle** — checkpoint 2 of the project owner's real CERT-analyst
+**See `docs/GAP_AUDIT_2026-09-03_MILESTONE_FFFFF.md` for the latest
+cycle** — checkpoint 4 (final) of the project owner's real CERT-analyst
 memory-forensics expansion (checkpoint 1: Milestone CCCCC's backend
-multi-plugin rewrite). `ArtifactsTab` (`CaseDetailPage.tsx`) gained a real
-second nav level — a clustered pill strip across the real artifact kinds a
-selected evidence file produced (Process / Suspicious / Files & Registry),
-since Milestone CCCCC's 7-plugin eager set means one file can now produce 7
-real kinds instead of 1-2. New `MalfindView` (`ArtifactViews.tsx`): a
-genuinely different card layout (not a table) for "suspicious" injected
-memory regions, amber/red accent, collapsible hexdump. `case-artifacts-ui.spec.ts`
-rewritten to click through all 7 real seeded kinds (`seed_volatility_artifacts.py`
-extended with real row shapes from `poc/volatility_multiplugin/output.txt`'s
-own captured output against a real 1.6GB user-uploaded image — `cridex.vmem`
-itself legitimately returns 0 rows for the 5 new plugins). `a11y.spec.ts`'s
-Artifacts-tab scan extended to cover the new `MalfindView` state, found and
-fixed a real WCAG AA color-contrast violation in the new cluster-label
-styling. Wired into CI.
+multi-plugin rewrite; checkpoint 2: Milestone DDDDD's eager-kind frontend
+nav; checkpoint 3: Milestone EEEEE's on-demand backend). `ArtifactsTab`
+(`CaseDetailPage.tsx`) now covers the full analyst workflow: a clustered
+pill-strip nav across every real artifact kind a selected evidence file
+produced (Process / Suspicious / Files & Registry), a real "Extract this
+file" action on `FileScanView` rows driving a new `DumpFilesView` ("Child
+Files"), and an interactive `RegistryBrowser` (hive picker → breadcrumb
+drill-down) for real, scoped `windows.registry.printkey` calls. New
+`case-artifacts-on-demand-ui.spec.ts` covers both on-demand views end to
+end against seeded data (real trigger-to-MinIO-to-download chain verified
+separately, live, against the real `Challenge.raw` sample — see Milestone
+FFFFF's own doc for the six real bugs that live run caught). `a11y.spec.ts`'s
+Artifacts-tab scan extended to both new states. Wired into CI.
+
+Prior cycles: `docs/GAP_AUDIT_2026-08-28_MILESTONE_DDDDD.md` (checkpoint 2 —
+`MalfindView`'s card layout, the original 2-level nav, a real WCAG
+contrast fix), `docs/GAP_AUDIT_2026-09-03_MILESTONE_EEEEE.md` (checkpoint
+3 — backend-only, no frontend changes that cycle).
 
 **See `docs/GAP_AUDIT_2026-08-28_MILESTONE_BBBBB.md` for the prior
 cycle** — the project owner's chosen follow-up to AAAAA: Detections tab
