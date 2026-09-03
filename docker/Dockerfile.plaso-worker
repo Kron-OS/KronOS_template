@@ -17,6 +17,16 @@
 # poc/volatility_memory_module/README.md) -- light enough to share this image
 # rather than needing its own Dockerfile variant the way Plaso's much heavier
 # dependency set does.
+#
+# pycryptodome (Milestone GGGGG): volatility3's own registry.hashdump/
+# lsadump/cachedump plugins `try: from Crypto.Cipher import ...` (real,
+# confirmed against the real installed package source, not guessed) --
+# without it those three plugins fail to even import (real, live-confirmed
+# ModuleNotFoundError, named as a known gap in Milestone CCCCC's own doc).
+# Version constraint matches volatility3==2.28.0's own declared `extra ==
+# "full"` optional dependency (`pycryptodome<4,>=3.21.0`, confirmed via
+# `importlib.metadata.distribution("volatility3").requires`) rather than an
+# unpinned `latest`.
 FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 USER root
@@ -30,7 +40,8 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir . \
     && /opt/venv/bin/pip install --no-cache-dir plaso==20260512 \
-    && /opt/venv/bin/pip install --no-cache-dir volatility3==2.28.0
+    && /opt/venv/bin/pip install --no-cache-dir volatility3==2.28.0 \
+    && /opt/venv/bin/pip install --no-cache-dir 'pycryptodome>=3.21.0,<4'
 
 RUN mkdir -p /var/log/kronos && touch /var/log/kronos/.keep
 
