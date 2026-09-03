@@ -62,6 +62,7 @@ from src.adapter.repository.yara_rule_pack import (
     InMemoryYaraRulePackRepository,
     YaraRulePackRepository,
 )
+from src.adapter.storage.derived_artifact_storage import DerivedArtifactStorage
 from src.adapter.storage.sealed_batch_storage import SealedBatchStorage
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.approval_gate import ApprovalGate, StepUpApprovalGate
@@ -133,6 +134,7 @@ _evidence_repository: EvidenceRepository | None = None
 _case_repository: CaseRepository = InMemoryCaseRepository()
 _artifact_repository: ArtifactRepository = InMemoryArtifactRepository()
 _evidence_storage: EvidenceStorage | None = None
+_derived_artifact_storage: DerivedArtifactStorage | None = None
 _scanner: AntivirusScanner = NoOpScanner()
 _task_queue: TaskQueue = InMemoryTaskQueue()
 _parser_registry: ParserRegistry | None = None
@@ -633,6 +635,15 @@ def get_evidence_storage() -> EvidenceStorage:
             "Call configure_dependencies() at application startup."
         )
     return _evidence_storage
+
+
+def get_derived_artifact_storage() -> DerivedArtifactStorage:
+    if _derived_artifact_storage is None:
+        raise RuntimeError(
+            "DerivedArtifactStorage is not configured. "
+            "Call configure_dependencies() at application startup."
+        )
+    return _derived_artifact_storage
 
 
 def get_scanner() -> AntivirusScanner:
@@ -1571,9 +1582,11 @@ def configure_dependencies(
     org_quota_repository: OrgQuotaRepository | None = None,
     source_cursor_repository: SourceCursorRepository | None = None,
     integration_source_key_repository: IntegrationSourceKeyRepository | None = None,
+    derived_artifact_storage: DerivedArtifactStorage | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
+    global _derived_artifact_storage
     global _scanner, _task_queue, _parser_registry, _opensearch_client
     global _max_upload_bytes, _presigned_expiry, _case_repository
     global _opensearch_dashboards_url, _timestamp_service, _default_retention_days
@@ -1593,6 +1606,7 @@ def configure_dependencies(
     if evidence_repository is not None:
         _evidence_repository = evidence_repository
     _evidence_storage = evidence_storage
+    _derived_artifact_storage = derived_artifact_storage
     if scanner is not None:
         _scanner = scanner
     if task_queue is not None:
@@ -1657,6 +1671,7 @@ def configure_dependencies(
 def reset_dependencies() -> None:
     """Reset all dependency bindings — used only in tests."""
     global _audit_log_repository, _evidence_repository, _evidence_storage, _scanner
+    global _derived_artifact_storage
     global _task_queue, _parser_registry, _opensearch_client, _max_upload_bytes, _presigned_expiry
     global _case_repository, _step_up_auth, _opensearch_dashboards_url
     global _timestamp_service, _default_retention_days, _opensearch_security_enabled
@@ -1684,6 +1699,7 @@ def reset_dependencies() -> None:
     _audit_log_repository = None
     _evidence_repository = None
     _evidence_storage = None
+    _derived_artifact_storage = None
     _case_repository = InMemoryCaseRepository()
     _artifact_repository = InMemoryArtifactRepository()
     _detection_repository = InMemoryDetectionRepository()

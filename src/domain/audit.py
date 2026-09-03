@@ -209,6 +209,20 @@ class AuditEventType(StrEnum):
     INTEGRATION_SOURCE_KEY_PROVISIONED = "integration_source.key_provisioned"
     INTEGRATION_SOURCE_KEY_REVOKED = "integration_source.key_revoked"
 
+    # Derived artifact extraction (Milestone EEEEE, roadmap E5 follow-up) --
+    # on-demand, analyst-triggered byte extraction (windows.dumpfiles) and
+    # registry-key drill-down (windows.registry.printkey) from a memory
+    # image, distinct from ARTIFACT_INGEST_* (which means "N StructuredArtifact
+    # rows saved during the eager per-evidence parse"). This is
+    # investigatively-relevant binary content pulled from evidence on a
+    # user's explicit request -- its own chain-of-custody trail (CLAUDE.md
+    # SS A.2), mirroring EVIDENCE_DOWNLOAD's "log on real access" discipline
+    # for the download side.
+    DERIVED_ARTIFACT_EXTRACTION_REQUESTED = "derived_artifact.extraction_requested"
+    DERIVED_ARTIFACT_EXTRACTED = "derived_artifact.extracted"
+    DERIVED_ARTIFACT_EXTRACTION_FAILED = "derived_artifact.extraction_failed"
+    DERIVED_ARTIFACT_DOWNLOADED = "derived_artifact.downloaded"
+
     # Generic
     SYSTEM_ERROR = "system.error"
 

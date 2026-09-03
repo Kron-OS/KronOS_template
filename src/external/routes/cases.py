@@ -16,9 +16,11 @@ from src.adapter.opensearch.dashboards_client import (
     case_index_pattern_id,
 )
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
+from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.artifact_repository import ArtifactRepository
 from src.adapter.repository.case_repository import CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
+from src.adapter.storage.derived_artifact_storage import DerivedArtifactStorage
 from src.adapter.storage.storage import EvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.domain.artifact import StructuredArtifact
@@ -31,11 +33,13 @@ from src.external.dependencies import (
     get_audit_log_service,
     get_case_repository,
     get_dashboards_index_pattern_provisioner,
+    get_derived_artifact_storage,
     get_detector_provisioner,
     get_evidence_repository,
     get_evidence_storage,
     get_keycloak_admin_client,
     get_opensearch_dashboards_url,
+    get_task_queue,
     get_tenant_context,
 )
 from src.external.middleware.rbac import (
@@ -136,6 +140,37 @@ def _to_artifact_out(artifact: StructuredArtifact) -> ArtifactOut:
         sourcePath=artifact.kronos.source_path,
         createdAt=artifact.kronos.ingest_timestamp.isoformat(),
     )
+
+
+class VolatilityDumpFileRequestIn(BaseModel):
+    """Body for the on-demand "Extract this file" action (Milestone
+    EEEEE) -- ``physaddr`` must be a real ``windows.filescan`` row's own
+    ``Offset`` (already fetched into the frontend from the eager
+    ``volatility.filescan`` artifact; the PoC's decisive finding is that
+    this must be the PHYSICAL offset, not a virtual address)."""
+
+    physaddr: int
+
+
+class VolatilityRegistryKeyRequestIn(BaseModel):
+    """Body for the on-demand registry drill-down action -- ``hiveOffset``
+    is a real ``windows.registry.hivelist`` row's own ``Offset``; ``key`` is
+    an optional one-level-deeper subkey name (omitted = hive root)."""
+
+    hiveOffset: int
+    key: str | None = None
+
+
+class VolatilityExtractionAcceptedOut(BaseModel):
+    """Returned immediately after enqueuing an on-demand extraction --
+    the real result lands as a new StructuredArtifact a short while later
+    (real-verified sub-few-second turnaround for both actions); the
+    frontend polls GET /api/cases/{case_id}/artifacts for the new kind
+    (``volatility.dumpfiles``/``volatility.registry.printkey``) rather than
+    a dedicated SSE channel (no artifact-aware SSE mechanism exists in this
+    codebase today -- see this route's own docstring)."""
+
+    taskId: str
 
 
 class DashboardUrlOut(BaseModel):
@@ -339,8 +374,8 @@ async def add_case_member(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     assert_case_lead_or_admin(tenant, case)
 
-    target_is_org_member = (
-        admin_client is None or await admin_client.is_org_member(tenant.org_id, body.userId)
+    target_is_org_member = admin_client is None or await admin_client.is_org_member(
+        tenant.org_id, body.userId
     )
     if not target_is_org_member:
         raise HTTPException(
@@ -444,9 +479,7 @@ async def list_case_member_candidates(
 
     members = await admin_client.list_org_members(tenant.org_id)
     needle = q.strip().lower()
-    matches = [
-        m for m in members if needle in m.username.lower() or needle in m.email.lower()
-    ][:20]
+    matches = [m for m in members if needle in m.username.lower() or needle in m.email.lower()][:20]
     return CaseMemberCandidatesResponse(
         items=[
             CaseMemberCandidateOut(userId=str(m.user_id), username=m.username, email=m.email)
@@ -615,6 +648,166 @@ async def download_evidence(
         byte_stream,
         media_type=evidence.metadata.content_type or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post(
+    "/{case_id}/evidence/{evidence_id}/volatility/dump-file",
+    response_model=VolatilityExtractionAcceptedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_volatility_dump_file(
+    case_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    body: VolatilityDumpFileRequestIn,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    task_queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> VolatilityExtractionAcceptedOut:
+    """Enqueue an on-demand windows.dumpfiles extraction (Milestone EEEEE,
+    real mechanism verified in poc/volatility_dumpfiles/) -- the analyst-
+    facing "Extract this file" action on a real ``volatility.filescan`` row.
+
+    Read-role gated (any real case member, all four roles) -- this is an
+    analyst investigative action on evidence they can already read, not a
+    case-lead-restricted mutation (mirrors ``download_evidence``'s own
+    gating, not the ``requires_role(ORG_ADMIN, CASE_LEAD)`` routes). Runs
+    via Celery (CLAUDE.md SS A.5/SS G.3 -- never a synchronous subprocess call
+    on the FastAPI thread) on evidence that must already be fully parsed.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None or evidence.metadata.case_id != case_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.minio_evidence_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Evidence file is not yet available for extraction",
+        )
+
+    await audit_log.log(
+        AuditEventType.DERIVED_ARTIFACT_EXTRACTION_REQUESTED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={"plugin": "windows.dumpfiles.DumpFiles", "physaddr": body.physaddr},
+    )
+    task_id = await task_queue.enqueue_volatility_dump_file(evidence_id, tenant, body.physaddr)
+    return VolatilityExtractionAcceptedOut(taskId=task_id)
+
+
+@router.post(
+    "/{case_id}/evidence/{evidence_id}/volatility/registry-key",
+    response_model=VolatilityExtractionAcceptedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_volatility_registry_key(
+    case_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    body: VolatilityRegistryKeyRequestIn,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    task_queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> VolatilityExtractionAcceptedOut:
+    """Enqueue an on-demand, scoped windows.registry.printkey call
+    (Milestone EEEEE, real mechanism verified in
+    poc/volatility_registry_printkey/) -- the analyst-facing registry
+    drill-down action. Gated identically to ``request_volatility_dump_file``
+    above.
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None or evidence.metadata.case_id != case_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.minio_evidence_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Evidence file is not yet available for extraction",
+        )
+
+    await audit_log.log(
+        AuditEventType.DERIVED_ARTIFACT_EXTRACTION_REQUESTED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={
+            "plugin": "windows.registry.printkey.PrintKey",
+            "hive_offset": body.hiveOffset,
+            "key": body.key,
+        },
+    )
+    task_id = await task_queue.enqueue_volatility_registry_key(
+        evidence_id, tenant, body.hiveOffset, body.key
+    )
+    return VolatilityExtractionAcceptedOut(taskId=task_id)
+
+
+@router.get("/{case_id}/artifacts/{artifact_id}/download")
+async def download_derived_artifact(
+    case_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    artifact_repo: Annotated[ArtifactRepository, Depends(get_artifact_repository)],
+    derived_storage: Annotated[DerivedArtifactStorage, Depends(get_derived_artifact_storage)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> StreamingResponse:
+    """Stream real bytes for a derived artifact (currently only
+    ``volatility.dumpfiles`` rows carry an ``object_key``) -- gated and
+    shaped identically to ``download_evidence`` above (read access, real
+    bytes streamed straight through the backend so the audit event stays
+    synchronous with actual access, 404 not 403 on any cross-org/case
+    mismatch).
+    """
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    artifact = await artifact_repo.get_by_id(artifact_id, tenant.org_id)
+    if artifact is None or artifact.kronos.case_id != case_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+
+    object_key = artifact.content.get("object_key")
+    filename = artifact.content.get("filename") or str(artifact_id)
+    if not isinstance(object_key, str):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This artifact has no downloadable bytes",
+        )
+
+    await audit_log.log(
+        AuditEventType.DERIVED_ARTIFACT_DOWNLOADED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        evidence_id=artifact.kronos.evidence_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={"artifact_id": str(artifact_id), "kind": artifact.kind, "filename": filename},
+    )
+
+    safe_filename = sanitize_content_disposition_filename(str(filename))
+    byte_stream = await derived_storage.stream_object(object_key)
+    return StreamingResponse(
+        byte_stream,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
     )
 
 

@@ -35,6 +35,7 @@ from src.application.timeline_ingest import TimelineIngestionService
 from src.config import Settings
 from src.external.dependencies import (
     get_default_retention_days,
+    get_derived_artifact_storage,
     get_evidence_storage,
     get_max_upload_bytes,
     get_parser_registry,
@@ -43,6 +44,7 @@ from src.external.dependencies import (
     get_timestamp_service,
     get_validator,
 )
+from src.external.parsers.volatility_on_demand import VolatilityOnDemandService
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class TaskResources:
     intake_service: EvidenceIntakeService
     org_quota_repository: PostgresOrgQuotaRepository
     quota_gate: StorageQuotaGate
+    volatility_on_demand_service: VolatilityOnDemandService
 
 
 async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClient]:
@@ -106,6 +109,14 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         quota_gate=quota_gate,
     )
 
+    volatility_on_demand_service = VolatilityOnDemandService(
+        evidence_repository=evidence_repo,
+        evidence_storage=get_evidence_storage(),
+        derived_artifact_storage=get_derived_artifact_storage(),
+        artifact_repository=artifact_repo,
+        audit_log=audit_service,
+    )
+
     intake_service = EvidenceIntakeService(
         evidence_repository=evidence_repo,
         storage=get_evidence_storage(),
@@ -129,6 +140,7 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         orchestration_service=orchestration,
         org_quota_repository=org_quota_repo,
         quota_gate=quota_gate,
+        volatility_on_demand_service=volatility_on_demand_service,
     )
     return resources, engine, opensearch
 

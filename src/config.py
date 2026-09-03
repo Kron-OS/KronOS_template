@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     # spec-authoritative default, configurable per case/org (COMP-5 — this
     # previously disagreed with scripts/provision_buckets.sh's 365d default).
     minio_default_retention_days: int = 365
+    # Derived-artifact bucket (Milestone EEEEE, poc/minio_derived_artifact/):
+    # a SEPARATE, non-WORM bucket for regenerable content extracted on
+    # demand from evidence (e.g. windows.dumpfiles byte extraction) --
+    # real-verified that omitting ObjectLockEnabledForBucket entirely (not
+    # just passing False) produces a genuinely non-WORM bucket where
+    # delete/regenerate works, unlike the evidence bucket.
+    minio_derived_bucket_prefix: str = "kronos-derived"
 
     # OpenSearch
     opensearch_url: str = Field(description="OpenSearch endpoint, e.g. https://opensearch:9200")
@@ -309,8 +316,7 @@ class Settings(BaseSettings):
     cef_syslog_port: int = Field(
         default=514,
         description=(
-            "Port of the real CEF-over-syslog receiver "
-            "(514 is syslog's own conventional default)."
+            "Port of the real CEF-over-syslog receiver (514 is syslog's own conventional default)."
         ),
     )
     cef_syslog_protocol: str = Field(

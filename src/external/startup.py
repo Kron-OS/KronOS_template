@@ -166,6 +166,16 @@ async def wire_dependencies_async() -> None:
         use_tls=settings.minio_use_tls,
     )
 
+    from src.adapter.storage.s3_derived_artifact import S3DerivedArtifactStorage  # noqa: PLC0415
+
+    derived_storage = S3DerivedArtifactStorage(
+        endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        bucket_prefix=settings.minio_derived_bucket_prefix,
+        use_tls=settings.minio_use_tls,
+    )
+
     from urllib.parse import urlparse  # noqa: PLC0415
 
     _parsed = urlparse(settings.opensearch_url)
@@ -332,6 +342,7 @@ async def wire_dependencies_async() -> None:
         correlation_client=correlation_client,
         correlation_rule_provisioner=correlation_rule_provisioner,
         evidence_storage=storage,
+        derived_artifact_storage=derived_storage,
         task_queue=task_queue,
         opensearch_client=opensearch,
         max_upload_bytes=settings.max_upload_bytes,
@@ -448,6 +459,16 @@ def wire_dependencies_sync() -> None:
         use_tls=settings.minio_use_tls,
     )
 
+    from src.adapter.storage.s3_derived_artifact import S3DerivedArtifactStorage  # noqa: PLC0415
+
+    derived_storage = S3DerivedArtifactStorage(
+        endpoint_url=f"{_minio_scheme}://{settings.minio_endpoint}",
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        bucket_prefix=settings.minio_derived_bucket_prefix,
+        use_tls=settings.minio_use_tls,
+    )
+
     task_queue = CeleryTaskQueue()
     step_up_store = build_step_up_ticket_store(settings)
     configure_step_up_auth(step_up_store)
@@ -458,6 +479,7 @@ def wire_dependencies_sync() -> None:
         audit_log_repository=None,
         evidence_repository=None,
         evidence_storage=storage,
+        derived_artifact_storage=derived_storage,
         task_queue=task_queue,
         max_upload_bytes=settings.max_upload_bytes,
         presigned_expiry_seconds=settings.presigned_url_expiry_seconds,

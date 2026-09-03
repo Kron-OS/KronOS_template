@@ -279,6 +279,137 @@ async def test_stderr_is_logged_on_success(
     assert "No metadata file" in stderr_logs[0].stderr
 
 
+# --- On-demand modes (Milestone EEEEE): run_dumpfile / run_registry_key ---
+
+
+async def test_run_dumpfile_returns_dumped_files_from_ok_payload(tmp_path: Path) -> None:
+    payload = {
+        "status": "ok",
+        "error": None,
+        "dumped_files": [
+            {
+                "filename": "file.0x53f3770.DataSectionObject.example.dat",
+                "path": "/tmp/kronos-volatility-dumpfiles-xyz/example.dat",
+                "sha256": "5c9d7a1952a6294ac6d631d8f564e0e50c939defecc347ff1f5fbdbc310f1f2c",
+                "size_bytes": 49152,
+            }
+        ],
+    }
+    script = _write_worker(
+        tmp_path,
+        f"""
+        import json
+        print(json.dumps({payload!r}))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run_dumpfile("/tmp/fake.raw", physaddr=88029040)
+
+    assert result.ok is True
+    assert result.error is None
+    assert len(result.dumped_files) == 1
+    dumped = result.dumped_files[0]
+    assert dumped.filename == "file.0x53f3770.DataSectionObject.example.dat"
+    assert dumped.size_bytes == 49152
+    assert dumped.sha256 == "5c9d7a1952a6294ac6d631d8f564e0e50c939defecc347ff1f5fbdbc310f1f2c"
+    # A real scratch directory was created by the launcher for the worker to
+    # write into -- present on VolatilityDumpFilesResult regardless of
+    # outcome, so the caller can always clean it up.
+    assert Path(result.output_dir).is_dir()
+
+
+async def test_run_dumpfile_reports_not_ok_when_no_bytes_recoverable(tmp_path: Path) -> None:
+    payload = {
+        "status": "scan_error",
+        "error": "No file recoverable at physaddr=1234 (0 rows, no bytes written)",
+        "dumped_files": [],
+    }
+    script = _write_worker(
+        tmp_path,
+        f"""
+        import json
+        print(json.dumps({payload!r}))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run_dumpfile("/tmp/fake.raw", physaddr=1234)
+
+    assert result.ok is False
+    assert result.dumped_files == ()
+    assert "No file recoverable" in (result.error or "")
+
+
+async def test_run_dumpfile_reports_not_ok_on_worker_launch_failure(tmp_path: Path) -> None:
+    """A whole-run failure (e.g. worker crashed, unparseable output) is
+    reported via VolatilityDumpFilesResult.ok=False, never raised -- the
+    caller (VolatilityOnDemandService) always gets a real, honest result to
+    audit, never an uncaught exception from the launcher itself."""
+    script = _write_worker(tmp_path, 'print("this is not json")')
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run_dumpfile("/tmp/fake.raw", physaddr=1234)
+
+    assert result.ok is False
+    assert "unparseable output" in (result.error or "")
+
+
+async def test_run_registry_key_returns_rows_from_ok_payload(tmp_path: Path) -> None:
+    payload = {
+        "status": "ok",
+        "error": None,
+        "plugin": "windows.registry.printkey.PrintKey",
+        "rows": [
+            {
+                "Last Write Time": "2019-08-07T05:05:46+00:00",
+                "Hive Offset": 273366078603280,
+                "Key": "\\\\REGISTRY\\\\MACHINE\\\\SYSTEM",
+                "Name": "ControlSet001",
+            }
+        ],
+    }
+    script = _write_worker(
+        tmp_path,
+        f"""
+        import json
+        print(json.dumps({payload!r}))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run_registry_key("/tmp/fake.raw", hive_offset=273366078603280)
+
+    assert result.ok is True
+    assert len(result.rows) == 1
+    assert result.rows[0]["Name"] == "ControlSet001"
+
+
+async def test_run_registry_key_reports_not_ok_on_scan_error(tmp_path: Path) -> None:
+    payload = {
+        "status": "scan_error",
+        "error": "TypeError: printkey failed",
+        "plugin": "windows.registry.printkey.PrintKey",
+        "rows": [],
+    }
+    script = _write_worker(
+        tmp_path,
+        f"""
+        import json
+        print(json.dumps({payload!r}))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run_registry_key(
+        "/tmp/fake.raw", hive_offset=273366078603280, key="ControlSet001"
+    )
+
+    assert result.ok is False
+    assert result.rows == ()
+    assert "printkey failed" in (result.error or "")
+
+
 # --- Real worker + real volatility3 (pinned volatility3==2.28.0) -----------
 
 

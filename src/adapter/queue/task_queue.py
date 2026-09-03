@@ -42,6 +42,23 @@ class TaskQueue(ABC):
     async def enqueue_parse_heavy(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
         """Enqueue to the heavy parse queue. Return the task ID."""
 
+    @abstractmethod
+    async def enqueue_volatility_dump_file(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, physaddr: int
+    ) -> str:
+        """Enqueue an on-demand windows.dumpfiles extraction (Milestone
+        EEEEE) -- an analyst-triggered action on already-parsed evidence,
+        never part of the autonomous per-evidence pipeline. Return the
+        Celery task ID (or a stub ID in tests)."""
+
+    @abstractmethod
+    async def enqueue_volatility_registry_key(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, hive_offset: int, key: str | None
+    ) -> str:
+        """Enqueue an on-demand, scoped windows.registry.printkey call
+        (Milestone EEEEE). Return the Celery task ID (or a stub ID in
+        tests)."""
+
 
 class InMemoryTaskQueue(TaskQueue):
     """Captures enqueued tasks without running them — for unit tests."""
@@ -67,4 +84,18 @@ class InMemoryTaskQueue(TaskQueue):
     async def enqueue_parse_heavy(self, evidence_id: uuid.UUID, tenant: TenantContext) -> str:
         task_id = str(uuid.uuid4())
         self.enqueued.append(("heavy", evidence_id, tenant))
+        return task_id
+
+    async def enqueue_volatility_dump_file(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, physaddr: int
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        self.enqueued.append(("volatility_dump_file", evidence_id, tenant))
+        return task_id
+
+    async def enqueue_volatility_registry_key(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, hive_offset: int, key: str | None
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        self.enqueued.append(("volatility_registry_key", evidence_id, tenant))
         return task_id

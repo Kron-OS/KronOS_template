@@ -60,6 +60,7 @@ import json
 import logging
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,6 +143,49 @@ class VolatilityMultiPluginResult:
         return None
 
 
+@dataclass(frozen=True)
+class DumpedFile:
+    """One real file extracted by an on-demand windows.dumpfiles run
+    (Milestone EEEEE, poc/volatility_dumpfiles/) -- ``path`` is a real
+    temp-file path on THIS (launcher/caller) process's filesystem, written
+    by the worker subprocess before it exited; the caller must read and
+    delete it (mirrors how VolatilityModule already writes/deletes the
+    evidence file itself around the launcher call)."""
+
+    filename: str
+    path: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class VolatilityDumpFilesResult:
+    """Real result of one on-demand windows.dumpfiles extraction.
+
+    ``output_dir`` is the real scratch directory ``dumped_files[*].path``
+    live in -- the caller (VolatilityModule's on-demand extraction path)
+    owns cleanup: read each file's bytes, upload to
+    DerivedArtifactStorage, then ``shutil.rmtree(output_dir)``. Present
+    even when ``ok`` is False/``dumped_files`` is empty, so the caller can
+    always clean up the (possibly-empty) scratch directory this call
+    created.
+    """
+
+    ok: bool
+    error: str | None
+    dumped_files: tuple[DumpedFile, ...]
+    output_dir: str
+
+
+@dataclass(frozen=True)
+class VolatilityRegistryKeyResult:
+    """Real result of one on-demand, scoped windows.registry.printkey call."""
+
+    ok: bool
+    error: str | None
+    rows: tuple[dict[str, Any], ...]
+
+
 class VolatilityLauncher:
     """Run several real volatility3 plugins (sharing one resolved automagic
     context) against a real memory image in a sandboxed subprocess.
@@ -179,6 +223,145 @@ class VolatilityLauncher:
                 is reported in its ``VolatilityPluginOutcome`` instead).
         """
         return await asyncio.to_thread(self._run_sync, evidence_path, plugins)
+
+    async def run_dumpfile(self, evidence_path: str, physaddr: int) -> VolatilityDumpFilesResult:
+        """On-demand, single-target windows.dumpfiles extraction (Milestone
+        EEEEE, real mechanism verified in poc/volatility_dumpfiles/):
+        *physaddr* must be a real windows.filescan row's own ``Offset``
+        (a physical address, NOT a virtual one -- the PoC's decisive
+        finding). Returns real file bytes written to real temp paths on
+        this process's own filesystem -- the caller (VolatilityModule's
+        on-demand path) is responsible for reading and deleting them after
+        uploading to DerivedArtifactStorage.
+        """
+        return await asyncio.to_thread(self._run_dumpfile_sync, evidence_path, physaddr)
+
+    def _run_dumpfile_sync(self, evidence_path: str, physaddr: int) -> VolatilityDumpFilesResult:
+        output_dir = tempfile.mkdtemp(prefix="kronos-volatility-dumpfiles-")
+        cmd = [
+            self._python_bin,
+            str(self._worker_path),
+            "--evidence-path",
+            evidence_path,
+            "--dumpfiles-physaddr",
+            str(physaddr),
+            "--dumpfiles-output-dir",
+            output_dir,
+            "--timeout-seconds",
+            str(self._timeout),
+        ]
+        try:
+            payload = self._run_worker(cmd)
+        except VolatilityScanError as exc:
+            return VolatilityDumpFilesResult(
+                ok=False, error=str(exc), dumped_files=(), output_dir=output_dir
+            )
+        if payload.get("status") != "ok":
+            return VolatilityDumpFilesResult(
+                ok=False,
+                error=payload.get("error") or "Unknown dumpfiles error",
+                dumped_files=(),
+                output_dir=output_dir,
+            )
+        dumped = tuple(
+            DumpedFile(
+                filename=entry["filename"],
+                path=entry["path"],
+                sha256=entry["sha256"],
+                size_bytes=entry["size_bytes"],
+            )
+            for entry in payload.get("dumped_files", [])
+        )
+        return VolatilityDumpFilesResult(
+            ok=True, error=None, dumped_files=dumped, output_dir=output_dir
+        )
+
+    async def run_registry_key(
+        self, evidence_path: str, hive_offset: int, key: str | None = None
+    ) -> VolatilityRegistryKeyResult:
+        """On-demand, scoped windows.registry.printkey call (Milestone
+        EEEEE, real mechanism verified in poc/volatility_registry_printkey/):
+        *hive_offset* must be a real windows.registry.hivelist row's own
+        ``Offset``. Always fresh-Context per call (worker-side) -- never
+        reused across repeated calls (real, verified reason: a shared
+        Context reused for a second printkey call against the same hive
+        raises LayerException).
+        """
+        return await asyncio.to_thread(self._run_registry_key_sync, evidence_path, hive_offset, key)
+
+    def _run_registry_key_sync(
+        self, evidence_path: str, hive_offset: int, key: str | None
+    ) -> VolatilityRegistryKeyResult:
+        cmd = [
+            self._python_bin,
+            str(self._worker_path),
+            "--evidence-path",
+            evidence_path,
+            "--registry-hive-offset",
+            str(hive_offset),
+            "--timeout-seconds",
+            str(self._timeout),
+        ]
+        if key:
+            cmd.extend(["--registry-key", key])
+        try:
+            payload = self._run_worker(cmd)
+        except VolatilityScanError as exc:
+            return VolatilityRegistryKeyResult(ok=False, error=str(exc), rows=())
+        if payload.get("status") != "ok":
+            return VolatilityRegistryKeyResult(
+                ok=False, error=payload.get("error") or "Unknown registry error", rows=()
+            )
+        return VolatilityRegistryKeyResult(ok=True, error=None, rows=tuple(payload.get("rows", [])))
+
+    def _run_worker(self, cmd: list[str]) -> dict[str, Any]:
+        """Shared subprocess-launch + JSON-parse logic for the two on-demand
+        modes -- same real launch/timeout/stderr-logging discipline as
+        ``_run_sync``, factored out since both on-demand calls need it
+        without the multi-plugin-specific ``--plugins`` argument."""
+        logger.info(
+            "volatility_launch_on_demand", extra={"worker": str(self._worker_path), "cmd": cmd}
+        )
+        try:
+            completed = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout + _SUBPROCESS_TIMEOUT_MARGIN_SECONDS,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise VolatilityScanError(
+                f"Volatility worker not found: {self._worker_path}",
+                context={"path": str(self._worker_path)},
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise VolatilityScanError(
+                "Volatility worker exceeded its outer wall-clock timeout",
+                context={"timeout_seconds": self._timeout},
+            ) from exc
+
+        if completed.stderr and completed.stderr.strip():
+            logger.info("volatility_worker_stderr", extra={"stderr": completed.stderr[:2000]})
+
+        if completed.returncode != 0:
+            raise VolatilityScanError(
+                f"Volatility worker exited with code {completed.returncode}: "
+                f"{completed.stderr[:200]}",
+                context={"returncode": completed.returncode},
+            )
+
+        stdout = completed.stdout.strip()
+        if not stdout:
+            raise VolatilityScanError("Volatility worker produced no output on stdout")
+
+        try:
+            result: dict[str, Any] = json.loads(stdout.splitlines()[-1])
+            return result
+        except json.JSONDecodeError as exc:
+            raise VolatilityScanError(
+                f"Volatility worker produced unparseable output: {stdout[:200]}"
+            ) from exc
 
     def _run_sync(self, evidence_path: str, plugins: Sequence[str]) -> VolatilityMultiPluginResult:
         cmd = [

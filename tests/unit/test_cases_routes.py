@@ -18,6 +18,7 @@ from src.adapter.keycloak.admin_client import (
     KeycloakSession,
     OrgMember,
 )
+from src.adapter.queue.task_queue import InMemoryTaskQueue
 from src.adapter.repository.artifact_repository import InMemoryArtifactRepository
 from src.adapter.repository.case_repository import InMemoryCaseRepository
 from src.adapter.storage.local import LocalEvidenceStorage
@@ -31,10 +32,12 @@ from src.external.dependencies import (
     get_artifact_repository,
     get_audit_log_service,
     get_case_repository,
+    get_derived_artifact_storage,
     get_evidence_repository,
     get_evidence_storage,
     get_keycloak_admin_client,
     get_opensearch_dashboards_url,
+    get_task_queue,
     get_tenant_context,
 )
 from src.external.fastapi_app import create_app
@@ -928,3 +931,429 @@ class TestDownloadEvidence:
         # Real case exists, but for a DIFFERENT org than the caller's tenant.
         resp = client.get(f"/api/cases/{other_case_id}/evidence/{evidence.evidence_id}/download")
         assert resp.status_code == 404
+
+
+class _FakeDerivedArtifactStorage:
+    """Stands in for S3DerivedArtifactStorage (CLAUDE.md SS B.5: mock the
+    external dependency, not domain objects) -- an in-memory dict keyed by
+    object_key, real enough to round-trip bytes for the download route
+    tests below."""
+
+    def __init__(self) -> None:
+        self._objects: dict[str, bytes] = {}
+
+    def seed(self, object_key: str, data: bytes) -> None:
+        self._objects[object_key] = data
+
+    async def put_object(
+        self,
+        org_alias: str,
+        object_key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        self._objects[object_key] = data
+
+    async def stream_object(self, object_key: str, chunk_size: int = 65536):
+        data = self._objects[object_key]
+
+        async def _gen():
+            yield data
+
+        return _gen()
+
+    def bucket_for(self, object_key: str) -> str:
+        return "kronos-derived-testorg"
+
+
+@pytest.fixture
+def on_demand_client(tmp_path):
+    """Like ``download_client``, but also wires a real ``InMemoryTaskQueue``
+    (to assert on-demand extraction tasks are enqueued with the right args),
+    a fake ``DerivedArtifactStorage``, and ``InMemoryArtifactRepository``
+    (Milestone EEEEE: the on-demand dumpfiles/registry-key trigger routes
+    and the derived-artifact download route)."""
+    case_repo = InMemoryCaseRepository()
+    audit_repo = InMemoryAuditLogRepository()
+    evidence_repo = InMemoryEvidenceRepository()
+    artifact_repo = InMemoryArtifactRepository()
+    storage = LocalEvidenceStorage(base_dir=tmp_path)
+    derived_storage = _FakeDerivedArtifactStorage()
+    task_queue = InMemoryTaskQueue()
+    audit_svc = AuditLogService(audit_repo)
+
+    fixed_org = uuid.uuid4()
+    fixed_user = uuid.uuid4()
+
+    def _admin_tenant() -> TenantContext:
+        return TenantContext(
+            org_id=fixed_org,
+            org_alias="testorg",
+            user_id=fixed_user,
+            username="admin",
+            roles=frozenset({Role.ORG_ADMIN}),
+            correlation_id=str(uuid.uuid4()),
+            acr="aal2",
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_tenant_context] = _admin_tenant
+    app.dependency_overrides[get_case_repository] = lambda: case_repo
+    app.dependency_overrides[get_audit_log_service] = lambda: audit_svc
+    app.dependency_overrides[get_evidence_repository] = lambda: evidence_repo
+    app.dependency_overrides[get_evidence_storage] = lambda: storage
+    app.dependency_overrides[get_artifact_repository] = lambda: artifact_repo
+    app.dependency_overrides[get_derived_artifact_storage] = lambda: derived_storage
+    app.dependency_overrides[get_task_queue] = lambda: task_queue
+
+    return (
+        TestClient(app),
+        case_repo,
+        evidence_repo,
+        artifact_repo,
+        derived_storage,
+        task_queue,
+        fixed_org,
+        fixed_user,
+        audit_repo,
+    )
+
+
+class TestRequestVolatilityDumpFile:
+    """POST .../volatility/dump-file (Milestone EEEEE) -- enqueues the
+    real on-demand extraction task, never runs it synchronously (CLAUDE.md
+    SS A.5/SS G.3)."""
+
+    def test_enqueues_task_and_returns_202(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Dumpfiles Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/dump-file",
+            json={"physaddr": 88029040},
+        )
+
+        assert resp.status_code == 202
+        assert "taskId" in resp.json()
+
+    def test_records_real_enqueued_task(self, on_demand_client):
+        (
+            client,
+            _,
+            evidence_repo,
+            _artifact_repo,
+            _derived,
+            task_queue,
+            org_id,
+            _user_id,
+            _audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "Dumpfiles Case 2"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/dump-file",
+            json={"physaddr": 88029040},
+        )
+
+        assert task_queue.enqueued[0][0] == "volatility_dump_file"
+        assert task_queue.enqueued[0][1] == evidence.evidence_id
+
+    def test_logs_extraction_requested_audit_event(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, user_id, audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Dumpfiles Audit Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/dump-file",
+            json={"physaddr": 88029040},
+        )
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(org_id)))
+        requested = [
+            e
+            for e in events
+            if e.event_type == AuditEventType.DERIVED_ARTIFACT_EXTRACTION_REQUESTED
+        ]
+        assert len(requested) == 1
+        assert requested[0].details["physaddr"] == 88029040
+
+    def test_unpromoted_evidence_returns_409(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Not Ready"}).json()
+        case_id = uuid.UUID(created["id"])
+        meta = EvidenceMetadata(
+            original_filename="not-ready.raw",
+            content_type="application/octet-stream",
+            size_bytes=10,
+            uploader_user_id=uuid.uuid4(),
+            case_id=case_id,
+            org_id=org_id,
+            org_alias="testorg",
+        )
+        evidence = asyncio.run(
+            evidence_repo.save(Evidence(metadata=meta, state=EvidenceState.PARSING))
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/dump-file",
+            json={"physaddr": 1234},
+        )
+        assert resp.status_code == 409
+
+    def test_nonexistent_evidence_returns_404(self, on_demand_client):
+        client, *_rest = on_demand_client
+        created = client.post("/api/cases", json={"title": "No Evidence"}).json()
+        case_id = uuid.UUID(created["id"])
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{uuid.uuid4()}/volatility/dump-file",
+            json={"physaddr": 1234},
+        )
+        assert resp.status_code == 404
+
+
+class TestRequestVolatilityRegistryKey:
+    """POST .../volatility/registry-key (Milestone EEEEE)."""
+
+    def test_enqueues_task_and_returns_202(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Registry Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/registry-key",
+            json={"hiveOffset": 273366078603280, "key": "ControlSet001"},
+        )
+
+        assert resp.status_code == 202
+        assert "taskId" in resp.json()
+
+    def test_key_is_optional(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Registry Root Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/registry-key",
+            json={"hiveOffset": 273366078603280},
+        )
+        assert resp.status_code == 202
+
+    def test_records_real_enqueued_task(self, on_demand_client):
+        (
+            client,
+            _,
+            evidence_repo,
+            _artifact_repo,
+            _derived,
+            task_queue,
+            org_id,
+            _user_id,
+            _audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "Registry Case 2"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/registry-key",
+            json={"hiveOffset": 273366078603280},
+        )
+
+        assert task_queue.enqueued[0][0] == "volatility_registry_key"
+
+
+class TestDownloadDerivedArtifact:
+    """GET /{case_id}/artifacts/{artifact_id}/download (Milestone EEEEE) --
+    gated/shaped identically to TestDownloadEvidence above."""
+
+    def test_download_returns_real_bytes(self, on_demand_client):
+        (
+            client,
+            case_repo,
+            evidence_repo,
+            artifact_repo,
+            derived_storage,
+            _tq,
+            org_id,
+            _user_id,
+            _audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "Derived Download Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+        object_key = f"testorg/{case_id}/{evidence.evidence_id}/artifact/example.dat"
+        derived_storage.seed(object_key, b"real extracted file bytes")
+        artifact = asyncio.run(
+            artifact_repo.save(
+                StructuredArtifact(
+                    kind="volatility.dumpfiles",
+                    content={
+                        "plugin": "windows.dumpfiles.DumpFiles",
+                        "filename": "example.dat",
+                        "object_key": object_key,
+                        "sha256": "abc",
+                        "size_bytes": 26,
+                        "enrichment": {},
+                    },
+                    kronos=KronosProvenance(
+                        evidence_id=evidence.evidence_id,
+                        case_id=case_id,
+                        org_id=org_id,
+                        sha256="abc",
+                        parser="volatility3",
+                        parser_version="2.28.0",
+                        record_index=0,
+                        ingest_timestamp=datetime.now(UTC),
+                    ),
+                )
+            )
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/artifacts/{artifact.artifact_id}/download")
+
+        assert resp.status_code == 200
+        assert resp.content == b"real extracted file bytes"
+        assert 'filename="example.dat"' in resp.headers["content-disposition"]
+
+    def test_logs_real_audit_event(self, on_demand_client):
+        (
+            client,
+            case_repo,
+            evidence_repo,
+            artifact_repo,
+            derived_storage,
+            _tq,
+            org_id,
+            user_id,
+            audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "Derived Audit Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+        object_key = f"testorg/{case_id}/{evidence.evidence_id}/artifact/example.dat"
+        derived_storage.seed(object_key, b"bytes")
+        artifact = asyncio.run(
+            artifact_repo.save(
+                StructuredArtifact(
+                    kind="volatility.dumpfiles",
+                    content={"filename": "example.dat", "object_key": object_key},
+                    kronos=KronosProvenance(
+                        evidence_id=evidence.evidence_id,
+                        case_id=case_id,
+                        org_id=org_id,
+                        sha256="abc",
+                        parser="volatility3",
+                        parser_version="2.28.0",
+                        record_index=0,
+                        ingest_timestamp=datetime.now(UTC),
+                    ),
+                )
+            )
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/artifacts/{artifact.artifact_id}/download")
+        assert resp.status_code == 200
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(org_id)))
+        downloaded = [
+            e for e in events if e.event_type == AuditEventType.DERIVED_ARTIFACT_DOWNLOADED
+        ]
+        assert len(downloaded) == 1
+        assert downloaded[0].actor_user_id == user_id
+
+    def test_artifact_without_object_key_returns_404(self, on_demand_client):
+        (
+            client,
+            case_repo,
+            evidence_repo,
+            artifact_repo,
+            _derived,
+            _tq,
+            org_id,
+            _user_id,
+            _audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "No Bytes Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+        artifact = asyncio.run(
+            artifact_repo.save(
+                StructuredArtifact(
+                    kind="volatility.registry.printkey",
+                    content={"plugin": "windows.registry.printkey.PrintKey", "rows": []},
+                    kronos=KronosProvenance(
+                        evidence_id=evidence.evidence_id,
+                        case_id=case_id,
+                        org_id=org_id,
+                        sha256="abc",
+                        parser="volatility3",
+                        parser_version="2.28.0",
+                        record_index=0,
+                        ingest_timestamp=datetime.now(UTC),
+                    ),
+                )
+            )
+        )
+
+        resp = client.get(f"/api/cases/{case_id}/artifacts/{artifact.artifact_id}/download")
+        assert resp.status_code == 404
+
+    def test_nonexistent_artifact_returns_404(self, on_demand_client):
+        client, *_rest = on_demand_client
+        created = client.post("/api/cases", json={"title": "No Artifact Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        resp = client.get(f"/api/cases/{case_id}/artifacts/{uuid.uuid4()}/download")
+        assert resp.status_code == 404
+
+
+async def _seed_promoted_evidence_for_org(
+    evidence_repo: InMemoryEvidenceRepository,
+    *,
+    org_id: uuid.UUID,
+    case_id: uuid.UUID,
+    filename: str = "memory.raw",
+) -> Evidence:
+    """Lighter-weight than ``_seed_promoted_evidence`` -- the on-demand
+    routes only need a real, promoted minio_evidence_key on the Evidence
+    row itself (the launcher/storage calls are mocked at the service layer
+    in the Celery task, never reached by these route-level tests), not a
+    real byte round-trip through LocalEvidenceStorage."""
+    meta = EvidenceMetadata(
+        original_filename=filename,
+        content_type="application/octet-stream",
+        size_bytes=1024,
+        uploader_user_id=uuid.uuid4(),
+        case_id=case_id,
+        org_id=org_id,
+        org_alias="testorg",
+    )
+    evidence = Evidence(metadata=meta, state=EvidenceState.COMPLETE).with_keys(
+        quarantine_key=None, evidence_key=f"testorg/{case_id}/evidence/{filename}"
+    )
+    return await evidence_repo.save(evidence)

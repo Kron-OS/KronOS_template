@@ -452,6 +452,134 @@ def finalize_evidence(
 
 
 # ---------------------------------------------------------------------------
+# extract_volatility_dump_file / extract_volatility_registry_key: on-demand,
+# analyst-triggered single-target volatility3 extractions (Milestone EEEEE).
+# Distinct from parse_artefact_heavy -- these are NOT part of the autonomous
+# per-evidence pipeline (CLAUDE.md SS E.1), they only ever run in response to
+# an explicit analyst click (a real "Extract this file" / "Browse this
+# registry key" UI action) on evidence that has ALREADY finished parsing.
+# Reuse q.parse.plaso: same worker image (volatility3 installed,
+# Dockerfile.plaso-worker), and these on-demand calls are real-verified fast
+# (poc/volatility_dumpfiles/, poc/volatility_registry_printkey/: sub-second
+# to a few seconds each) so they don't need separate concurrency tuning from
+# the eager pipeline.
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="kronos.extract_volatility_dump_file",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    queue="q.parse.plaso",
+    time_limit=360,
+    soft_time_limit=330,
+)
+def extract_volatility_dump_file(
+    self: object, evidence_id: str, physaddr: int, *, org_id: str, user_id: str
+) -> dict[str, Any]:
+    """Run windows.dumpfiles against *physaddr* (a real windows.filescan
+    row's own Offset -- see VolatilityOnDemandService's own docstring for
+    why physaddr, not virtaddr) and persist the real extracted file(s) as
+    StructuredArtifacts + DerivedArtifactStorage objects.
+    """
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+    from src.external.parsers.volatility_on_demand import (  # noqa: PLC0415
+        VolatilityOnDemandExtractionError,
+    )
+
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources: TaskResources) -> list[str]:
+        artifacts = await resources.volatility_on_demand_service.extract_dump_file(
+            uuid.UUID(evidence_id), tenant, physaddr
+        )
+        return [str(a.artifact_id) for a in artifacts]
+
+    try:
+        artifact_ids = run_evidence_coro(_work)
+        return {"evidence_id": evidence_id, "artifact_ids": artifact_ids}
+    except VolatilityOnDemandExtractionError as exc:
+        # A real, honest extraction failure (bad target, no bytes
+        # recoverable) -- already audited inside the service itself. Not
+        # retried: retrying the exact same physaddr against the exact same
+        # evidence file will fail identically every time (this isn't a
+        # transient infrastructure error).
+        logger.warning(
+            "extract_volatility_dump_file_no_result",
+            extra={"evidence_id": evidence_id, "physaddr": physaddr, "error": str(exc)},
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "extract_volatility_dump_file_failed",
+            extra={"evidence_id": evidence_id, "physaddr": physaddr, "error": str(exc)},
+        )
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+
+@celery_app.task(
+    name="kronos.extract_volatility_registry_key",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    queue="q.parse.plaso",
+    time_limit=120,
+    soft_time_limit=90,
+)
+def extract_volatility_registry_key(
+    self: object,
+    evidence_id: str,
+    hive_offset: int,
+    key: str | None,
+    *,
+    org_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Run a scoped, non-recursive windows.registry.printkey call (real-
+    verified fast/bounded: poc/volatility_registry_printkey/) and persist
+    the resulting rows as one StructuredArtifact."""
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+    from src.external.parsers.volatility_on_demand import (  # noqa: PLC0415
+        VolatilityOnDemandExtractionError,
+    )
+
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources: TaskResources) -> str:
+        artifact = await resources.volatility_on_demand_service.extract_registry_key(
+            uuid.UUID(evidence_id), tenant, hive_offset, key
+        )
+        return str(artifact.artifact_id)
+
+    try:
+        artifact_id = run_evidence_coro(_work)
+        return {"evidence_id": evidence_id, "artifact_id": artifact_id}
+    except VolatilityOnDemandExtractionError as exc:
+        logger.warning(
+            "extract_volatility_registry_key_no_result",
+            extra={
+                "evidence_id": evidence_id,
+                "hive_offset": hive_offset,
+                "key": key,
+                "error": str(exc),
+            },
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "extract_volatility_registry_key_failed",
+            extra={
+                "evidence_id": evidence_id,
+                "hive_offset": hive_offset,
+                "key": key,
+                "error": str(exc),
+            },
+        )
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
 # abort_orphan_uploads: hourly cleanup of stuck UPLOADING evidence
 # ---------------------------------------------------------------------------
 

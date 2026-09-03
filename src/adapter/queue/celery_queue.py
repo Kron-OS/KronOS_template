@@ -68,3 +68,36 @@ class CeleryTaskQueue(TaskQueue):
             queue="q.parse.plaso",
         )
         return result.id  # type: ignore[no-any-return]
+
+    async def enqueue_volatility_dump_file(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, physaddr: int
+    ) -> str:
+        from src.external.celery_app import extract_volatility_dump_file  # noqa: PLC0415
+
+        result = extract_volatility_dump_file.apply_async(
+            kwargs={
+                "evidence_id": str(evidence_id),
+                "physaddr": physaddr,
+                "org_id": str(tenant.org_id),
+                "user_id": str(tenant.user_id),
+            },
+            queue="q.parse.plaso",
+        )
+        return result.id  # type: ignore[no-any-return]
+
+    async def enqueue_volatility_registry_key(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, hive_offset: int, key: str | None
+    ) -> str:
+        from src.external.celery_app import extract_volatility_registry_key  # noqa: PLC0415
+
+        result = extract_volatility_registry_key.apply_async(
+            kwargs={
+                "evidence_id": str(evidence_id),
+                "hive_offset": hive_offset,
+                "key": key,
+                "org_id": str(tenant.org_id),
+                "user_id": str(tenant.user_id),
+            },
+            queue="q.parse.plaso",
+        )
+        return result.id  # type: ignore[no-any-return]

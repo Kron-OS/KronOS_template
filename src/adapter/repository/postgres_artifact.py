@@ -67,6 +67,20 @@ class PostgresArtifactRepository(ArtifactRepository):
                 ) from exc
         return artifact
 
+    async def get_by_id(
+        self, artifact_id: uuid.UUID, org_id: uuid.UUID
+    ) -> StructuredArtifact | None:
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    structured_artifacts_table.select().where(
+                        structured_artifacts_table.c.artifact_id == artifact_id,
+                        structured_artifacts_table.c.org_id == org_id,
+                    )
+                )
+            ).first()
+        return self._from_row(row._asdict()) if row is not None else None
+
     async def list_by_evidence(
         self, evidence_id: uuid.UUID, org_id: uuid.UUID
     ) -> list[StructuredArtifact]:
@@ -81,9 +95,7 @@ class PostgresArtifactRepository(ArtifactRepository):
             ).all()
         return [self._from_row(row._asdict()) for row in rows]
 
-    async def list_by_case(
-        self, case_id: uuid.UUID, org_id: uuid.UUID
-    ) -> list[StructuredArtifact]:
+    async def list_by_case(self, case_id: uuid.UUID, org_id: uuid.UUID) -> list[StructuredArtifact]:
         async with self._engine.connect() as conn:
             rows = (
                 await conn.execute(
