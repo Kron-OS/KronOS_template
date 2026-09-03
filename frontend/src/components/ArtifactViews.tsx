@@ -45,13 +45,13 @@ interface DllRow {
   [key: string]: unknown
 }
 
-interface FileScanRow {
+export interface FileScanRow {
   Offset?: number
   Name?: string
   [key: string]: unknown
 }
 
-interface HiveListRow {
+export interface HiveListRow {
   Offset?: number
   FileFullPath?: string
   [key: string]: unknown
@@ -66,6 +66,22 @@ interface MalfindRow {
   CommitCharge?: number
   Hexdump?: string
   [key: string]: unknown
+}
+
+interface RegistryPrintkeyRow {
+  Name?: string
+  Type?: string
+  Data?: string
+  Key?: string
+  Volatile?: boolean
+  'Last Write Time'?: string
+  [key: string]: unknown
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function formatHex(value: unknown): string {
@@ -234,7 +250,30 @@ const FILESCAN_COLUMNS: { key: keyof FileScanRow; label: string; hex?: boolean }
   { key: 'Name', label: 'Path' },
 ]
 
-export function FileScanView({ rows }: { rows: FileScanRow[] }) {
+/** Milestone EEEEE/FFFFF: FileScanView is the entry point for the
+ * on-demand "Extract this file" action -- windows.filescan's own `Offset`
+ * column is the real PHYSICAL address windows.dumpfiles needs
+ * (poc/volatility_dumpfiles/'s decisive finding, NOT a virtual address),
+ * so a row here can drive the extraction request directly, with no
+ * additional lookup. `onExtract` is optional so this view still works
+ * read-only wherever it's reused without wiring the on-demand path. */
+export function FileScanView({
+  rows,
+  onExtract,
+  extractingOffsets,
+  extractedOffsets,
+  failedOffsets,
+}: {
+  rows: FileScanRow[]
+  onExtract?: (row: FileScanRow) => void
+  extractingOffsets?: Set<number>
+  extractedOffsets?: Set<number>
+  /** Milestone FFFFF, real bug found via a live browser run: a targeted
+   * physaddr can genuinely have no recoverable bytes (a real, honest
+   * volatility3 outcome, not an error) -- without this, a failed
+   * extraction left the button stuck on "Extracting…" forever. */
+  failedOffsets?: Set<number>
+}) {
   if (rows.length === 0) {
     return <p className="text-sm text-gray-500">No file objects found resident in memory.</p>
   }
@@ -248,21 +287,49 @@ export function FileScanView({ rows }: { rows: FileScanRow[] }) {
                 {col.label}
               </th>
             ))}
+            {onExtract && <th className="px-3 py-2 font-medium">Child Files</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
-          {rows.map((row, i) => (
-            <tr key={`${row.Offset ?? i}-${i}`} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
-              {FILESCAN_COLUMNS.map((col) => (
-                <td
-                  key={String(col.key)}
-                  className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300"
-                >
-                  {col.hex ? formatHex(row[col.key as string]) : formatCell(row[col.key as string])}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {rows.map((row, i) => {
+            const offset = typeof row.Offset === 'number' ? row.Offset : null
+            const isExtracting = offset !== null && extractingOffsets?.has(offset)
+            const isExtracted = offset !== null && extractedOffsets?.has(offset)
+            const hasFailed = offset !== null && failedOffsets?.has(offset)
+            return (
+              <tr key={`${row.Offset ?? i}-${i}`} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
+                {FILESCAN_COLUMNS.map((col) => (
+                  <td
+                    key={String(col.key)}
+                    className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    {col.hex ? formatHex(row[col.key as string]) : formatCell(row[col.key as string])}
+                  </td>
+                ))}
+                {onExtract && (
+                  <td className="px-3 py-2">
+                    {offset === null ? (
+                      '—'
+                    ) : isExtracted ? (
+                      <span className="text-xs font-medium text-green-700 dark:text-green-400">
+                        Extracted
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onExtract(row)}
+                        disabled={isExtracting}
+                        title={hasFailed ? 'No bytes recoverable at this offset — try another file' : undefined}
+                        className="rounded px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-gray-400 dark:text-indigo-400 dark:hover:bg-indigo-950/40 dark:disabled:text-gray-600"
+                      >
+                        {isExtracting ? 'Extracting…' : hasFailed ? 'Failed — retry?' : 'Extract'}
+                      </button>
+                    )}
+                  </td>
+                )}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -386,6 +453,293 @@ export function MalfindView({ rows }: { rows: MalfindRow[] }) {
   )
 }
 
+/** Milestone EEEEE/FFFFF: the user's own "child files" phrase -- lists
+ * every real windows.dumpfiles extraction result for the selected evidence
+ * file. Unlike every other kind, each `volatility.dumpfiles`
+ * StructuredArtifact IS one row already (one real extracted file, not a
+ * `content.rows` array) -- ArtifactsTab passes the raw, unmerged artifact
+ * list here rather than routing through the shared row-merge path. Shows a
+ * real SHA-256 plus a disabled, tooltipped VirusTotal placeholder (UI-only
+ * per the plan's "eventually" -- content.enrichment stays `{}` until a
+ * real lookup pass exists). */
+export function DumpFilesView({
+  artifacts,
+  onDownload,
+}: {
+  artifacts: Artifact[]
+  onDownload: (artifactId: string, filename: string) => void
+}) {
+  if (artifacts.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No files extracted yet. Open "Files in Memory" and click Extract next to a real file to pull
+        its bytes here.
+      </p>
+    )
+  }
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+            <th className="px-3 py-2 font-medium">Filename</th>
+            <th className="px-3 py-2 font-medium">Size</th>
+            <th className="px-3 py-2 font-medium">SHA-256</th>
+            <th className="px-3 py-2 font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+          {artifacts.map((artifact) => {
+            const filename =
+              typeof artifact.content.filename === 'string' ? artifact.content.filename : artifact.id
+            const sizeBytes =
+              typeof artifact.content.size_bytes === 'number' ? artifact.content.size_bytes : null
+            const sha256 = typeof artifact.content.sha256 === 'string' ? artifact.content.sha256 : null
+            return (
+              <tr key={artifact.id} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
+                <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{filename}</td>
+                <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                  {sizeBytes !== null ? formatBytes(sizeBytes) : '—'}
+                </td>
+                <td className="max-w-[16rem] truncate px-3 py-2 font-mono text-xs text-gray-500">
+                  {sha256 ?? '—'}
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onDownload(artifact.id, filename)}
+                      className="rounded px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950/40"
+                    >
+                      Download
+                    </button>
+                    <span
+                      title="Check reputation — VirusTotal coming soon"
+                      className="cursor-not-allowed rounded bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                    >
+                      Check reputation
+                    </span>
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function HiveBreadcrumb({
+  hivePath,
+  path,
+  onNavigate,
+}: {
+  hivePath: string
+  path: string[]
+  onNavigate: (depth: number) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1 font-mono text-xs text-gray-500">
+      <button type="button" onClick={() => onNavigate(0)} className="hover:underline">
+        {hivePath || 'hive root'}
+      </button>
+      {path.map((segment, i) => (
+        <span key={`${segment}-${i}`} className="flex items-center gap-1">
+          <span>\</span>
+          <button type="button" onClick={() => onNavigate(i + 1)} className="hover:underline">
+            {segment}
+          </button>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/** Milestone EEEEE/FFFFF: interactive, one-level-at-a-time registry
+ * browser (poc/volatility_registry_printkey/'s real, verified design --
+ * scoped, non-recursive `printkey` calls, ~0.35s each, vs. >200s
+ * unscoped). A real `windows.registry.printkey` call's own `key` parameter
+ * takes the FULL backslash-joined path from the hive root (re-verified
+ * live against Challenge.raw: `"ControlSet001\\Control"` returns Control's
+ * own children directly) -- not an incremental one-level name -- so `path`
+ * here is the full breadcrumb, joined fresh on every request. Each
+ * (hiveOffset, key) combination the user has already drilled into is its
+ * own real `volatility.registry.printkey` StructuredArtifact; this
+ * component looks up the one matching its current position rather than
+ * merging them (each represents a different, real point in the registry
+ * tree -- merging would interleave unrelated keys' rows into one table). */
+export function RegistryBrowser({
+  hives,
+  printkeyArtifacts,
+  onRequestKey,
+  pendingKeys,
+  failedKeys,
+}: {
+  hives: HiveListRow[]
+  printkeyArtifacts: Artifact[]
+  onRequestKey: (hiveOffset: number, key: string | null) => void
+  pendingKeys: Set<string>
+  /** Milestone FFFFF: a real printkey request can genuinely fail
+   * asynchronously (e.g. a real LayerException -- poc/volatility_registry_printkey/)
+   * with nothing to ever resolve "Loading…" on its own; the container
+   * times a pending request out and reports it here so the UI can offer a
+   * real retry instead of spinning forever. */
+  failedKeys?: Set<string>
+}) {
+  const [selectedHive, setSelectedHive] = useState<HiveListRow | null>(null)
+  const [path, setPath] = useState<string[]>([])
+
+  if (hives.length === 0) {
+    return <p className="text-sm text-gray-500">No registry hives found in this memory image.</p>
+  }
+
+  const selectHive = (hive: HiveListRow) => {
+    setSelectedHive(hive)
+    setPath([])
+    if (typeof hive.Offset === 'number') onRequestKey(hive.Offset, null)
+  }
+
+  if (!selectedHive) {
+    return (
+      <div>
+        <p className="mb-2 text-xs text-gray-500">Select a hive to browse its real keys on demand.</p>
+        <ul className="flex flex-col gap-1">
+          {hives.map((hive, i) => (
+            <li key={hive.Offset ?? i}>
+              <button
+                type="button"
+                onClick={() => selectHive(hive)}
+                className="rounded px-2 py-1 text-left font-mono text-sm text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950/40"
+              >
+                {hive.FileFullPath || '(path not recovered)'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+
+  const hiveOffset = selectedHive.Offset
+  if (typeof hiveOffset !== 'number') return null
+
+  const drillInto = (name: string) => {
+    const nextPath = [...path, name]
+    setPath(nextPath)
+    onRequestKey(hiveOffset, nextPath.join('\\'))
+  }
+  const navigateTo = (depth: number) => {
+    const nextPath = path.slice(0, depth)
+    setPath(nextPath)
+    onRequestKey(hiveOffset, nextPath.length > 0 ? nextPath.join('\\') : null)
+  }
+
+  const currentKey = path.length > 0 ? path.join('\\') : null
+  const cacheKey = `${hiveOffset}|${currentKey ?? ''}`
+  const isPending = pendingKeys.has(cacheKey)
+  const hasFailed = failedKeys?.has(cacheKey) ?? false
+  const matching = printkeyArtifacts.find(
+    (a) => a.content.hive_offset === hiveOffset && (a.content.key ?? null) === currentKey,
+  )
+  const rows =
+    matching && Array.isArray(matching.content.rows)
+      ? (matching.content.rows as RegistryPrintkeyRow[])
+      : null
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <HiveBreadcrumb
+          hivePath={selectedHive.FileFullPath ?? ''}
+          path={path}
+          onNavigate={navigateTo}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedHive(null)
+            setPath([])
+          }}
+          className="shrink-0 text-xs text-gray-500 hover:underline"
+        >
+          Change hive
+        </button>
+      </div>
+      {isPending && !rows && <p className="text-sm text-gray-500">Loading real registry data…</p>}
+      {!isPending && hasFailed && !rows && (
+        <p className="text-sm text-red-600 dark:text-red-400">
+          Failed to load this key.{' '}
+          <button
+            type="button"
+            onClick={() => onRequestKey(hiveOffset, currentKey)}
+            className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+          >
+            Retry
+          </button>
+        </p>
+      )}
+      {!isPending && !hasFailed && !rows && (
+        <button
+          type="button"
+          onClick={() => onRequestKey(hiveOffset, currentKey)}
+          className="text-sm text-indigo-600 hover:underline dark:text-indigo-400"
+        >
+          Load this key
+        </button>
+      )}
+      {rows && rows.length === 0 && (
+        <p className="text-sm text-gray-500">This key has no real subkeys or values.</p>
+      )}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+                <th className="px-3 py-2 font-medium">Name</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium">Data</th>
+                <th className="px-3 py-2 font-medium">Last write time</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+              {rows.map((row, i) => {
+                const isKey = row.Type === 'Key'
+                return (
+                  <tr key={`${row.Name ?? i}-${i}`} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {isKey ? (
+                        <button
+                          type="button"
+                          onClick={() => drillInto(String(row.Name))}
+                          className="text-indigo-600 hover:underline dark:text-indigo-400"
+                        >
+                          {formatCell(row.Name)}
+                        </button>
+                      ) : (
+                        <span className="text-gray-700 dark:text-gray-300">{formatCell(row.Name)}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                      {formatCell(row.Type)}
+                    </td>
+                    <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                      {formatCell(row.Data)}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-gray-500">
+                      {row['Last Write Time'] ? new Date(row['Last Write Time']).toLocaleString() : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Generic fallback for any kind this platform doesn't have a dedicated
  * renderer for yet -- a real table built from whatever keys the first row
  * has, or raw JSON if content isn't even row-shaped. */
@@ -435,7 +789,23 @@ export function GenericArtifactView({ content }: { content: Record<string, unkno
 /** Dispatches an Artifact to the right kind-aware renderer by its real
  * `kind` string. Unrecognized kinds -- including any future non-Volatility
  * module's own -- fall back to GenericArtifactView, never a blank view. */
-export function ArtifactContent({ artifact }: { artifact: Artifact }) {
+export function ArtifactContent({
+  artifact,
+  onExtract,
+  extractingOffsets,
+  extractedOffsets,
+  failedOffsets,
+}: {
+  artifact: Artifact
+  /** Milestone EEEEE/FFFFF: only meaningful for volatility.filescan --
+   * wires FileScanView's real "Extract this file" action. Optional so
+   * ArtifactContent still works read-only wherever the on-demand path
+   * isn't available. */
+  onExtract?: (row: FileScanRow) => void
+  extractingOffsets?: Set<number>
+  extractedOffsets?: Set<number>
+  failedOffsets?: Set<number>
+}) {
   const rows = Array.isArray(artifact.content.rows) ? artifact.content.rows : null
 
   if (artifact.kind === 'volatility.pstree' && rows) {
@@ -448,7 +818,15 @@ export function ArtifactContent({ artifact }: { artifact: Artifact }) {
     return <DllListView rows={rows as DllRow[]} />
   }
   if (artifact.kind === 'volatility.filescan' && rows) {
-    return <FileScanView rows={rows as FileScanRow[]} />
+    return (
+      <FileScanView
+        rows={rows as FileScanRow[]}
+        onExtract={onExtract}
+        extractingOffsets={extractingOffsets}
+        extractedOffsets={extractedOffsets}
+        failedOffsets={failedOffsets}
+      />
+    )
   }
   if (artifact.kind === 'volatility.registry.hivelist' && rows) {
     return <HiveListView rows={rows as HiveListRow[]} />

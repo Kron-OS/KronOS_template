@@ -28,6 +28,7 @@ lesson: print the resolved constant and look at it before trusting an
 override took effect), not a new runtime check baked into every fixture
 script.
 """
+
 from __future__ import annotations
 
 import os
@@ -61,3 +62,14 @@ OPENSEARCH_HOST = os.environ.get("KRONOS_E2E_OPENSEARCH_HOST", "localhost")
 OPENSEARCH_PORT = int(os.environ.get("KRONOS_E2E_OPENSEARCH_PORT", "9200"))
 OPENSEARCH_USERNAME = os.environ.get("KRONOS_E2E_OPENSEARCH_USERNAME", "admin")
 OPENSEARCH_PASSWORD = os.environ.get("KRONOS_E2E_OPENSEARCH_PASSWORD", "admin")
+
+# Milestone FFFFF: seed_volatility_artifacts.py's derived-artifact real-byte
+# seeding (S3DerivedArtifactStorage) -- both docker-compose.dev.yml and
+# .test.yml publish MinIO on host port 9000 unremapped, same reasoning as
+# KEYCLOAK_INTERNAL_URL above. Unlike KEYCLOAK_INTERNAL_URL, the password
+# genuinely differs per stack (dev: kronos_minio_dev_password, test:
+# kronos_minio_password) -- same POSTGRES_DSN situation, default here is
+# the dev-stack value, override for a .test.yml run.
+MINIO_ENDPOINT = os.environ.get("KRONOS_E2E_MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = os.environ.get("KRONOS_E2E_MINIO_ACCESS_KEY", "kronos_minio")
+MINIO_SECRET_KEY = os.environ.get("KRONOS_E2E_MINIO_SECRET_KEY", "kronos_minio_dev_password")

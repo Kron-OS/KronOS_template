@@ -90,6 +90,13 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
   // a genuinely new amber/red card layout distinct from every other
   // table/tree view already scanned) -- per this file's own "per page
   // STATE, not just per URL" convention.
+  //
+  // Milestone FFFFF: extended to also scan the two new on-demand states --
+  // Child Files (`DumpFilesView`, a real table with a Download button plus
+  // a disabled VirusTotal placeholder) and Registry Browser
+  // (`RegistryBrowser`, its own hive-picker and breadcrumb-nav states) --
+  // seeded via includeOnDemand=true so both render real content, not just
+  // their honest empty states.
   test("case detail page's Artifacts tab has no real WCAG violations", async ({
     casesPageAsCaseLead,
     page,
@@ -101,7 +108,7 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
     expect(terminal).toBe("Complete");
     const caseId = caseIdFromUrl(detail.url);
     const evidenceId = await detail.fetchFirstEvidenceId(caseId);
-    new VolatilityArtifactSeeder().seed(caseId, evidenceId);
+    new VolatilityArtifactSeeder().seed(caseId, evidenceId, undefined, true);
 
     await page.reload();
     await page.waitForSelector("text=apache_access.log", { timeout: 10000 });
@@ -116,6 +123,19 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
 
     const results = await scan(page);
     expect(results.violations, formatViolations(results)).toEqual([]);
+
+    await page.getByRole("button", { name: "Child Files" }).click();
+    await page.waitForSelector("text=F3A2A55211EE66D36F43F15EFF501E9546680661.dat", {
+      timeout: 10000,
+    });
+    const childFilesResults = await scan(page);
+    expect(childFilesResults.violations, formatViolations(childFilesResults)).toEqual([]);
+
+    await page.getByRole("button", { name: "Registry Browser" }).click();
+    await page.getByRole("button", { name: "\\REGISTRY\\MACHINE\\SYSTEM" }).click();
+    await page.waitForSelector("text=ControlSet001", { timeout: 10000 });
+    const registryBrowserResults = await scan(page);
+    expect(registryBrowserResults.violations, formatViolations(registryBrowserResults)).toEqual([]);
   });
 
   test("detections page has no real WCAG violations", async ({ casesPageAsCaseLead, page }) => {

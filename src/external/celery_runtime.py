@@ -16,6 +16,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
@@ -115,6 +116,9 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         derived_artifact_storage=get_derived_artifact_storage(),
         artifact_repository=artifact_repo,
         audit_log=audit_service,
+        worker_path=Path(settings.volatility_worker_path)
+        if settings.volatility_worker_path
+        else None,
     )
 
     intake_service = EvidenceIntakeService(

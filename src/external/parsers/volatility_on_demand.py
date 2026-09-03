@@ -70,6 +70,7 @@ class VolatilityOnDemandService:
         artifact_repository: ArtifactRepository,
         audit_log: AuditLogService,
         launcher: VolatilityLauncher | None = None,
+        worker_path: Path | None = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._evidence_repository = evidence_repository
@@ -77,7 +78,19 @@ class VolatilityOnDemandService:
         self._derived_artifact_storage = derived_artifact_storage
         self._artifact_repository = artifact_repository
         self._audit_log = audit_log
-        self._launcher = launcher or VolatilityLauncher(timeout_seconds=timeout_seconds)
+        # Real, live-verified bug (Milestone FFFFF): without an explicit
+        # worker_path, VolatilityLauncher's own default (computed relative
+        # to its source file) does not match where
+        # docker/Dockerfile.plaso-worker actually COPYs the worker script
+        # in the real built image (/app/volatility-worker/
+        # kronos-volatility-worker.py, not /app/docker/volatility/...).
+        # VolatilityModule._run_volatility already reads
+        # settings.volatility_worker_path correctly; this on-demand path
+        # needs the identical real value threaded through by the caller
+        # (celery_runtime.py's _build_task_resources()).
+        self._launcher = launcher or VolatilityLauncher(
+            worker_path=worker_path, timeout_seconds=timeout_seconds
+        )
 
     async def extract_dump_file(
         self, evidence_id: uuid.UUID, tenant: TenantContext, physaddr: int

@@ -27,14 +27,22 @@ export class VolatilityArtifactSeeder {
     caseId: string,
     evidenceId: string,
     orgAlias = process.env.KRONOS_E2E_SEED_ORG_ALIAS ?? "kronos-dev",
+    // Milestone FFFFF: seeds the two on-demand kinds
+    // (volatility.dumpfiles/volatility.registry.printkey) plus real bytes
+    // in the derived-artifact MinIO bucket -- opt-in since
+    // case-artifacts-ui.spec.ts asserts exactly 7 seeded kinds via this
+    // same script's default (eager-only) behavior.
+    includeOnDemand = false,
   ): SeededArtifacts {
-    return runPythonFixture<SeededArtifacts>(SEED_SCRIPT, [
+    const args = [
       "--case-id",
       caseId,
       "--evidence-id",
       evidenceId,
       "--org-alias",
       orgAlias,
-    ]);
+    ];
+    if (includeOnDemand) args.push("--include-on-demand");
+    return runPythonFixture<SeededArtifacts>(SEED_SCRIPT, args);
   }
 }

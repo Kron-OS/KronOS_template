@@ -17,12 +17,19 @@ volatility3 itself.
 Prints one JSON object to stdout. Diagnostics go to stderr.
 
 Run: ~/venv/bin/python3 frontend/e2e/fixtures/seed_volatility_artifacts.py \
-    --case-id <uuid> --evidence-id <uuid> [--org-alias kronos-dev]
+    --case-id <uuid> --evidence-id <uuid> [--org-alias kronos-dev] \
+    [--include-on-demand]
+
+Milestone FFFFF: --include-on-demand additionally seeds
+volatility.dumpfiles/volatility.registry.printkey (the on-demand kinds --
+opt-in, see seed()'s own docstring for why this can't be unconditional).
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 import uuid
@@ -33,8 +40,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import boto3  # noqa: E402
 import httpx  # noqa: E402
-from _e2e_env import KEYCLOAK_INTERNAL_URL, POSTGRES_DSN  # noqa: E402
+from _e2e_env import (  # noqa: E402
+    KEYCLOAK_INTERNAL_URL,
+    MINIO_ACCESS_KEY,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    POSTGRES_DSN,
+)
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from src.adapter.repository.postgres_artifact import PostgresArtifactRepository  # noqa: E402
@@ -50,22 +64,46 @@ KEYCLOAK_ADMIN_CLIENT_SECRET = "kronos-backend-secret"
 # invented field names/shapes.
 _REAL_PSSCAN_ROWS = [
     {
-        "PID": 908, "PPID": 652, "Wow64": False, "Handles": None, "Threads": 9,
-        "ExitTime": None, "Offset(V)": 33725112, "SessionId": None,
-        "CreateTime": "2012-07-22T02:42:33+00:00", "__children": [],
-        "File output": "Disabled", "ImageFileName": "svchost.exe",
+        "PID": 908,
+        "PPID": 652,
+        "Wow64": False,
+        "Handles": None,
+        "Threads": 9,
+        "ExitTime": None,
+        "Offset(V)": 33725112,
+        "SessionId": None,
+        "CreateTime": "2012-07-22T02:42:33+00:00",
+        "__children": [],
+        "File output": "Disabled",
+        "ImageFileName": "svchost.exe",
     },
     {
-        "PID": 664, "PPID": 608, "Wow64": False, "Handles": None, "Threads": 24,
-        "ExitTime": None, "Offset(V)": 33727416, "SessionId": None,
-        "CreateTime": "2012-07-22T02:42:32+00:00", "__children": [],
-        "File output": "Disabled", "ImageFileName": "lsass.exe",
+        "PID": 664,
+        "PPID": 608,
+        "Wow64": False,
+        "Handles": None,
+        "Threads": 24,
+        "ExitTime": None,
+        "Offset(V)": 33727416,
+        "SessionId": None,
+        "CreateTime": "2012-07-22T02:42:32+00:00",
+        "__children": [],
+        "File output": "Disabled",
+        "ImageFileName": "lsass.exe",
     },
     {
-        "PID": 652, "PPID": 608, "Wow64": False, "Handles": None, "Threads": 16,
-        "ExitTime": None, "Offset(V)": 33729320, "SessionId": None,
-        "CreateTime": "2012-07-22T02:42:32+00:00", "__children": [],
-        "File output": "Disabled", "ImageFileName": "services.exe",
+        "PID": 652,
+        "PPID": 608,
+        "Wow64": False,
+        "Handles": None,
+        "Threads": 16,
+        "ExitTime": None,
+        "Offset(V)": 33729320,
+        "SessionId": None,
+        "CreateTime": "2012-07-22T02:42:32+00:00",
+        "__children": [],
+        "File output": "Disabled",
+        "ImageFileName": "services.exe",
     },
 ]
 
@@ -78,9 +116,15 @@ _REAL_PSSCAN_ROWS = [
 # to actually exercise non-empty rendering.
 _REAL_DLLLIST_ROWS = [
     {
-        "PID": 264, "Process": "smss.exe", "Base": 1202782208, "Size": 131072,
-        "Name": "smss.exe", "Path": "\\SystemRoot\\System32\\smss.exe",
-        "LoadCount": -1, "LoadTime": None, "File output": "Disabled",
+        "PID": 264,
+        "Process": "smss.exe",
+        "Base": 1202782208,
+        "Size": 131072,
+        "Name": "smss.exe",
+        "Path": "\\SystemRoot\\System32\\smss.exe",
+        "LoadCount": -1,
+        "LoadTime": None,
+        "File output": "Disabled",
     },
 ]
 _REAL_CMDLINE_ROWS = [
@@ -88,9 +132,16 @@ _REAL_CMDLINE_ROWS = [
 ]
 _REAL_MALFIND_ROWS = [
     {
-        "PID": 1944, "Process": "explorer.exe", "Start VPN": 63832064, "End VPN": 63836159,
-        "Tag": "VadS", "Protection": "PAGE_EXECUTE_READWRITE", "CommitCharge": 1,
-        "PrivateMemory": 1, "File output": "Disabled", "Notes": None,
+        "PID": 1944,
+        "Process": "explorer.exe",
+        "Start VPN": 63832064,
+        "End VPN": 63836159,
+        "Tag": "VadS",
+        "Protection": "PAGE_EXECUTE_READWRITE",
+        "CommitCharge": 1,
+        "PrivateMemory": 1,
+        "File output": "Disabled",
+        "Notes": None,
         "Hexdump": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
     },
 ]
@@ -99,6 +150,70 @@ _REAL_FILESCAN_ROWS = [
 ]
 _REAL_HIVELIST_ROWS = [
     {"Offset": 273366078509072, "FileFullPath": "", "File output": "Disabled"},
+    {
+        "Offset": 273366078603280,
+        "FileFullPath": "\\REGISTRY\\MACHINE\\SYSTEM",
+        "File output": "Disabled",
+    },
+]
+
+# Milestone FFFFF: windows.dumpfiles/registry.printkey rows -- these two
+# kinds are only ever produced on-demand, never eagerly, so there is no
+# earlier eager-pipeline PoC output to trim from the way the kinds above
+# were. The real physaddr/filename/plugin values here are the actual ones
+# captured live this session extracting a real file from the real 1.6GB
+# Challenge.raw sample (docs/GAP_AUDIT_2026-09-03_MILESTONE_EEEEE.md,
+# poc/volatility_dumpfiles/README.md's re-verification addendum) -- but
+# the real EXTRACTED FILE BYTES from that live run were not kept (ephemeral
+# scratch data, cleaned up after verification), and a sha256 can't be
+# reproduced without the original bytes. seed() below generates a fresh
+# real payload, computes ITS real sha256, and uploads it to the real
+# derived-artifact MinIO bucket -- so this fixture's Download button
+# round-trips genuinely matching real bytes, honest about being a fresh
+# payload rather than a redistributed copy of the original extraction.
+_DUMPFILE_FILENAME = (
+    "file.0x53f3770.0xfa80030456c0.DataSectionObject.F3A2A55211EE66D36F43F15EFF501E9546680661.dat"
+)
+_DUMPFILE_PHYSADDR = 88029040
+_REAL_PRINTKEY_ROOT_ROWS = [
+    {
+        "Last Write Time": "2019-08-07T05:05:46+00:00",
+        "Hive Offset": 273366078603280,
+        "Type": "Key",
+        "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+        "Name": "ControlSet001",
+        "Data": "",
+        "Volatile": False,
+    },
+    {
+        "Last Write Time": "2019-08-07T05:03:45+00:00",
+        "Hive Offset": 273366078603280,
+        "Type": "Key",
+        "Key": "\\REGISTRY\\MACHINE\\SYSTEM",
+        "Name": "MountedDevices",
+        "Data": "",
+        "Volatile": False,
+    },
+]
+_REAL_PRINTKEY_CONTROLSET001_ROWS = [
+    {
+        "Last Write Time": "2019-08-19T14:40:07+00:00",
+        "Hive Offset": 273366078603280,
+        "Type": "Key",
+        "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+        "Name": "Control",
+        "Data": "",
+        "Volatile": False,
+    },
+    {
+        "Last Write Time": "2019-08-07T05:07:38+00:00",
+        "Hive Offset": 273366078603280,
+        "Type": "Key",
+        "Key": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001",
+        "Name": "Enum",
+        "Data": "",
+        "Volatile": False,
+    },
 ]
 
 
@@ -132,7 +247,11 @@ def get_org_id(client: httpx.Client, token: str, alias: str) -> str:
 
 
 async def seed(
-    org_id: str, org_alias: str, case_id: str, evidence_id: str
+    org_id: str,
+    org_alias: str,
+    case_id: str,
+    evidence_id: str,
+    include_on_demand: bool = False,
 ) -> list[StructuredArtifact]:
     engine = create_async_engine(POSTGRES_DSN)
     repo = PostgresArtifactRepository(engine)
@@ -170,6 +289,80 @@ async def seed(
         )
         for index, (kind, plugin, rows) in enumerate(kinds_and_rows)
     ]
+
+    # Milestone FFFFF: the on-demand kinds (volatility.dumpfiles/
+    # volatility.registry.printkey) are opt-in via include_on_demand --
+    # case-artifacts-ui.spec.ts (Milestone DDDDD) already asserts exactly
+    # 7 seeded kinds via this same shared script; adding these
+    # unconditionally would silently break that assertion.
+    if include_on_demand:
+        # Registry Browser: two real printkey positions (hive root, then
+        # one level into ControlSet001) so the seeded fixture exercises
+        # the same breadcrumb-drill-down UI the real on-demand feature
+        # does, without needing a live extraction against real evidence
+        # bytes in CI.
+        for offset, (key, rows) in enumerate(
+            [
+                (None, _REAL_PRINTKEY_ROOT_ROWS),
+                ("ControlSet001", _REAL_PRINTKEY_CONTROLSET001_ROWS),
+            ],
+            start=len(saved),
+        ):
+            saved.append(
+                await repo.save(
+                    StructuredArtifact(
+                        kind="volatility.registry.printkey",
+                        content={
+                            "plugin": "windows.registry.printkey.PrintKey",
+                            "hive_offset": 273366078603280,
+                            "key": key,
+                            "rows": rows,
+                        },
+                        kronos=_provenance(offset),
+                    )
+                )
+            )
+
+        # Child Files: a real, fresh payload (not a redistributed copy of
+        # the original live extraction -- see _DUMPFILE_FILENAME's own
+        # comment) uploaded to the real, live derived-artifact MinIO
+        # bucket so the UI's Download button round-trips genuinely
+        # matching bytes.
+        dumpfile_artifact_id = uuid.uuid4()
+        payload = f"KronOS E2E fixture: stand-in bytes for {_DUMPFILE_FILENAME}\n".encode() * 1024
+        object_key = (
+            f"{org_alias}/{case_id}/{evidence_id}/{dumpfile_artifact_id}/{_DUMPFILE_FILENAME}"
+        )
+        dumpfile_artifact = StructuredArtifact(
+            artifact_id=dumpfile_artifact_id,
+            kind="volatility.dumpfiles",
+            content={
+                "plugin": "windows.dumpfiles.DumpFiles",
+                "physaddr": _DUMPFILE_PHYSADDR,
+                "filename": _DUMPFILE_FILENAME,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size_bytes": len(payload),
+                "object_key": object_key,
+                "enrichment": {},
+            },
+            kronos=_provenance(len(saved)),
+        )
+        saved.append(await repo.save(dumpfile_artifact))
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=MINIO_ENDPOINT,
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY,
+        )
+        derived_bucket = f"kronos-derived-{org_alias}"
+        try:
+            s3.head_bucket(Bucket=derived_bucket)
+        except Exception:  # noqa: BLE001 -- real, expected first-use bucket-creation path
+            s3.create_bucket(Bucket=derived_bucket)
+        s3.put_object(Bucket=derived_bucket, Key=object_key, Body=payload)
+        log(f"seeded real derived-artifact bytes: bucket={derived_bucket} key={object_key}")
+
     await engine.dispose()
     return saved
 
@@ -179,6 +372,7 @@ def main() -> None:
     parser.add_argument("--case-id", required=True)
     parser.add_argument("--evidence-id", required=True)
     parser.add_argument("--org-alias", default="kronos-dev")
+    parser.add_argument("--include-on-demand", action="store_true")
     args = parser.parse_args()
 
     with httpx.Client(timeout=15) as client:
@@ -186,7 +380,15 @@ def main() -> None:
         org_id = get_org_id(client, token, args.org_alias)
         log(f"resolved live org_id={org_id} for alias={args.org_alias}")
 
-    saved = asyncio.run(seed(org_id, args.org_alias, args.case_id, args.evidence_id))
+    saved = asyncio.run(
+        seed(
+            org_id,
+            args.org_alias,
+            args.case_id,
+            args.evidence_id,
+            include_on_demand=args.include_on_demand,
+        )
+    )
     log(
         f"seeded {len(saved)} real StructuredArtifact(s) "
         f"for case={args.case_id} evidence={args.evidence_id}"

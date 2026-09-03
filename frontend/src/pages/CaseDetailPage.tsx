@@ -8,6 +8,9 @@ import {
   deleteCase,
   searchCaseMemberCandidates,
   getCaseArtifacts,
+  requestVolatilityDumpFile,
+  requestVolatilityRegistryKey,
+  downloadDerivedArtifact,
 } from '../api/cases'
 import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
@@ -16,7 +19,13 @@ import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
-import { ArtifactContent } from '../components/ArtifactViews'
+import {
+  ArtifactContent,
+  DumpFilesView,
+  RegistryBrowser,
+  type FileScanRow,
+  type HiveListRow,
+} from '../components/ArtifactViews'
 import { MEMORY_DUMP_EXTENSIONS } from '../utils/validateFileMagic'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
@@ -259,6 +268,14 @@ function TimelineTab({ caseId }: { caseId: string }) {
 // strings VolatilityModule emits (src/external/parsers/volatility.py's own
 // `_plugin_to_kind`) -- an unrecognized kind (a future non-Volatility
 // module's own) falls back to the raw kind string itself, never blank.
+// Milestone EEEEE/FFFFF: `volatility.dumpfiles`/`__registry_browser__` are
+// the on-demand path -- the former is a real StructuredArtifact kind (one
+// per extracted file), the latter is a synthetic pseudo-kind (never
+// persisted) that unlocks the interactive RegistryBrowser whenever
+// `volatility.registry.hivelist` is present, since a real
+// `volatility.registry.printkey` artifact only exists once a user has
+// actually drilled into a key -- see ArtifactsTab's kindsPresent injection
+// below.
 const KIND_LABELS: Record<string, string> = {
   'volatility.pstree': 'Process Tree',
   'volatility.psscan': 'Process List (scan)',
@@ -267,6 +284,8 @@ const KIND_LABELS: Record<string, string> = {
   'volatility.malfind': 'Suspicious Regions',
   'volatility.filescan': 'Files in Memory',
   'volatility.registry.hivelist': 'Registry Hives',
+  'volatility.dumpfiles': 'Child Files',
+  __registry_browser__: 'Registry Browser',
 }
 
 // Clustered the way an analyst actually works a case, not alphabetically --
@@ -275,7 +294,15 @@ const KIND_LABELS: Record<string, string> = {
 const KIND_CLUSTERS: { label: string; kinds: string[] }[] = [
   { label: 'Process', kinds: ['volatility.pstree', 'volatility.psscan', 'volatility.cmdline', 'volatility.dlllist'] },
   { label: 'Suspicious', kinds: ['volatility.malfind'] },
-  { label: 'Files & Registry', kinds: ['volatility.filescan', 'volatility.registry.hivelist'] },
+  {
+    label: 'Files & Registry',
+    kinds: [
+      'volatility.filescan',
+      'volatility.dumpfiles',
+      'volatility.registry.hivelist',
+      '__registry_browser__',
+    ],
+  },
 ]
 
 /** Second-level nav within a selected evidence file: a clustered pill strip
@@ -345,16 +372,142 @@ function ArtifactsTab({
   caseId: string
   focusEvidenceId: string | null
 }) {
+  // Milestone EEEEE/FFFFF: on-demand dumpfiles/registry-key requests don't
+  // change Evidence.state (the existing SSE mechanism's only signal, see
+  // docs/GAP_AUDIT_2026-09-03_MILESTONE_EEEEE.md), so this tab polls the
+  // artifacts query itself while a real request is in flight -- turned off
+  // again once the matching real artifact shows up (the effect below) or
+  // there's nothing pending, so this never polls forever. Values are the
+  // real request timestamp (ms), not a plain boolean -- see the timeout
+  // effect below for why: a real extraction request can genuinely fail
+  // asynchronously inside the Celery task (e.g. the targeted filescan
+  // offset has no recoverable bytes -- a real, honest outcome, confirmed
+  // live) with no HTTP-layer error to catch (the trigger POST itself
+  // still returns a real 202), so nothing ever clears the pending marker
+  // on its own; a client-side timeout is what turns "stuck forever" into
+  // an honest failure state.
+  const [extractingOffsets, setExtractingOffsets] = useState<Map<number, number>>(new Map())
+  const [pendingRegistryKeys, setPendingRegistryKeys] = useState<Map<string, number>>(new Map())
+  const [failedOffsets, setFailedOffsets] = useState<Set<number>>(new Set())
+  const [failedRegistryKeys, setFailedRegistryKeys] = useState<Set<string>>(new Set())
+  const hasPendingOnDemandWork = extractingOffsets.size > 0 || pendingRegistryKeys.size > 0
+
   const { data: artifacts, isLoading, error } = useQuery({
     queryKey: ['artifacts', caseId],
     queryFn: () => getCaseArtifacts(caseId),
     staleTime: 15_000,
+    refetchInterval: hasPendingOnDemandWork ? 3000 : false,
   })
   const { data: evidenceData } = useQuery({
     queryKey: ['evidence', caseId],
     queryFn: () => getEvidence(caseId),
     staleTime: 15_000,
   })
+
+  const dumpFileMutation = useMutation({
+    mutationFn: ({ evidenceId, physaddr }: { evidenceId: string; physaddr: number }) =>
+      requestVolatilityDumpFile(caseId, evidenceId, physaddr),
+    onSuccess: (_data, variables) => {
+      setFailedOffsets((prev) => {
+        if (!prev.has(variables.physaddr)) return prev
+        const next = new Set(prev)
+        next.delete(variables.physaddr)
+        return next
+      })
+      setExtractingOffsets((prev) => new Map(prev).set(variables.physaddr, Date.now()))
+    },
+  })
+  const registryKeyMutation = useMutation({
+    mutationFn: ({
+      evidenceId,
+      hiveOffset,
+      key,
+    }: {
+      evidenceId: string
+      hiveOffset: number
+      key: string | null
+    }) => requestVolatilityRegistryKey(caseId, evidenceId, hiveOffset, key),
+    onSuccess: (_data, variables) => {
+      const cacheKey = `${variables.hiveOffset}|${variables.key ?? ''}`
+      setFailedRegistryKeys((prev) => {
+        if (!prev.has(cacheKey)) return prev
+        const next = new Set(prev)
+        next.delete(cacheKey)
+        return next
+      })
+      setPendingRegistryKeys((prev) => new Map(prev).set(cacheKey, Date.now()))
+    },
+  })
+
+  // Clears a pending marker once its real result actually lands in the
+  // polled artifacts list -- not on a fixed timer alone, so a slower real
+  // extraction (a larger file) doesn't get marked "done" prematurely.
+  useEffect(() => {
+    if (!artifacts) return
+    setExtractingOffsets((prev) => {
+      if (prev.size === 0) return prev
+      const next = new Map(prev)
+      for (const a of artifacts) {
+        if (a.kind === 'volatility.dumpfiles' && typeof a.content.physaddr === 'number') {
+          next.delete(a.content.physaddr)
+        }
+      }
+      return next.size === prev.size ? prev : next
+    })
+    setPendingRegistryKeys((prev) => {
+      if (prev.size === 0) return prev
+      const next = new Map(prev)
+      for (const a of artifacts) {
+        if (a.kind === 'volatility.registry.printkey' && typeof a.content.hive_offset === 'number') {
+          const rawKey = a.content.key
+          next.delete(`${a.content.hive_offset}|${typeof rawKey === 'string' ? rawKey : ''}`)
+        }
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [artifacts])
+
+  // Milestone FFFFF, real bug found and fixed via a live browser run: a
+  // genuinely failed on-demand extraction (real, honest outcome -- e.g.
+  // the targeted windows.filescan offset has no recoverable bytes, real-
+  // verified live) never clears the pending marker above, since there is
+  // no artifact to ever land. Without this, the button stays on
+  // "Extracting…" forever with no way to retry or learn it failed. 20s
+  // comfortably exceeds every real measured on-demand turnaround this
+  // session (worst case ~14s for a real dumpfiles extraction against
+  // Challenge.raw) while still failing fast for a genuinely bad target.
+  useEffect(() => {
+    if (!hasPendingOnDemandWork) return
+    const TIMEOUT_MS = 20_000
+    const interval = setInterval(() => {
+      const now = Date.now()
+      setExtractingOffsets((prev) => {
+        const timedOut = [...prev.entries()].filter(([, at]) => now - at > TIMEOUT_MS)
+        if (timedOut.length === 0) return prev
+        const next = new Map(prev)
+        for (const [offset] of timedOut) next.delete(offset)
+        setFailedOffsets((prevFailed) => {
+          const nextFailed = new Set(prevFailed)
+          for (const [offset] of timedOut) nextFailed.add(offset)
+          return nextFailed
+        })
+        return next
+      })
+      setPendingRegistryKeys((prev) => {
+        const timedOut = [...prev.entries()].filter(([, at]) => now - at > TIMEOUT_MS)
+        if (timedOut.length === 0) return prev
+        const next = new Map(prev)
+        for (const [key] of timedOut) next.delete(key)
+        setFailedRegistryKeys((prevFailed) => {
+          const nextFailed = new Set(prevFailed)
+          for (const [key] of timedOut) nextFailed.add(key)
+          return nextFailed
+        })
+        return next
+      })
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [hasPendingOnDemandWork])
 
   const evidenceIdsWithArtifacts = Array.from(new Set((artifacts ?? []).map((a) => a.evidenceId)))
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null)
@@ -384,7 +537,33 @@ function ArtifactsTab({
   // early-return checks below) -- hooks must run unconditionally on every
   // render, and `artifacts` is already safely optional via `?? []`.
   const selectedArtifacts = (artifacts ?? []).filter((a) => a.evidenceId === selectedEvidenceId)
-  const kindsPresent = Array.from(new Set(selectedArtifacts.map((a) => a.kind)))
+  // Real bug found and fixed via a live a11y run: volatility.registry.printkey
+  // is a real StructuredArtifact.kind (each drilled-into key is its own
+  // row), but it's never meant to be its own nav tab -- it's only ever
+  // browsed through the synthetic "Registry Browser" entry below.
+  // Without this exclusion it fell into the "Other" cluster as a raw,
+  // confusing `volatility.registry.printkey` label the moment a user
+  // drilled into a second real key (or, as here, the moment any printkey
+  // artifact existed at all).
+  const kindsPresent = Array.from(
+    new Set(
+      selectedArtifacts
+        .map((a) => a.kind)
+        .filter((kind) => kind !== 'volatility.registry.printkey'),
+    ),
+  )
+  // Milestone EEEEE/FFFFF: both on-demand views are discoverable BEFORE
+  // any real extraction/drill-down has happened -- "Child Files" shows an
+  // honest empty state pointing back at "Files in Memory" until the user
+  // extracts something; "Registry Browser" is a synthetic pseudo-kind
+  // (never a real StructuredArtifact.kind) that just needs a real
+  // `volatility.registry.hivelist` to exist to be useful.
+  if (kindsPresent.includes('volatility.filescan') && !kindsPresent.includes('volatility.dumpfiles')) {
+    kindsPresent.push('volatility.dumpfiles')
+  }
+  if (kindsPresent.includes('volatility.registry.hivelist')) {
+    kindsPresent.push('__registry_browser__')
+  }
   const [selectedKind, setSelectedKind] = useState<string | null>(null)
 
   useEffect(() => {
@@ -460,11 +639,28 @@ function ArtifactsTab({
     evidenceData?.items.find((e) => e.id === evidenceId)?.filename ?? evidenceId
 
   const selectedKindArtifacts = selectedArtifacts.filter((a) => a.kind === selectedKind)
+  // Milestone EEEEE/FFFFF: volatility.dumpfiles artifacts are NOT
+  // rows-shaped -- each real StructuredArtifact IS one extracted file
+  // already (filename/sha256/size_bytes/object_key, a single object, not
+  // a rows array), so DumpFilesView takes the raw, unmerged artifact list
+  // directly rather than the shared row-merge path below (which assumes
+  // content.rows exists). Same reasoning for RegistryBrowser: each real
+  // volatility.registry.printkey artifact represents a different point in
+  // the registry tree -- merging them would interleave unrelated keys'
+  // rows into one table.
+  const dumpFilesArtifacts = selectedArtifacts.filter((a) => a.kind === 'volatility.dumpfiles')
+  const printkeyArtifacts = selectedArtifacts.filter((a) => a.kind === 'volatility.registry.printkey')
+  const hiveRows = selectedArtifacts
+    .filter((a) => a.kind === 'volatility.registry.hivelist')
+    .flatMap((a) => (Array.isArray(a.content.rows) ? (a.content.rows as HiveListRow[]) : []))
+
   // Multiple StructuredArtifact rows can share one kind (ArtifactIngestService's
   // own size-cap-driven batching, src/application/artifact_ingest.py) --
   // that's a storage implementation detail, not something the UI should
   // expose as separate sections. Merge their rows into one view.
   const mergedArtifact =
+    selectedKind !== 'volatility.dumpfiles' &&
+    selectedKind !== '__registry_browser__' &&
     selectedKindArtifacts.length > 0
       ? {
           ...selectedKindArtifacts[0],
@@ -476,6 +672,23 @@ function ArtifactsTab({
           } as Record<string, unknown>,
         }
       : null
+
+  const handleExtract = (row: FileScanRow) => {
+    if (!selectedEvidenceId || typeof row.Offset !== 'number') return
+    dumpFileMutation.mutate({ evidenceId: selectedEvidenceId, physaddr: row.Offset })
+  }
+  const handleRequestRegistryKey = (hiveOffset: number, key: string | null) => {
+    if (!selectedEvidenceId) return
+    registryKeyMutation.mutate({ evidenceId: selectedEvidenceId, hiveOffset, key })
+  }
+  const handleDownloadDerivedArtifact = (artifactId: string, filename: string) => {
+    void downloadDerivedArtifact(caseId, artifactId, filename)
+  }
+  const extractedOffsets = new Set(
+    dumpFilesArtifacts
+      .filter((a) => typeof a.content.physaddr === 'number')
+      .map((a) => a.content.physaddr as number),
+  )
 
   return (
     <div className="flex gap-6">
@@ -505,18 +718,46 @@ function ArtifactsTab({
           selectedKind={selectedKind}
           onSelectKind={setSelectedKind}
         />
-        {mergedArtifact && (
+        {selectedKind === 'volatility.dumpfiles' ? (
           <div>
             <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
-              {KIND_LABELS[mergedArtifact.kind] ?? mergedArtifact.kind}
-              {typeof mergedArtifact.content.plugin === 'string' && (
-                <span className="ml-2 font-mono text-xs font-normal text-gray-500">
-                  ({mergedArtifact.content.plugin})
-                </span>
-              )}
+              {KIND_LABELS['volatility.dumpfiles']}
             </h3>
-            <ArtifactContent artifact={mergedArtifact} />
+            <DumpFilesView artifacts={dumpFilesArtifacts} onDownload={handleDownloadDerivedArtifact} />
           </div>
+        ) : selectedKind === '__registry_browser__' ? (
+          <div>
+            <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+              {KIND_LABELS.__registry_browser__}
+            </h3>
+            <RegistryBrowser
+              hives={hiveRows}
+              printkeyArtifacts={printkeyArtifacts}
+              onRequestKey={handleRequestRegistryKey}
+              pendingKeys={new Set(pendingRegistryKeys.keys())}
+              failedKeys={failedRegistryKeys}
+            />
+          </div>
+        ) : (
+          mergedArtifact && (
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                {KIND_LABELS[mergedArtifact.kind] ?? mergedArtifact.kind}
+                {typeof mergedArtifact.content.plugin === 'string' && (
+                  <span className="ml-2 font-mono text-xs font-normal text-gray-500">
+                    ({mergedArtifact.content.plugin})
+                  </span>
+                )}
+              </h3>
+              <ArtifactContent
+                artifact={mergedArtifact}
+                onExtract={mergedArtifact.kind === 'volatility.filescan' ? handleExtract : undefined}
+                extractingOffsets={new Set(extractingOffsets.keys())}
+                extractedOffsets={extractedOffsets}
+                failedOffsets={failedOffsets}
+              />
+            </div>
+          )
         )}
       </div>
     </div>
