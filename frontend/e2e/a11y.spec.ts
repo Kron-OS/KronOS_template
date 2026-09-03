@@ -82,6 +82,14 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
   // never touch -- scanned WITH real seeded content (not just the empty
   // state), since a real process table/tree is exactly where a missing
   // header association or contrast issue would actually show up.
+  //
+  // Gap Audit Milestone DDDDD: one evidence file now produces 7 real kinds
+  // behind a real second nav level (only the selected kind renders) --
+  // scans BOTH the default-selected state (Process Tree, real honest-empty
+  // state) and, separately, the Suspicious Regions state (`MalfindView`,
+  // a genuinely new amber/red card layout distinct from every other
+  // table/tree view already scanned) -- per this file's own "per page
+  // STATE, not just per URL" convention.
   test("case detail page's Artifacts tab has no real WCAG violations", async ({
     casesPageAsCaseLead,
     page,
@@ -98,7 +106,13 @@ test.describe("accessibility (@axe-core/playwright, real WCAG scan)", () => {
     await page.reload();
     await page.waitForSelector("text=apache_access.log", { timeout: 10000 });
     await detail.openArtifactsTab();
-    await page.waitForSelector("text=svchost.exe", { timeout: 10000 });
+    await page.waitForSelector("text=No processes found by this plugin.", { timeout: 10000 });
+
+    const defaultStateResults = await scan(page);
+    expect(defaultStateResults.violations, formatViolations(defaultStateResults)).toEqual([]);
+
+    await page.getByRole("button", { name: "Suspicious Regions" }).click();
+    await page.waitForSelector("text=PAGE_EXECUTE_READWRITE", { timeout: 10000 });
 
     const results = await scan(page);
     expect(results.violations, formatViolations(results)).toEqual([]);

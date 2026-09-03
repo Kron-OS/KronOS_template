@@ -255,6 +255,77 @@ function TimelineTab({ caseId }: { caseId: string }) {
   )
 }
 
+// Gap Audit Milestone DDDDD: human-readable labels for the real `kind`
+// strings VolatilityModule emits (src/external/parsers/volatility.py's own
+// `_plugin_to_kind`) -- an unrecognized kind (a future non-Volatility
+// module's own) falls back to the raw kind string itself, never blank.
+const KIND_LABELS: Record<string, string> = {
+  'volatility.pstree': 'Process Tree',
+  'volatility.psscan': 'Process List (scan)',
+  'volatility.dlllist': 'Loaded DLLs',
+  'volatility.cmdline': 'Command Lines',
+  'volatility.malfind': 'Suspicious Regions',
+  'volatility.filescan': 'Files in Memory',
+  'volatility.registry.hivelist': 'Registry Hives',
+}
+
+// Clustered the way an analyst actually works a case, not alphabetically --
+// "is anything suspicious here" is a different question from "what DLLs did
+// this process load," and both are different from "what processes ran."
+const KIND_CLUSTERS: { label: string; kinds: string[] }[] = [
+  { label: 'Process', kinds: ['volatility.pstree', 'volatility.psscan', 'volatility.cmdline', 'volatility.dlllist'] },
+  { label: 'Suspicious', kinds: ['volatility.malfind'] },
+  { label: 'Files & Registry', kinds: ['volatility.filescan', 'volatility.registry.hivelist'] },
+]
+
+/** Second-level nav within a selected evidence file: a clustered pill strip
+ * across the real artifact kinds that file actually produced -- a kind
+ * this platform doesn't yet have a cluster entry for (a future module)
+ * still renders, grouped under "Other" so it's never silently hidden. */
+function ArtifactKindNav({
+  kindsPresent,
+  selectedKind,
+  onSelectKind,
+}: {
+  kindsPresent: string[]
+  selectedKind: string | null
+  onSelectKind: (kind: string) => void
+}) {
+  const clustered = new Set(KIND_CLUSTERS.flatMap((c) => c.kinds))
+  const otherKinds = kindsPresent.filter((k) => !clustered.has(k))
+  const clusters = [...KIND_CLUSTERS, ...(otherKinds.length > 0 ? [{ label: 'Other', kinds: otherKinds }] : [])]
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+      {clusters.map((cluster) => {
+        const present = cluster.kinds.filter((k) => kindsPresent.includes(k))
+        if (present.length === 0) return null
+        return (
+          <div key={cluster.label} className="flex items-center gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-gray-600 dark:text-gray-400">
+              {cluster.label}
+            </span>
+            {present.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => onSelectKind(kind)}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  selectedKind === kind
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-gray-800'
+                }`}
+              >
+                {KIND_LABELS[kind] ?? kind}
+              </button>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 /**
  * Gap Audit Milestone AAAAA: case-level Artifacts view ("scenario 4" of
  * the Volatility-UI design conversation). Groups real StructuredArtifacts
@@ -263,7 +334,9 @@ function TimelineTab({ caseId }: { caseId: string }) {
  * docstring on why this is case-scoped, not per-evidence), then by kind
  * within a file (e.g. a real pstree tree next to a real psscan table).
  * `focusEvidenceId` (set by EvidenceDetailDrawer's "Open full analysis"
- * link) pre-selects that evidence file's group on arrival.
+ * link) pre-selects that evidence file's group on arrival. Gap Audit
+ * Milestone DDDDD: kind selection is a real second nav level now (see
+ * `ArtifactKindNav`), since one file can produce 7+ real kinds.
  */
 function ArtifactsTab({
   caseId,
@@ -300,6 +373,28 @@ function ArtifactsTab({
     // data change, not fight a user's own manual re-selection below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusEvidenceId, artifacts])
+
+  // Gap Audit Milestone DDDDD: a single evidence file can now produce 7+
+  // real artifact kinds (Milestone CCCCC's eager multi-plugin set) instead
+  // of the original 1-2 -- stacking every kind's full content vertically
+  // (the pre-DDDDD behavior) would push a real "suspicious regions" card
+  // off-screen below a 2500-row DLL table. Second nav level: cluster kinds
+  // the way an analyst actually works a case (Process / Suspicious /
+  // Files & Registry), select one at a time. Computed here (not after the
+  // early-return checks below) -- hooks must run unconditionally on every
+  // render, and `artifacts` is already safely optional via `?? []`.
+  const selectedArtifacts = (artifacts ?? []).filter((a) => a.evidenceId === selectedEvidenceId)
+  const kindsPresent = Array.from(new Set(selectedArtifacts.map((a) => a.kind)))
+  const [selectedKind, setSelectedKind] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (selectedKind && kindsPresent.includes(selectedKind)) return
+    setSelectedKind(kindsPresent[0] ?? null)
+    // Deliberately keyed on the evidence selection, not kindsPresent's own
+    // array identity (recomputed every render) -- only re-pick a default
+    // kind when the user actually switches evidence files.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEvidenceId])
 
   if (isLoading) {
     return (
@@ -364,7 +459,23 @@ function ArtifactsTab({
   const filenameFor = (evidenceId: string): string =>
     evidenceData?.items.find((e) => e.id === evidenceId)?.filename ?? evidenceId
 
-  const selectedArtifacts = (artifacts ?? []).filter((a) => a.evidenceId === selectedEvidenceId)
+  const selectedKindArtifacts = selectedArtifacts.filter((a) => a.kind === selectedKind)
+  // Multiple StructuredArtifact rows can share one kind (ArtifactIngestService's
+  // own size-cap-driven batching, src/application/artifact_ingest.py) --
+  // that's a storage implementation detail, not something the UI should
+  // expose as separate sections. Merge their rows into one view.
+  const mergedArtifact =
+    selectedKindArtifacts.length > 0
+      ? {
+          ...selectedKindArtifacts[0],
+          content: {
+            ...selectedKindArtifacts[0].content,
+            rows: selectedKindArtifacts.flatMap((a) =>
+              Array.isArray(a.content.rows) ? a.content.rows : [],
+            ),
+          } as Record<string, unknown>,
+        }
+      : null
 
   return (
     <div className="flex gap-6">
@@ -388,20 +499,25 @@ function ArtifactsTab({
           ))}
         </ul>
       </nav>
-      <div className="min-w-0 flex-1 space-y-6">
-        {selectedArtifacts.map((artifact) => (
-          <div key={artifact.id}>
+      <div className="min-w-0 flex-1">
+        <ArtifactKindNav
+          kindsPresent={kindsPresent}
+          selectedKind={selectedKind}
+          onSelectKind={setSelectedKind}
+        />
+        {mergedArtifact && (
+          <div>
             <h3 className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
-              {artifact.kind}
-              {typeof artifact.content.plugin === 'string' && (
+              {KIND_LABELS[mergedArtifact.kind] ?? mergedArtifact.kind}
+              {typeof mergedArtifact.content.plugin === 'string' && (
                 <span className="ml-2 font-mono text-xs font-normal text-gray-500">
-                  ({artifact.content.plugin})
+                  ({mergedArtifact.content.plugin})
                 </span>
               )}
             </h3>
-            <ArtifactContent artifact={artifact} />
+            <ArtifactContent artifact={mergedArtifact} />
           </div>
-        ))}
+        )}
       </div>
     </div>
   )

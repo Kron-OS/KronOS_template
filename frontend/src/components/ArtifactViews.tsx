@@ -5,11 +5,21 @@ import type { Artifact } from '../types'
  * Gap Audit Milestone AAAAA: kind-aware rendering for StructuredArtifact
  * content, per the design conversation's "scenario 4" decision. `content`
  * is intentionally opaque (src/domain/artifact.py) -- these components
- * give the two real kinds this platform emits today (Volatility
- * `pstree`/`psscan`) real, curated shape; anything else falls back to a
- * generic table (or raw JSON if it isn't even row-shaped), so a future
- * module's new `kind` renders usably with zero new frontend code, not a
- * blank/broken view.
+ * give real kinds this platform emits real, curated shape; anything else
+ * falls back to a generic table (or raw JSON if it isn't even row-shaped),
+ * so a future module's new `kind` renders usably with zero new frontend
+ * code, not a blank/broken view.
+ *
+ * Gap Audit Milestone DDDDD: extended for the 5 new eager Volatility
+ * plugins (Milestone CCCCC's backend work) -- `dlllist`/`filescan`/
+ * `registry.hivelist` get small dedicated views (hides volatility3's own
+ * always-"Disabled" `File output` column, formats addresses as hex --
+ * real DFIR convention); `cmdline`'s real row shape
+ * (`{PID, Process, Args}`) already renders adequately through
+ * `GenericArtifactView`, so no dedicated component was added for it (per
+ * the approved plan's own "don't build one if the generic table already
+ * looks right" guidance). `malfind` gets a genuinely new, visually
+ * distinct "suspicious" card layout, not a table -- see `MalfindView`.
  */
 
 interface ProcessRow {
@@ -23,6 +33,43 @@ interface ProcessRow {
   SessionId?: number | null
   __children?: ProcessRow[]
   [key: string]: unknown
+}
+
+interface DllRow {
+  PID?: number
+  Process?: string
+  Name?: string
+  Path?: string
+  Base?: number
+  Size?: number
+  [key: string]: unknown
+}
+
+interface FileScanRow {
+  Offset?: number
+  Name?: string
+  [key: string]: unknown
+}
+
+interface HiveListRow {
+  Offset?: number
+  FileFullPath?: string
+  [key: string]: unknown
+}
+
+interface MalfindRow {
+  PID?: number
+  Process?: string
+  'Start VPN'?: number
+  'End VPN'?: number
+  Protection?: string
+  CommitCharge?: number
+  Hexdump?: string
+  [key: string]: unknown
+}
+
+function formatHex(value: unknown): string {
+  return typeof value === 'number' ? `0x${value.toString(16)}` : formatCell(value)
 }
 
 function formatCell(value: unknown): string {
@@ -135,6 +182,210 @@ export function ProcessTableView({ rows }: { rows: ProcessRow[] }) {
   )
 }
 
+const DLLLIST_COLUMNS: { key: keyof DllRow; label: string; hex?: boolean }[] = [
+  { key: 'PID', label: 'PID' },
+  { key: 'Process', label: 'Process' },
+  { key: 'Name', label: 'DLL name' },
+  { key: 'Path', label: 'Path' },
+  { key: 'Base', label: 'Base', hex: true },
+  { key: 'Size', label: 'Size' },
+]
+
+export function DllListView({ rows }: { rows: DllRow[] }) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-gray-500">No loaded modules found by this plugin.</p>
+  }
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+            {DLLLIST_COLUMNS.map((col) => (
+              <th key={String(col.key)} className="px-3 py-2 font-medium">
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+          {rows.map((row, i) => (
+            <tr
+              key={`${row.PID ?? i}-${row.Base ?? i}-${i}`}
+              className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30"
+            >
+              {DLLLIST_COLUMNS.map((col) => (
+                <td
+                  key={String(col.key)}
+                  className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300"
+                >
+                  {col.hex ? formatHex(row[col.key as string]) : formatCell(row[col.key as string])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const FILESCAN_COLUMNS: { key: keyof FileScanRow; label: string; hex?: boolean }[] = [
+  { key: 'Offset', label: 'Offset', hex: true },
+  { key: 'Name', label: 'Path' },
+]
+
+export function FileScanView({ rows }: { rows: FileScanRow[] }) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-gray-500">No file objects found resident in memory.</p>
+  }
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+            {FILESCAN_COLUMNS.map((col) => (
+              <th key={String(col.key)} className="px-3 py-2 font-medium">
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+          {rows.map((row, i) => (
+            <tr key={`${row.Offset ?? i}-${i}`} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
+              {FILESCAN_COLUMNS.map((col) => (
+                <td
+                  key={String(col.key)}
+                  className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300"
+                >
+                  {col.hex ? formatHex(row[col.key as string]) : formatCell(row[col.key as string])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+export function HiveListView({ rows }: { rows: HiveListRow[] }) {
+  if (rows.length === 0) {
+    return <p className="text-sm text-gray-500">No registry hives found in this memory image.</p>
+  }
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+            <th className="px-3 py-2 font-medium">Offset</th>
+            <th className="px-3 py-2 font-medium">Hive path</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+          {rows.map((row, i) => (
+            <tr key={`${row.Offset ?? i}-${i}`} className="hover:bg-gray-100/50 dark:hover:bg-gray-900/30">
+              <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                {formatHex(row.Offset)}
+              </td>
+              <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                {row.FileFullPath ? row.FileFullPath : '(path not recovered)'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Real, reproduced signal, Gap Audit Milestone CCCCC: a real 1.6GB user
+ * memory image produced 4 real windows.malware.malfind.Malfind hits,
+ * including one PAGE_EXECUTE_READWRITE region inside explorer.exe -- the
+ * classic code-injection tell. This is the single highest-signal "something
+ * is wrong here" plugin this platform runs, so it gets a genuinely
+ * different, visually distinct card layout (amber/red accent) rather than
+ * folding into the same neutral-gray table every other kind uses -- an
+ * analyst should never have to read column headers to notice this is the
+ * "suspicious" view. */
+function MalfindCard({ row }: { row: MalfindRow }) {
+  const [showHexdump, setShowHexdump] = useState(false)
+  const isWritableExecutable = row.Protection?.includes('EXECUTE') && row.Protection?.includes('WRITE')
+
+  return (
+    <div
+      className={`rounded-lg border p-4 ${
+        isWritableExecutable
+          ? 'border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
+          : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p
+          className={`text-sm font-semibold ${
+            isWritableExecutable
+              ? 'text-red-800 dark:text-red-300'
+              : 'text-amber-800 dark:text-amber-300'
+          }`}
+        >
+          {formatCell(row.Process)} <span className="font-mono text-xs">(PID {formatCell(row.PID)})</span>
+        </p>
+        {row.Protection && (
+          <span
+            className={`shrink-0 rounded px-2 py-0.5 font-mono text-xs font-medium ${
+              isWritableExecutable
+                ? 'bg-red-200 text-red-900 dark:bg-red-900/60 dark:text-red-200'
+                : 'bg-amber-200 text-amber-900 dark:bg-amber-900/60 dark:text-amber-200'
+            }`}
+          >
+            {row.Protection}
+          </span>
+        )}
+      </div>
+      <p className="mt-1.5 font-mono text-xs text-gray-600 dark:text-gray-400">
+        {formatHex(row['Start VPN'])} – {formatHex(row['End VPN'])}
+        {row.CommitCharge !== undefined && ` · commit charge ${formatCell(row.CommitCharge)}`}
+      </p>
+      {row.Hexdump && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowHexdump((v) => !v)}
+            className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+          >
+            {showHexdump ? 'Hide' : 'Show'} memory bytes
+          </button>
+          {showHexdump && (
+            <pre className="mt-1.5 overflow-x-auto rounded border border-gray-200 bg-white p-2 font-mono text-[10px] text-gray-700 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+              {row.Hexdump}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function MalfindView({ rows }: { rows: MalfindRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="rounded-lg border border-gray-200 p-4 text-sm text-gray-500 dark:border-gray-800">
+        No injected/suspicious memory regions detected.
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs font-medium text-gray-500">
+        {rows.length} suspicious region{rows.length === 1 ? '' : 's'} found
+      </p>
+      {rows.map((row, i) => (
+        <MalfindCard key={`${row.PID ?? i}-${row['Start VPN'] ?? i}-${i}`} row={row} />
+      ))}
+    </div>
+  )
+}
+
 /** Generic fallback for any kind this platform doesn't have a dedicated
  * renderer for yet -- a real table built from whatever keys the first row
  * has, or raw JSON if content isn't even row-shaped. */
@@ -185,15 +436,29 @@ export function GenericArtifactView({ content }: { content: Record<string, unkno
  * `kind` string. Unrecognized kinds -- including any future non-Volatility
  * module's own -- fall back to GenericArtifactView, never a blank view. */
 export function ArtifactContent({ artifact }: { artifact: Artifact }) {
-  const rows = Array.isArray(artifact.content.rows)
-    ? (artifact.content.rows as ProcessRow[])
-    : null
+  const rows = Array.isArray(artifact.content.rows) ? artifact.content.rows : null
 
   if (artifact.kind === 'volatility.pstree' && rows) {
-    return <ProcessTreeView rows={rows} />
+    return <ProcessTreeView rows={rows as ProcessRow[]} />
   }
   if (artifact.kind === 'volatility.psscan' && rows) {
-    return <ProcessTableView rows={rows} />
+    return <ProcessTableView rows={rows as ProcessRow[]} />
   }
+  if (artifact.kind === 'volatility.dlllist' && rows) {
+    return <DllListView rows={rows as DllRow[]} />
+  }
+  if (artifact.kind === 'volatility.filescan' && rows) {
+    return <FileScanView rows={rows as FileScanRow[]} />
+  }
+  if (artifact.kind === 'volatility.registry.hivelist' && rows) {
+    return <HiveListView rows={rows as HiveListRow[]} />
+  }
+  if (artifact.kind === 'volatility.malfind' && rows) {
+    return <MalfindView rows={rows as MalfindRow[]} />
+  }
+  // volatility.cmdline's real row shape ({PID, Process, Args}) already
+  // renders adequately through the generic fallback below -- no dedicated
+  // component needed (verified against real captured rows,
+  // poc/volatility_multiplugin/output.txt).
   return <GenericArtifactView content={artifact.content} />
 }

@@ -2,12 +2,17 @@
 
 Inserts real StructuredArtifact rows via the real PostgresArtifactRepository
 (never hand-written SQL, same reasoning as seed_detection.py) for a given
---case-id/--evidence-id. Content mirrors the actual real volatility3 output
+--case-id/--evidence-id. Content mirrors actual real volatility3 output
 already captured against cridex.vmem (poc/volatility_timeline_dual_emit/,
-poc/volatility_pipeline_ingest/) -- the shape is real, not invented, only
-the specific memory-image run itself is skipped here (already verified for
-real in poc/volatility_timeline_dual_emit/, this only needs to prove the
-Artifacts UI renders real data, not re-verify volatility3 itself).
+poc/volatility_pipeline_ingest/) for pstree/psscan, and (Gap Audit
+Milestone DDDDD) against a real 1.6GB user-uploaded Windows 7 image
+(poc/volatility_multiplugin/output.txt) for the 5 newer plugins --
+cridex.vmem itself legitimately returns 0 rows for those (a real,
+documented XP-era limitation), so it has no real non-empty rows to trim.
+Every row shape here is real, not invented; only the specific memory-image
+run itself is skipped (already verified for real elsewhere) -- this only
+needs to prove the Artifacts UI renders real data, not re-verify
+volatility3 itself.
 
 Prints one JSON object to stdout. Diagnostics go to stderr.
 
@@ -64,6 +69,38 @@ _REAL_PSSCAN_ROWS = [
     },
 ]
 
+# Gap Audit Milestone DDDDD: real rows for the 5 new eager plugins, trimmed
+# from real captured output against a real 1.6GB user-uploaded Windows 7
+# image (poc/volatility_multiplugin/output.txt) -- cridex.vmem itself
+# legitimately returns 0 rows for all 5 (a real, already-documented XP-era
+# per-process-introspection limitation), so it has nothing real to trim for
+# these kinds; this richer real sample is what the frontend UI work needs
+# to actually exercise non-empty rendering.
+_REAL_DLLLIST_ROWS = [
+    {
+        "PID": 264, "Process": "smss.exe", "Base": 1202782208, "Size": 131072,
+        "Name": "smss.exe", "Path": "\\SystemRoot\\System32\\smss.exe",
+        "LoadCount": -1, "LoadTime": None, "File output": "Disabled",
+    },
+]
+_REAL_CMDLINE_ROWS = [
+    {"PID": 4, "Process": "System", "Args": None},
+]
+_REAL_MALFIND_ROWS = [
+    {
+        "PID": 1944, "Process": "explorer.exe", "Start VPN": 63832064, "End VPN": 63836159,
+        "Tag": "VadS", "Protection": "PAGE_EXECUTE_READWRITE", "CommitCharge": 1,
+        "PrivateMemory": 1, "File output": "Disabled", "Notes": None,
+        "Hexdump": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    },
+]
+_REAL_FILESCAN_ROWS = [
+    {"Offset": 88024720, "Name": "\\Endpoint"},
+]
+_REAL_HIVELIST_ROWS = [
+    {"Offset": 273366078509072, "FileFullPath": "", "File output": "Disabled"},
+]
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] {msg}", file=sys.stderr)
@@ -114,17 +151,25 @@ async def seed(
             ingest_timestamp=datetime.now(UTC),
         )
 
-    pstree = StructuredArtifact(
-        kind="volatility.pstree",
-        content={"plugin": "windows.pstree", "rows": []},
-        kronos=_provenance(0),
-    )
-    psscan = StructuredArtifact(
-        kind="volatility.psscan",
-        content={"plugin": "windows.psscan", "rows": _REAL_PSSCAN_ROWS},
-        kronos=_provenance(1),
-    )
-    saved = [await repo.save(pstree), await repo.save(psscan)]
+    kinds_and_rows = [
+        ("volatility.pstree", "windows.pstree.PsTree", []),
+        ("volatility.psscan", "windows.psscan.PsScan", _REAL_PSSCAN_ROWS),
+        ("volatility.dlllist", "windows.dlllist.DllList", _REAL_DLLLIST_ROWS),
+        ("volatility.cmdline", "windows.cmdline.CmdLine", _REAL_CMDLINE_ROWS),
+        ("volatility.malfind", "windows.malware.malfind.Malfind", _REAL_MALFIND_ROWS),
+        ("volatility.filescan", "windows.filescan.FileScan", _REAL_FILESCAN_ROWS),
+        ("volatility.registry.hivelist", "windows.registry.hivelist.HiveList", _REAL_HIVELIST_ROWS),
+    ]
+    saved = [
+        await repo.save(
+            StructuredArtifact(
+                kind=kind,
+                content={"plugin": plugin, "rows": rows},
+                kronos=_provenance(index),
+            )
+        )
+        for index, (kind, plugin, rows) in enumerate(kinds_and_rows)
+    ]
     await engine.dispose()
     return saved
 
