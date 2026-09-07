@@ -1,0 +1,8 @@
+2026-09-05T06:50:58.341598+02:00 reca-dk sshd[1782]: Received signal 15; terminating.
+2026-09-05T06:50:58.844506+02:00 reca-dk (systemd-stdio-bridge): pam_unix(login:session): session opened for user reca(uid=1000) by reca(uid=0)
+2026-09-05T06:50:59.165806+02:00 reca-dk (sd-pam): pam_unix(login:session): session closed for user reca
+2026-09-05T06:50:59.198879+02:00 reca-dk (systemd-stdio-bridge): pam_unix(login:session): session opened for user gdm-greeter(uid=60578) by gdm-greeter(uid=0)
+2026-09-05T06:50:59.202088+02:00 reca-dk systemd-logind[1299]: New session '2992' of user 'gdm-greeter' with class 'background-light' and type 'unspecified'.
+2026-09-05T06:50:59.495351+02:00 reca-dk (sd-pam): pam_unix(login:session): session closed for user gdm-greeter
+2026-09-05T06:50:59.496188+02:00 reca-dk systemd-logind[1299]: Session 2992 logged out. Waiting for processes to exit.
+2026-09-05T06:50:59.500487+02:00 reca-dk systemd-logind[1299]: Removed session 2992.
