@@ -341,6 +341,103 @@ class TestListDetections:
         resp = client.get("/api/detections", params={"q": "suspicious"})
         assert resp.json()["total"] == 1
 
+    def test_triage_state_accepts_multiple_repeated_values(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """Milestone IIIII: triageState is now repeatable -- e.g. an
+        analyst switching to a "not yet resolved" view (NEW + INVESTIGATING
+        together) without needing two separate requests."""
+        new_one = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        investigating = asyncio.run(
+            detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-2"))
+        )
+        investigating = investigating.with_triage_state(DetectionTriageState.INVESTIGATING)
+        asyncio.run(detection_repo.update(investigating))
+        true_positive = asyncio.run(
+            detection_repo.save(
+                _make_detection(
+                    org_id=ORG_A,
+                    finding_id="f-3",
+                    triage_state=DetectionTriageState.TRUE_POSITIVE,
+                )
+            )
+        )
+
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get(
+            "/api/detections",
+            params=[("triageState", "NEW"), ("triageState", "INVESTIGATING")],
+        )
+        body = resp.json()
+        ids = {item["id"] for item in body["items"]}
+        assert body["total"] == 2
+        assert ids == {str(new_one.detection_id), str(investigating.detection_id)}
+        assert str(true_positive.detection_id) not in ids
+
+    def test_severity_accepts_multiple_repeated_values(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        high = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        low = _make_detection(org_id=ORG_A, finding_id="f-2").model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(rule_id="rule-2", rule_name="Minor Thing", tags=("low",)),
+                )
+            }
+        )
+        asyncio.run(detection_repo.save(low))
+        medium = _make_detection(org_id=ORG_A, finding_id="f-3").model_copy(
+            update={
+                "rule_matches": (
+                    DetectionRuleMatch(rule_id="rule-3", rule_name="Mid Thing", tags=("medium",)),
+                )
+            }
+        )
+        asyncio.run(detection_repo.save(medium))
+
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get(
+            "/api/detections", params=[("severity", "high"), ("severity", "low")]
+        )
+        body = resp.json()
+        assert body["total"] == 2
+        ids = {item["id"] for item in body["items"]}
+        assert str(high.detection_id) in ids
+
+    def test_filter_by_date_range(self, detection_repo: InMemoryDetectionRepository) -> None:
+        old = _make_detection(org_id=ORG_A, finding_id="f-old").model_copy(
+            update={"finding_timestamp": datetime(2020, 1, 1, tzinfo=UTC)}
+        )
+        asyncio.run(detection_repo.save(old))
+        recent = _make_detection(org_id=ORG_A, finding_id="f-recent").model_copy(
+            update={"finding_timestamp": datetime(2026, 1, 1, tzinfo=UTC)}
+        )
+        asyncio.run(detection_repo.save(recent))
+
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections", params={"dateFrom": "2025-01-01T00:00:00Z"})
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == str(recent.detection_id)
+
+        resp2 = client.get("/api/detections", params={"dateTo": "2021-01-01T00:00:00Z"})
+        assert resp2.json()["total"] == 1
+        assert resp2.json()["items"][0]["id"] == str(old.detection_id)
+
+    def test_naive_date_param_does_not_500(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """A bare 'YYYY-MM-DD' (no tz offset) parses via pydantic as a
+        naive datetime -- comparing that directly against
+        Detection.finding_timestamp (always UTC-aware) raised a real,
+        unhandled TypeError before this was fixed. Must be honestly
+        handled (assume UTC), never a 500."""
+        asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.CASE_LEAD))
+        resp = client.get("/api/detections", params={"dateFrom": "2020-01-01"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+
 
 class TestGetDetection:
     def test_returns_detail_for_own_org(self, detection_repo: InMemoryDetectionRepository) -> None:
@@ -564,6 +661,156 @@ class TestTriageDetection:
             json={"targetState": "INVESTIGATING"},
         )
         assert resp.status_code == 403
+
+
+class TestBulkTriageDetections:
+    """POST /api/detections/bulk-triage (Milestone IIIII) -- the analyst
+    "select several alerts, change them all at once" action. Reuses the
+    real DetectionTriageService.transition per item; not reimplemented."""
+
+    def test_all_valid_transitions_succeed_and_persist(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        first = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        second = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-2")))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={
+                "detectionIds": [str(first.detection_id), str(second.detection_id)],
+                "targetState": "INVESTIGATING",
+            },
+        )
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert {r["status"] for r in results} == {"ok"}
+
+        for detection_id in (first.detection_id, second.detection_id):
+            persisted = asyncio.run(detection_repo.get_by_id(detection_id, ORG_A))
+            assert persisted is not None
+            assert persisted.triage_state == DetectionTriageState.INVESTIGATING
+
+    def test_partial_failure_reports_per_item_and_does_not_abort_the_batch(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        """A mixed-state selection is a normal, expected input -- one row
+        already TRUE_POSITIVE (terminal) must not prevent the other, still
+        -NEW row from being transitioned."""
+        transitionable = asyncio.run(
+            detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1"))
+        )
+        terminal = asyncio.run(
+            detection_repo.save(
+                _make_detection(
+                    org_id=ORG_A,
+                    finding_id="f-2",
+                    triage_state=DetectionTriageState.TRUE_POSITIVE,
+                )
+            )
+        )
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={
+                "detectionIds": [str(transitionable.detection_id), str(terminal.detection_id)],
+                "targetState": "INVESTIGATING",
+            },
+        )
+        assert resp.status_code == 200
+        results = {r["detectionId"]: r for r in resp.json()["results"]}
+        assert results[str(transitionable.detection_id)]["status"] == "ok"
+        assert results[str(terminal.detection_id)]["status"] == "error"
+
+        persisted_ok = asyncio.run(detection_repo.get_by_id(transitionable.detection_id, ORG_A))
+        assert persisted_ok is not None
+        assert persisted_ok.triage_state == DetectionTriageState.INVESTIGATING
+        persisted_terminal = asyncio.run(detection_repo.get_by_id(terminal.detection_id, ORG_A))
+        assert persisted_terminal is not None
+        assert persisted_terminal.triage_state == DetectionTriageState.TRUE_POSITIVE
+
+    def test_unknown_id_reports_error_not_a_request_failure(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+        unknown_id = uuid.uuid4()
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={"detectionIds": [str(unknown_id)], "targetState": "INVESTIGATING"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["status"] == "error"
+
+    def test_each_success_is_individually_audited(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        first = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-1")))
+        second = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A, finding_id="f-2")))
+        audit_repo = InMemoryAuditLogRepository()
+        audit_svc = AuditLogService(audit_repo)
+        triage_service = DetectionTriageService(detection_repo, audit_svc)
+
+        app = create_app()
+        app.dependency_overrides[get_tenant_context] = lambda: _fixed_tenant(
+            ORG_A, Role.ANALYST
+        )
+        app.dependency_overrides[get_detection_repository] = lambda: detection_repo
+        app.dependency_overrides[get_detection_triage_service] = lambda: triage_service
+        app.dependency_overrides[get_opensearch_client] = lambda: InMemoryOpenSearchClient()
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={
+                "detectionIds": [str(first.detection_id), str(second.detection_id)],
+                "targetState": "INVESTIGATING",
+            },
+        )
+        assert resp.status_code == 200
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(ORG_A)))
+        transitioned = [
+            e for e in events if e.event_type == AuditEventType.DETECTION_TRIAGE_TRANSITIONED
+        ]
+        assert len(transitioned) == 2
+
+    def test_read_only_role_forbidden(self, detection_repo: InMemoryDetectionRepository) -> None:
+        detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_A)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.READ_ONLY))
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={"detectionIds": [str(detection.detection_id)], "targetState": "INVESTIGATING"},
+        )
+        assert resp.status_code == 403
+
+    def test_cross_org_id_reports_error_not_leaked(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        other_org_detection = asyncio.run(detection_repo.save(_make_detection(org_id=ORG_B)))
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={
+                "detectionIds": [str(other_org_detection.detection_id)],
+                "targetState": "INVESTIGATING",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["status"] == "error"
+
+    def test_empty_id_list_rejected_with_422(
+        self, detection_repo: InMemoryDetectionRepository
+    ) -> None:
+        client = _build_client(detection_repo, _fixed_tenant(ORG_A, Role.ANALYST))
+        resp = client.post(
+            "/api/detections/bulk-triage",
+            json={"detectionIds": [], "targetState": "INVESTIGATING"},
+        )
+        assert resp.status_code == 422
 
 
 class TestSyncDetectionToSiem:

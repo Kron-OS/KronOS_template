@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
-from typing import Annotated, Any
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -18,7 +19,7 @@ from src.adapter.opensearch.dashboards_client import (
 from src.adapter.opensearch.detector_provisioner import DetectorProvisioner
 from src.adapter.queue.task_queue import TaskQueue
 from src.adapter.repository.artifact_repository import ArtifactRepository
-from src.adapter.repository.case_repository import CaseRepository
+from src.adapter.repository.case_repository import CaseFilter, CaseRepository
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.storage.derived_artifact_storage import DerivedArtifactStorage
 from src.adapter.storage.storage import EvidenceStorage
@@ -74,6 +75,7 @@ class CaseOut(BaseModel):
     description: str | None
     reference: str | None
     status: str
+    classification: str
     createdAt: str
     updatedAt: str
     createdBy: str
@@ -312,9 +314,40 @@ async def list_cases(
     case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    q: Annotated[str | None, Query(max_length=256)] = None,
+    case_status: Annotated[CaseStatus | None, Query(alias="status")] = None,
+    classification: str | None = None,
+    created_from: Annotated[datetime | None, Query(alias="createdFrom")] = None,
+    created_to: Annotated[datetime | None, Query(alias="createdTo")] = None,
+    sort_by: Annotated[
+        Literal["createdAt", "updatedAt", "title"], Query(alias="sortBy")
+    ] = "createdAt",
+    sort_order: Annotated[Literal["asc", "desc"], Query(alias="sortOrder")] = "desc",
 ) -> PaginatedCases:
-    """Return paginated cases for the caller's org."""
-    cases, total = await case_repo.list_by_org(tenant.org_id, page=page, page_size=page_size)
+    """Return paginated, filtered cases for the caller's org.
+
+    Milestone IIIII: filters are pushed into SQL (``CaseFilter`` ->
+    ``PostgresCaseRepository.list_by_org``), not applied in-memory —
+    Cases already paginated via real SQL LIMIT/OFFSET before this change,
+    so extending that with a dynamic WHERE clause keeps the same
+    scalability characteristic rather than regressing to a full-table scan.
+    """
+    filters = CaseFilter(
+        q=q,
+        status=case_status,
+        classification=classification,
+        # A client-supplied bare date (no tz offset) parses via pydantic as
+        # naive -- comparing that directly against Case.created_at (always
+        # UTC-aware) raises TypeError in the in-memory repository and can
+        # silently misbehave in Postgres; assume UTC for a naive input.
+        created_from=_ensure_utc(created_from) if created_from else None,
+        created_to=_ensure_utc(created_to) if created_to else None,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    cases, total = await case_repo.list_by_org(
+        tenant.org_id, page=page, page_size=page_size, filters=filters
+    )
     return PaginatedCases(
         items=[_to_case_out(c) for c in cases],
         total=total,
@@ -963,11 +996,21 @@ def _to_case_out(case: Case) -> CaseOut:
         description=case.metadata.description,
         reference=case.metadata.reference_number,
         status=case.status.value,
+        classification=case.metadata.classification,
         createdAt=case.created_at.isoformat(),
         updatedAt=case.updated_at.isoformat(),
         createdBy=str(case.owner_user_id),
         memberUserIds=[str(uid) for uid in case.member_user_ids],
     )
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Assume UTC for a client-supplied naive createdFrom/createdTo -- see
+    detections.py's own ``_ensure_utc`` for the identical real bug this
+    guards against (comparing naive vs. aware datetimes raises TypeError)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _to_audit_out(ev: AuditEvent) -> AuditEventOut:

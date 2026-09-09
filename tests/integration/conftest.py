@@ -33,10 +33,12 @@ def postgres_engine():  # type: ignore[no-untyped-def]
         # Create tables synchronously before yielding.
         async def _setup() -> None:
             from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository
+            from src.adapter.repository.postgres_case import PostgresCaseRepository
             from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
 
             await PostgresEvidenceRepository.create_tables(engine)
             await PostgresAuditLogRepository.create_tables(engine)
+            await PostgresCaseRepository.create_tables(engine)
 
         asyncio.run(_setup())
         yield engine

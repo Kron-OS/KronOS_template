@@ -2,8 +2,20 @@ import apiClient from './client'
 import { filenameFromContentDisposition } from './evidence'
 import type { Artifact, Case, CaseMemberCandidate, PaginatedResponse } from '../types'
 
-export async function getCases(): Promise<PaginatedResponse<Case>> {
-  const res = await apiClient.get<PaginatedResponse<Case>>('/api/cases')
+export interface ListCasesParams {
+  q?: string
+  status?: 'open' | 'closed' | 'archived'
+  classification?: string
+  createdFrom?: string
+  createdTo?: string
+  sortBy?: 'createdAt' | 'updatedAt' | 'title'
+  sortOrder?: 'asc' | 'desc'
+  page?: number
+  pageSize?: number
+}
+
+export async function getCases(params: ListCasesParams = {}): Promise<PaginatedResponse<Case>> {
+  const res = await apiClient.get<PaginatedResponse<Case>>('/api/cases', { params })
   return res.data
 }
 

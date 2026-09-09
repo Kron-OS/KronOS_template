@@ -25,6 +25,7 @@ from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.audit_log import AuditLogService
 from src.domain.artifact import StructuredArtifact
 from src.domain.audit import AuditEventType
+from src.domain.case import CaseStatus
 from src.domain.evidence import Evidence, EvidenceMetadata, EvidenceState
 from src.domain.timeline import KronosProvenance
 from src.domain.user import Role, TenantContext
@@ -154,6 +155,82 @@ class TestListCases:
         resp = client.get("/api/cases")
         assert resp.status_code == 200
         assert resp.json()["total"] == 2
+
+    def test_response_includes_classification(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Classified Case", "classification": "SECRET"})
+        resp = client.get("/api/cases")
+        assert resp.json()["items"][0]["classification"] == "SECRET"
+
+
+class TestListCasesFilters:
+    """Milestone IIIII: multi-parameter Cases filtering (q/status/
+    classification/date range/sort), pushed into the repository's own
+    dynamic filter-building (CaseFilter)."""
+
+    def test_q_matches_title_case_insensitively(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Ransomware Incident"})
+        client.post("/api/cases", json={"title": "Phishing Campaign"})
+        resp = client.get("/api/cases", params={"q": "ransomware"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["title"] == "Ransomware Incident"
+
+    def test_q_matches_reference_number(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Case A", "reference_number": "REF-42"})
+        client.post("/api/cases", json={"title": "Case B", "reference_number": "REF-99"})
+        resp = client.get("/api/cases", params={"q": "REF-42"})
+        assert resp.json()["total"] == 1
+
+    def test_filter_by_status(self, cases_client):
+        client, repo, org_id, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Open Case"})
+        closed_resp = client.post("/api/cases", json={"title": "Closed Case"})
+        closed_id = uuid.UUID(closed_resp.json()["id"])
+        case = asyncio.run(repo.get_by_id(closed_id, org_id))
+        asyncio.run(repo.update(case.with_status(CaseStatus.CLOSED)))
+
+        resp = client.get("/api/cases", params={"status": "closed"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["title"] == "Closed Case"
+
+    def test_filter_by_classification(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Secret Case", "classification": "SECRET"})
+        client.post("/api/cases", json={"title": "Plain Case"})
+        resp = client.get("/api/cases", params={"classification": "SECRET"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+
+    def test_naive_date_param_does_not_500(self, cases_client):
+        """A bare 'YYYY-MM-DD' (no tz offset) parses via pydantic as a
+        naive datetime -- comparing that directly against Case.created_at
+        (always UTC-aware) raised a real, unhandled TypeError before this
+        was fixed. Must be honestly handled (assume UTC), never a 500."""
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Case A"})
+        resp = client.get("/api/cases", params={"createdFrom": "2020-01-01"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+
+    def test_sort_by_title_ascending(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Zebra"})
+        client.post("/api/cases", json={"title": "Alpha"})
+        resp = client.get("/api/cases", params={"sortBy": "title", "sortOrder": "asc"})
+        titles = [item["title"] for item in resp.json()["items"]]
+        assert titles == ["Alpha", "Zebra"]
+
+    def test_no_matches_returns_empty(self, cases_client):
+        client, _, _, _, _ = cases_client
+        client.post("/api/cases", json={"title": "Case A"})
+        resp = client.get("/api/cases", params={"q": "nonexistent-needle"})
+        assert resp.json()["total"] == 0
 
 
 class TestGetCase:

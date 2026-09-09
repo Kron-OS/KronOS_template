@@ -29,6 +29,7 @@ export interface Case {
   description: string
   reference: string
   status: CaseStatus
+  classification: string
   createdAt: string
   updatedAt: string
   createdBy: string

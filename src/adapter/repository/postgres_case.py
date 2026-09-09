@@ -10,9 +10,15 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.adapter.repository._schema_lock import acquire_schema_creation_lock
-from src.adapter.repository.case_repository import CaseRepository
+from src.adapter.repository.case_repository import CaseFilter, CaseRepository
 from src.domain.case import Case, CaseMetadata, CaseStatus
 from src.exceptions import StorageError
+
+_SORT_COLUMNS = {
+    "createdAt": "created_at",
+    "updatedAt": "updated_at",
+    "title": "title",
+}
 
 _metadata = sa.MetaData()
 
@@ -82,22 +88,32 @@ class PostgresCaseRepository(CaseRepository):
         return self._from_row(row._asdict())
 
     async def list_by_org(
-        self, org_id: uuid.UUID, page: int = 1, page_size: int = 50
+        self,
+        org_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 50,
+        *,
+        filters: CaseFilter | None = None,
     ) -> tuple[list[Case], int]:
+        conditions = [cases_table.c.org_id == org_id, *_filter_conditions(filters)]
+
         async with self._engine.connect() as conn:
             count_row = await conn.execute(
-                sa.select(sa.func.count())
-                .select_from(cases_table)
-                .where(cases_table.c.org_id == org_id)
+                sa.select(sa.func.count()).select_from(cases_table).where(*conditions)
             )
             total: int = count_row.scalar_one()
 
             offset = (page - 1) * page_size
+            sort_by = filters.sort_by if filters is not None else "createdAt"
+            sort_order = filters.sort_order if filters is not None else "desc"
+            sort_column = cases_table.c[_SORT_COLUMNS[sort_by]]
+            order_by = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+
             rows = (
                 await conn.execute(
                     cases_table.select()
-                    .where(cases_table.c.org_id == org_id)
-                    .order_by(cases_table.c.created_at.desc())
+                    .where(*conditions)
+                    .order_by(order_by)
                     .limit(page_size)
                     .offset(offset)
                 )
@@ -173,3 +189,27 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
+
+
+def _filter_conditions(filters: CaseFilter | None) -> list[Any]:
+    if filters is None:
+        return []
+    conditions: list[Any] = []
+    if filters.q:
+        pattern = f"%{filters.q}%"
+        conditions.append(
+            sa.or_(
+                cases_table.c.title.ilike(pattern),
+                cases_table.c.description.ilike(pattern),
+                cases_table.c.reference_number.ilike(pattern),
+            )
+        )
+    if filters.status is not None:
+        conditions.append(cases_table.c.status == filters.status.value)
+    if filters.classification is not None:
+        conditions.append(cases_table.c.classification == filters.classification)
+    if filters.created_from is not None:
+        conditions.append(cases_table.c.created_at >= filters.created_from)
+    if filters.created_to is not None:
+        conditions.append(cases_table.c.created_at <= filters.created_to)
+    return conditions

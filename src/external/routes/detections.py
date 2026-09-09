@@ -11,6 +11,7 @@ native SA Dashboards UI is never linked here either.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -120,6 +121,28 @@ class TriageIn(BaseModel):
     targetState: DetectionTriageState
 
 
+class BulkTriageIn(BaseModel):
+    """Request body for POST /detections/bulk-triage (Milestone IIIII)."""
+
+    detectionIds: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    targetState: DetectionTriageState
+
+
+class BulkTriageResultOut(BaseModel):
+    """Per-item outcome of one bulk-triage attempt -- a bulk action over an
+    FSM is expected to partially fail (e.g. one row already terminal), so
+    each id's own result is reported rather than the whole request failing
+    or silently dropping the ones that didn't apply."""
+
+    detectionId: uuid.UUID
+    status: str
+    detail: str | None = None
+
+
+class BulkTriageResponse(BaseModel):
+    results: list[BulkTriageResultOut]
+
+
 class PlaybookStepResultOut(BaseModel):
     """API response DTO for one PlaybookStepResult (roadmap M7/H1/W1)."""
 
@@ -175,10 +198,14 @@ class RevokeKeycloakSessionIn(BaseModel):
 async def list_detections(
     tenant: Annotated[TenantContext, Depends(get_tenant_context)],
     detection_repo: Annotated[DetectionRepository, Depends(get_detection_repository)],
-    triage_state: Annotated[DetectionTriageState | None, Query(alias="triageState")] = None,
+    triage_state: Annotated[
+        list[DetectionTriageState] | None, Query(alias="triageState")
+    ] = None,
     case_id: Annotated[uuid.UUID | None, Query(alias="caseId")] = None,
-    severity: Annotated[str | None, Query()] = None,
+    severity: Annotated[list[str] | None, Query()] = None,
     q: Annotated[str | None, Query(max_length=256)] = None,
+    date_from: Annotated[datetime | None, Query(alias="dateFrom")] = None,
+    date_to: Annotated[datetime | None, Query(alias="dateTo")] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> PaginatedDetections:
@@ -190,16 +217,18 @@ async def list_detections(
     timeline (OS)" row (all four roles may read); mutating via ``/triage``
     is gated separately below.
 
-    ``case_id``/``triage_state``/``severity``/``q`` are all additive
-    in-memory filters applied over the org's own repository stream
-    (mirrors ``cases.py``'s ``list_case_evidence`` pagination idiom) —
-    this docstring's own prior version already anticipated adding a new
-    filter dimension needing only another predicate here, no repository
-    or schema change (Gap Audit Milestone BBBBB adds the first two).
-    ``severity`` matches ``Detection.rule_severity`` (the real Sigma
-    ``level:`` vocabulary, ``SIGMA_SEVERITY_LEVELS``) exactly, not a
-    substring. ``q`` is a case-insensitive substring match against
-    detector name, or any matched rule's name/id — covers "find the
+    ``case_id``/``triage_state``/``severity``/``q``/``date_from``/``date_to``
+    are all additive in-memory filters applied over the org's own
+    repository stream (mirrors ``cases.py``'s ``list_case_evidence``
+    pagination idiom) — this docstring's own prior version already
+    anticipated adding a new filter dimension needing only another
+    predicate here, no repository or schema change (Gap Audit Milestone
+    BBBBB adds the first two; Milestone IIIII makes ``triage_state``/
+    ``severity`` repeatable and adds the date range on
+    ``finding_timestamp``). ``severity`` matches ``Detection.rule_severity``
+    (the real Sigma ``level:`` vocabulary, ``SIGMA_SEVERITY_LEVELS``)
+    exactly, not a substring. ``q`` is a case-insensitive substring match
+    against detector name, or any matched rule's name/id — covers "find the
     detections this rule/detector produced" without needing a dedicated
     per-field control for each.
     """
@@ -209,12 +238,18 @@ async def list_detections(
         else detection_repo.stream_by_org(tenant.org_id)
     )
     needle = q.strip().lower() if q else None
+    triage_states = set(triage_state) if triage_state else None
+    severities = set(severity) if severity else None
+    date_from = _ensure_utc(date_from)
+    date_to = _ensure_utc(date_to)
     items = [
         d
         async for d in source
-        if (triage_state is None or d.triage_state == triage_state)
-        and (severity is None or d.rule_severity == severity)
+        if (triage_states is None or d.triage_state in triage_states)
+        and (severities is None or d.rule_severity in severities)
         and (needle is None or _detection_matches_query(d, needle))
+        and (date_from is None or d.finding_timestamp >= date_from)
+        and (date_to is None or d.finding_timestamp <= date_to)
     ]
 
     total = len(items)
@@ -339,6 +374,52 @@ async def triage_detection(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return _to_detection_out(updated)
+
+
+@router.post("/bulk-triage", response_model=BulkTriageResponse)
+async def bulk_triage_detections(
+    body: BulkTriageIn,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
+    triage_service: Annotated[DetectionTriageService, Depends(get_detection_triage_service)],
+) -> BulkTriageResponse:
+    """Advance the triage FSM for multiple Detections in one request
+    (Milestone IIIII) — the analyst-facing "select several alerts, change
+    them all at once" action.
+
+    Same RBAC as the single-item ``/triage`` route above. Reuses
+    ``DetectionTriageService.transition`` unchanged, looped per id — every
+    successful transition is audited exactly as it already is for a single
+    triage call (``DETECTION_TRIAGE_TRANSITIONED``/``_FAILED``, CLAUDE.md
+    §A.2), so a batch of 10 successful transitions produces 10 real, distinct
+    audit events, not one that silently summarizes a batch. A bad id (not
+    found/wrong org) or an illegal FSM transition for one item does not
+    abort the rest of the batch — always returns 200 with a per-item
+    ``status``/``detail``, since "8 ok, 2 skipped (already terminal)" is a
+    normal, expected outcome of a mixed-state selection, not a request-level
+    error.
+    """
+    results: list[BulkTriageResultOut] = []
+    for detection_id in body.detectionIds:
+        try:
+            await triage_service.transition(detection_id, body.targetState, tenant)
+        except ValidationError as exc:
+            results.append(
+                BulkTriageResultOut(detectionId=detection_id, status="error", detail=str(exc))
+            )
+        except DetectionStateError as exc:
+            results.append(
+                BulkTriageResultOut(detectionId=detection_id, status="error", detail=str(exc))
+            )
+        except ConcurrentModificationError as exc:
+            results.append(
+                BulkTriageResultOut(detectionId=detection_id, status="error", detail=str(exc))
+            )
+        else:
+            results.append(BulkTriageResultOut(detectionId=detection_id, status="ok"))
+
+    return BulkTriageResponse(results=results)
 
 
 @router.post("/{detection_id}/sync-to-siem/{sink_name}", response_model=PlaybookExecutionResultOut)
@@ -551,6 +632,20 @@ async def revoke_session_for_detection(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    """A client-supplied dateFrom/dateTo without a timezone offset (e.g. a
+    bare 'YYYY-MM-DD') parses via pydantic as a naive datetime -- comparing
+    that directly against Detection.finding_timestamp (always UTC-aware, in
+    both real synced data and every test fixture) raises
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``,
+    turning an otherwise-valid filter request into an unhandled 500. Assume
+    UTC for a naive input, mirroring PostgresCaseRepository's own
+    ``_ensure_utc`` for the same real class of bug on the Cases side."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _detection_matches_query(detection: Detection, needle: str) -> bool:

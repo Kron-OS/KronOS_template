@@ -1,10 +1,24 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { getCases, createCase } from '../api/cases'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { getCases, createCase, type ListCasesParams } from '../api/cases'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
-import type { Case } from '../types'
+import type { Case, CaseStatus } from '../types'
+import type { CasesSearch } from '../App'
+
+const STATUS_FILTERS: Array<{ id: CaseStatus | 'ALL'; label: string }> = [
+  { id: 'ALL', label: 'All' },
+  { id: 'open', label: 'Open' },
+  { id: 'closed', label: 'Closed' },
+  { id: 'archived', label: 'Archived' },
+]
+
+const SORT_OPTIONS: Array<{ value: string; label: string; sortBy: ListCasesParams['sortBy']; sortOrder: ListCasesParams['sortOrder'] }> = [
+  { value: 'createdAt-desc', label: 'Newest first', sortBy: 'createdAt', sortOrder: 'desc' },
+  { value: 'createdAt-asc', label: 'Oldest first', sortBy: 'createdAt', sortOrder: 'asc' },
+  { value: 'title-asc', label: 'Title (A-Z)', sortBy: 'title', sortOrder: 'asc' },
+]
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -39,7 +53,14 @@ function CaseCard({ c }: { c: Case }) {
       )}
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span>{c.evidenceCount} item{c.evidenceCount !== 1 ? 's' : ''}</span>
-        <span>{formatDate(c.createdAt)}</span>
+        <span className="flex items-center gap-2">
+          {c.classification && c.classification !== 'UNCLASSIFIED' && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-400">
+              {c.classification}
+            </span>
+          )}
+          {formatDate(c.createdAt)}
+        </span>
       </div>
     </Link>
   )
@@ -140,13 +161,61 @@ function CreateCaseModal({ open, onClose }: CreateCaseModalProps) {
   )
 }
 
+const PAGE_SIZE = 24
+
 export function CasesPage() {
   const [showCreate, setShowCreate] = useState(false)
+  const navigate = useNavigate({ from: '/cases' })
+  const search = useSearch({ from: '/cases' })
+  const [searchInput, setSearchInput] = useState(search.q ?? '')
+
+  const status = search.status ?? 'ALL'
+  const classification = search.classification ?? ''
+  const sortBy = search.sortBy ?? 'createdAt'
+  const sortOrder = search.sortOrder ?? 'desc'
+  const page = search.page ?? 1
+  const sortValue = `${sortBy}-${sortOrder}`
+
+  // Keep the free-text input debounced before it lands in the URL, mirroring
+  // DetectionsPage's own search-input pattern.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = searchInput.trim()
+      if (trimmed !== (search.q ?? '')) {
+        void navigate({
+          search: (prev) => ({ ...prev, q: trimmed || undefined, page: undefined }),
+        })
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput])
+
+  // Changing a filter resets to page 1 (via `page: undefined`) unless the
+  // patch itself explicitly sets `page` (the Previous/Next buttons below) --
+  // patch is spread last so it always wins.
+  function updateSearch(patch: Partial<CasesSearch>) {
+    void navigate({
+      search: (prev) => ({ ...prev, page: undefined, ...patch }),
+    })
+  }
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['cases'],
-    queryFn: getCases,
+    queryKey: ['cases', search.q, status, classification, sortBy, sortOrder, page],
+    queryFn: () =>
+      getCases({
+        q: search.q,
+        status: status === 'ALL' ? undefined : (status as ListCasesParams['status']),
+        classification: classification || undefined,
+        sortBy: sortBy as ListCasesParams['sortBy'],
+        sortOrder: sortOrder as ListCasesParams['sortOrder'],
+        page,
+        pageSize: PAGE_SIZE,
+      }),
     staleTime: 30_000,
   })
+
+  const isFiltered = Boolean(search.q) || status !== 'ALL' || Boolean(classification)
 
   return (
     <div>
@@ -161,6 +230,59 @@ export function CasesPage() {
         </button>
       </div>
 
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="flex gap-1">
+          {STATUS_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => updateSearch({ status: f.id === 'ALL' ? undefined : f.id })}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+                status === f.id
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        <input
+          type="text"
+          aria-label="Filter by classification"
+          placeholder="Classification…"
+          value={classification}
+          onChange={(e) => updateSearch({ classification: e.target.value || undefined })}
+          className="w-40 rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        />
+
+        <select
+          aria-label="Sort cases"
+          value={sortValue}
+          onChange={(e) => {
+            const opt = SORT_OPTIONS.find((o) => o.value === e.target.value)
+            if (opt) updateSearch({ sortBy: opt.sortBy, sortOrder: opt.sortOrder })
+          }}
+          className="rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="search"
+          aria-label="Search cases"
+          placeholder="Search title, description, or reference…"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          className="w-72 rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        />
+      </div>
+
       {isLoading && (
         <div className="flex justify-center py-16">
           <Spinner size="lg" />
@@ -172,16 +294,41 @@ export function CasesPage() {
       )}
 
       {data && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {data.items.map((c) => (
-            <CaseCard key={c.id} c={c} />
-          ))}
-          {data.items.length === 0 && (
-            <p className="col-span-full py-12 text-center text-sm text-gray-500">
-              No cases yet. Create one to get started.
-            </p>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {data.items.map((c) => (
+              <CaseCard key={c.id} c={c} />
+            ))}
+            {data.items.length === 0 && (
+              <p className="col-span-full py-12 text-center text-sm text-gray-500">
+                {isFiltered ? 'No cases match the current filters.' : 'No cases yet. Create one to get started.'}
+              </p>
+            )}
+          </div>
+          {data.total > PAGE_SIZE && (
+            <div className="mt-4 flex items-center justify-between text-sm text-gray-500">
+              <span>{data.total} total</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateSearch({ page: Math.max(1, page - 1) || undefined })}
+                  disabled={page === 1}
+                  className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSearch({ page: page + 1 })}
+                  disabled={page * PAGE_SIZE >= data.total}
+                  className="rounded px-3 py-1 hover:bg-gray-200 disabled:opacity-40 dark:hover:bg-gray-800"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
           )}
-        </div>
+        </>
       )}
 
       <CreateCaseModal open={showCreate} onClose={() => setShowCreate(false)} />
