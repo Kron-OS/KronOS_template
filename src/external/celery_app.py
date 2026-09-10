@@ -519,6 +519,57 @@ def extract_volatility_dump_file(
 
 
 @celery_app.task(
+    name="kronos.extract_volatility_run_plugin",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    queue="q.parse.plaso",
+    time_limit=360,
+    soft_time_limit=330,
+)
+def extract_volatility_run_plugin(
+    self: object, evidence_id: str, plugin: str, *, org_id: str, user_id: str
+) -> dict[str, Any]:
+    """Run one curated, analyst-picked volatility3 plugin on demand
+    (poc/volatility_ondemand_picker/: real-verified, slowest candidate
+    ~35s on a 1.6GB image -- same time budget as extract_volatility_dump_file
+    for headroom on larger real images) and persist its rows as
+    StructuredArtifact(s)."""
+    from src.external.celery_runtime import run_evidence_coro  # noqa: PLC0415
+    from src.external.parsers.volatility_on_demand import (  # noqa: PLC0415
+        VolatilityOnDemandExtractionError,
+    )
+
+    tenant = _tenant(org_id, user_id)
+
+    async def _work(resources: TaskResources) -> list[str]:
+        artifacts = await resources.volatility_on_demand_service.run_plugin(
+            uuid.UUID(evidence_id), tenant, plugin
+        )
+        return [str(a.artifact_id) for a in artifacts]
+
+    try:
+        artifact_ids = run_evidence_coro(_work)
+        return {"evidence_id": evidence_id, "artifact_ids": artifact_ids}
+    except VolatilityOnDemandExtractionError as exc:
+        # A real, honest failure (unsupported OS build for this plugin,
+        # plugin not in the curated allowlist, etc.) -- already audited
+        # inside the service. Not retried: the same plugin against the
+        # same evidence file fails identically every time.
+        logger.warning(
+            "extract_volatility_run_plugin_no_result",
+            extra={"evidence_id": evidence_id, "plugin": plugin, "error": str(exc)},
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "extract_volatility_run_plugin_failed",
+            extra={"evidence_id": evidence_id, "plugin": plugin, "error": str(exc)},
+        )
+        raise self.retry(exc=exc) from exc  # type: ignore[attr-defined]
+
+
+@celery_app.task(
     name="kronos.extract_volatility_registry_key",
     bind=True,
     max_retries=1,

@@ -101,3 +101,19 @@ class CeleryTaskQueue(TaskQueue):
             queue="q.parse.plaso",
         )
         return result.id  # type: ignore[no-any-return]
+
+    async def enqueue_volatility_run_plugin(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, plugin: str
+    ) -> str:
+        from src.external.celery_app import extract_volatility_run_plugin  # noqa: PLC0415
+
+        result = extract_volatility_run_plugin.apply_async(
+            kwargs={
+                "evidence_id": str(evidence_id),
+                "plugin": plugin,
+                "org_id": str(tenant.org_id),
+                "user_id": str(tenant.user_id),
+            },
+            queue="q.parse.plaso",
+        )
+        return result.id  # type: ignore[no-any-return]

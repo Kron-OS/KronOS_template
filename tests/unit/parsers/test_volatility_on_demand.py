@@ -20,11 +20,14 @@ from src.application.audit_log import AuditLogService
 from src.domain.audit import AuditEventType
 from src.exceptions import VolatilityScanError
 from src.external.parsers.volatility_on_demand import (
+    CURATED_ON_DEMAND_PLUGINS,
     VolatilityOnDemandExtractionError,
     VolatilityOnDemandService,
 )
 from src.external.sandbox.volatility_launcher import (
     VolatilityDumpFilesResult,
+    VolatilityMultiPluginResult,
+    VolatilityPluginOutcome,
     VolatilityRegistryKeyResult,
 )
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
@@ -78,13 +81,16 @@ class _FakeLauncher:
         self,
         dumpfile_result: VolatilityDumpFilesResult | None = None,
         registry_result: VolatilityRegistryKeyResult | None = None,
+        run_result: VolatilityMultiPluginResult | None = None,
         raise_error: Exception | None = None,
     ) -> None:
         self._dumpfile_result = dumpfile_result
         self._registry_result = registry_result
+        self._run_result = run_result
         self._raise_error = raise_error
         self.dumpfile_calls: list[dict[str, Any]] = []
         self.registry_calls: list[dict[str, Any]] = []
+        self.run_calls: list[dict[str, Any]] = []
 
     async def run_dumpfile(self, evidence_path: str, physaddr: int) -> VolatilityDumpFilesResult:
         self.dumpfile_calls.append({"evidence_path": evidence_path, "physaddr": physaddr})
@@ -103,6 +109,15 @@ class _FakeLauncher:
             raise self._raise_error
         assert self._registry_result is not None
         return self._registry_result
+
+    async def run(
+        self, evidence_path: str, plugins: list[str]
+    ) -> VolatilityMultiPluginResult:
+        self.run_calls.append({"evidence_path": evidence_path, "plugins": plugins})
+        if self._raise_error is not None:
+            raise self._raise_error
+        assert self._run_result is not None
+        return self._run_result
 
 
 async def _make_service(
@@ -248,6 +263,106 @@ async def test_extract_dump_file_raises_when_evidence_not_promoted() -> None:
         await service.extract_dump_file(evidence.evidence_id, tenant, physaddr=1234)
 
     assert launcher.dumpfile_calls == []
+
+
+async def test_run_plugin_saves_artifact_for_a_curated_plugin() -> None:
+    tenant = make_tenant_context()
+    evidence = make_evidence(org_id=tenant.org_id).with_keys(None, "testorg/case/evidence/test.raw")
+    plugin = CURATED_ON_DEMAND_PLUGINS[0].plugin
+    launcher = _FakeLauncher(
+        run_result=VolatilityMultiPluginResult(
+            outcomes=(
+                VolatilityPluginOutcome(
+                    plugin=plugin,
+                    status="ok",
+                    rows=({"PID": 4, "Variable": "Path", "Value": "C:\\Windows"},),
+                    error=None,
+                ),
+            )
+        )
+    )
+    service, evidence_repo, artifact_repo, audit_log = await _make_service(launcher)
+    await evidence_repo.save(evidence)
+
+    saved = await service.run_plugin(evidence.evidence_id, tenant, plugin)
+
+    assert len(saved) == 1
+    assert saved[0].content["plugin"] == plugin
+    assert saved[0].content["rows"][0]["PID"] == 4
+    persisted = await artifact_repo.list_by_evidence(evidence.evidence_id, tenant.org_id)
+    assert len(persisted) == 1
+    assert launcher.run_calls[0]["plugins"] == [plugin]
+    events = [e async for e in audit_log._repository.stream_by_org(tenant.org_id)]  # type: ignore[attr-defined]
+    assert any(e.event_type == AuditEventType.DERIVED_ARTIFACT_EXTRACTED for e in events)
+
+
+async def test_run_plugin_rejects_a_non_curated_plugin_without_calling_the_launcher() -> None:
+    tenant = make_tenant_context()
+    evidence = make_evidence(org_id=tenant.org_id).with_keys(None, "testorg/case/evidence/test.raw")
+    launcher = _FakeLauncher()
+    service, evidence_repo, artifact_repo, _ = await _make_service(launcher)
+    await evidence_repo.save(evidence)
+
+    with pytest.raises(VolatilityOnDemandExtractionError, match="not a curated"):
+        await service.run_plugin(evidence.evidence_id, tenant, "windows.malware.malfind.Malfind")
+
+    assert launcher.run_calls == []
+    assert (await artifact_repo.list_by_evidence(evidence.evidence_id, tenant.org_id)) == []
+
+
+async def test_run_plugin_audits_failure_when_the_plugin_itself_fails() -> None:
+    """A real, honest per-plugin failure (e.g. consoles on an unsupported
+    OS build, per poc/volatility_ondemand_picker/) -- not a crash."""
+    tenant = make_tenant_context()
+    evidence = make_evidence(org_id=tenant.org_id).with_keys(None, "testorg/case/evidence/test.raw")
+    plugin = CURATED_ON_DEMAND_PLUGINS[0].plugin
+    launcher = _FakeLauncher(
+        run_result=VolatilityMultiPluginResult(
+            outcomes=(
+                VolatilityPluginOutcome(
+                    plugin=plugin, status="error", rows=(), error="NotImplementedError: unsupported"
+                ),
+            )
+        )
+    )
+    service, evidence_repo, artifact_repo, audit_log = await _make_service(launcher)
+    await evidence_repo.save(evidence)
+
+    with pytest.raises(VolatilityOnDemandExtractionError, match="unsupported"):
+        await service.run_plugin(evidence.evidence_id, tenant, plugin)
+
+    assert (await artifact_repo.list_by_evidence(evidence.evidence_id, tenant.org_id)) == []
+    events = [e async for e in audit_log._repository.stream_by_org(tenant.org_id)]  # type: ignore[attr-defined]
+    assert any(e.event_type == AuditEventType.DERIVED_ARTIFACT_EXTRACTION_FAILED for e in events)
+
+
+async def test_run_plugin_wraps_launcher_scan_error() -> None:
+    tenant = make_tenant_context()
+    evidence = make_evidence(org_id=tenant.org_id).with_keys(None, "testorg/case/evidence/test.raw")
+    plugin = CURATED_ON_DEMAND_PLUGINS[0].plugin
+    launcher = _FakeLauncher(raise_error=VolatilityScanError("worker exited with code 1"))
+    service, evidence_repo, _, audit_log = await _make_service(launcher)
+    await evidence_repo.save(evidence)
+
+    with pytest.raises(VolatilityOnDemandExtractionError, match="worker exited"):
+        await service.run_plugin(evidence.evidence_id, tenant, plugin)
+
+    events = [e async for e in audit_log._repository.stream_by_org(tenant.org_id)]  # type: ignore[attr-defined]
+    assert any(e.event_type == AuditEventType.DERIVED_ARTIFACT_EXTRACTION_FAILED for e in events)
+
+
+async def test_run_plugin_raises_when_evidence_not_promoted() -> None:
+    tenant = make_tenant_context()
+    evidence = make_evidence(org_id=tenant.org_id)  # no with_keys() -- not promoted
+    plugin = CURATED_ON_DEMAND_PLUGINS[0].plugin
+    launcher = _FakeLauncher()
+    service, evidence_repo, _, _ = await _make_service(launcher)
+    await evidence_repo.save(evidence)
+
+    with pytest.raises(VolatilityOnDemandExtractionError, match="not yet available"):
+        await service.run_plugin(evidence.evidence_id, tenant, plugin)
+
+    assert launcher.run_calls == []
 
 
 def _dumped_file(tmp_path: Any, filename: str, data: bytes) -> Any:

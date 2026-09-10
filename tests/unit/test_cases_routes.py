@@ -1259,6 +1259,163 @@ class TestRequestVolatilityRegistryKey:
         assert task_queue.enqueued[0][0] == "volatility_registry_key"
 
 
+class TestVolatilityAvailablePlugins:
+    """GET .../volatility/available-plugins -- the curated on-demand
+    plugin picker's catalog."""
+
+    def test_returns_the_real_curated_catalog(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Catalog Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.get(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/available-plugins"
+        )
+
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) > 0
+        plugins = {item["plugin"] for item in items}
+        assert "windows.envars.Envars" in plugins
+        assert all({"plugin", "label", "description"} <= item.keys() for item in items)
+
+    def test_excludes_plugins_with_their_own_bespoke_on_demand_route(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Catalog Exclusion Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.get(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/available-plugins"
+        )
+
+        plugins = {item["plugin"] for item in resp.json()["items"]}
+        assert "windows.dumpfiles.DumpFiles" not in plugins
+        assert "windows.registry.printkey.PrintKey" not in plugins
+
+
+class TestRequestVolatilityRunPlugin:
+    """POST .../volatility/run-plugin -- the generic curated on-demand
+    plugin action."""
+
+    def test_enqueues_task_and_returns_202_for_a_curated_plugin(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Run Plugin Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/run-plugin",
+            json={"plugin": "windows.envars.Envars"},
+        )
+
+        assert resp.status_code == 202
+        assert "taskId" in resp.json()
+
+    def test_records_real_enqueued_task_with_the_requested_plugin(self, on_demand_client):
+        (
+            client,
+            _,
+            evidence_repo,
+            _artifact_repo,
+            _derived,
+            task_queue,
+            org_id,
+            _user_id,
+            _audit_repo,
+        ) = on_demand_client
+        created = client.post("/api/cases", json={"title": "Run Plugin Case 2"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/run-plugin",
+            json={"plugin": "windows.envars.Envars"},
+        )
+
+        assert task_queue.enqueued[0][0] == "volatility_run_plugin"
+        assert task_queue.enqueued[0][1] == evidence.evidence_id
+
+    def test_logs_extraction_requested_audit_event_with_the_plugin_name(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, user_id, audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Run Plugin Audit Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/run-plugin",
+            json={"plugin": "windows.envars.Envars"},
+        )
+
+        events = asyncio.run(_collect(audit_repo.stream_by_org(org_id)))
+        requested = [
+            e
+            for e in events
+            if e.event_type == AuditEventType.DERIVED_ARTIFACT_EXTRACTION_REQUESTED
+        ]
+        assert len(requested) == 1
+        assert requested[0].details["plugin"] == "windows.envars.Envars"
+
+    def test_non_curated_plugin_returns_400_never_a_bare_500(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Uncurated Plugin Case"}).json()
+        case_id = uuid.UUID(created["id"])
+        evidence = asyncio.run(
+            _seed_promoted_evidence_for_org(evidence_repo, org_id=org_id, case_id=case_id)
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/run-plugin",
+            json={"plugin": "windows.malware.malfind.Malfind"},
+        )
+
+        assert resp.status_code == 400
+
+    def test_unpromoted_evidence_returns_409(self, on_demand_client):
+        client, _, evidence_repo, *_rest, org_id, _user_id, _audit_repo = on_demand_client
+        created = client.post("/api/cases", json={"title": "Run Plugin Not Ready"}).json()
+        case_id = uuid.UUID(created["id"])
+        meta = EvidenceMetadata(
+            original_filename="not-ready.raw",
+            content_type="application/octet-stream",
+            size_bytes=10,
+            uploader_user_id=uuid.uuid4(),
+            case_id=case_id,
+            org_id=org_id,
+            org_alias="testorg",
+        )
+        evidence = asyncio.run(
+            evidence_repo.save(Evidence(metadata=meta, state=EvidenceState.PARSING))
+        )
+
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{evidence.evidence_id}/volatility/run-plugin",
+            json={"plugin": "windows.envars.Envars"},
+        )
+        assert resp.status_code == 409
+
+    def test_nonexistent_evidence_returns_404(self, on_demand_client):
+        client, *_rest = on_demand_client
+        created = client.post("/api/cases", json={"title": "Run Plugin No Evidence"}).json()
+        case_id = uuid.UUID(created["id"])
+        resp = client.post(
+            f"/api/cases/{case_id}/evidence/{uuid.uuid4()}/volatility/run-plugin",
+            json={"plugin": "windows.envars.Envars"},
+        )
+        assert resp.status_code == 404
+
+
 class TestDownloadDerivedArtifact:
     """GET /{case_id}/artifacts/{artifact_id}/download (Milestone EEEEE) --
     gated/shaped identically to TestDownloadEvidence above."""

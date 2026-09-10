@@ -1,0 +1,114 @@
+Real captured output, docker exec docker-celery-worker-plaso-1 (volatility3==2.28.0),
+against Challenge.raw (real 1.6GB Windows 7 SP1 x64 image, case
+43097ab0-aae3-4968-915b-8f0229ac3865, evidence
+e9f3287f-3858-4018-bcee-42a4bcbb0bc3, pulled fresh via boto3 from the real
+kronos-evidence-kronos-dev MinIO bucket for this run; not redistributed).
+
+=== Batch run (run_poc.py), shared context ===
+=== Challenge.raw (real user upload, not redistributed) ===
+{
+  "plugin_import_failures": [],
+  "plugins": {
+    "windows.envars.Envars": {
+      "rows": 1590,
+      "construct_seconds": 0.339,
+      "render_seconds": 0.526,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 264, \"Process\": \"smss.exe\", \"Block\": \"0x411430\", \"Variable\": \"Path\", \"Value\": \"C:\\\\Windows\\\\System32\"}"
+    },
+    "windows.windows.Windows": {
+      "rows": 0,
+      "construct_seconds": 0.153,
+      "render_seconds": 9.504,
+      "error": null,
+      "sample_row": null
+    },
+    "windows.handles.Handles": {
+      "rows": 13276,
+      "construct_seconds": 0.179,
+      "render_seconds": 16.323,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 4, \"Process\": \"System\", \"Offset\": 275427682308160, \"HandleValue\": 4, \"Type\": \"Process\", \"GrantedAccess\": 2097151, \"Name\": \"System Pid 4\"}"
+    },
+    "windows.getsids.GetSIDs": {
+      "rows": 705,
+      "construct_seconds": 0.169,
+      "render_seconds": 1.324,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 4, \"Process\": \"System\", \"SID\": \"S-1-5-18\", \"Name\": \"Local System\"}"
+    },
+    "windows.privileges.Privs": {
+      "rows": 1855,
+      "construct_seconds": 0.16,
+      "render_seconds": 0.361,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 4, \"Process\": \"System\", \"Value\": 2, \"Privilege\": \"SeCreateTokenPrivilege\", \"Attributes\": \"Present\", \"Description\": \"Create a token object\"}"
+    },
+    "windows.consoles.Consoles": {
+      "rows": 0,
+      "construct_seconds": 0.166,
+      "render_seconds": 0.205,
+      "error": "render failed: LayerException: Layer already exists: hive0xf8a0006d7010"
+    },
+    "windows.svcscan.SvcScan": {
+      "rows": 0,
+      "construct_seconds": 0.162,
+      "render_seconds": 0.1,
+      "error": "render failed: LayerException: Layer already exists: hive0xf8a000024010"
+    }
+  }
+}
+
+=== Isolated re-run (run_poc_isolated.py) -- consoles/svcscan alone, fresh Context each (the shared-context LayerException above is a harness artifact of testing multiple hive-touching plugins together; the real on-demand mechanism always uses a fresh Context per single-plugin call, same as run_registry_key already does) ===
+{
+  "plugin_import_failures": [],
+  "plugins": {
+    "windows.consoles.Consoles": {
+      "rows": 0,
+      "construct_seconds": 0.292,
+      "render_seconds": 0.85,
+      "error": "render failed: NotImplementedError: This version of Windows is not supported: 6.1 15.7601!"
+    }
+  }
+}
+{
+  "plugin_import_failures": [],
+  "plugins": {
+    "windows.svcscan.SvcScan": {
+      "rows": 863,
+      "construct_seconds": 0.27,
+      "render_seconds": 9.117,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"Offset\": 1894720, \"Order\": 225, \"PID\": 608, \"Start\": \"SERVICE_AUTO_START\", \"State\": \"SERVICE_RUNNING\", \"Type\": \"SERVICE_WIN32_SHARE_PROCESS\", \"Name\": \"Power\", \"Display\": \"Power\", \"Binary\": \"C:\\\\Windows\\\\system32\\\\svchost.exe -k DcomLaunch\", \"Binary (Registry)\": \"%SystemRoot%\\\\sys...\"}"
+    }
+  }
+}
+
+=== Follow-up isolated checks (run_poc_isolated2.py) ===
+{
+  "plugin_import_failures": [],
+  "plugins": {
+    "windows.vadinfo.VadInfo": {
+      "rows": 7324,
+      "construct_seconds": 0.305,
+      "render_seconds": 34.614,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"PID\": 4, \"Process\": \"System\", \"Offset\": 18446738026414733456, \"Start VPN\": 2147352576, \"End VPN\": 2147418111, \"Tag\": \"Vadl\", \"Protection\": \"PAGE_READONLY\", \"CommitCharge\": 2251799813685247, \"PrivateMemory\": 1, \"Parent\": 275427682309256, \"File\": null, \"File output\": \"Disabled\"}"
+    }
+  }
+}
+{
+  "plugin_import_failures": [],
+  "plugins": {
+    "windows.sessions.Sessions": {
+      "rows": 53,
+      "construct_seconds": 0.287,
+      "render_seconds": 0.326,
+      "error": null,
+      "sample_row": "{\"__children\": [], \"Session ID\": null, \"Session Type\": null, \"Process ID\": 4, \"Process\": \"System\", \"User Name\": null, \"Create Time\": \"2019-08-19T14:40:07+00:00\"}"
+    }
+  }
+}
+
+=== Separate check: windows.vadinfo's `dump` requirement default (not run through the harness -- read directly off get_requirements()) ===
+dump requirement: dump default= False optional= True

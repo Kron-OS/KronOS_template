@@ -11,6 +11,8 @@ import {
   requestVolatilityDumpFile,
   requestVolatilityRegistryKey,
   downloadDerivedArtifact,
+  getVolatilityAvailablePlugins,
+  requestVolatilityRunPlugin,
 } from '../api/cases'
 import { getEvidence, getAuditLog, getDashboardUrl } from '../api/evidence'
 import { getOrgSettings, updateOrgSettings } from '../api/admin'
@@ -280,6 +282,17 @@ const KIND_LABELS: Record<string, string> = {
   'volatility.registry.hivelist': 'Registry Hives',
   'volatility.dumpfiles': 'Child Files',
   __registry_browser__: 'Registry Browser',
+  // Curated on-demand plugin picker (poc/volatility_ondemand_picker/) --
+  // real kind names the backend's _plugin_to_kind() derives from each
+  // curated plugin's own module path (src/external/parsers/volatility.py).
+  'volatility.envars': 'Environment Variables',
+  'volatility.privileges': 'Process Privileges',
+  'volatility.getsids': 'Process SIDs',
+  'volatility.sessions': 'Logon Sessions',
+  'volatility.windows': 'GUI Windows',
+  'volatility.svcscan': 'Services',
+  'volatility.handles': 'Open Handles',
+  'volatility.vadinfo': 'Memory Regions (VADs)',
 }
 
 // Clustered the way an analyst actually works a case, not alphabetically --
@@ -297,7 +310,95 @@ const KIND_CLUSTERS: { label: string; kinds: string[] }[] = [
       '__registry_browser__',
     ],
   },
+  {
+    label: 'Additional Analysis',
+    kinds: [
+      'volatility.envars',
+      'volatility.privileges',
+      'volatility.getsids',
+      'volatility.sessions',
+      'volatility.windows',
+      'volatility.svcscan',
+      'volatility.handles',
+      'volatility.vadinfo',
+    ],
+  },
 ]
+
+/** The curated on-demand plugin picker (poc/volatility_ondemand_picker/) --
+ * the analyst picks any real-verified plugin from the dropdown and runs it
+ * against the selected memory-dump evidence file with no further
+ * parameters. Result lands as a new StructuredArtifact a short while later
+ * (same polling mechanism as dumpfiles/registry-key above) and renders via
+ * ArtifactContent's generic fallback -- no dedicated view for any of these,
+ * by design (that's the entire point of curating a generic mechanism
+ * instead of building a bespoke route+component per plugin). */
+function RunAdditionalAnalysis({
+  caseId,
+  evidenceId,
+  onRun,
+  pendingPlugins,
+  failedPlugins,
+}: {
+  caseId: string
+  evidenceId: string
+  onRun: (plugin: string) => void
+  pendingPlugins: Set<string>
+  failedPlugins: Set<string>
+}) {
+  const { data: catalog } = useQuery({
+    queryKey: ['volatility-available-plugins', caseId, evidenceId],
+    queryFn: () => getVolatilityAvailablePlugins(caseId, evidenceId),
+    staleTime: 5 * 60_000,
+  })
+  const [selected, setSelected] = useState('')
+
+  useEffect(() => {
+    if (!selected && catalog && catalog.length > 0) setSelected(catalog[0].plugin)
+  }, [catalog, selected])
+
+  if (!catalog || catalog.length === 0) return null
+
+  const isPending = pendingPlugins.has(selected)
+  const isFailed = failedPlugins.has(selected)
+  const selectedEntry = catalog.find((c) => c.plugin === selected)
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-900/40">
+      <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+        Run additional analysis:
+      </span>
+      <select
+        aria-label="Select a plugin to run"
+        value={selected}
+        onChange={(e) => setSelected(e.target.value)}
+        className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+      >
+        {catalog.map((entry) => (
+          <option key={entry.plugin} value={entry.plugin}>
+            {entry.label}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={() => onRun(selected)}
+        disabled={!selected || isPending}
+        className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+      >
+        {isPending ? 'Running…' : 'Run'}
+      </button>
+      {selectedEntry && (
+        <span className="text-xs text-gray-500 dark:text-gray-500">
+          {selectedEntry.description}
+        </span>
+      )}
+      {isFailed && (
+        <span className="text-xs text-red-600 dark:text-red-400">Failed or timed out.</span>
+      )}
+    </div>
+  )
+}
 
 /** Second-level nav within a selected evidence file: a clustered pill strip
  * across the real artifact kinds that file actually produced -- a kind
@@ -384,7 +485,13 @@ function ArtifactsTab({
   const [pendingRegistryKeys, setPendingRegistryKeys] = useState<Map<string, number>>(new Map())
   const [failedOffsets, setFailedOffsets] = useState<Set<number>>(new Set())
   const [failedRegistryKeys, setFailedRegistryKeys] = useState<Set<string>>(new Set())
-  const hasPendingOnDemandWork = extractingOffsets.size > 0 || pendingRegistryKeys.size > 0
+  // Milestone: curated on-demand plugin picker -- same pending/timeout/poll
+  // pattern as the two on-demand actions above, keyed by plugin name
+  // (unique per evidence file's own selection, no offset/hive-key needed).
+  const [pendingPlugins, setPendingPlugins] = useState<Map<string, number>>(new Map())
+  const [failedPlugins, setFailedPlugins] = useState<Set<string>>(new Set())
+  const hasPendingOnDemandWork =
+    extractingOffsets.size > 0 || pendingRegistryKeys.size > 0 || pendingPlugins.size > 0
 
   const { data: artifacts, isLoading, error } = useQuery({
     queryKey: ['artifacts', caseId],
@@ -432,6 +539,19 @@ function ArtifactsTab({
       setPendingRegistryKeys((prev) => new Map(prev).set(cacheKey, Date.now()))
     },
   })
+  const runPluginMutation = useMutation({
+    mutationFn: ({ evidenceId, plugin }: { evidenceId: string; plugin: string }) =>
+      requestVolatilityRunPlugin(caseId, evidenceId, plugin),
+    onSuccess: (_data, variables) => {
+      setFailedPlugins((prev) => {
+        if (!prev.has(variables.plugin)) return prev
+        const next = new Set(prev)
+        next.delete(variables.plugin)
+        return next
+      })
+      setPendingPlugins((prev) => new Map(prev).set(variables.plugin, Date.now()))
+    },
+  })
 
   // Clears a pending marker once its real result actually lands in the
   // polled artifacts list -- not on a fixed timer alone, so a slower real
@@ -459,6 +579,14 @@ function ArtifactsTab({
       }
       return next.size === prev.size ? prev : next
     })
+    setPendingPlugins((prev) => {
+      if (prev.size === 0) return prev
+      const next = new Map(prev)
+      for (const a of artifacts) {
+        if (typeof a.content.plugin === 'string') next.delete(a.content.plugin)
+      }
+      return next.size === prev.size ? prev : next
+    })
   }, [artifacts])
 
   // Milestone FFFFF, real bug found and fixed via a live browser run: a
@@ -473,6 +601,11 @@ function ArtifactsTab({
   useEffect(() => {
     if (!hasPendingOnDemandWork) return
     const TIMEOUT_MS = 20_000
+    // windows.vadinfo (the slowest curated plugin) real-measured ~35s on a
+    // 1.6GB image (poc/volatility_ondemand_picker/) -- a larger real image
+    // could take longer, so the picker gets its own, more generous timeout
+    // rather than reusing dumpfiles/registry-key's tuned-for-~14s value.
+    const PLUGIN_TIMEOUT_MS = 60_000
     const interval = setInterval(() => {
       const now = Date.now()
       setExtractingOffsets((prev) => {
@@ -495,6 +628,18 @@ function ArtifactsTab({
         setFailedRegistryKeys((prevFailed) => {
           const nextFailed = new Set(prevFailed)
           for (const [key] of timedOut) nextFailed.add(key)
+          return nextFailed
+        })
+        return next
+      })
+      setPendingPlugins((prev) => {
+        const timedOut = [...prev.entries()].filter(([, at]) => now - at > PLUGIN_TIMEOUT_MS)
+        if (timedOut.length === 0) return prev
+        const next = new Map(prev)
+        for (const [plugin] of timedOut) next.delete(plugin)
+        setFailedPlugins((prevFailed) => {
+          const nextFailed = new Set(prevFailed)
+          for (const [plugin] of timedOut) nextFailed.add(plugin)
           return nextFailed
         })
         return next
@@ -707,6 +852,15 @@ function ArtifactsTab({
         </ul>
       </nav>
       <div className="min-w-0 flex-1">
+        {selectedEvidenceId && (
+          <RunAdditionalAnalysis
+            caseId={caseId}
+            evidenceId={selectedEvidenceId}
+            onRun={(plugin) => runPluginMutation.mutate({ evidenceId: selectedEvidenceId, plugin })}
+            pendingPlugins={new Set(pendingPlugins.keys())}
+            failedPlugins={failedPlugins}
+          />
+        )}
         <ArtifactKindNav
           kindsPresent={kindsPresent}
           selectedKind={selectedKind}

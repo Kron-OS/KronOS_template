@@ -59,6 +59,15 @@ class TaskQueue(ABC):
         (Milestone EEEEE). Return the Celery task ID (or a stub ID in
         tests)."""
 
+    @abstractmethod
+    async def enqueue_volatility_run_plugin(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, plugin: str
+    ) -> str:
+        """Enqueue a generic, curated on-demand volatility3 plugin run --
+        the analyst picks any plugin from CURATED_ON_DEMAND_PLUGINS, no
+        further target/parameters needed. Return the Celery task ID (or a
+        stub ID in tests)."""
+
 
 class InMemoryTaskQueue(TaskQueue):
     """Captures enqueued tasks without running them — for unit tests."""
@@ -98,4 +107,11 @@ class InMemoryTaskQueue(TaskQueue):
     ) -> str:
         task_id = str(uuid.uuid4())
         self.enqueued.append(("volatility_registry_key", evidence_id, tenant))
+        return task_id
+
+    async def enqueue_volatility_run_plugin(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, plugin: str
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        self.enqueued.append(("volatility_run_plugin", evidence_id, tenant))
         return task_id

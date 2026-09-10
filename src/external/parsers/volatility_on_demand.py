@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from src.domain.audit import AuditEventType
 from src.domain.timeline import EvidenceProvenance
 from src.domain.user import TenantContext
 from src.exceptions import KronOSException, VolatilityScanError
+from src.external.parsers.volatility import rows_to_artifacts
 from src.external.sandbox.volatility_launcher import VolatilityLauncher
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,79 @@ _PARSER_NAME = "volatility3"
 _PARSER_VERSION = "2.28.0"
 _DUMPFILES_PLUGIN = "windows.dumpfiles.DumpFiles"
 _DEFAULT_TIMEOUT_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class VolatilityPluginCatalogEntry:
+    """One curated, vetted plugin an analyst can trigger on demand from a
+    generic picker -- see ``run_plugin()``'s own docstring for why this is
+    curated rather than every real plugin volatility3 ships."""
+
+    plugin: str
+    label: str
+    description: str
+
+
+# Curated on-demand plugin allowlist. Every entry here was real-verified
+# against the pinned volatility3==2.28.0 and a real 1.6GB Windows 7 SP1
+# image (poc/volatility_ondemand_picker/, README.md has the full real
+# captured timing/safety data this list is sourced from -- not guessed).
+#
+# Deliberately excluded, with real reasons (see that README):
+# - windows.dumpfiles / windows.registry.printkey: already shipped as
+#   their own bespoke on-demand actions above -- both need a specific
+#   target (a physaddr/hive-offset from a prior result row) that doesn't
+#   fit a generic "just run it" call.
+# - windows.strings: needs a separate, pre-computed strings-file input
+#   (a real, external `strings` pass over the whole image) -- a two-phase
+#   pipeline, not a single plugin invocation.
+# - windows.consoles: real, confirmed incompatibility with Windows 7 SP1
+#   in this volatility3 version (`NotImplementedError: This version of
+#   Windows is not supported: 6.1 15.7601!`) -- the exact OS family every
+#   real sample on this platform currently is. Not a speed exclusion.
+CURATED_ON_DEMAND_PLUGINS: tuple[VolatilityPluginCatalogEntry, ...] = (
+    VolatilityPluginCatalogEntry(
+        plugin="windows.envars.Envars",
+        label="Environment variables",
+        description="Per-process environment variables (e.g. credentials/paths set before launch).",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.privileges.Privs",
+        label="Process privileges",
+        description="Windows privilege tokens held by each process.",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.getsids.GetSIDs",
+        label="Process SIDs",
+        description="Security identifiers (SIDs) associated with each process, mapped to owners.",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.sessions.Sessions",
+        label="Logon sessions",
+        description="Real logon sessions and the processes running in each.",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.windows.Windows",
+        label="GUI windows",
+        description="Desktop/window-station GUI objects resident in memory (titles, not pixels).",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.svcscan.SvcScan",
+        label="Windows services",
+        description="Registered services, including ones hidden from the Service Manager.",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.handles.Handles",
+        label="Open handles",
+        description="Open handles (files, registry keys, mutants, ...) per process.",
+    ),
+    VolatilityPluginCatalogEntry(
+        plugin="windows.vadinfo.VadInfo",
+        label="Virtual memory regions (VADs)",
+        description="Per-process virtual address descriptors -- slower (~35s/1.6GB); no disk dump.",
+    ),
+)
+_CURATED_PLUGIN_NAMES = frozenset(entry.plugin for entry in CURATED_ON_DEMAND_PLUGINS)
 
 
 class VolatilityOnDemandExtractionError(KronOSException):
@@ -265,6 +340,90 @@ class VolatilityOnDemandService:
             raise VolatilityOnDemandExtractionError(
                 str(exc), context={"hive_offset": hive_offset, "key": key}
             ) from exc
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    async def run_plugin(
+        self, evidence_id: uuid.UUID, tenant: TenantContext, plugin: str
+    ) -> list[StructuredArtifact]:
+        """Run one curated, analyst-picked volatility3 plugin on demand and
+        save its rows as StructuredArtifact(s).
+
+        Unlike ``extract_dump_file``/``extract_registry_key`` (which need a
+        specific target picked from a prior result row -- a physaddr or
+        hive offset), this is the generic "just run this plugin" action:
+        any plugin in ``CURATED_ON_DEMAND_PLUGINS`` can be requested with
+        no further parameters, because ``VolatilityLauncher.run()`` is
+        already plugin-name-generic (the eager path already calls it with
+        7 names; this calls it with exactly one curated name). New
+        analyst-useful plugins can be added to the catalog without any new
+        route, Celery task, or frontend component -- only a new catalog
+        entry, once real-verified (poc/volatility_ondemand_picker/).
+
+        *plugin* must already be validated against the curated allowlist
+        by the caller (the route) -- this method re-checks it anyway
+        (defense in depth: never trust a client-supplied string reached
+        this deep purely because an earlier layer said so).
+        """
+        if plugin not in _CURATED_PLUGIN_NAMES:
+            raise VolatilityOnDemandExtractionError(
+                f"'{plugin}' is not a curated on-demand plugin", context={"plugin": plugin}
+            )
+
+        evidence = await self._get_evidence_or_raise(evidence_id, tenant)
+        tmp_path = await self._write_evidence_to_temp(evidence)
+        try:
+            result = await self._launcher.run(tmp_path, plugins=[plugin])
+            outcome = result.for_plugin(plugin)
+            if outcome is None or not outcome.ok:
+                error = (outcome.error if outcome is not None else None) or "Plugin did not run"
+                await self._audit_log.log(
+                    AuditEventType.DERIVED_ARTIFACT_EXTRACTION_FAILED,
+                    org_id=tenant.org_id,
+                    case_id=evidence.metadata.case_id,
+                    evidence_id=evidence_id,
+                    actor_user_id=tenant.user_id,
+                    actor_username=tenant.username,
+                    details={"plugin": plugin, "error": error},
+                )
+                raise VolatilityOnDemandExtractionError(error, context={"plugin": plugin})
+
+            saved: list[StructuredArtifact] = []
+            for artifact in rows_to_artifacts(
+                outcome.rows,
+                plugin=plugin,
+                evidence=evidence,
+                record_index_start=0,
+                parser_name=_PARSER_NAME,
+                parser_version=_PARSER_VERSION,
+            ):
+                saved.append(await self._artifact_repository.save(artifact))
+
+            await self._audit_log.log(
+                AuditEventType.DERIVED_ARTIFACT_EXTRACTED,
+                org_id=tenant.org_id,
+                case_id=evidence.metadata.case_id,
+                evidence_id=evidence_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                details={
+                    "plugin": plugin,
+                    "artifact_ids": [str(a.artifact_id) for a in saved],
+                    "row_count": len(outcome.rows),
+                },
+            )
+            return saved
+        except VolatilityScanError as exc:
+            await self._audit_log.log(
+                AuditEventType.DERIVED_ARTIFACT_EXTRACTION_FAILED,
+                org_id=tenant.org_id,
+                case_id=evidence.metadata.case_id,
+                evidence_id=evidence_id,
+                actor_user_id=tenant.user_id,
+                actor_username=tenant.username,
+                details={"plugin": plugin, "error": str(exc)},
+            )
+            raise VolatilityOnDemandExtractionError(str(exc), context={"plugin": plugin}) from exc
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

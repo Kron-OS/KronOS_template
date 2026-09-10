@@ -278,11 +278,13 @@ class VolatilityModule(ForensicParser):
                 # no artifact at all, not a fabricated empty one. Logged by
                 # the worker/launcher already; nothing further to do here.
                 continue
-            for artifact in self._rows_to_artifacts(
+            for artifact in rows_to_artifacts(
                 outcome.rows,
                 plugin=outcome.plugin,
                 evidence=evidence,
                 record_index_start=record_index,
+                parser_name=self.parser_name,
+                parser_version=self.parser_version,
             ):
                 yield artifact
                 record_index += 1
@@ -344,44 +346,6 @@ class VolatilityModule(ForensicParser):
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-    def _rows_to_artifacts(
-        self,
-        rows: tuple[dict[str, Any], ...],
-        *,
-        plugin: str,
-        evidence: Evidence,
-        record_index_start: int,
-    ) -> Iterator[StructuredArtifact]:
-        """Yield one or more StructuredArtifacts covering *rows*.
-
-        Splits on ``_MAX_ROWS_CONTENT_BYTES`` -- mirrors
-        ``ArtifactIngestService``'s own documented convention (see
-        ``src/application/artifact_ingest.py``): split into multiple
-        artifacts of the same ``kind`` rather than asking to raise the cap.
-        A zero-row result still yields exactly one artifact with an empty
-        ``rows`` list -- a real, honest "this plugin found nothing" result
-        (see this module's own docstring re: ``windows.pstree`` against
-        ``cridex.vmem``), not silently dropped.
-        """
-        kind = _plugin_to_kind(plugin)
-        if not rows:
-            yield _build_artifact((), kind, plugin, evidence, self, record_index_start)
-            return
-
-        batch: list[dict[str, Any]] = []
-        index = record_index_start
-        for row in rows:
-            candidate = [*batch, row]
-            size = len(json.dumps(candidate, default=str).encode("utf-8"))
-            if size > _MAX_ROWS_CONTENT_BYTES and batch:
-                yield _build_artifact(tuple(batch), kind, plugin, evidence, self, index)
-                index += 1
-                batch = [row]
-            else:
-                batch = candidate
-        if batch:
-            yield _build_artifact(tuple(batch), kind, plugin, evidence, self, index)
-
 
 def _timeline_rows(
     result: VolatilityMultiPluginResult,
@@ -428,12 +392,65 @@ def _plugin_to_kind(plugin: str) -> str:
     return f"volatility.{'.'.join(parts)}"
 
 
+def rows_to_artifacts(
+    rows: tuple[dict[str, Any], ...],
+    *,
+    plugin: str,
+    evidence: Evidence,
+    record_index_start: int,
+    parser_name: str,
+    parser_version: str,
+) -> Iterator[StructuredArtifact]:
+    """Yield one or more StructuredArtifacts covering *rows*.
+
+    Module-level (not a ``VolatilityModule`` method) so both the eager
+    ``extract_artifacts()`` path and ``VolatilityOnDemandService``'s
+    curated-plugin on-demand path (which has no ``VolatilityModule``
+    instance of its own) share the exact same batching/kind-mapping logic
+    instead of a second, drifting copy.
+
+    Splits on ``_MAX_ROWS_CONTENT_BYTES`` -- mirrors
+    ``ArtifactIngestService``'s own documented convention (see
+    ``src/application/artifact_ingest.py``): split into multiple
+    artifacts of the same ``kind`` rather than asking to raise the cap.
+    A zero-row result still yields exactly one artifact with an empty
+    ``rows`` list -- a real, honest "this plugin found nothing" result
+    (see this module's own docstring re: ``windows.pstree`` against
+    ``cridex.vmem``), not silently dropped.
+    """
+    kind = _plugin_to_kind(plugin)
+    if not rows:
+        yield _build_artifact(
+            (), kind, plugin, evidence, parser_name, parser_version, record_index_start
+        )
+        return
+
+    batch: list[dict[str, Any]] = []
+    index = record_index_start
+    for row in rows:
+        candidate = [*batch, row]
+        size = len(json.dumps(candidate, default=str).encode("utf-8"))
+        if size > _MAX_ROWS_CONTENT_BYTES and batch:
+            yield _build_artifact(
+                tuple(batch), kind, plugin, evidence, parser_name, parser_version, index
+            )
+            index += 1
+            batch = [row]
+        else:
+            batch = candidate
+    if batch:
+        yield _build_artifact(
+            tuple(batch), kind, plugin, evidence, parser_name, parser_version, index
+        )
+
+
 def _build_artifact(
     rows: tuple[dict[str, Any], ...],
     kind: str,
     plugin: str,
     evidence: Evidence,
-    parser: VolatilityModule,
+    parser_name: str,
+    parser_version: str,
     record_index: int,
 ) -> StructuredArtifact:
     content: dict[str, Any] = {"plugin": plugin, "rows": list(rows)}
@@ -443,8 +460,8 @@ def _build_artifact(
         org_id=evidence.metadata.org_id,
         org_alias=evidence.metadata.org_alias,
         sha256=evidence.sha256 or "",
-        parser=parser.parser_name,
-        parser_version=parser.parser_version,
+        parser=parser_name,
+        parser_version=parser_version,
         record_index=record_index,
         ingest_timestamp=datetime.now(UTC),
     )

@@ -175,6 +175,24 @@ class VolatilityExtractionAcceptedOut(BaseModel):
     taskId: str
 
 
+class VolatilityRunPluginRequestIn(BaseModel):
+    """Body for the generic curated on-demand plugin picker -- ``plugin``
+    must be one of ``CURATED_ON_DEMAND_PLUGINS`` (validated server-side,
+    never trusted just because the client only offers curated choices)."""
+
+    plugin: str
+
+
+class VolatilityPluginCatalogEntryOut(BaseModel):
+    plugin: str
+    label: str
+    description: str
+
+
+class VolatilityAvailablePluginsResponse(BaseModel):
+    items: list[VolatilityPluginCatalogEntryOut]
+
+
 class DashboardUrlOut(BaseModel):
     url: str
 
@@ -788,6 +806,106 @@ async def request_volatility_registry_key(
     task_id = await task_queue.enqueue_volatility_registry_key(
         evidence_id, tenant, body.hiveOffset, body.key
     )
+    return VolatilityExtractionAcceptedOut(taskId=task_id)
+
+
+@router.get(
+    "/{case_id}/evidence/{evidence_id}/volatility/available-plugins",
+    response_model=VolatilityAvailablePluginsResponse,
+)
+async def list_volatility_available_plugins(
+    case_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+) -> VolatilityAvailablePluginsResponse:
+    """The curated, real-verified list of plugins the analyst can trigger
+    on demand from a generic picker (poc/volatility_ondemand_picker/) --
+    static catalog data, but still case-access-gated for consistency with
+    every other route under this evidence file. Read-role gated, same as
+    ``request_volatility_dump_file``.
+    """
+    from src.external.parsers.volatility_on_demand import (  # noqa: PLC0415
+        CURATED_ON_DEMAND_PLUGINS,
+    )
+
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    return VolatilityAvailablePluginsResponse(
+        items=[
+            VolatilityPluginCatalogEntryOut(
+                plugin=entry.plugin, label=entry.label, description=entry.description
+            )
+            for entry in CURATED_ON_DEMAND_PLUGINS
+        ]
+    )
+
+
+@router.post(
+    "/{case_id}/evidence/{evidence_id}/volatility/run-plugin",
+    response_model=VolatilityExtractionAcceptedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_volatility_run_plugin(
+    case_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    body: VolatilityRunPluginRequestIn,
+    tenant: Annotated[TenantContext, Depends(get_tenant_context)],
+    case_repo: Annotated[CaseRepository, Depends(get_case_repository)],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+    task_queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> VolatilityExtractionAcceptedOut:
+    """Enqueue one curated, analyst-picked volatility3 plugin run -- the
+    generic counterpart to ``request_volatility_dump_file``/
+    ``request_volatility_registry_key`` for plugins that need no target
+    beyond the evidence file itself (see
+    ``CURATED_ON_DEMAND_PLUGINS``'s own docstring for why the list is
+    curated, not every real plugin volatility3 ships). Gated identically
+    to the other two on-demand routes above.
+
+    ``body.plugin`` is validated against the curated allowlist here (400,
+    never a bare 500 or a silent pass-through) -- the frontend picker only
+    ever offers curated choices, but the server must never trust that.
+    """
+    from src.external.parsers.volatility_on_demand import (  # noqa: PLC0415
+        CURATED_ON_DEMAND_PLUGINS,
+    )
+
+    curated_names = {entry.plugin for entry in CURATED_ON_DEMAND_PLUGINS}
+    if body.plugin not in curated_names:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{body.plugin}' is not a curated on-demand plugin",
+        )
+
+    case = await case_repo.get_by_id(case_id, tenant.org_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assert_case_access(tenant, case)
+
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None or evidence.metadata.case_id != case_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.minio_evidence_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Evidence file is not yet available for extraction",
+        )
+
+    await audit_log.log(
+        AuditEventType.DERIVED_ARTIFACT_EXTRACTION_REQUESTED,
+        org_id=tenant.org_id,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        actor_user_id=tenant.user_id,
+        actor_username=tenant.username,
+        details={"plugin": body.plugin},
+    )
+    task_id = await task_queue.enqueue_volatility_run_plugin(evidence_id, tenant, body.plugin)
     return VolatilityExtractionAcceptedOut(taskId=task_id)
 
 

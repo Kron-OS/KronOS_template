@@ -104,6 +104,38 @@ export async function requestVolatilityRegistryKey(
   return res.data
 }
 
+export interface VolatilityPluginCatalogEntry {
+  plugin: string
+  label: string
+  description: string
+}
+
+// The curated, real-verified on-demand plugin picker (poc/volatility_ondemand_picker/) --
+// analyst can run any of these against a memory-dump evidence file with no
+// further parameters (unlike dump-file/registry-key above, which each need
+// a target picked from a prior result row).
+export async function getVolatilityAvailablePlugins(
+  caseId: string,
+  evidenceId: string,
+): Promise<VolatilityPluginCatalogEntry[]> {
+  const res = await apiClient.get<{ items: VolatilityPluginCatalogEntry[] }>(
+    `/api/cases/${caseId}/evidence/${evidenceId}/volatility/available-plugins`,
+  )
+  return res.data.items
+}
+
+export async function requestVolatilityRunPlugin(
+  caseId: string,
+  evidenceId: string,
+  plugin: string,
+): Promise<{ taskId: string }> {
+  const res = await apiClient.post<{ taskId: string }>(
+    `/api/cases/${caseId}/evidence/${evidenceId}/volatility/run-plugin`,
+    { plugin },
+  )
+  return res.data
+}
+
 // Mirrors downloadEvidence's real Content-Disposition-aware blob download.
 export async function downloadDerivedArtifact(
   caseId: string,
