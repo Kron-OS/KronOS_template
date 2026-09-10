@@ -1,80 +1,49 @@
-import { useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { requestUpload, finalizeUploadWithHash } from '../api/evidence'
-import { validateFileMagic, BLOCKED_EXTENSIONS } from '../utils/validateFileMagic'
+import { useState } from 'react'
+import { useUploadsStore } from '../store/uploads'
+import { BLOCKED_EXTENSIONS } from '../utils/validateFileMagic'
 import { Spinner } from './Spinner'
 import { ErrorBanner } from './ErrorBanner'
 
-async function computeSHA256(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer()
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
+// Milestone: minimizable uploads. This drawer no longer owns any upload
+// progress state itself (moved to store/uploads.ts, which keeps driving
+// the real upload regardless of whether this component is mounted) --
+// it's a thin, globally-mounted view over that store (see Layout.tsx).
+// Local state remains only for files staged before "Upload" is clicked,
+// which is inherently transient and doesn't need to survive minimize.
+export function UploadDrawer() {
+  const activeCaseId = useUploadsStore((s) => s.activeCaseId)
+  const drawerOpen = useUploadsStore((s) => s.drawerOpen)
+  const minimized = useUploadsStore((s) => s.minimized)
+  const jobs = useUploadsStore((s) => s.jobs)
+  const minimize = useUploadsStore((s) => s.minimize)
+  const closeDrawer = useUploadsStore((s) => s.closeDrawer)
+  const enqueueFiles = useUploadsStore((s) => s.enqueueFiles)
 
-interface FileProgress {
-  name: string
-  progress: number
-  error: string | null
-  done: boolean
-}
-
-interface UploadDrawerProps {
-  caseId: string
-  open: boolean
-  onClose: () => void
-}
-
-async function uploadFile(
-  caseId: string,
-  file: File,
-  onProgress: (pct: number) => void,
-): Promise<void> {
-  const validation = await validateFileMagic(file)
-  if (!validation.ok) {
-    throw new Error(validation.reason ?? 'File rejected by pre-check')
-  }
-
-  const sha256 = await computeSHA256(file)
-
-  const upload = await requestUpload(
-    caseId,
-    file.name,
-    file.type || 'application/octet-stream',
-    file.size,
-  )
-
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', upload.presignedUrl)
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
-    }
-    xhr.onload = () => (xhr.status < 400 ? resolve() : reject(new Error(`HTTP ${xhr.status}`)))
-    xhr.onerror = () => reject(new Error('Network error'))
-    xhr.send(file)
-  })
-
-  await finalizeUploadWithHash(upload.evidenceId, sha256)
-  // Parsing is auto-triggered by the backend pipeline after finalization.
-  // No client-side parse/start call needed.
-}
-
-export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
-  const queryClient = useQueryClient()
-  const inputRef = useRef<HTMLInputElement>(null)
-  const [files, setFiles] = useState<FileProgress[]>([])
-  const [uploading, setUploading] = useState(false)
+  const [stagedFiles, setStagedFiles] = useState<File[]>([])
   const [globalError, setGlobalError] = useState<string | null>(null)
 
-  function handleClose() {
-    if (!uploading) {
-      setFiles([])
-      setGlobalError(null)
-      onClose()
-    }
-  }
+  // Real, hard E2E constraint (frontend/e2e/pages/CaseDetailPage.ts's
+  // uploadEvidence() asserts #evidence-file-input fully detaches from the
+  // DOM once closed) -- minimized must unmount exactly like closed does,
+  // not just hide visually.
+  if (!drawerOpen || minimized || !activeCaseId) return null
+
+  const caseJobs = jobs.filter((j) => j.caseId === activeCaseId)
+  const uploading = caseJobs.some((j) => j.status === 'uploading')
+  // Newly staged (not-yet-uploaded) files take priority over a PRIOR
+  // batch's finished/errored jobs for this case -- otherwise picking a new
+  // batch after one finishes would keep silently showing the old one until
+  // Upload is clicked again.
+  const displayItems =
+    stagedFiles.length > 0 && !uploading
+      ? stagedFiles.map((f) => ({ key: f.name, name: f.name, progress: 0, error: null, done: false }))
+      : caseJobs.map((j) => ({
+          key: j.id,
+          name: j.filename,
+          progress: j.progress,
+          error: j.error,
+          done: j.status === 'done',
+        }))
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files ?? [])
@@ -83,64 +52,47 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
       return BLOCKED_EXTENSIONS.has(ext)
     })
     if (blocked.length > 0) {
-      setGlobalError(
-        `Blocked file type(s): ${blocked.map((f) => f.name).join(', ')}`,
-      )
+      setGlobalError(`Blocked file type(s): ${blocked.map((f) => f.name).join(', ')}`)
       e.target.value = ''
       return
     }
     setGlobalError(null)
-    setFiles(selected.map((f) => ({ name: f.name, progress: 0, error: null, done: false })))
+    setStagedFiles(selected)
   }
 
   async function handleUpload() {
-    const selected = Array.from(inputRef.current?.files ?? [])
-    if (selected.length === 0) return
-
-    setUploading(true)
+    if (stagedFiles.length === 0 || !activeCaseId) return
     setGlobalError(null)
-    setFiles((prev) => prev.map((f) => ({ ...f, error: null })))
-
-    await Promise.allSettled(
-      selected.map(async (file, i) => {
-        try {
-          await uploadFile(caseId, file, (pct) => {
-            setFiles((prev) =>
-              prev.map((f, j) => (j === i ? { ...f, progress: pct, error: null } : f)),
-            )
-          })
-          setFiles((prev) =>
-            prev.map((f, j) => (j === i ? { ...f, progress: 100, done: true, error: null } : f)),
-          )
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Upload failed'
-          setFiles((prev) =>
-            prev.map((f, j) => (j === i ? { ...f, error: msg, done: false } : f)),
-          )
-        }
-      }),
-    )
-
-    await queryClient.invalidateQueries({ queryKey: ['evidence', caseId] })
-    setUploading(false)
+    const files = stagedFiles
+    setStagedFiles([])
+    await enqueueFiles(activeCaseId, files)
   }
-
-  if (!open) return null
 
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 sm:items-center">
       <div className="w-full max-w-lg rounded-t-lg border border-gray-300 bg-white p-5 dark:border-gray-700 dark:bg-gray-900 sm:rounded-lg">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Upload Evidence</h2>
-          <button
-            type="button"
-            onClick={handleClose}
-            disabled={uploading}
-            className="text-lg text-gray-600 hover:text-gray-900 disabled:opacity-40 dark:text-gray-400 dark:hover:text-gray-200"
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={minimize}
+              className="text-lg leading-none text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
+              aria-label="Minimize"
+              title="Minimize (upload keeps running)"
+            >
+              &#9472;
+            </button>
+            <button
+              type="button"
+              onClick={closeDrawer}
+              disabled={uploading}
+              className="text-lg text-gray-600 hover:text-gray-900 disabled:opacity-40 dark:text-gray-400 dark:hover:text-gray-200"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         <label
@@ -153,7 +105,6 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
           </span>
           <input
             id="evidence-file-input"
-            ref={inputRef}
             type="file"
             multiple
             className="sr-only"
@@ -167,10 +118,10 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
           </div>
         )}
 
-        {files.length > 0 && (
+        {displayItems.length > 0 && (
           <ul className="mb-4 space-y-2">
-            {files.map((f, i) => (
-              <li key={i} className="text-xs">
+            {displayItems.map((f) => (
+              <li key={f.key} className="text-xs">
                 <div className="mb-1 flex justify-between text-gray-700 dark:text-gray-300">
                   <span className="max-w-xs truncate">{f.name}</span>
                   <span className="ml-2 shrink-0">
@@ -197,7 +148,7 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
         <div className="flex justify-end gap-3">
           <button
             type="button"
-            onClick={handleClose}
+            onClick={closeDrawer}
             disabled={uploading}
             className="rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 disabled:opacity-40 dark:text-gray-400 dark:hover:bg-gray-800"
           >
@@ -206,7 +157,7 @@ export function UploadDrawer({ caseId, open, onClose }: UploadDrawerProps) {
           <button
             type="button"
             onClick={handleUpload}
-            disabled={uploading || files.length === 0}
+            disabled={uploading || stagedFiles.length === 0}
             className="flex items-center gap-2 rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
           >
             {uploading && <Spinner size="sm" />}

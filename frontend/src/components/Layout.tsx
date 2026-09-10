@@ -3,6 +3,8 @@ import { Link } from '@tanstack/react-router'
 import { keycloak } from '../keycloak'
 import { useAuthStore } from '../store/auth'
 import { useDarkMode } from '../hooks/useDarkMode'
+import { UploadDrawer } from './UploadDrawer'
+import { UploadStatusBadge } from './UploadStatusBadge'
 
 interface LayoutProps {
   children: ReactNode
@@ -88,6 +90,8 @@ export function Layout({ children }: LayoutProps) {
         </div>
       </header>
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
+      <UploadDrawer />
+      <UploadStatusBadge />
     </div>
   )
 }

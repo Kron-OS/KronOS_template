@@ -6,7 +6,8 @@ import {
   Outlet,
   Navigate,
 } from '@tanstack/react-router'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from './lib/queryClient'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Layout } from './components/Layout'
 import { useDarkMode } from './hooks/useDarkMode'
@@ -98,15 +99,6 @@ function parseStringArray(value: unknown): string[] | undefined {
   if (typeof value === 'string' && value.length > 0) return [value]
   return undefined
 }
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-})
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,

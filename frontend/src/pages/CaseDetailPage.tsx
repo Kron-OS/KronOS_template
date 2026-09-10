@@ -17,7 +17,6 @@ import { getOrgSettings, updateOrgSettings } from '../api/admin'
 import { StatusPill } from '../components/StatusPill'
 import { Spinner } from '../components/Spinner'
 import { ErrorBanner } from '../components/ErrorBanner'
-import { UploadDrawer } from '../components/UploadDrawer'
 import { EvidenceDetailDrawer } from '../components/EvidenceDetailDrawer'
 import {
   ArtifactContent,
@@ -29,6 +28,7 @@ import {
 import { MEMORY_DUMP_EXTENSIONS } from '../utils/validateFileMagic'
 import { useEvidenceSSE } from '../hooks/useEvidenceSSE'
 import { useAuthStore } from '../store/auth'
+import { useUploadsStore } from '../store/uploads'
 import { isTrustedDashboardsUrl } from '../utils/dashboardsOrigin'
 import type { Case, CaseMemberCandidate, Evidence, AuditEvent, SSEStatusEvent } from '../types'
 
@@ -52,7 +52,7 @@ function EvidenceTab({
   onViewArtifacts: (evidenceId: string) => void
 }) {
   const queryClient = useQueryClient()
-  const [showUpload, setShowUpload] = useState(false)
+  const openUploadDrawer = useUploadsStore((s) => s.openDrawer)
   const [selectedEvidence, setSelectedEvidence] = useState<Evidence | null>(null)
   const { data, isLoading, error } = useQuery({
     queryKey: ['evidence', caseId],
@@ -116,7 +116,7 @@ function EvidenceTab({
       <div className="mb-4 flex justify-end">
         <button
           type="button"
-          onClick={() => setShowUpload(true)}
+          onClick={() => openUploadDrawer(caseId)}
           className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
         >
           Upload Evidence
@@ -186,12 +186,6 @@ function EvidenceTab({
           </table>
         </div>
       )}
-
-      <UploadDrawer
-        caseId={caseId}
-        open={showUpload}
-        onClose={() => setShowUpload(false)}
-      />
 
       <EvidenceDetailDrawer
         evidence={selectedEvidence}

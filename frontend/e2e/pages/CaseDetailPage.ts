@@ -104,6 +104,54 @@ export class CaseDetailPage extends KronosPage {
     await this.page.waitForSelector("#evidence-file-input", { state: "detached", timeout: 10000 });
   }
 
+  /**
+   * Real, minimizable-upload flow (store/uploads.ts): selects a file,
+   * starts the upload, but does NOT wait for completion -- callers use
+   * this together with `delayPresignedPut()` below to get a reliable
+   * window to minimize/navigate mid-upload, since real E2E fixtures PUT
+   * near-instantly otherwise.
+   */
+  async startUploadWithoutWaiting(filePath: string): Promise<void> {
+    await this.page.click("text=Upload Evidence");
+    await this.page.waitForSelector("#evidence-file-input", { timeout: 10000 });
+    await this.page.setInputFiles("#evidence-file-input", filePath);
+    await this.page.getByRole("button", { name: "Upload", exact: true }).click();
+  }
+
+  /**
+   * Delays the real presigned-URL PUT (MinIO, `https://kronos.local:9444`
+   * per `docker/docker-compose.dev.yml`'s `MINIO_PUBLIC_ENDPOINT`) by
+   * *delayMs* before letting it continue for real -- the only way to get a
+   * deterministic window to observe live progress/minimize mid-upload
+   * against this suite's small real fixtures, which otherwise PUT in well
+   * under a second.
+   */
+  async delayPresignedPut(delayMs: number): Promise<void> {
+    await this.page.route("https://kronos.local:9444/**", async (route) => {
+      if (route.request().method() === "PUT") {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      await route.continue();
+    });
+  }
+
+  /** Clicks the real minimize button (─) in the upload drawer's header. */
+  async minimizeUpload(): Promise<void> {
+    await this.page.click('button[aria-label="Minimize"]');
+  }
+
+  /** Real, persistent upload-status badge (UploadStatusBadge.tsx) -- only
+   * rendered while minimized with at least one real job. */
+  uploadBadge() {
+    return this.page.getByRole("button", { name: /Upload status:/ });
+  }
+
+  /** Clicks the badge to reopen the drawer (un-minimize) from wherever the
+   * user currently is in the app. */
+  async reopenFromBadge(): Promise<void> {
+    await this.uploadBadge().click();
+  }
+
   /** Opens EvidenceDetailDrawer by clicking the real evidence row (CaseDetailPage.tsx's own onClick). */
   async openEvidenceDrawer(fileName: string): Promise<void> {
     await this.page.locator(`tr:has-text('${fileName}')`).click();
