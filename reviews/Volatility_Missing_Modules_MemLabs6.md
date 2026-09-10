@@ -1,9 +1,23 @@
 # Volatility module gaps, found via MemLabs Lab6
 
-**Status:** research only, queued for a future implementation cycle — not
-built this pass, per the project owner's own framing ("another task for
-later"). This document is the concrete list + eager/on-demand
-recommendation asked for; PoC-and-implement is the next cycle's work.
+**Status update:** the mechanism below is now **built and shipped** — not
+as individual eager-plugin additions to `DEFAULT_PLUGINS` as originally
+sketched, but as a single generic **curated on-demand plugin picker**
+(the project owner's own redirect: "put the list of possibilities, let the
+user require modules" rather than us hand-picking eager plugins one at a
+time). See `poc/volatility_ondemand_picker/` for the real timing/safety
+PoC that replaced this doc's original reasoned-not-measured guesses with
+real numbers (several placements below turned out wrong once measured —
+see that PoC's own README for the corrections), and
+`src/external/parsers/volatility_on_demand.py`'s `CURATED_ON_DEMAND_PLUGINS`
+for the real, live catalog: `windows.envars`, `windows.privileges`,
+`windows.getsids`, `windows.sessions`, `windows.windows`, `windows.svcscan`,
+`windows.handles`, `windows.vadinfo`. Real end-to-end verified against the
+actual `Challenge.raw` case referenced below
+(`frontend/e2e/case-artifacts-volatility-picker.spec.ts`). The original
+research below is kept for its own real value (the writeup analysis,
+the plugin-requirement findings) — read the corrections in the PoC README
+before trusting any placement claim made before that PoC ran.
 
 **Trigger:** the project owner worked through
 [MemLabs Lab6](https://n1ght-w0lf.github.io/ctf%20writeups/memlabs-lab6/)
@@ -80,30 +94,38 @@ regression and wasn't one). The CCCCC-era blocker is gone; the
 sensitivity-based "needs an explicit go-ahead" gate from that milestone
 still stands and is unchanged by this finding.
 
-## Recommended next cycle (not done this pass)
+## Recommended next cycle (status per item)
 
-1. Get a real memory sample back onto this host (the prior `Challenge.raw`
-   used by Milestones CCCCC/EEEEE is gone from the container's `/tmp`; a
-   small public sample like the well-known `cridex.vmem` would cover the
-   *shape* of the timing question, even though it won't reproduce this
-   specific exercise's own artifacts) and re-run the CCCCC-style shared-
-   context timing methodology (`poc/volatility_multiplugin/`) for
-   `envars`/`consoles`/`windows.windows` specifically.
-2. Add `windows.envars` to `DEFAULT_PLUGINS` (eager) — reasoned placement
-   above is strong enough to act on without waiting for step 1, mirroring
-   how confident CCCCC was about `cmdline`'s cost class.
-3. Decide `consoles`/`windows.windows` eager-vs-on-demand from the real
-   step-1 numbers, not the reasoning above alone.
-4. Add `windows.strings` as a new on-demand action (mirrors the existing
-   `dump-file`/`registry-key` on-demand routes in `cases.py` exactly —
-   same Celery-task-not-synchronous-call pattern, same
-   `DerivedArtifactStorage` destination for the raw strings output).
-5. Design the dumped-file re-dispatch idea (extracted `History`/similar
-   files matching a known parser's magic bytes get automatically re-run
-   through `get_parser_registry()`, mirroring `ZipArchiveParser`'s own
-   recursive-dispatch pattern) — this is the highest-leverage single
-   addition, since it makes *every* existing parser (not just Chrome
-   history) automatically available to anything recovered from memory.
-6. Explicitly ask before doing anything with `hashdump`/`lsadump`/
-   `cachedump` given the real credential-material sensitivity — not
-   blocked by any remaining technical gap, purely a judgment call.
+1. ~~Get a real memory sample back onto this host~~ **Done** — the project
+   owner pointed directly at the real, already-uploaded `Challenge.raw`
+   evidence on this dev stack (case `43097ab0-aae3-4968-915b-8f0229ac3865`,
+   evidence `e9f3287f-3858-4018-bcee-42a4bcbb0bc3`); re-ran the CCCCC-style
+   shared-context timing methodology against it for real
+   (`poc/volatility_ondemand_picker/`).
+2. ~~Add `windows.envars` to `DEFAULT_PLUGINS` (eager)~~ **Superseded** —
+   shipped instead as part of the curated *on-demand* picker (the project
+   owner's own redirect away from more eager-plugin hand-picking). Real
+   measured cost (0.87s) would have supported eager placement too; on-demand
+   was chosen for mechanism consistency with the other 7 curated plugins,
+   not because envars itself needed it.
+3. `windows.consoles`/`windows.windows` eager-vs-on-demand decided from
+   real numbers, not reasoning: **`consoles` excluded entirely** (real,
+   confirmed incompatibility with Windows 7 SP1 in this volatility3
+   version — a functional gap, not a cost one, and the exact OS family
+   every real sample on this platform is); **`windows.windows` shipped
+   on-demand** (9.5s real-measured, tolerable for an explicit click, 0 rows
+   on this particular image — an honest negative result).
+4. `windows.strings` — **still not built.** Real requirements confirmed it
+   needs a separate pre-computed strings-file input (a genuine two-phase
+   pipeline, not a single plugin call) — doesn't fit the generic on-demand
+   mechanism the other 8 plugins share. Would need its own bespoke route
+   (mirrors `dump-file`/`registry-key`'s own bespoke-target reasoning),
+   not a catalog entry.
+5. The dumped-file re-dispatch idea (extracted `History`/similar files
+   matching a known parser's magic bytes auto-run through
+   `get_parser_registry()`) — **still not built**, still the highest-
+   leverage single follow-up named in this doc.
+6. `hashdump`/`lsadump`/`cachedump` — **still gated**, unchanged: real
+   credential-hash material, needs an explicit go-ahead before any
+   inclusion, not blocked by any remaining technical gap (pycryptodome
+   import confirmed working, see below).
