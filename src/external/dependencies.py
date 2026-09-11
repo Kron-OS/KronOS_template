@@ -1111,9 +1111,21 @@ def get_parser_registry() -> ParserRegistry:
         # standalone .evtx file directly, not just one embedded in an
         # image, before this was flipped.
         try:
+            from src.external.parsers.ewf_container import EwfContainerParser  # noqa: PLC0415
             from src.external.parsers.plaso import PlasoParser  # noqa: PLC0415
 
-            registry.register(PlasoParser())
+            plaso_parser = PlasoParser()
+            # Must precede PlasoParser: real diagnosis (case
+            # 43097ab0-aae3-4968-915b-8f0229ac3865) found an EWF-magic file
+            # whose real media payload is a tar archive, not a disk image --
+            # PlasoParser's own dfVFS whole-image walk finds no partition
+            # table for that shape and silently produces nothing. This class
+            # unwraps every EWF file first and either re-dispatches a
+            # recognised inner container (TarArchiveParser, found via this
+            # same registry) or falls back to plaso_parser unchanged for a
+            # genuine EWF disk image -- see ewf_container.py's own docstring.
+            registry.register(EwfContainerParser(registry, plaso_parser))
+            registry.register(plaso_parser)
         except ImportError:
             pass
         # Must be registered LAST (roadmap E5): its own supports() is

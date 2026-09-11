@@ -18,6 +18,7 @@ from src.application.parsing import ForensicParser, ParserType
 from src.domain.evidence import Evidence
 from src.domain.timeline import TimelineRecord
 from src.domain.user import TenantContext
+from src.external.parsers._container_common import EWF_MAGIC as _EWF_MAGIC
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,9 @@ _EVTX_MAGIC = b"ElfFile\x00"  # Windows Event Log -- see supports() docstring
 # media image" via dfVFS (already a real Plaso dependency, confirmed present
 # in docker/Dockerfile.plaso-worker's venv) and walks every partition/
 # filesystem inside it directly -- no separate DiskImageExtractor needed,
-# same subprocess invocation as every other PlasoParser artifact.
-_EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
+# same subprocess invocation as every other PlasoParser artifact. Value
+# itself now lives in _container_common.EWF_MAGIC (imported above as
+# _EWF_MAGIC) -- shared with ewf_container.py, not redefined here.
 
 # Raw (unwrapped) disk image signatures -- no EWF/E01 container, a bare
 # filesystem directly on the file (e.g. `image.dd`, `image.img`, `image.raw`).
@@ -55,6 +57,12 @@ _EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
 # even after TarArchiveParser correctly unwraps the tar, image.dd would
 # still hit "no parser found" and silently vanish, reproducing the same
 # zero-events failure one layer deeper.
+#
+# NOTE: _EWF_MAGIC itself is now defined in _container_common.py (shared
+# with ewf_container.py, registered ahead of this parser in the registry --
+# see that module's own docstring for the real, live-diagnosed EWF-wraps-a-
+# tar case this repo's own forensic2 evidence turned out to be, distinct
+# from the genuine-EWF-disk-image case this class still handles directly).
 #
 # Verified for real (poc/tar_container_unwrapping/): a real log2timeline/
 # psort run (plaso==20260512, the exact version pinned in

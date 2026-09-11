@@ -33,6 +33,13 @@ from src.domain.evidence import Evidence
 from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.exceptions import ParsingError
 
+# EWF (E01/Ex01) container signature -- promoted here from plaso.py (its
+# original, still-valid home) so ewf_container.py can share the exact same
+# constant rather than a second, driftable copy. See ewf_container.py's own
+# module docstring for why an EWF container needs its own unwrap step
+# distinct from PlasoParser's existing EWF-disk-image dfVFS path.
+EWF_MAGIC = b"EVF\x09\x0d\x0a\xff\x00"
+
 
 @dataclass
 class ExtractionBudget:

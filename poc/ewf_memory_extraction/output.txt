@@ -1,0 +1,32 @@
+=== Opening real EWF file: /tmp/forensic2 ===
+media_size (real, from pyewf.get_media_size()): 615516160
+real bytes written to /tmp/forensic2_extracted.raw: 615516160
+=== Running real volatility3 automagic diagnosis on extracted bytes ===
+volatility3.cli.text_renderer DEBUG Disassembly library capstone not found
+volatility3.plugins.renderers.parquet_renderer DEBUG Arrow/Parquet libraries not found
+volatility3.framework.automagic INFO Detected a windows category plugin
+volatility3.framework.automagic INFO Running automagic: ConstructionMagic
+volatility3.framework.automagic INFO Running automagic: SymbolCacheMagic
+volatility3.framework.automagic INFO Running automagic: LayerStacker
+volatility3.framework.automagic.windows DEBUG Detecting Self-referential pointer for recent windows
+volatility3.framework.automagic.windows DEBUG WindowsIntelStacker hits: []
+volatility3.framework.automagic.windows DEBUG Older windows fixed location self-referential pointers
+volatility3.framework.automagic.windows DEBUG WindowsIntelStacker hits: []
+volatility3.framework.automagic.stacker DEBUG physical_layer maximum_address: 615516159
+volatility3.framework.automagic.stacker DEBUG Stacked layers: ['FileLayer']
+volatility3.framework.automagic INFO Running automagic: WinSwapLayers
+volatility3.framework.automagic INFO Running automagic: KernelPDBScanner
+volatility3.framework.automagic.pdbscan INFO No suitable kernels found during pdbscan
+volatility3.framework.automagic INFO Running automagic: SymbolFinder
+volatility3.framework.automagic INFO Running automagic: KernelModule
+{
+  "plugin": "windows.pstree.PsTree",
+  "construct_seconds": 2.47,
+  "layer_names": [],
+  "error": "UnsatisfiedException: "
+}
+=== Real header inspection of extracted media (proves tar, not memory) ===
+bytes 0-100 (tar name field): b'image.dd\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+bytes 257-263 (tar ustar magic): b'ustar '
+bytes 100-108 (tar mode field): b'0000770\x00'
+bytes 124-136 (tar size field, octal): b'00454000000\x00'
