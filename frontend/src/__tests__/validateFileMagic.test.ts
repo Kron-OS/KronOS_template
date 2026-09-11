@@ -117,3 +117,37 @@ describe('validateFileMagic (Gap Audit Milestone BBBBB: memory dump support)', (
     expect(result.ok).toBe(true)
   })
 })
+
+/**
+ * Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+ * explicit declaredFormat="memory_dump" override must reach the server
+ * even under an extension this client-side allowlist has never heard of
+ * -- mirroring the backend's own MagicByteValidator bypass.
+ */
+describe('validateFileMagic (declaredFormat override)', () => {
+  it('accepts an unrecognized extension when declaredFormat is memory_dump', async () => {
+    const bytes = new Array(262).fill(0).map((_, i) => i % 256)
+    const file = fileWithBytes('ch2.totallyunknown', bytes)
+
+    const result = await validateFileMagic(file, 'memory_dump')
+
+    expect(result.ok).toBe(true)
+  })
+
+  it('still rejects a blocked extension even with declaredFormat set', async () => {
+    const file = fileWithBytes('evil.exe', new Array(262).fill(0))
+
+    const result = await validateFileMagic(file, 'memory_dump')
+
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects the same unrecognized extension without the override', async () => {
+    const bytes = new Array(262).fill(0).map((_, i) => i % 256)
+    const file = fileWithBytes('ch2.totallyunknown', bytes)
+
+    const result = await validateFileMagic(file)
+
+    expect(result.ok).toBe(false)
+  })
+})

@@ -51,6 +51,10 @@ evidence_table = sa.Table(
     # legal_hold/object_lock_until/rfc3161_token above (create_all only adds
     # missing tables, not columns).
     sa.Column("quota_held", sa.Boolean, nullable=False, server_default=sa.false()),
+    # Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865) --
+    # additive column, same "existing deployments need a manual ALTER
+    # TABLE" caveat as legal_hold/rfc3161_token/quota_held above.
+    sa.Column("declared_format", sa.String(32)),
     sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False),
 )
@@ -235,6 +239,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             "object_lock_until": ev.object_lock_until,
             "rfc3161_token": ev.rfc3161_token,
             "quota_held": ev.quota_held,
+            "declared_format": ev.metadata.declared_format,
             "created_at": ev.created_at,
             "updated_at": ev.updated_at,
         }
@@ -249,6 +254,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             case_id=row["case_id"],
             org_id=row["org_id"],
             org_alias=row["org_alias"],
+            declared_format=row.get("declared_format"),
         )
         return Evidence(
             evidence_id=row["evidence_id"],

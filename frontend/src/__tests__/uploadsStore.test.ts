@@ -3,6 +3,7 @@ import { useUploadsStore, hasActiveJobs } from '../store/uploads'
 
 const requestUploadMock = vi.fn()
 const finalizeUploadWithHashMock = vi.fn()
+const validateFileMagicMock = vi.fn().mockResolvedValue({ ok: true })
 
 vi.mock('../api/evidence', () => ({
   requestUpload: (...args: unknown[]) => requestUploadMock(...args),
@@ -10,7 +11,7 @@ vi.mock('../api/evidence', () => ({
 }))
 
 vi.mock('../utils/validateFileMagic', () => ({
-  validateFileMagic: vi.fn().mockResolvedValue({ ok: true }),
+  validateFileMagic: (...args: unknown[]) => validateFileMagicMock(...args),
   BLOCKED_EXTENSIONS: new Set(['exe']),
 }))
 
@@ -36,6 +37,7 @@ beforeEach(() => {
   useUploadsStore.setState({ activeCaseId: null, drawerOpen: false, minimized: false, jobs: [] })
   requestUploadMock.mockReset()
   finalizeUploadWithHashMock.mockReset()
+  validateFileMagicMock.mockReset().mockResolvedValue({ ok: true })
   FakeXHR.instances = []
   vi.stubGlobal('XMLHttpRequest', FakeXHR)
   vi.stubGlobal('crypto', {
@@ -153,5 +155,30 @@ describe('useUploadsStore.enqueueFiles', () => {
     expect(job.status).toBe('error')
     expect(job.error).toBe('Network error')
     expect(hasActiveJobs()).toBe(false)
+  })
+
+  it('threads declaredFormat through to validateFileMagic and requestUpload', async () => {
+    // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): the
+    // "This is a memory image" checkbox in UploadDrawer must reach both
+    // the client-side pre-check and the real backend request, not just one.
+    requestUploadMock.mockResolvedValue({ evidenceId: 'ev-1', presignedUrl: 'https://minio/x' })
+    finalizeUploadWithHashMock.mockResolvedValue({})
+
+    const promise = useUploadsStore
+      .getState()
+      .enqueueFiles('case-1', [makeFile('ch2.dat')], 'memory_dump')
+
+    await vi.waitFor(() => expect(FakeXHR.instances).toHaveLength(1))
+    FakeXHR.instances[0].onload?.()
+    await promise
+
+    expect(validateFileMagicMock).toHaveBeenCalledWith(expect.anything(), 'memory_dump')
+    expect(requestUploadMock).toHaveBeenCalledWith(
+      'case-1',
+      'ch2.dat',
+      expect.any(String),
+      expect.any(Number),
+      'memory_dump',
+    )
   })
 })

@@ -516,7 +516,24 @@ class ParsingOrchestrationService:
         return tenant.model_copy(update={"org_alias": evidence.metadata.org_alias})
 
     async def _detect_parser(self, evidence: Evidence, evidence_key: str) -> ForensicParser:
-        """Read the first 8 KB and return the matching parser."""
+        """Read the first 8 KB and return the matching parser.
+
+        Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+        analyst-declared ``declared_format="memory_dump"`` (see
+        ``EvidenceMetadata``) short-circuits straight to the registered
+        ``volatility3`` parser, bypassing normal extension/magic-byte
+        detection entirely -- this is what actually lets a memory image
+        uploaded under an unrecognised extension (e.g. ``ch2.dat``) reach
+        Volatility at all, since ``VolatilityModule.supports()`` itself is
+        extension-only and would otherwise never claim it. Falls through to
+        normal detection if the named parser somehow isn't registered
+        (defensive only -- production always registers it).
+        """
+        if evidence.metadata.declared_format == "memory_dump":
+            declared_parser = self._registry.get_by_name("volatility3")
+            if declared_parser is not None:
+                return declared_parser
+
         header = b""
         async for chunk in await self._storage.stream_object(evidence_key, bucket="evidence"):
             header += chunk

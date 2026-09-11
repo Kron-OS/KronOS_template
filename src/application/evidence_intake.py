@@ -123,6 +123,7 @@ class EvidenceIntakeService:
         size_bytes: int,
         case_id: uuid.UUID,
         tenant: TenantContext,
+        declared_format: str | None = None,
     ) -> tuple[Evidence, PresignedUploadResponse]:
         """Create an Evidence record and return a presigned upload URL.
 
@@ -172,6 +173,7 @@ class EvidenceIntakeService:
             case_id=case_id,
             org_id=tenant.org_id,
             org_alias=tenant.org_alias,
+            declared_format=declared_format,
         )
         evidence = Evidence(metadata=metadata)
 
@@ -404,6 +406,7 @@ class EvidenceIntakeService:
                 content_type=evidence.metadata.content_type,
                 size_bytes=evidence.metadata.size_bytes,
                 header_bytes=header,
+                declared_format=evidence.metadata.declared_format,
             )
         except ValidationError:
             evidence = evidence.with_error("validation_failed")

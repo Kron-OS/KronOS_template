@@ -219,6 +219,37 @@ class TestMagicByteValidator:
         with pytest.raises(ValidationError, match="empty"):
             self.validator.validate("empty.evtx", "application/octet-stream", 0, b"")
 
+    def test_declared_memory_dump_bypasses_magic_check_for_unlisted_extension(self) -> None:
+        """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865):
+        `.dat` isn't on `_MEMORY_DUMP_EXTENSIONS`, so this would normally be
+        rejected the way the real ch2.dat was -- an explicit analyst
+        declaration is the only honest way past a check that has no real
+        magic signature to fall back on."""
+        self.validator.validate(
+            "ch2.dat",
+            "application/octet-stream",
+            1024,
+            UNKNOWN_BINARY,
+            declared_format="memory_dump",
+        )
+
+    def test_undeclared_dat_extension_is_still_rejected(self) -> None:
+        """Without the override, the original bug reproduces exactly."""
+        with pytest.raises(ValidationError, match="magic bytes"):
+            self.validator.validate("ch2.dat", "application/octet-stream", 1024, UNKNOWN_BINARY)
+
+    def test_unrecognized_declared_format_value_has_no_effect(self) -> None:
+        """Only the literal "memory_dump" value bypasses the check -- a typo
+        or unrelated value must not silently grant the same bypass."""
+        with pytest.raises(ValidationError, match="magic bytes"):
+            self.validator.validate(
+                "ch2.dat",
+                "application/octet-stream",
+                1024,
+                UNKNOWN_BINARY,
+                declared_format="something_else",
+            )
+
 
 def _build_zip_fixture(entries: dict[str, bytes]) -> bytes:
     """Build a minimal real ZIP file (in memory) with the given entries."""
@@ -285,7 +316,12 @@ class TestValidatorChain:
 
         class RecordingValidator(MagicByteValidator):
             def validate(
-                self, filename: str, content_type: str, size_bytes: int, header_bytes: bytes
+                self,
+                filename: str,
+                content_type: str,
+                size_bytes: int,
+                header_bytes: bytes,
+                declared_format: str | None = None,
             ) -> None:
                 failures.append("second")
 
@@ -295,6 +331,16 @@ class TestValidatorChain:
 
         # RecordingValidator should never be reached.
         assert not failures
+
+    def test_declared_format_reaches_magic_byte_validator(self) -> None:
+        chain = ValidatorChain(ExtensionValidator(), MagicByteValidator())
+        chain.validate(
+            "ch2.dat",
+            "application/octet-stream",
+            512,
+            UNKNOWN_BINARY,
+            declared_format="memory_dump",
+        )
 
 
 class TestDefaultValidatorChain:

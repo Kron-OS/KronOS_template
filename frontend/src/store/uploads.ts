@@ -20,7 +20,11 @@ interface UploadsState {
   openDrawer: (caseId: string) => void
   minimize: () => void
   closeDrawer: () => void
-  enqueueFiles: (caseId: string, files: File[]) => Promise<void>
+  enqueueFiles: (
+    caseId: string,
+    files: File[],
+    declaredFormat?: 'memory_dump',
+  ) => Promise<void>
 }
 
 async function computeSHA256(file: File): Promise<string> {
@@ -41,8 +45,9 @@ async function runUpload(
   caseId: string,
   file: File,
   onProgress: (pct: number) => void,
+  declaredFormat?: 'memory_dump',
 ): Promise<void> {
-  const validation = await validateFileMagic(file)
+  const validation = await validateFileMagic(file, declaredFormat)
   if (!validation.ok) {
     throw new Error(validation.reason ?? 'File rejected by pre-check')
   }
@@ -54,6 +59,7 @@ async function runUpload(
     file.name,
     file.type || 'application/octet-stream',
     file.size,
+    declaredFormat,
   )
 
   await new Promise<void>((resolve, reject) => {
@@ -99,7 +105,7 @@ export const useUploadsStore = create<UploadsState>((set) => ({
       }
     }),
 
-  enqueueFiles: async (caseId, files) => {
+  enqueueFiles: async (caseId, files, declaredFormat) => {
     const newJobs: UploadJob[] = files.map((f) => ({
       id: `${caseId}:${f.name}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
       caseId,
@@ -114,11 +120,16 @@ export const useUploadsStore = create<UploadsState>((set) => ({
       files.map(async (file, i) => {
         const jobId = newJobs[i].id
         try {
-          await runUpload(caseId, file, (pct) => {
-            set((state) => ({
-              jobs: state.jobs.map((j) => (j.id === jobId ? { ...j, progress: pct } : j)),
-            }))
-          })
+          await runUpload(
+            caseId,
+            file,
+            (pct) => {
+              set((state) => ({
+                jobs: state.jobs.map((j) => (j.id === jobId ? { ...j, progress: pct } : j)),
+              }))
+            },
+            declaredFormat,
+          )
           set((state) => ({
             jobs: state.jobs.map((j) =>
               j.id === jobId ? { ...j, progress: 100, status: 'done', error: null } : j,

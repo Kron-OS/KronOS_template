@@ -21,6 +21,13 @@ export function UploadDrawer() {
 
   const [stagedFiles, setStagedFiles] = useState<File[]>([])
   const [globalError, setGlobalError] = useState<string | null>(null)
+  // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): most
+  // useful exactly when the extension is unrecognised (e.g. `ch2.dat`),
+  // where the file would otherwise be rejected -- raw memory has no
+  // reliable magic bytes to fall back on either. Applies to every file in
+  // the current staged batch, not per-file: a mixed batch of memory dumps
+  // and other evidence should be uploaded as separate batches.
+  const [isMemoryDump, setIsMemoryDump] = useState(false)
 
   // Real, hard E2E constraint (frontend/e2e/pages/CaseDetailPage.ts's
   // uploadEvidence() asserts #evidence-file-input fully detaches from the
@@ -64,8 +71,10 @@ export function UploadDrawer() {
     if (stagedFiles.length === 0 || !activeCaseId) return
     setGlobalError(null)
     const files = stagedFiles
+    const declaredFormat = isMemoryDump ? 'memory_dump' : undefined
     setStagedFiles([])
-    await enqueueFiles(activeCaseId, files)
+    setIsMemoryDump(false)
+    await enqueueFiles(activeCaseId, files, declaredFormat)
   }
 
   return (
@@ -111,6 +120,18 @@ export function UploadDrawer() {
             onChange={handleFileChange}
           />
         </label>
+
+        {stagedFiles.length > 0 && !uploading && (
+          <label className="mb-4 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+            <input
+              type="checkbox"
+              checked={isMemoryDump}
+              onChange={(e) => setIsMemoryDump(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600"
+            />
+            This is a memory image (bypasses file-type detection for these files)
+          </label>
+        )}
 
         {globalError && (
           <div className="mb-4">

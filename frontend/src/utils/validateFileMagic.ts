@@ -28,11 +28,24 @@ export const BLOCKED_EXTENSIONS = new Set([
  * doesn't break that component file's React Fast Refresh contract (oxlint
  * react(only-export-components)).
  */
-export async function validateFileMagic(file: File): Promise<{ ok: boolean; reason?: string }> {
+export async function validateFileMagic(
+  file: File,
+  declaredFormat?: 'memory_dump',
+): Promise<{ ok: boolean; reason?: string }> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
 
   if (BLOCKED_EXTENSIONS.has(ext)) {
     return { ok: false, reason: `Blocked file type: .${ext}` }
+  }
+
+  // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+  // explicit analyst declaration must reach the server even under an
+  // extension this client-side allowlist has never heard of (raw memory
+  // has no reliable magic bytes either) -- mirrors the backend's own
+  // MagicByteValidator bypass exactly. The blocked-extension check above
+  // still applies unconditionally, same as the backend's ExtensionValidator.
+  if (declaredFormat === 'memory_dump') {
+    return { ok: true }
   }
 
   // Read 262 bytes for magic byte check -- exactly enough to cover the tar

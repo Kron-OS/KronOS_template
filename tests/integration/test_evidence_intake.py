@@ -116,6 +116,41 @@ async def test_evidence_persisted_in_postgres(postgres_engine, local_storage) ->
 
 
 @pytest.mark.asyncio
+async def test_declared_format_round_trips_through_real_postgres(
+    postgres_engine, local_storage
+) -> None:
+    """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): a real
+    bug caught only by this real-Postgres path, not the InMemoryEvidenceRepository
+    unit tests -- declared_format was added to the domain model and the
+    upload route, but the real repository's row mapping (_to_row/_from_row)
+    was never updated, so the value was silently dropped the moment
+    evidence was re-fetched from the real database (exactly what
+    _run_validation/_detect_parser do). The in-memory test double stores
+    the whole Evidence object directly and has no row mapping to drift, so
+    it could never have caught this -- only a real round trip through the
+    real repository proves it."""
+    from src.adapter.repository.postgres_evidence import PostgresEvidenceRepository
+
+    intake = _make_intake(postgres_engine, local_storage)
+    tenant = _make_tenant()
+
+    evidence, _ = await intake.request_upload(
+        filename="ch2.dat",
+        content_type="application/octet-stream",
+        size_bytes=len(_JSON_CONTENT),
+        case_id=uuid.uuid4(),
+        tenant=tenant,
+        declared_format="memory_dump",
+    )
+
+    repo = PostgresEvidenceRepository(postgres_engine)
+    stored = await repo.get_by_id(evidence.evidence_id, tenant.org_id)
+
+    assert stored is not None
+    assert stored.metadata.declared_format == "memory_dump"
+
+
+@pytest.mark.asyncio
 async def test_audit_events_persisted(postgres_engine, local_storage) -> None:
     """After finalize, at least 5 audit events exist for the evidence."""
     from src.adapter.repository.postgres_audit_log import PostgresAuditLogRepository

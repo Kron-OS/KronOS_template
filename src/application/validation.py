@@ -114,8 +114,18 @@ class EvidenceValidator(ABC):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
-        """Raise ValidationError if the file fails validation."""
+        """Raise ValidationError if the file fails validation.
+
+        ``declared_format`` is an explicit, analyst-supplied override (real
+        diagnosis fix, case 43097ab0-aae3-4968-915b-8f0229ac3865) -- today
+        the only recognised value is ``"memory_dump"``, read solely by
+        ``MagicByteValidator``. Every other validator ignores it; it exists
+        on the shared signature (not a MagicByteValidator-only method) so
+        ``ValidatorChain`` can pass one set of arguments to every
+        validator uniformly, same convention as the other shared params.
+        """
 
 
 class ExtensionValidator(EvidenceValidator):
@@ -127,6 +137,7 @@ class ExtensionValidator(EvidenceValidator):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
         ext = _extension(filename)
         if ext in BLOCKED_EXTENSIONS:
@@ -150,6 +161,7 @@ class MagicByteValidator(EvidenceValidator):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
         ext = _extension(filename)
 
@@ -161,6 +173,16 @@ class MagicByteValidator(EvidenceValidator):
         # _MEMORY_DUMP_EXTENSIONS's own comment) -- accept on extension alone,
         # same as the text-format bypass above.
         if ext in _MEMORY_DUMP_EXTENSIONS:
+            return
+
+        # Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): a
+        # genuine memory image uploaded under an extension not on the fixed
+        # allowlist above (e.g. `ch2.dat`) was flatly rejected with no
+        # recourse -- raw memory has no reliable magic bytes to fall back
+        # on either. An explicit analyst declaration is the only honest way
+        # to accept it; this bypasses the magic-table check exactly the way
+        # the extension-based bypasses above do, never silently guessed.
+        if declared_format == "memory_dump":
             return
 
         # Empty file is always invalid.
@@ -206,6 +228,7 @@ class ZipJarDisguiseValidator(EvidenceValidator):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
         if not header_bytes.startswith(b"PK\x03\x04") and not header_bytes.startswith(
             b"PK\x05\x06"
@@ -240,6 +263,7 @@ class FileSizeValidator(EvidenceValidator):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
         if size_bytes > self._max_bytes:
             raise ValidationError(
@@ -269,9 +293,10 @@ class ValidatorChain(EvidenceValidator):
         content_type: str,
         size_bytes: int,
         header_bytes: bytes,
+        declared_format: str | None = None,
     ) -> None:
         for validator in self._validators:
-            validator.validate(filename, content_type, size_bytes, header_bytes)
+            validator.validate(filename, content_type, size_bytes, header_bytes, declared_format)
 
 
 # ---------------------------------------------------------------------------

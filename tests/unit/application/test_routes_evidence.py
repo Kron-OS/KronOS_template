@@ -139,6 +139,37 @@ class TestRequestUploadRoute:
         )
         assert resp.status_code == 403
 
+    def test_declared_format_memory_dump_is_accepted(self, app_client) -> None:
+        """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865)."""
+        client, _, _, _, case_id = app_client
+        resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "ch2.dat",
+                "contentType": "application/octet-stream",
+                "sizeBytes": 100,
+                "caseId": str(case_id),
+                "declaredFormat": "memory_dump",
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_unrecognized_declared_format_value_returns_422(self, app_client) -> None:
+        """Only the literal "memory_dump" value is accepted -- anything else
+        is a client bug, not a silent no-op."""
+        client, _, _, _, case_id = app_client
+        resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "ch2.dat",
+                "contentType": "application/octet-stream",
+                "sizeBytes": 100,
+                "caseId": str(case_id),
+                "declaredFormat": "something_else",
+            },
+        )
+        assert resp.status_code == 422
+
 
 class TestFinalizeUploadRoute:
     def test_happy_path_returns_received(self, app_client) -> None:
@@ -224,6 +255,66 @@ class TestFinalizeUploadRoute:
             json={"client_sha256": _sha256(_JSON_CONTENT)},
         )
         assert fin_resp.status_code == 403
+
+
+class TestDeclaredFormatEndToEnd:
+    """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): the
+    real `ch2.dat` bug reproduced and confirmed fixed end-to-end -- a
+    genuine memory image under an extension MagicByteValidator doesn't
+    recognise (no magic bytes exist for this format family at all) is
+    flatly rejected without the override, and passes validation with it.
+    """
+
+    _UNRECOGNIZED_MEMORY_BYTES = bytes(range(256)) * 4  # arbitrary binary, no known signature
+
+    def test_without_override_reproduces_the_original_rejection(self, app_client) -> None:
+        client, storage, _, _, case_id = app_client
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "ch2.dat",
+                "contentType": "application/octet-stream",
+                "sizeBytes": len(self._UNRECOGNIZED_MEMORY_BYTES),
+                "caseId": str(case_id),
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, self._UNRECOGNIZED_MEMORY_BYTES)
+
+        fin_resp = client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(self._UNRECOGNIZED_MEMORY_BYTES)},
+        )
+        # Same shape as test_hash_mismatch_returns_422 above: a
+        # ValidationError raised synchronously inside start_intake (no
+        # task_queue configured in this fixture) becomes a 422 directly,
+        # not a 202 + ERROR-state body.
+        assert fin_resp.status_code == 422
+        assert "magic bytes" in fin_resp.json()["detail"]
+
+    def test_with_override_the_same_bytes_pass_validation(self, app_client) -> None:
+        client, storage, _, _, case_id = app_client
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "ch2.dat",
+                "contentType": "application/octet-stream",
+                "sizeBytes": len(self._UNRECOGNIZED_MEMORY_BYTES),
+                "caseId": str(case_id),
+                "declaredFormat": "memory_dump",
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, self._UNRECOGNIZED_MEMORY_BYTES)
+
+        fin_resp = client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(self._UNRECOGNIZED_MEMORY_BYTES)},
+        )
+        assert fin_resp.status_code == 202
+        assert fin_resp.json()["state"] == EvidenceState.RECEIVED.value
 
 
 class TestRetryParseRoute:

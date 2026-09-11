@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -52,6 +52,11 @@ class UploadRequestIn(BaseModel):
     contentType: str
     sizeBytes: int = Field(ge=1)
     caseId: uuid.UUID
+    # Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+    # explicit analyst declaration that this file is a memory image, so
+    # MagicByteValidator can accept it even under an extension it doesn't
+    # otherwise recognise. Only "memory_dump" is a real value today.
+    declaredFormat: Literal["memory_dump"] | None = None
 
 
 class UploadRequestOut(BaseModel):
@@ -144,6 +149,7 @@ async def request_upload(
             size_bytes=body.sizeBytes,
             case_id=body.caseId,
             tenant=tenant,
+            declared_format=body.declaredFormat,
         )
     except StorageQuotaExceededError as exc:
         # 413 Payload Too Large, not 409 Conflict: the real cause is a size

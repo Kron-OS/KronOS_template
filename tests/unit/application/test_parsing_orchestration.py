@@ -95,6 +95,24 @@ class _HeavyParser(_FakeCloudTrailParser):
         return ParserType.HEAVY
 
 
+class _NeverMatchingVolatilityParser(_FakeCloudTrailParser):
+    """Stands in for the real VolatilityModule for the declared_format
+    short-circuit test -- supports() always returns False, proving
+    _detect_parser's declared_format check bypasses supports() entirely
+    rather than merely making it more permissive."""
+
+    @property
+    def parser_name(self) -> str:
+        return "volatility3"
+
+    @property
+    def parser_type(self) -> ParserType:
+        return ParserType.HEAVY
+
+    def supports(self, filename: str, content_type: str, header_bytes: bytes) -> bool:
+        return False
+
+
 class _OrgContextCapturingParser(_FakeCloudTrailParser):
     """Records yara_scan_org_var's value observed inside extract_artifacts(),
     without yielding any artifact -- used to prove ParsingOrchestrationService
@@ -294,6 +312,43 @@ class TestStartParsing:
         await orchestrator.start_parsing(evidence.evidence_id, tenant)
         types = [e.event_type for e in audit_repo.events]
         assert AuditEventType.PARSE_STARTED in types
+
+    @pytest.mark.asyncio
+    async def test_declared_memory_dump_short_circuits_to_volatility(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+        analyst-declared override must reach the volatility3 parser even
+        though its own supports() would never match this file (an
+        unrecognised extension/content, e.g. the real ch2.dat case)."""
+        meta = make_evidence_metadata(org_id=tenant.org_id).model_copy(
+            update={"declared_format": "memory_dump", "original_filename": "ch2.dat"}
+        )
+        evidence_key = f"{meta.org_alias}/{meta.case_id}/{uuid.uuid4()}"
+        local_storage.write_evidence(evidence_key, b"\x00" * 64)
+        evidence = Evidence(
+            metadata=meta,
+            state=EvidenceState.RECEIVED,
+            sha256="a" * 64,
+            minio_evidence_key=evidence_key,
+        )
+        await evidence_repo.save(evidence)
+
+        registry = ParserRegistry()
+        registry.register(_NeverMatchingVolatilityParser())
+        orchestrator = ParsingOrchestrationService(
+            evidence_repository=evidence_repo,
+            storage=local_storage,
+            audit_log=AuditLogService(audit_repo),
+            parser_registry=registry,
+            task_queue=task_queue,
+        )
+
+        result = await orchestrator.start_parsing(evidence.evidence_id, tenant)
+
+        assert result.state == EvidenceState.PARSING
+        assert len(task_queue.enqueued) == 1
+        assert task_queue.enqueued[0][0] == "heavy"  # volatility3 is HEAVY
 
     @pytest.mark.asyncio
     async def test_start_parsing_no_parser_raises(

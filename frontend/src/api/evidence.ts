@@ -22,12 +22,18 @@ export async function requestUpload(
   filename: string,
   contentType: string,
   sizeBytes: number,
+  // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): an
+  // explicit "this is a memory image" declaration lets the backend accept
+  // a real memory dump under an extension MagicByteValidator doesn't
+  // otherwise recognise (raw memory has no reliable magic bytes at all).
+  declaredFormat?: 'memory_dump',
 ): Promise<UploadRequest> {
   const res = await apiClient.post<UploadRequest>('/api/evidence/upload/request', {
     caseId,
     filename,
     contentType,
     sizeBytes,
+    declaredFormat,
   })
   return res.data
 }

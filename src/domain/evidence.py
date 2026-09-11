@@ -122,6 +122,17 @@ class EvidenceMetadata(BaseModel):
     case_id: uuid.UUID
     org_id: uuid.UUID
     org_alias: str
+    # Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): raw
+    # memory dumps have no reliable magic bytes at all (verified live --
+    # see MagicByteValidator's own _MEMORY_DUMP_EXTENSIONS comment), so
+    # MagicByteValidator can only recognize them by a fixed extension
+    # allowlist. A real memory image uploaded under an unlisted extension
+    # (e.g. `ch2.dat`) was flatly rejected with no way for the analyst to
+    # say "trust me, this is memory" -- this is that explicit, analyst-
+    # declared override. Only "memory_dump" is a real value today; None
+    # means "detect normally," matching every existing upload's behavior
+    # unchanged.
+    declared_format: str | None = None
 
 
 class Evidence(BaseModel):

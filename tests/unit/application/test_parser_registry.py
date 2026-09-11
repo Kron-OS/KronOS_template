@@ -161,6 +161,19 @@ class TestParserRegistry:
         assert registry.get_parser("data.json", "application/json", b"") is fast
         assert registry.get_parser("log.evtx", "application/octet-stream", b"ElfFile\x00") is heavy
 
+    def test_get_by_name_returns_matching_parser(self) -> None:
+        registry = ParserRegistry()
+        target = _AlwaysParser("volatility3")
+        other = _AlwaysParser("plaso")
+        registry.register(other)
+        registry.register(target)
+        assert registry.get_by_name("volatility3") is target
+
+    def test_get_by_name_returns_none_when_absent(self) -> None:
+        registry = ParserRegistry()
+        registry.register(_AlwaysParser("plaso"))
+        assert registry.get_by_name("volatility3") is None
+
     def test_get_parser_calls_supports_with_correct_args(self) -> None:
         received: list[tuple[str, str, bytes]] = []
 
