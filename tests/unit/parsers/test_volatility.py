@@ -268,6 +268,49 @@ class TestExtractArtifacts:
         assert len(artifacts) == 1
         assert artifacts[0].kind == "volatility.pstree"
 
+    async def test_all_plugins_failing_yields_one_diagnostic_artifact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865):
+        when every requested plugin's own outcome is non-ok (e.g.
+        volatility3's automagic couldn't identify the image's kernel at
+        all), the analyst must see a real, permanent record of why --
+        not silence. Distinct from test_a_genuinely_failed_plugin_yields_
+        no_artifact_at_all above, where at least one plugin succeeded.
+        """
+        result = VolatilityMultiPluginResult(
+            outcomes=(
+                _outcome(
+                    "windows.pstree.PsTree",
+                    (),
+                    status="scan_error",
+                    error="UnsatisfiedException: ",
+                ),
+                _outcome(
+                    "windows.dlllist.DllList",
+                    (),
+                    status="scan_error",
+                    error="UnsatisfiedException: ",
+                ),
+            )
+        )
+        _install_fake_launcher(monkeypatch, result=result)
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        artifacts = await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert len(artifacts) == 1
+        assert artifacts[0].kind == "volatility.diagnostic"
+        assert artifacts[0].content["plugin_errors"] == {
+            "windows.pstree.PsTree": "UnsatisfiedException: ",
+            "windows.dlllist.DllList": "UnsatisfiedException: ",
+        }
+        assert artifacts[0].kronos.evidence_id == evidence.evidence_id
+        assert artifacts[0].kronos.parser == "volatility3"
+
     async def test_scan_error_yields_no_artifacts_and_does_not_raise(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

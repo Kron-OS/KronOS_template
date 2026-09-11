@@ -449,10 +449,20 @@ class VolatilityLauncher:
             for name, entry in plugins_payload.items()
         )
 
-        if status == "scan_error" and not any(o.ok for o in outcomes):
-            # Every requested plugin genuinely failed (or none were even
-            # attempted) -- this is a real, whole-run failure, not a partial
-            # result the caller could still usefully build artifacts from.
+        if status == "scan_error" and not outcomes:
+            # Real, live-diagnosed bug fix (case
+            # 43097ab0-aae3-4968-915b-8f0229ac3865): this used to also
+            # raise whenever every *attempted* plugin failed (`not any(o.ok
+            # for o in outcomes)`), discarding each plugin's own real error
+            # string (e.g. volatility3's genuine "UnsatisfiedException: "/
+            # "No suitable kernels found during pdbscan" when it can't
+            # identify an image's kernel) and leaving VolatilityModule with
+            # nothing to build a diagnostic artifact from -- the exact
+            # silent-failure path CaseDetailPage.tsx's own empty-state text
+            # falsely promised had an explanation in the Audit tab. Only an
+            # empty ``plugins`` payload (no plugin even attempted -- a
+            # worker-level failure, not a per-plugin one) is still a real
+            # whole-run error with nothing informative to return instead.
             raise VolatilityScanError(
                 payload.get("error") or "Volatility worker: no plugin produced a usable result",
                 context={"status": status},

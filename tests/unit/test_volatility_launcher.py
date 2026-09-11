@@ -140,11 +140,19 @@ async def test_run_returns_independent_outcome_per_plugin(tmp_path: Path) -> Non
     assert "Unsatisfied requirement" in (malfind.error or "")
 
 
-async def test_run_raises_when_every_plugin_fails(tmp_path: Path) -> None:
-    """Real, reproduced case: automagic construction itself fails for a
-    genuinely unsupported image (the ch2.dmp finding) -- every plugin
-    sharing that context fails identically. This IS a whole-run failure,
-    not a partial result the caller could build artifacts from."""
+async def test_run_returns_result_when_every_plugin_fails(tmp_path: Path) -> None:
+    """Real, reproduced case (case 43097ab0-aae3-4968-915b-8f0229ac3865,
+    ch2.dmp/contact_me.dmp): volatility3's own automagic can't identify the
+    image's kernel at all, so every plugin sharing that context fails
+    identically. Real-verified live against these exact bytes inside
+    celery-worker-plaso: this used to raise VolatilityScanError here,
+    discarding each plugin's own genuine error string and leaving
+    VolatilityModule.extract_artifacts() with nothing to build a
+    diagnostic artifact from (the silent-failure bug this fix addresses).
+    Each outcome DOES carry a real error -- that's informative, not a
+    worker-level failure -- so this must return normally, same as any
+    other partial-failure run, and let the caller decide what to do with
+    an all-failed VolatilityMultiPluginResult."""
     payload = {
         "status": "scan_error",
         "error": "no plugin produced a usable result",
@@ -161,6 +169,31 @@ async def test_run_raises_when_every_plugin_fails(tmp_path: Path) -> None:
             },
         },
     }
+    script = _write_worker(
+        tmp_path,
+        f"""
+        import json
+        print(json.dumps({payload!r}))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run(
+        "/tmp/fake.vmem", plugins=["windows.pstree.PsTree", "windows.psscan.PsScan"]
+    )
+
+    pstree = result.for_plugin("windows.pstree.PsTree")
+    psscan = result.for_plugin("windows.psscan.PsScan")
+    assert pstree is not None and not pstree.ok
+    assert "Unsatisfied requirement" in (pstree.error or "")
+    assert psscan is not None and not psscan.ok
+
+
+async def test_run_raises_when_no_plugin_was_even_attempted(tmp_path: Path) -> None:
+    """A genuinely empty ``plugins`` payload -- no plugin even attempted --
+    is a real worker-level failure with nothing informative to return
+    instead, unlike the per-plugin-failure case above."""
+    payload = {"status": "scan_error", "error": "no plugin produced a usable result", "plugins": {}}
     script = _write_worker(
         tmp_path,
         f"""

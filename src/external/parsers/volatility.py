@@ -270,6 +270,29 @@ class VolatilityModule(ForensicParser):
                 return
             result = maybe_result
 
+        # Real, confirmed gap this fixes: when EVERY plugin fails (e.g.
+        # volatility3's automagic genuinely can't identify this image's
+        # kernel -- "UnsatisfiedException"/"No suitable kernels found
+        # during pdbscan", live-verified against real evidence on case
+        # 43097ab0-aae3-4968-915b-8f0229ac3865), the analyst previously saw
+        # "COMPLETE, 0 artifacts" with the real reason discarded ("Logged
+        # by the worker/launcher already" -- true, but only in ephemeral
+        # Celery stdout, never anywhere the analyst can see it). The
+        # frontend's own empty-state message claims "Check the Audit tab
+        # for the real underlying error" -- confirmed live that this was
+        # never true for Volatility failures. This diagnostic artifact is
+        # what makes that claim honest: one real, permanent, analyst-
+        # visible record of why nothing else exists for this file. Only
+        # emitted when literally everything failed -- a normal run with at
+        # least one successful plugin (even a real, honest zero-row
+        # success) never gets this, matching the existing "zero-row !=
+        # failed" distinction the codebase already draws everywhere else.
+        if result.outcomes and all(not o.ok for o in result.outcomes):
+            yield _build_diagnostic_artifact(
+                result, evidence, self.parser_name, self.parser_version
+            )
+            return
+
         record_index = 0
         for outcome in result.outcomes:
             if not outcome.ok:
@@ -466,6 +489,39 @@ def _build_artifact(
         ingest_timestamp=datetime.now(UTC),
     )
     return StructuredArtifact(kind=kind, content=content, kronos=provenance)
+
+
+def _build_diagnostic_artifact(
+    result: VolatilityMultiPluginResult,
+    evidence: Evidence,
+    parser_name: str,
+    parser_version: str,
+) -> StructuredArtifact:
+    """One real, permanent record of why a Volatility run produced nothing.
+
+    Only called when every requested plugin's own outcome is non-ok (see
+    ``extract_artifacts()`` above) -- ``content`` carries each plugin's
+    real ``error`` string verbatim (e.g. volatility3's own
+    ``"UnsatisfiedException: "``/``"No suitable kernels found during
+    pdbscan"`` text, live-verified against real evidence on case
+    43097ab0-aae3-4968-915b-8f0229ac3865), not a paraphrase, so an analyst
+    reading it sees the same thing this session's own diagnostic run did.
+    """
+    content: dict[str, Any] = {
+        "plugin_errors": {outcome.plugin: outcome.error for outcome in result.outcomes},
+    }
+    provenance = EvidenceProvenance(
+        evidence_id=evidence.evidence_id,
+        case_id=evidence.metadata.case_id,
+        org_id=evidence.metadata.org_id,
+        org_alias=evidence.metadata.org_alias,
+        sha256=evidence.sha256 or "",
+        parser=parser_name,
+        parser_version=parser_version,
+        record_index=0,
+        ingest_timestamp=datetime.now(UTC),
+    )
+    return StructuredArtifact(kind="volatility.diagnostic", content=content, kronos=provenance)
 
 
 def _parse_create_time(raw: Any) -> datetime | None:

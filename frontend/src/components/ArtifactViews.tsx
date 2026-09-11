@@ -740,6 +740,57 @@ export function RegistryBrowser({
   )
 }
 
+/** Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): when
+ * every requested Volatility plugin fails for a memory image (most often
+ * volatility3's own automagic being unable to identify the kernel --
+ * "No suitable kernels found during pdbscan" -- a real, external
+ * limitation, not a KronOS bug), the backend now emits exactly one
+ * `volatility.diagnostic` artifact instead of silently producing nothing.
+ * `content.plugin_errors` is a real `{plugin: error}` map -- shown
+ * verbatim, not paraphrased, so the analyst sees the same text this
+ * platform's own diagnosis did. */
+export function VolatilityDiagnosticView({ content }: { content: Record<string, unknown> }) {
+  const pluginErrors =
+    content.plugin_errors && typeof content.plugin_errors === 'object'
+      ? (content.plugin_errors as Record<string, string | null>)
+      : {}
+  const entries = Object.entries(pluginErrors)
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+        Memory analysis could not recover anything usable from this file -- every plugin that was
+        run failed. This is often an external volatility3 limitation (e.g. the image's kernel/OS
+        version couldn't be identified), not necessarily a problem with the upload itself.
+      </p>
+      {entries.length === 0 ? (
+        <p className="text-sm text-gray-500">No per-plugin error detail was captured.</p>
+      ) : (
+        <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 bg-gray-100/50 text-left text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-400">
+                <th className="px-3 py-2 font-medium">Plugin</th>
+                <th className="px-3 py-2 font-medium">Error</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+              {entries.map(([plugin, error]) => (
+                <tr key={plugin}>
+                  <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                    {plugin}
+                  </td>
+                  <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{error ?? '(none)'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Generic fallback for any kind this platform doesn't have a dedicated
  * renderer for yet -- a real table built from whatever keys the first row
  * has, or raw JSON if content isn't even row-shaped. */
@@ -833,6 +884,9 @@ export function ArtifactContent({
   }
   if (artifact.kind === 'volatility.malfind' && rows) {
     return <MalfindView rows={rows as MalfindRow[]} />
+  }
+  if (artifact.kind === 'volatility.diagnostic') {
+    return <VolatilityDiagnosticView content={artifact.content} />
   }
   // volatility.cmdline's real row shape ({PID, Process, Args}) already
   // renders adequately through the generic fallback below -- no dedicated

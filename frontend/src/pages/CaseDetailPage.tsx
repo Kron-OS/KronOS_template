@@ -293,6 +293,10 @@ const KIND_LABELS: Record<string, string> = {
   'volatility.svcscan': 'Services',
   'volatility.handles': 'Open Handles',
   'volatility.vadinfo': 'Memory Regions (VADs)',
+  // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): emitted
+  // instead of silence when every plugin in a run fails -- see
+  // VolatilityDiagnosticView (ArtifactViews.tsx) for the actual rendering.
+  'volatility.diagnostic': 'Diagnostic (analysis failed)',
 }
 
 // Clustered the way an analyst actually works a case, not alphabetically --
@@ -742,14 +746,25 @@ function ArtifactsTab({
     )
 
     if (completedWithNoArtifacts.length > 0) {
+      // Real diagnosis fix (case 43097ab0-aae3-4968-915b-8f0229ac3865): a
+      // memory-dump evidence file that's COMPLETE with truly zero
+      // artifacts -- including zero volatility.diagnostic artifacts --
+      // means the whole volatility3 run itself never got far enough to
+      // even report per-plugin errors (e.g. the worker process crashed
+      // outright). This is now the rare residual case, not the common
+      // one: an image whose plugins ran but all failed instead produces a
+      // real, selectable volatility.diagnostic artifact (see
+      // VolatilityDiagnosticView) rather than landing here at all. The
+      // Audit tab still has no per-plugin detail for this residual case,
+      // so this text no longer claims otherwise.
       return (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-gray-200 py-16 text-sm text-gray-500 dark:border-gray-800">
           <p>No process data could be recovered from the uploaded memory dump.</p>
           <p className="max-w-md text-center text-xs text-gray-400 dark:text-gray-600">
             {completedWithNoArtifacts.map((e) => e.filename).join(', ')} finished processing, but
-            memory analysis found nothing usable -- the image's OS/kernel structures may be
-            unrecognized or unsupported. Check the Audit tab for this evidence for the real
-            underlying error.
+            the memory analysis tool did not produce any output at all for this file -- it may
+            have crashed before it could even run. Try re-uploading the file, or contact an
+            administrator if this persists.
           </p>
         </div>
       )
