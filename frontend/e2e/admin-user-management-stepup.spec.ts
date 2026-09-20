@@ -6,7 +6,7 @@ import { SecondCaseLeadSeeder } from "./SecondCaseLeadSeeder";
 
 /**
  * Gap Audit Milestone WWWW: closes Tier 1 item 4 of
- * `docs/HANDOFF_AND_ORCHESTRATION.md`. `POST /api/admin/org/users/invite`
+ * `docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current)`. `POST /api/admin/org/users/invite`
  * and `PATCH /api/admin/org/users/{id}/role` share the exact same
  * `_assert_aal2` step-up gating `PATCH /api/admin/org/quota` does
  * (`admin-quota-ui.spec.ts`, Milestone TTTT -- the first spec to drive a

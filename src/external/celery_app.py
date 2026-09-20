@@ -898,28 +898,29 @@ def auto_resume_quota_held(self: object) -> int:
 @celery_app.task(name="kronos.poll_defender_alerts", bind=True, max_retries=1)
 def poll_defender_alerts(self: object) -> int:
     """Poll Microsoft Defender's ``alerts_v2`` feed for new/updated alerts
-    (Gap Audit 2026-08 P1-2 -- closes the "registered but never invoked"
-    gap: ``configure_defender_poll_source_from_settings()`` wired a real
-    ``DefenderPollSource`` at startup, but nothing ever called
-    ``IntegrationSourceIngestService.run_poll_cycle()`` for it before this
-    task existed).
+    (originally Gap Audit 2026-08 P1-2; now per-org config, connector
+    marketplace).
 
     Delegates entirely to ``src.external.celery_defender.run_defender_poll_cycle()``
-    -- see that module's own docstring for why this task cannot safely reuse
-    the FastAPI process's own process-lifetime ``DefenderPollSource``/
-    ``httpx.AsyncClient`` (``get_defender_poll_source()``) and instead builds
-    every loop-bound resource fresh, per invocation, exactly like
+    -- see that module's own docstring for why this task builds every
+    loop-bound resource (including a fresh, per-org ``DefenderPollSource``/
+    ``httpx.AsyncClient``) fresh, per invocation, exactly like
     ``celery_runtime.py`` already does for the evidence-parsing DAG's own
     Postgres/OpenSearch resources.
 
-    An unconfigured deployment (no real Entra ID app registration or no
-    ``defender_poll_org_id`` set yet) is treated exactly like every other
-    beat task's own "repository/source not configured; skipping" idiom
-    (``abort_orphan_uploads`` et al. above) -- an honest no-op, not a retry
-    or an error. A real poll failure (Graph API unreachable, malformed
-    response, etc.) is retried once, then surfaces loudly -- ``run_poll_cycle``
-    has already audited the failure (``INTEGRATION_SOURCE_POLL_FAILED``)
-    before this task ever sees the exception.
+    Per-org config (connector marketplace, `/admin/connectors`):
+    ``run_defender_poll_cycle`` now polls every org with an enabled
+    ``ms-defender-alerts`` connector config, not one hardcoded global org --
+    see ``celery_defender.py``'s own docstring. Zero enabled orgs, or the
+    per-org secret store itself not being wired on this deployment, are
+    both treated exactly like every other beat task's own "repository/
+    source not configured; skipping" idiom (``abort_orphan_uploads`` et al.
+    above) -- an honest no-op, not a retry or an error. A single org's
+    credential/API failure is recorded against that org alone (never
+    raised here); only a systemic failure (Vault itself unreachable,
+    Postgres/Redis down) propagates to this task's retry below --
+    ``run_poll_cycle`` has already audited any per-org failure
+    (``INTEGRATION_SOURCE_POLL_FAILED``) before this task ever sees it.
 
     Returns the number of real, non-duplicate alerts produced onto the
     stream this cycle (0 for a no-op skip or a genuinely empty poll result).

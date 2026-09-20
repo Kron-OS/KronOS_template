@@ -24,6 +24,11 @@ sealed_batches_table = sa.Table(
     sa.Column("batch_id", sa.UUID(as_uuid=True), primary_key=True),
     sa.Column("org_id", sa.UUID(as_uuid=True), nullable=False, index=True),
     sa.Column("source_id", sa.String(256), nullable=False, index=True),
+    # Connector marketplace: the connector's real format identifier (e.g.
+    # "wazuh"), distinct from source_id (a freeform per-instance name) --
+    # see SealedBatch's own docstring. Nullable: batches sealed before this
+    # column existed, or from the D2 mTLS collector path, honestly have none.
+    sa.Column("source_type", sa.String(128), nullable=True),
     sa.Column("sealed_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("event_count", sa.Integer, nullable=False),
     # JSON, not ARRAY: order matters (leaf index <-> Merkle proof position)
@@ -108,6 +113,7 @@ class PostgresSealedBatchRepository(SealedBatchRepository):
             "batch_id": batch.batch_id,
             "org_id": batch.org_id,
             "source_id": batch.source_id,
+            "source_type": batch.source_type,
             "sealed_at": batch.sealed_at,
             "event_count": batch.event_count,
             "leaf_hashes": list(batch.leaf_hashes),
@@ -129,6 +135,7 @@ class PostgresSealedBatchRepository(SealedBatchRepository):
             batch_id=row["batch_id"],
             org_id=row["org_id"],
             source_id=row["source_id"],
+            source_type=row.get("source_type"),
             sealed_at=sealed_at,
             event_count=row["event_count"],
             leaf_hashes=tuple(row["leaf_hashes"]),  # type: ignore[arg-type]

@@ -39,6 +39,38 @@ class TestRedisStreamIngestAdapterProduce:
         )
         assert message_id == "123-0"
 
+    @pytest.mark.asyncio
+    async def test_produce_with_source_type_stores_the_extra_field(self) -> None:
+        """Connector marketplace: source_type is the connector's real
+        format identifier, stored alongside payload so
+        StreamNormalizationService can look normalizers up by it instead of
+        the freeform source_id -- see StreamMessage.source_type's own
+        docstring for the real bug this fixes."""
+        redis = AsyncMock()
+        redis.xadd.return_value = b"123-0"
+        adapter = RedisStreamIngestAdapter(redis)
+        org = uuid.uuid4()
+
+        await adapter.produce(org, "wazuh-manager-1", b"payload-bytes", source_type="wazuh")
+
+        redis.xadd.assert_awaited_once_with(
+            f"kronos:stream:{org}:wazuh-manager-1",
+            {b"payload": b"payload-bytes", b"source_type": b"wazuh"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_produce_without_source_type_omits_the_field(self) -> None:
+        redis = AsyncMock()
+        redis.xadd.return_value = b"123-0"
+        adapter = RedisStreamIngestAdapter(redis)
+        org = uuid.uuid4()
+
+        await adapter.produce(org, "zeek-conn", b"payload-bytes")
+
+        redis.xadd.assert_awaited_once_with(
+            f"kronos:stream:{org}:zeek-conn", {b"payload": b"payload-bytes"}
+        )
+
 
 class TestRedisStreamIngestAdapterEnsureConsumerGroup:
     @pytest.mark.asyncio
@@ -96,6 +128,20 @@ class TestRedisStreamIngestAdapterConsume:
             StreamMessage(message_id="1-0", payload=b"a"),
             StreamMessage(message_id="1-1", payload=b"b"),
         ]
+
+    @pytest.mark.asyncio
+    async def test_source_type_field_round_trips_when_present(self) -> None:
+        redis = AsyncMock()
+        org = uuid.uuid4()
+        key = f"kronos:stream:{org}:wazuh-manager-1".encode()
+        redis.xreadgroup.return_value = [
+            (key, [(b"1-0", {b"payload": b"a", b"source_type": b"wazuh"})])
+        ]
+        adapter = RedisStreamIngestAdapter(redis)
+
+        messages = await adapter.consume(org, "wazuh-manager-1", "cg", "consumer-1")
+
+        assert messages == [StreamMessage(message_id="1-0", payload=b"a", source_type="wazuh")]
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_empty_list(self) -> None:

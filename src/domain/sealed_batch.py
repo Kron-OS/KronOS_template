@@ -49,6 +49,16 @@ class SealedBatch(BaseModel):
     batch_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     org_id: uuid.UUID
     source_id: str = Field(min_length=1)
+    # The connector's real format identifier (e.g. "wazuh"), distinct from
+    # source_id above (a freeform per-instance name) -- see
+    # StreamMessage.source_type's own docstring (src/adapter/queue/
+    # stream_ingest.py) for the real bug this fixes:
+    # StreamSourceNormalizerRegistry is keyed by source_type, not by
+    # whatever name an org admin happened to give their connector instance.
+    # None for batches sealed before this field existed, or from the D2
+    # mTLS collector path (no source_type concept) -- StreamNormalizationService
+    # falls back to source_id in that case, preserving prior behavior.
+    source_type: str | None = None
     sealed_at: datetime
 
     event_count: int = Field(ge=1)

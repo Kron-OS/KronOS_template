@@ -4,7 +4,7 @@ import { SecondCaseLeadSeeder } from "./SecondCaseLeadSeeder";
 
 /**
  * Gap Audit Milestone ZZZZ: closes Tier 1 item 6 of
- * docs/HANDOFF_AND_ORCHESTRATION.md, per the project owner's explicit
+ * docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current), per the project owner's explicit
  * choice (a new, case-scoped user-search endpoint, not a UI-only
  * workaround or widening admin.py's existing org-admin-only listing).
  * `GET /{case_id}/member-candidates` (src/external/routes/cases.py) is

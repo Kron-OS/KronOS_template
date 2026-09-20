@@ -20,17 +20,20 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.adapter.keycloak.admin_client import HttpxKeycloakAdminClient
+from src.adapter.repository.connector_config import InMemoryConnectorConfigRepository
 from src.adapter.repository.detection import InMemoryDetectionRepository
 from src.application.approval_gate import StepUpApprovalGate
 from src.application.audit_log import AuditLogService
+from src.application.connector_catalog import ConnectorCatalog
+from src.application.connector_config import ConnectorConfigService
 from src.application.containment_actions import RevokeKeycloakSessionAction
 from src.application.detection_triage import DetectionTriageService
 from src.application.playbook_execution import PlaybookExecutionService
+from src.application.secret_store import InMemorySecretStore
 from src.application.sync_detection_to_siem_action import SyncDetectionToSiemAction
 from src.domain.playbook import Playbook, PlaybookStep
 from src.external.dependencies import (
     configure_keycloak_admin_client_from_settings,
-    configure_splunk_hec_sink_from_settings,
     get_containment_approval_gate,
     get_keycloak_admin_client,
     get_playbook_action_registry,
@@ -54,37 +57,18 @@ def _fake_keycloak_settings() -> SimpleNamespace:
     )
 
 
-def _fake_splunk_settings(
-    *,
-    splunk_hec_url: str | None = "https://splunk.example.com:8088/services/collector/event",
-    splunk_hec_token: str | None = "test-token-123",
-) -> SimpleNamespace:
-    token_obj = None
-    if splunk_hec_token is not None:
-        token_obj = MagicMock()
-        token_obj.get_secret_value.return_value = splunk_hec_token
-    return SimpleNamespace(
-        splunk_hec_url=splunk_hec_url,
-        splunk_hec_token=token_obj,
-        splunk_hec_source="kronos:test",
-        splunk_hec_sourcetype="kronos:test-detection",
-        splunk_hec_index="kronos_idx",
-        splunk_hec_verify_tls=True,
-        splunk_hec_enable_indexer_ack=False,
-        splunk_hec_ack_poll_timeout=30.0,
-        splunk_hec_ack_poll_interval=1.0,
-    )
-
-
 def _build_registry_inputs() -> (
-    tuple[InMemoryDetectionRepository, DetectionTriageService, AuditLogService]
+    tuple[InMemoryDetectionRepository, DetectionTriageService, AuditLogService, ConnectorConfigService]
 ):
     detection_repository = InMemoryDetectionRepository()
     audit_log = AuditLogService(InMemoryAuditLogRepository())
     triage_service = DetectionTriageService(
         detection_repository=detection_repository, audit_log=audit_log
     )
-    return detection_repository, triage_service, audit_log
+    connector_config_service = ConnectorConfigService(
+        ConnectorCatalog(), InMemoryConnectorConfigRepository(), InMemorySecretStore(), audit_log
+    )
+    return detection_repository, triage_service, audit_log, connector_config_service
 
 
 class TestPlaybookActionRegistryWiring:
@@ -95,40 +79,46 @@ class TestPlaybookActionRegistryWiring:
         reset_dependencies()
 
     def test_default_registry_has_the_two_pre_existing_real_actions(self) -> None:
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
 
         assert registry.get_action("transition_detection_triage") is not None
         assert registry.get_action("log_notification") is not None
 
-    def test_no_siem_action_registered_when_no_sink_configured(self) -> None:
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+    def test_all_three_siem_actions_always_registered_unconditionally(self) -> None:
+        """Per-org rewrite (connector marketplace): unlike the old global-
+        Settings-gated registration, all three sink actions are now always
+        registered -- whether any org has actually configured a given sink
+        is a per-org, execute()-time question (see
+        test_sync_detection_to_siem_action.py's own
+        test_unconfigured_org_raises_playbook_error_not_a_global_fallback),
+        never a boot-time registration question."""
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
 
-        assert registry.get_action("sync_detection_to_siem_splunk") is None
-        assert registry.get_action("sync_detection_to_siem_cef") is None
-        assert registry.get_action("sync_detection_to_siem_sentinel") is None
-
-    def test_splunk_sink_configured_registers_a_real_siem_action(self) -> None:
-        with patch("src.config.Settings", return_value=_fake_splunk_settings()):
-            configure_splunk_hec_sink_from_settings()
-
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
-
-        action = registry.get_action("sync_detection_to_siem_splunk")
-        assert isinstance(action, SyncDetectionToSiemAction)
-        # The other two sinks are still honestly absent.
-        assert registry.get_action("sync_detection_to_siem_cef") is None
-        assert registry.get_action("sync_detection_to_siem_sentinel") is None
+        for source_type in ("splunk-hec", "cef-syslog", "sentinel"):
+            action = registry.get_action(f"sync_detection_to_siem_{source_type}")
+            assert isinstance(action, SyncDetectionToSiemAction)
 
     def test_ticket_sync_action_is_deliberately_not_registered(self) -> None:
         """No real TicketingSystem implementation exists anywhere in this
         codebase yet -- registering SyncDetectionTicketAction against a
         fabricated one would be exactly CLAUDE.md SS F's "plausible code
         without a captured real run" failure mode."""
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
 
         assert registry.get_action("sync_detection_ticket") is None
 
@@ -136,8 +126,12 @@ class TestPlaybookActionRegistryWiring:
         """End-to-end: PlaybookExecutionService.execute() against the DI-built
         registry actually finds and runs a real action, proving the wiring
         (not just the registry's own get_action lookup) works."""
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
         execution_service = get_playbook_execution_service(registry, audit_log)
         assert isinstance(execution_service, PlaybookExecutionService)
 
@@ -218,7 +212,9 @@ class TestRevokeKeycloakSessionActionWiring:
         assert decision.authorized is True
 
     def test_revoke_action_getter_is_none_without_a_configured_admin_client(self) -> None:
-        _detection_repository, _triage_service, audit_log = _build_registry_inputs()
+        _detection_repository, _triage_service, audit_log, _connector_config_service = (
+            _build_registry_inputs()
+        )
         gate = get_containment_approval_gate(get_step_up_auth())
 
         action = get_revoke_keycloak_session_action(get_keycloak_admin_client(), gate, audit_log)
@@ -229,7 +225,9 @@ class TestRevokeKeycloakSessionActionWiring:
         with patch("src.config.Settings", return_value=_fake_keycloak_settings()):
             configure_keycloak_admin_client_from_settings()
 
-        _detection_repository, _triage_service, audit_log = _build_registry_inputs()
+        _detection_repository, _triage_service, audit_log, _connector_config_service = (
+            _build_registry_inputs()
+        )
         gate = get_containment_approval_gate(get_step_up_auth())
 
         action = get_revoke_keycloak_session_action(get_keycloak_admin_client(), gate, audit_log)
@@ -240,8 +238,12 @@ class TestRevokeKeycloakSessionActionWiring:
     def test_no_revoke_session_action_registered_when_keycloak_admin_client_unconfigured(
         self,
     ) -> None:
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
 
         assert registry.get_action("revoke_keycloak_session") is None
 
@@ -251,8 +253,12 @@ class TestRevokeKeycloakSessionActionWiring:
         with patch("src.config.Settings", return_value=_fake_keycloak_settings()):
             configure_keycloak_admin_client_from_settings()
 
-        detection_repository, triage_service, audit_log = _build_registry_inputs()
-        registry = get_playbook_action_registry(detection_repository, triage_service, audit_log)
+        detection_repository, triage_service, audit_log, connector_config_service = (
+            _build_registry_inputs()
+        )
+        registry = get_playbook_action_registry(
+            detection_repository, triage_service, audit_log, connector_config_service
+        )
 
         action = registry.get_action("revoke_keycloak_session")
         assert isinstance(action, RevokeKeycloakSessionAction)

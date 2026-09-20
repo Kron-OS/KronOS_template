@@ -31,10 +31,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class StreamMessage:
-    """One transport-level message: an opaque id plus its raw payload bytes."""
+    """One transport-level message: an opaque id plus its raw payload bytes.
+
+    ``source_type`` (real, reproduced finding, connector marketplace):
+    the stream key (``kronos:stream:{org_id}:{source_id}``) is keyed by
+    ``source_id``, which for a PUSH connector is a freeform, per-instance
+    name an org admin picks (e.g. "wazuh-manager-1"), NOT the connector's
+    format identifier ("wazuh") that ``StreamSourceNormalizerRegistry`` is
+    actually keyed by (confirmed: the default registry only pre-registers
+    normalizers under the literal strings "wazuh"/"zeek-conn-log"/
+    "ms-defender-alerts" -- any instance not named exactly that failed to
+    normalize before this field existed). Captured once, at produce time,
+    when the real ``IntegrationSourceIdentity.source_type`` is unambiguously
+    known -- never re-derived from ``source_id`` downstream. ``None`` for
+    the D2 mTLS collector path (``CollectorIdentity`` has no source_type
+    concept at all) and for any message produced before this field existed
+    -- both honest "unknown, fall back to source_id" states, not errors.
+    """
 
     message_id: str
     payload: bytes
+    source_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,8 +88,17 @@ class StreamIngestAdapter(ABC):
     """Per-org, per-source durable telemetry transport."""
 
     @abstractmethod
-    async def produce(self, org_id: uuid.UUID, source_id: str, payload: bytes) -> str:
+    async def produce(
+        self, org_id: uuid.UUID, source_id: str, payload: bytes, *, source_type: str | None = None
+    ) -> str:
         """Durably append *payload* to this (org, source)'s own stream.
+
+        *source_type* (connector marketplace) -- the connector's real
+        format identifier (e.g. "wazuh"), distinct from *source_id* (the
+        freeform per-instance name an org admin picks) -- see
+        ``StreamMessage.source_type``'s own docstring for why this must be
+        captured here, not re-derived downstream. Optional: callers with no
+        source_type concept (the D2 mTLS collector path) simply omit it.
 
         Returns the new message id.
         """
@@ -210,6 +236,7 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
     """
 
     _FIELD = b"payload"
+    _SOURCE_TYPE_FIELD = b"source_type"
 
     def __init__(self, redis_client) -> None:  # type: ignore[no-untyped-def]
         # Constructor takes an already-configured redis.asyncio.Redis
@@ -225,9 +252,20 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
     def _key(self, org_id: uuid.UUID, source_id: str) -> str:
         return f"kronos:stream:{org_id}:{source_id}"
 
-    async def produce(self, org_id: uuid.UUID, source_id: str, payload: bytes) -> str:
-        message_id = await self._redis.xadd(self._key(org_id, source_id), {self._FIELD: payload})
+    async def produce(
+        self, org_id: uuid.UUID, source_id: str, payload: bytes, *, source_type: str | None = None
+    ) -> str:
+        fields: dict[bytes, bytes] = {self._FIELD: payload}
+        if source_type is not None:
+            fields[self._SOURCE_TYPE_FIELD] = source_type.encode("utf-8")
+        message_id = await self._redis.xadd(self._key(org_id, source_id), fields)
         return message_id.decode() if isinstance(message_id, bytes) else str(message_id)
+
+    def _parse_source_type(self, fields: dict[bytes, bytes]) -> str | None:
+        raw = fields.get(self._SOURCE_TYPE_FIELD)
+        if raw is None:
+            return None
+        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
     async def list_active_streams(self) -> list[tuple[uuid.UUID, str]]:
         # SCAN (not KEYS): non-blocking, cursor-based iteration -- this is a
@@ -293,6 +331,7 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
             StreamMessage(
                 message_id=mid.decode() if isinstance(mid, bytes) else str(mid),
                 payload=fields[self._FIELD],
+                source_type=self._parse_source_type(fields),
             )
             for _stream, entries in (resp or [])
             for mid, fields in entries
@@ -320,6 +359,7 @@ class RedisStreamIngestAdapter(StreamIngestAdapter):
             StreamMessage(
                 message_id=mid.decode() if isinstance(mid, bytes) else str(mid),
                 payload=fields[self._FIELD],
+                source_type=self._parse_source_type(fields),
             )
             for mid, fields in claimed_entries
         ]
@@ -413,11 +453,13 @@ class InMemoryStreamIngestAdapter(StreamIngestAdapter):
     def _key(self, org_id: uuid.UUID, source_id: str) -> str:
         return f"kronos:stream:{org_id}:{source_id}"
 
-    async def produce(self, org_id: uuid.UUID, source_id: str, payload: bytes) -> str:
+    async def produce(
+        self, org_id: uuid.UUID, source_id: str, payload: bytes, *, source_type: str | None = None
+    ) -> str:
         self._seq += 1
         message_id = f"{self._seq}-0"
         self._streams.setdefault(self._key(org_id, source_id), []).append(
-            StreamMessage(message_id=message_id, payload=payload)
+            StreamMessage(message_id=message_id, payload=payload, source_type=source_type)
         )
         return message_id
 

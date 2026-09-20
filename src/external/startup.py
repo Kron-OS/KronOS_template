@@ -57,9 +57,13 @@ async def wire_dependencies_async() -> None:
     from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
         PostgresEvidenceRepository,
     )
+    from src.adapter.repository.postgres_connector_config import (  # noqa: PLC0415
+        PostgresConnectorConfigRepository,
+    )
     from src.adapter.repository.postgres_integration_source_key import (  # noqa: PLC0415
         PostgresIntegrationSourceKeyRepository,
     )
+    from src.adapter.secret.vault_secret_store import VaultSecretStore  # noqa: PLC0415
     from src.adapter.repository.postgres_ioc_feed import (  # noqa: PLC0415
         PostgresIOCFeedRepository,
     )
@@ -82,13 +86,9 @@ async def wire_dependencies_async() -> None:
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
-        configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
-        configure_defender_poll_source_from_settings,
         configure_dependencies,
         configure_keycloak_admin_client_from_settings,
-        configure_sentinel_sink_from_settings,
-        configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
     )
 
@@ -131,6 +131,23 @@ async def wire_dependencies_async() -> None:
     # integration_source_auth.py) -- replaces the boot-time-only static
     # dict that had no real admin-facing provisioning route wired to it.
     integration_source_key_repo = PostgresIntegrationSourceKeyRepository(engine)
+    # Connector marketplace (`/admin/connectors`) per-org config -- real
+    # Postgres storage for the non-secret half, same "safe here, this
+    # engine lives as long as the FastAPI lifespan loop" reasoning as
+    # source_cursor_repo above. Secret half (VaultSecretStore) is only
+    # wired when Settings.vault_connectors_approle_creds_file is actually
+    # set -- "None is a valid, honest configuration" mirrors every other
+    # optional adapter in this function (configure_*_sink_from_settings
+    # below); an unconfigured Vault AppRole means secret-bearing connectors
+    # (Defender/Sentinel/Splunk HEC) simply cannot be configured yet, not a
+    # silent fallback to plaintext storage.
+    connector_config_repo = PostgresConnectorConfigRepository(engine)
+    if settings.vault_connectors_approle_creds_file:
+        secret_store = VaultSecretStore.from_approle_creds_file(
+            settings.vault_url, settings.vault_connectors_approle_creds_file
+        )
+    else:
+        secret_store = None
 
     # Schema creation/evolution (Gap Audit P1-12 / Milestone V4): this used
     # to call every repository's own `create_tables()` classmethod here, at
@@ -390,12 +407,10 @@ async def wire_dependencies_async() -> None:
         org_quota_repository=org_quota_repo,
         source_cursor_repository=source_cursor_repo,
         integration_source_key_repository=integration_source_key_repo,
+        connector_config_repository=connector_config_repo,
+        secret_store=secret_store,
     )
     configure_clamav_from_settings()
-    configure_splunk_hec_sink_from_settings()
-    configure_cef_syslog_sink_from_settings()
-    configure_sentinel_sink_from_settings()
-    configure_defender_poll_source_from_settings()
     configure_keycloak_admin_client_from_settings()
 
     logger.info("startup: dependencies wired (async)")
@@ -434,12 +449,9 @@ def wire_dependencies_sync() -> None:
     from src.config import Settings  # noqa: PLC0415
     from src.external.dependencies import (  # noqa: PLC0415
         build_step_up_ticket_store,
-        configure_cef_syslog_sink_from_settings,
         configure_clamav_from_settings,
         configure_dependencies,
         configure_keycloak_admin_client_from_settings,
-        configure_sentinel_sink_from_settings,
-        configure_splunk_hec_sink_from_settings,
         configure_step_up_auth,
     )
 
@@ -489,50 +501,24 @@ def wire_dependencies_sync() -> None:
         opensearch_security_enabled=settings.opensearch_security_enabled,
     )
     configure_clamav_from_settings()
-    # Real, previously-undiscovered gap found and fixed 2026-08-09
-    # (Milestone S): wire_dependencies_async() (the FastAPI path) has always
-    # called all four of configure_splunk_hec_sink_from_settings()/
-    # configure_cef_syslog_sink_from_settings()/
-    # configure_sentinel_sink_from_settings()/
-    # configure_defender_poll_source_from_settings(), but this sync/Celery
-    # path never called any of them -- meaning get_splunk_hec_sink()/
-    # get_cef_syslog_sink()/get_sentinel_sink() would all resolve to None
-    # inside a Celery task (e.g. a future SOAR playbook action pushing a
-    # Detection to an external SIEM) even with real splunk_hec_url/
-    # cef_syslog_host/sentinel_* env vars set on the worker. Not an active
-    # bug today (no route/playbook-action currently calls
-    # DetectionSinkPushService from anywhere, confirmed via a direct
-    # grep -- R2/R3/R4's own "Not built here" scope notes), but a real,
-    # latent one given the SOAR playbook engine (Milestone M7/H1) that just
-    # landed is exactly the kind of caller that would run inside a Celery
-    # task. Splunk/CEF/Sentinel are safe to add here: SplunkHecSink,
-    # CefDetectionMapper/SyslogIntegrationSink, and SentinelHttpSink all
-    # construct their own httpx.AsyncClient fresh, per-call, inside
-    # push_events() (`async with httpx.AsyncClient(...)`) rather than
-    # holding one open at configure time -- so they don't reintroduce the
-    # cross-event-loop sharing bug this function's own docstring documents
-    # Postgres/OpenSearch having to avoid. configure_defender_poll_source_
-    # from_settings() is deliberately STILL NOT added here: its own
-    # docstring states it constructs and keeps alive a single
-    # process-lifetime httpx.AsyncClient specifically so DefenderPollSource's
-    # OAuth2 token cache persists across poll cycles -- reusing that one
-    # client from inside Celery's own per-task fresh-event-loop model (see
-    # this function's own docstring above) would risk exactly the "Future
-    # attached to a different loop" failure class this sync path was built
-    # to avoid. Gap Audit P1-2/Milestone V2 closed the "wiring Defender
-    # polling into Celery correctly" follow-up flagged here on 2026-08-09 --
-    # see src/external/celery_defender.py's own module docstring and
-    # celery_app.py's poll_defender_alerts task: a celery_runtime.py-style
-    # per-task client, built and disposed fresh every 10-minute beat
-    # invocation, rather than a copy-paste of this function's own
-    # process-lifetime call.
-    configure_splunk_hec_sink_from_settings()
-    configure_cef_syslog_sink_from_settings()
-    configure_sentinel_sink_from_settings()
+    # Splunk HEC/CEF syslog/Sentinel sink wiring (formerly
+    # configure_splunk_hec_sink_from_settings() et al., global-Settings-based)
+    # and Defender POLL wiring (formerly configure_defender_poll_source_
+    # from_settings(), same shape) were both removed here in the connector
+    # marketplace's Phase 7 cleanup: every one of those is now real, per-org
+    # connector_configs, resolved fresh per push/poll cycle by
+    # build_sink_and_mapper_from_config()/celery_defender.py respectively --
+    # neither needs (or has) a process-lifetime singleton to wire at startup
+    # anymore, in this process or the FastAPI one.
+    #
     # HttpxKeycloakAdminClient constructs its own httpx.AsyncClient fresh,
-    # per-call, inside _admin_request() (mirrors SplunkHecSink/SentinelHttpSink
-    # above) -- safe to wire here too, unlike DefenderPollSource's own
-    # process-lifetime client (see this function's own docstring above).
+    # per-call, inside _admin_request() -- safe to wire here (unlike the
+    # now-removed DefenderPollSource's old process-lifetime client, which is
+    # exactly why this sync/Celery path never wired that one: reusing an
+    # httpx.AsyncClient across this function's own per-task fresh-event-loop
+    # model risks the "Future attached to a different loop" failure class
+    # this function's own docstring documents Postgres/OpenSearch having to
+    # avoid).
     configure_keycloak_admin_client_from_settings()
 
     logger.info("startup: dependencies wired (sync/celery)")

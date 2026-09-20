@@ -488,7 +488,7 @@ async def list_case_member_candidates(
     q: Annotated[str, Query(min_length=1, max_length=256)],
 ) -> CaseMemberCandidatesResponse:
     """Search the caller's own org for a user to add to *this* case (Gap
-    Audit Milestone ZZZZ, Tier 1 item 6 of docs/HANDOFF_AND_ORCHESTRATION.md).
+    Audit Milestone ZZZZ, Tier 1 item 6 of docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current)).
 
     Before this, `add_case_member` required a case-lead to already know the
     target's raw Keycloak user id (deliberate v1 scope, Milestone RRRR) --

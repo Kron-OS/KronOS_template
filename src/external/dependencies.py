@@ -10,10 +10,14 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-import httpx
 from fastapi import Depends
 
+from src.adapter.integration_sink.integration_sink import IntegrationSink
 from src.adapter.integration_sink.sentinel_sink import SentinelHttpSink
+from src.adapter.integration_sink.sink_authenticator import (
+    OAuth2ClientCredentialsAuthenticator,
+    StaticTokenAuthenticator,
+)
 from src.adapter.integration_sink.splunk_hec_sink import SplunkHecSink
 from src.adapter.integration_sink.syslog_sink import SyslogIntegrationSink, SyslogTransportProtocol
 from src.adapter.keycloak.admin_client import HttpxKeycloakAdminClient, KeycloakAdminClient
@@ -41,6 +45,10 @@ from src.adapter.repository.detection import DetectionRepository, InMemoryDetect
 from src.adapter.repository.detection_correlation import (
     DetectionCorrelationRepository,
     InMemoryDetectionCorrelationRepository,
+)
+from src.adapter.repository.connector_config import (
+    ConnectorConfigRepository,
+    InMemoryConnectorConfigRepository,
 )
 from src.adapter.repository.evidence import EvidenceRepository
 from src.adapter.repository.integration_source_key import (
@@ -74,14 +82,17 @@ from src.application.collector_ingest import CollectorIngestService
 from src.application.containment_actions import RevokeKeycloakSessionAction
 from src.application.correlation_sync import CorrelationSyncService
 from src.application.cost_gate import RuleCostGate
-from src.application.detection_sink_push import DetectionSinkPushService
+from src.application.detection_sink_mapper import DetectionEventMapper
 from src.application.detection_sync import DetectionSyncService
 from src.application.detection_triage import DetectionTriageService
+from src.application.connector_catalog import ConnectorCatalog
+from src.application.connector_config import ConnectorConfigService
 from src.application.enrichment import EnrichmentPipeline
 from src.application.evidence_intake import EvidenceIntakeService
 from src.application.hashing import HashService
 from src.application.integration_source import IntegrationSourceRegistry
 from src.application.integration_source_ingest import IntegrationSourceIngestService
+from src.application.secret_store import InMemorySecretStore, SecretStore
 from src.application.ism_tiering import DefaultIsmTierResolver, IsmTierResolver
 from src.application.pack_signing import PackSignatureVerifier
 from src.application.parser_registry import ParserRegistry
@@ -105,13 +116,11 @@ from src.application.validation import EvidenceValidator, default_validator_chai
 from src.application.yara_rule_pack_service import YaraRulePackService
 from src.application.yara_rules import YaraRuleProvider
 from src.domain.user import Role, TenantContext
-from src.external.integration_sources.defender import DefenderPollSource
 from src.external.integration_sources.generic_webhook import GenericWebhookPushSource
 from src.external.integration_sources.suricata_zeek import SuricataEvePushSource, ZeekJsonPushSource
 from src.external.integration_sources.wazuh import WazuhPushSource
 from src.external.middleware.integration_source_auth import (
     InboundSourceAuthenticator,
-    OAuth2ClientCredentialsOutboundAuthStrategy,
     StaticApiKeyInboundAuthenticator,
 )
 from src.external.middleware.step_up_auth import StepUpAuth as _StepUpAuth
@@ -177,6 +186,14 @@ _collector_ingest_service: CollectorIngestService | None = None
 _integration_source_key_repository: IntegrationSourceKeyRepository = (
     InMemoryIntegrationSourceKeyRepository()
 )
+# Connector marketplace (`/admin/connectors`) per-org config -- same
+# "in-memory default so DI wiring never hard-fails before Postgres/Vault
+# are configured" shape as _integration_source_key_repository above.
+# wire_dependencies_async() (src/external/startup.py) swaps these for
+# PostgresConnectorConfigRepository/VaultSecretStore at real startup.
+_connector_config_repository: ConnectorConfigRepository = InMemoryConnectorConfigRepository()
+_secret_store: SecretStore = InMemorySecretStore()
+_connector_catalog: ConnectorCatalog = ConnectorCatalog()
 _integration_source_registry: IntegrationSourceRegistry = IntegrationSourceRegistry()
 _integration_source_registry.register(GenericWebhookPushSource())
 # WazuhPushSource (roadmap Q2) -- the first real, named-vendor connector
@@ -245,68 +262,21 @@ _ioc_feed_repository: IOCFeedRepository = InMemoryIOCFeedRepository()
 # integration, so it always has a real (if in-memory-backed in tests)
 # implementation and StorageQuotaGate is always constructed from it.
 _org_quota_repository: OrgQuotaRepository = InMemoryOrgQuotaRepository()
-# Real Keycloak Admin REST API client (roadmap M7/H2/EE1) -- same "None
-# means not configured, an honest disabled state" shape as
-# _splunk_hec_sink below. Unlike the SIEM sinks, keycloak_url/
-# keycloak_client_secret are REQUIRED Settings fields (no default) since
-# this platform's own JWT auth already depends on them (CLAUDE.md "Key
-# Decisions: Keycloak 26+ Organizations for multi-tenancy") -- a real
-# deployment that can boot at all already has these, so None here is only
-# ever hit in a DI container built without full Settings (unit tests that
-# never call configure_keycloak_admin_client_from_settings()), never a
-# real deployment silently missing containment.
+# Real Keycloak Admin REST API client (roadmap M7/H2/EE1) -- "None means
+# not configured, an honest disabled state." Unlike the old SIEM-sink
+# globals this used to be compared to (removed: connector marketplace,
+# `/admin/connectors`, made Splunk HEC/CEF syslog/Sentinel per-org config
+# resolved fresh per push via `build_sink_and_mapper_from_config` instead
+# of a process-wide singleton -- see that function's own docstring),
+# keycloak_url/keycloak_client_secret are REQUIRED Settings fields (no
+# default) since this platform's own JWT auth already depends on them
+# (CLAUDE.md "Key Decisions: Keycloak 26+ Organizations for
+# multi-tenancy") -- a real deployment that can boot at all already has
+# these, so None here is only ever hit in a DI container built without
+# full Settings (unit tests that never call
+# configure_keycloak_admin_client_from_settings()), never a real
+# deployment silently missing containment.
 _keycloak_admin_client: KeycloakAdminClient | None = None
-# Splunk HEC sink (roadmap R2) -- same "None means not configured, an
-# honest disabled state" shape as _timestamp_service above. Both default to
-# None until configure_splunk_hec_sink_from_settings() finds a real
-# splunk_hec_url + splunk_hec_token pair; no route/playbook-action wiring
-# exists yet that would push a Detection automatically (mirrors R1's own
-# "foundation/connector only, no auto-trigger" precedent for
-# DetectionSinkPushService) -- callers construct their own push service
-# from these two getters when/if they need one.
-_splunk_hec_sink: SplunkHecSink | None = None
-_splunk_detection_mapper: SplunkDetectionMapper | None = None
-# Generic CEF-over-syslog sink (roadmap R3) -- identical "None means
-# disabled" shape as _splunk_hec_sink above. Unlike Splunk, the sink class
-# itself (SyslogIntegrationSink) is R1's own, unmodified transport -- only
-# the mapper is new here (see cef_detection_mapper.py's own module
-# docstring for why no sibling sink class was built).
-_cef_syslog_sink: SyslogIntegrationSink | None = None
-_cef_detection_mapper: CefDetectionMapper | None = None
-# Microsoft Sentinel Logs Ingestion API sink (roadmap R4) -- identical
-# "None means disabled" shape as _splunk_hec_sink/_cef_syslog_sink above.
-# Both the sink (SentinelHttpSink) and mapper (SentinelDetectionMapper) are
-# new this pass -- see sentinel_sink.py's own module docstring for why a
-# sibling sink class (not reuse of HttpJsonIntegrationSink) was the right
-# call here too.
-_sentinel_sink: SentinelHttpSink | None = None
-_sentinel_detection_mapper: SentinelDetectionMapper | None = None
-# Microsoft Defender Graph Security API alerts_v2 poll source (roadmap Q4)
-# -- same "None means disabled, an honest state" shape as _splunk_hec_sink/
-# _cef_syslog_sink above, but on the POLL *source* side rather than the PUSH
-# *sink* side. Unlike GenericWebhookPushSource/WazuhPushSource (Q1/Q2, zero-
-# arg constructors, always safe to register unconditionally),
-# DefenderPollSource genuinely needs real OAuth2 credentials to construct
-# (an httpx.AsyncClient + OAuth2ClientCredentialsOutboundAuthStrategy) --
-# there is no honest zero-arg default, so it is registered into
-# _integration_source_registry only by configure_defender_poll_source_from_settings()
-# finding real defender_tenant_id/client_id/client_secret, mirroring
-# _splunk_hec_sink's own "constructed and registered together" idiom rather
-# than Q1's own still-open "PUSH sources always registered, auth is the only
-# gate" precedent (which doesn't apply here since there is no auth-free
-# registration step possible for a POLL source at all).
-_defender_poll_source: DefenderPollSource | None = None
-_defender_http_client: httpx.AsyncClient | None = None
-# Captured independently of _defender_poll_source above (Milestone W14,
-# GET /api/admin/connectors/status) -- the connector-status route needs to
-# know WHICH org (if any) Defender is globally configured for even though
-# it never talks to Graph itself, so it must not depend on the OAuth2
-# client/http client also having been constructed successfully. None is the
-# honest "unset" state (mirrors Settings.defender_poll_org_id's own default).
-_defender_poll_org_id: str | None = None
-_defender_poll_source_id: str = "ms-defender-alerts"
-
-
 # ---------------------------------------------------------------------------
 # Repository / storage providers
 # ---------------------------------------------------------------------------
@@ -434,6 +404,42 @@ def get_integration_source_key_repository() -> IntegrationSourceKeyRepository:
     same instance ``_inbound_source_authenticator`` above queries per
     request."""
     return _integration_source_key_repository
+
+
+def get_connector_config_repository() -> ConnectorConfigRepository:
+    return _connector_config_repository
+
+
+def get_secret_store() -> SecretStore:
+    return _secret_store
+
+
+def get_connector_catalog() -> ConnectorCatalog:
+    return _connector_catalog
+
+
+def get_connector_config_service(
+    catalog: Annotated[ConnectorCatalog, Depends(get_connector_catalog)],
+    repository: Annotated[ConnectorConfigRepository, Depends(get_connector_config_repository)],
+    secret_store: Annotated[SecretStore, Depends(get_secret_store)],
+    audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> ConnectorConfigService:
+    """FastAPI dependency for ConnectorConfigService (connector marketplace,
+    `/admin/connectors`)."""
+    return ConnectorConfigService(catalog, repository, secret_store, audit_log)
+
+
+def configure_connector_config_repository(repository: ConnectorConfigRepository) -> None:
+    """Swap the live ConnectorConfigRepository (e.g. for
+    PostgresConnectorConfigRepository at real startup)."""
+    global _connector_config_repository
+    _connector_config_repository = repository
+
+
+def configure_secret_store(store: SecretStore) -> None:
+    """Swap the live SecretStore (e.g. for VaultSecretStore at real startup)."""
+    global _secret_store
+    _secret_store = store
 
 
 def get_integration_source_ingest_service(
@@ -710,12 +716,12 @@ def configure_keycloak_admin_client_from_settings() -> None:
     ``dependencies.py``/``startup.py``").
 
     Call at application startup after ``configure_dependencies()``, mirroring
-    ``configure_clamav_from_settings()``'s/``configure_splunk_hec_sink_from_
-    settings()``'s own "falls back silently if Settings can't be
-    instantiated" shape for unit tests -- the exact same construction this
-    codebase already trusts for containment (``_build_keycloak_admin_client``,
-    ``src/external/celery_streaming.py``), reused here rather than a second,
-    parallel construction path for the same real client.
+    ``configure_clamav_from_settings()``'s own "falls back silently if
+    Settings can't be instantiated" shape for unit tests -- the exact same
+    construction this codebase already trusts for containment
+    (``_build_keycloak_admin_client``, ``src/external/celery_streaming.py``),
+    reused here rather than a second, parallel construction path for the
+    same real client.
     """
     global _keycloak_admin_client
     from src.config import Settings  # noqa: PLC0415
@@ -744,297 +750,73 @@ def get_keycloak_admin_client() -> KeycloakAdminClient | None:
     return _keycloak_admin_client
 
 
-def configure_splunk_hec_sink_from_settings() -> None:
-    """Wire a real ``SplunkHecSink``/``SplunkDetectionMapper`` pair from
-    ``splunk_hec_url``/``splunk_hec_token`` in Settings (roadmap R2).
+def build_sink_and_mapper_from_config(
+    source_type: str, config: dict[str, str]
+) -> tuple[IntegrationSink, DetectionEventMapper]:
+    """Build a real (sink, mapper) pair for one org's resolved connector
+    config (connector marketplace, `/admin/connectors`).
 
-    Call at application startup after ``configure_dependencies()``. Mirrors
-    ``configure_clamav_from_settings()``'s own "falls back silently if
-    Settings can't be instantiated" shape for unit tests -- but unlike
-    ClamAV there is no production hard-fail case here: an unconfigured
-    Splunk sink is an honest, legitimate "this deployment doesn't push to
-    Splunk" state (mirrors ``get_timestamp_service()``'s own
-    None-is-valid contract), never a security control silently downgrading.
+    Historically (Phase 5 of the connector marketplace) three
+    ``configure_*_sink_from_settings()`` functions each built ONE
+    process-lifetime instance from global ``Settings`` -- since removed
+    (Phase 7 cleanup) once every sink became per-org config. This builds a
+    fresh instance from *config* (``ConnectorConfigService.resolve_runtime_config``'s
+    return value: already merged non-secret fields + secret values + catalog
+    defaults for unset optional params), called by
+    ``SyncDetectionToSiemAction.execute()`` per push, per org, so each
+    org's detections always go to THAT org's own destination. Raises
+    ``KeyError`` if a genuinely required field is missing from *config* --
+    should not happen in practice since ``ConnectorConfigService.set_config``
+    already validated required fields at configure time, but this function
+    doesn't re-trust that silently.
     """
-    global _splunk_hec_sink, _splunk_detection_mapper
-    from src.adapter.integration_sink.sink_authenticator import (  # noqa: PLC0415
-        StaticTokenAuthenticator,
-    )
-    from src.config import Settings  # noqa: PLC0415
-
-    try:
-        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
-    except Exception:
-        return  # keep both None in test/dev environments without full Settings
-
-    if not s.splunk_hec_url or s.splunk_hec_token is None:
-        logger.info(
-            "splunk_hec_sink_not_configured",
-            extra={"splunk_hec_url_set": bool(s.splunk_hec_url)},
+    if source_type == "splunk-hec":
+        authenticator = StaticTokenAuthenticator(
+            config["splunk_hec_token"],
+            scheme="Splunk",
+            verify=config.get("splunk_hec_verify_tls", "true").lower() != "false",
         )
-        return
-
-    authenticator = StaticTokenAuthenticator(
-        s.splunk_hec_token.get_secret_value(),
-        scheme="Splunk",
-        verify=s.splunk_hec_verify_tls,
-    )
-    _splunk_hec_sink = SplunkHecSink(
-        s.splunk_hec_url,
-        authenticator,
-        enable_indexer_ack=s.splunk_hec_enable_indexer_ack,
-        ack_poll_timeout=s.splunk_hec_ack_poll_timeout,
-        ack_poll_interval=s.splunk_hec_ack_poll_interval,
-    )
-    _splunk_detection_mapper = SplunkDetectionMapper(
-        source=s.splunk_hec_source,
-        sourcetype=s.splunk_hec_sourcetype,
-        index=s.splunk_hec_index,
-    )
-
-
-def get_splunk_hec_sink() -> SplunkHecSink | None:
-    """Return the configured ``SplunkHecSink``, or None if unconfigured.
-
-    None is a valid, honest configuration (no splunk_hec_url/token set);
-    callers must treat it as "Splunk push disabled", never substitute a
-    fabricated sink.
-    """
-    return _splunk_hec_sink
-
-
-def get_splunk_detection_mapper() -> SplunkDetectionMapper | None:
-    """Return the configured ``SplunkDetectionMapper``, or None if the sink
-    itself is unconfigured (see ``get_splunk_hec_sink``)."""
-    return _splunk_detection_mapper
-
-
-def configure_cef_syslog_sink_from_settings() -> None:
-    """Wire a real ``SyslogIntegrationSink``/``CefDetectionMapper`` pair from
-    ``cef_syslog_host``/``cef_syslog_port``/``cef_syslog_protocol`` in
-    Settings (roadmap R3).
-
-    Call at application startup after ``configure_dependencies()``. Mirrors
-    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
-    if Settings can't be instantiated" shape for unit tests -- an
-    unconfigured CEF sink is an honest, legitimate "this deployment doesn't
-    push to a syslog SIEM" state, never a security control silently
-    downgrading.
-    """
-    global _cef_syslog_sink, _cef_detection_mapper
-    from src.config import Settings  # noqa: PLC0415
-
-    try:
-        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
-    except Exception:
-        return  # keep both None in test/dev environments without full Settings
-
-    if not s.cef_syslog_host:
-        logger.info("cef_syslog_sink_not_configured", extra={"cef_syslog_host_set": False})
-        return
-
-    protocol = (
-        SyslogTransportProtocol.UDP
-        if s.cef_syslog_protocol.lower() == "udp"
-        else SyslogTransportProtocol.TCP
-    )
-    _cef_syslog_sink = SyslogIntegrationSink(
-        s.cef_syslog_host, s.cef_syslog_port, protocol=protocol
-    )
-    _cef_detection_mapper = CefDetectionMapper(
-        device_vendor=s.cef_device_vendor,
-        device_product=s.cef_device_product,
-        device_version=s.cef_device_version,
-    )
-
-
-def get_cef_syslog_sink() -> SyslogIntegrationSink | None:
-    """Return the configured ``SyslogIntegrationSink`` for CEF-over-syslog,
-    or None if unconfigured.
-
-    None is a valid, honest configuration (no ``cef_syslog_host`` set);
-    callers must treat it as "CEF-over-syslog push disabled", never
-    substitute a fabricated sink.
-    """
-    return _cef_syslog_sink
-
-
-def get_cef_detection_mapper() -> CefDetectionMapper | None:
-    """Return the configured ``CefDetectionMapper``, or None if the sink
-    itself is unconfigured (see ``get_cef_syslog_sink``)."""
-    return _cef_detection_mapper
-
-
-def configure_sentinel_sink_from_settings() -> None:
-    """Wire a real ``SentinelHttpSink``/``SentinelDetectionMapper`` pair from
-    ``sentinel_dce_endpoint``/``sentinel_dcr_immutable_id``/
-    ``sentinel_tenant_id``/``sentinel_client_id``/``sentinel_client_secret``
-    in Settings (roadmap R4).
-
-    Call at application startup after ``configure_dependencies()``. Mirrors
-    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
-    if Settings can't be instantiated" shape for unit tests -- an
-    unconfigured Sentinel sink is an honest, legitimate "this deployment
-    doesn't push to Sentinel" state, never a security control silently
-    downgrading. ALL of the four settings named above must be set (unlike
-    Splunk's two/CEF's one) since Sentinel's real OAuth2 client-credentials
-    flow has no partial/anonymous mode -- a deployment missing any one of
-    them cannot authenticate at all.
-    """
-    global _sentinel_sink, _sentinel_detection_mapper
-    from src.adapter.integration_sink.sink_authenticator import (  # noqa: PLC0415
-        OAuth2ClientCredentialsAuthenticator,
-    )
-    from src.config import Settings  # noqa: PLC0415
-
-    try:
-        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
-    except Exception:
-        return  # keep both None in test/dev environments without full Settings
-
-    if not (
-        s.sentinel_dce_endpoint
-        and s.sentinel_dcr_immutable_id
-        and s.sentinel_tenant_id
-        and s.sentinel_client_id
-        and s.sentinel_client_secret is not None
-    ):
-        logger.info(
-            "sentinel_sink_not_configured",
-            extra={
-                "sentinel_dce_endpoint_set": bool(s.sentinel_dce_endpoint),
-                "sentinel_dcr_immutable_id_set": bool(s.sentinel_dcr_immutable_id),
-                "sentinel_tenant_id_set": bool(s.sentinel_tenant_id),
-                "sentinel_client_id_set": bool(s.sentinel_client_id),
-            },
+        sink: IntegrationSink = SplunkHecSink(config["splunk_hec_url"], authenticator)
+        mapper: DetectionEventMapper = SplunkDetectionMapper(
+            source=config.get("splunk_hec_source", "kronos"),
+            sourcetype=config.get("splunk_hec_sourcetype", "_json"),
+            index=config.get("splunk_hec_index"),
         )
-        return
+        return sink, mapper
 
-    # Real Entra ID v2.0 client-credentials token endpoint (verified against
-    # the tutorial-logs-ingestion-code PowerShell sample fetched this pass):
-    # https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
-    token_url = f"https://login.microsoftonline.com/{s.sentinel_tenant_id}/oauth2/v2.0/token"
-    authenticator = OAuth2ClientCredentialsAuthenticator(
-        token_url,
-        s.sentinel_client_id,
-        s.sentinel_client_secret.get_secret_value(),
-        scope=s.sentinel_oauth_scope,
-        verify=s.sentinel_verify_tls,
-    )
-    _sentinel_sink = SentinelHttpSink(
-        s.sentinel_dce_endpoint,
-        s.sentinel_dcr_immutable_id,
-        s.sentinel_stream_name,
-        authenticator,
-        api_version=s.sentinel_api_version,
-    )
-    _sentinel_detection_mapper = SentinelDetectionMapper()
-
-
-def get_sentinel_sink() -> SentinelHttpSink | None:
-    """Return the configured ``SentinelHttpSink``, or None if unconfigured.
-
-    None is a valid, honest configuration (Sentinel settings unset);
-    callers must treat it as "Sentinel push disabled", never substitute a
-    fabricated sink.
-    """
-    return _sentinel_sink
-
-
-def get_sentinel_detection_mapper() -> SentinelDetectionMapper | None:
-    """Return the configured ``SentinelDetectionMapper``, or None if the
-    sink itself is unconfigured (see ``get_sentinel_sink``)."""
-    return _sentinel_detection_mapper
-
-
-def configure_defender_poll_source_from_settings() -> None:
-    """Wire a real ``DefenderPollSource`` from ``defender_tenant_id``/
-    ``defender_client_id``/``defender_client_secret`` in Settings
-    (roadmap Q4).
-
-    Call at application startup after ``configure_dependencies()``. Mirrors
-    ``configure_splunk_hec_sink_from_settings()``'s own "falls back silently
-    if Settings can't be instantiated" shape -- an unconfigured Defender
-    source is an honest, legitimate "this deployment has no real Entra ID
-    app registration yet" state (verified: no such tenant exists anywhere in
-    this repo's own env/secrets setup), never a security control silently
-    downgrading. Unlike the Splunk/CEF *sinks*, all three of
-    ``defender_tenant_id``/``defender_client_id``/``defender_client_secret``
-    must be set together (there is no honest partial-credential state for an
-    OAuth2 client-credentials grant), and this also, unlike a sink, requires
-    a real ``httpx.AsyncClient`` (owned here, kept alive for the process
-    lifetime so ``OAuth2ClientCredentialsOutboundAuthStrategy``'s own token
-    cache is actually reused across poll cycles rather than re-authenticating
-    every call -- see that class's own docstring for why that matters).
-    """
-    global _defender_poll_source, _defender_http_client
-    global _defender_poll_org_id, _defender_poll_source_id
-    from src.config import Settings  # noqa: PLC0415
-
-    try:
-        s = Settings()  # type: ignore[call-arg]  # BaseSettings: real values come from env vars
-    except Exception:
-        return  # keep both None in test/dev environments without full Settings
-
-    # Captured unconditionally -- org/source_id attribution is meaningful
-    # even if the OAuth2 credential trio below is unset (see this module
-    # global's own comment), unlike _defender_poll_source itself which
-    # genuinely cannot exist without real credentials.
-    _defender_poll_org_id = s.defender_poll_org_id
-    _defender_poll_source_id = s.defender_poll_source_id
-
-    if not s.defender_tenant_id or not s.defender_client_id or s.defender_client_secret is None:
-        logger.info(
-            "defender_poll_source_not_configured",
-            extra={"defender_tenant_id_set": bool(s.defender_tenant_id)},
+    if source_type == "cef-syslog":
+        protocol = (
+            SyslogTransportProtocol.UDP
+            if config.get("cef_syslog_protocol", "udp").lower() == "udp"
+            else SyslogTransportProtocol.TCP
         )
-        return
+        sink = SyslogIntegrationSink(config["cef_syslog_host"], int(config["cef_syslog_port"]), protocol=protocol)
+        mapper = CefDetectionMapper(
+            device_vendor=config.get("cef_device_vendor", "KronOS"),
+            device_product=config.get("cef_device_product", "DetectionSink"),
+            device_version=config.get("cef_device_version", "1.0"),
+        )
+        return sink, mapper
 
-    _defender_http_client = httpx.AsyncClient()
-    auth_strategy = OAuth2ClientCredentialsOutboundAuthStrategy(
-        _defender_http_client,
-        token_endpoint=f"https://login.microsoftonline.com/{s.defender_tenant_id}/oauth2/v2.0/token",
-        client_id=s.defender_client_id,
-        client_secret=s.defender_client_secret.get_secret_value(),
-        scope="https://graph.microsoft.com/.default",
-    )
-    _defender_poll_source = DefenderPollSource(
-        _defender_http_client,
-        base_url=s.defender_graph_base_url,
-        auth_strategy=auth_strategy,
-    )
-    _integration_source_registry.register(_defender_poll_source)
+    if source_type == "sentinel":
+        token_url = f"https://login.microsoftonline.com/{config['sentinel_tenant_id']}/oauth2/v2.0/token"
+        authenticator = OAuth2ClientCredentialsAuthenticator(
+            token_url,
+            config["sentinel_client_id"],
+            config["sentinel_client_secret"],
+            scope=config.get("sentinel_oauth_scope", "https://monitor.azure.com/.default"),
+            verify=config.get("sentinel_verify_tls", "true").lower() != "false",
+        )
+        sink = SentinelHttpSink(
+            config["sentinel_dce_endpoint"],
+            config["sentinel_dcr_immutable_id"],
+            config["sentinel_stream_name"],
+            authenticator,
+        )
+        mapper = SentinelDetectionMapper()
+        return sink, mapper
 
-
-def get_defender_poll_source() -> DefenderPollSource | None:
-    """Return the configured ``DefenderPollSource``, or None if unconfigured.
-
-    None is a valid, honest configuration (no real Entra ID app registration
-    provisioned); callers must treat it as "Defender poll disabled", never
-    substitute a fabricated source.
-    """
-    return _defender_poll_source
-
-
-def get_defender_poll_org_id() -> str | None:
-    """FastAPI dependency: the raw ``Settings.defender_poll_org_id`` string
-    (or None if unset), as last read by
-    ``configure_defender_poll_source_from_settings()`` -- the connector-status
-    route (Milestone W14) is the sole consumer. Deliberately the raw string,
-    not a pre-parsed ``uuid.UUID``: a malformed value is a real, distinct
-    state from "unset" that the caller must be able to tell apart and log,
-    mirroring ``celery_defender.py``'s own "let a malformed value be visible,
-    don't silently coerce it" treatment of this same setting.
-    """
-    return _defender_poll_org_id
-
-
-def get_defender_poll_source_id() -> str:
-    """FastAPI dependency: ``Settings.defender_poll_source_id`` (defaults to
-    ``"ms-defender-alerts"``, matching the ``Settings`` field's own default)
-    -- the ``SourceCursor``/audit ``source_id`` this org's Defender feed is
-    keyed under, for display in the connector-status route."""
-    return _defender_poll_source_id
+    raise ValueError(f"build_sink_and_mapper_from_config: no factory for source_type={source_type!r}")
 
 
 def get_task_queue() -> TaskQueue:
@@ -1309,6 +1091,9 @@ def get_playbook_action_registry(
     detection_repository: Annotated[DetectionRepository, Depends(get_detection_repository)],
     triage_service: Annotated[DetectionTriageService, Depends(get_detection_triage_service)],
     audit_log: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    connector_config_service: Annotated[
+        ConnectorConfigService, Depends(get_connector_config_service)
+    ],
 ) -> PlaybookActionRegistry:
     """FastAPI dependency for PlaybookActionRegistry (roadmap M7/H1).
 
@@ -1333,12 +1118,15 @@ def get_playbook_action_registry(
     SyncDetectionToSiemAction sinks are added below once a real
     TicketingSystem is built and wired.
 
-    One ``SyncDetectionToSiemAction`` is registered per SIEM sink that is
-    actually configured (``get_splunk_hec_sink()`` et al. -- all honestly
-    ``None`` until real ``splunk_hec_url``/``cef_syslog_host``/``sentinel_*``
-    settings are provided, see each getter's own docstring) -- an
-    unconfigured deployment ends up with zero SyncDetectionToSiemAction
-    registrations, never a fabricated one pointed at nothing.
+    Per-org config (connector marketplace, `/admin/connectors`): one
+    ``SyncDetectionToSiemAction`` is now registered per SIEM sink TYPE
+    unconditionally (splunk-hec/cef-syslog/sentinel), never gated on
+    whether any org has actually configured it -- that is now a per-org,
+    execute()-time question (``ConnectorConfigService.resolve_runtime_config``),
+    not a boot-time registration question. An org with no config for a
+    given sink gets a loud ``PlaybookError`` when that action actually
+    runs, never a silently-missing registration or a fallback to some
+    other org's credentials.
 
     ``revoke_keycloak_session`` (roadmap M7/H2/EE1) is registered the same
     "honestly absent until configured" way, via
@@ -1355,36 +1143,14 @@ def get_playbook_action_registry(
     if revoke_session_action is not None:
         registry.register(revoke_session_action)
 
-    splunk_sink = get_splunk_hec_sink()
-    splunk_mapper = get_splunk_detection_mapper()
-    if splunk_sink is not None and splunk_mapper is not None:
+    for source_type in ("splunk-hec", "cef-syslog", "sentinel"):
         registry.register(
             SyncDetectionToSiemAction(
-                "splunk",
+                source_type,
                 detection_repository,
-                DetectionSinkPushService(splunk_sink, splunk_mapper, audit_log),
-            )
-        )
-
-    cef_sink = get_cef_syslog_sink()
-    cef_mapper = get_cef_detection_mapper()
-    if cef_sink is not None and cef_mapper is not None:
-        registry.register(
-            SyncDetectionToSiemAction(
-                "cef",
-                detection_repository,
-                DetectionSinkPushService(cef_sink, cef_mapper, audit_log),
-            )
-        )
-
-    sentinel_sink = get_sentinel_sink()
-    sentinel_mapper = get_sentinel_detection_mapper()
-    if sentinel_sink is not None and sentinel_mapper is not None:
-        registry.register(
-            SyncDetectionToSiemAction(
-                "sentinel",
-                detection_repository,
-                DetectionSinkPushService(sentinel_sink, sentinel_mapper, audit_log),
+                connector_config_service,
+                build_sink_and_mapper_from_config,
+                audit_log,
             )
         )
 
@@ -1595,6 +1361,8 @@ def configure_dependencies(
     source_cursor_repository: SourceCursorRepository | None = None,
     integration_source_key_repository: IntegrationSourceKeyRepository | None = None,
     derived_artifact_storage: DerivedArtifactStorage | None = None,
+    connector_config_repository: ConnectorConfigRepository | None = None,
+    secret_store: SecretStore | None = None,
 ) -> None:
     """Wire concrete implementations into the container."""
     global _audit_log_repository, _evidence_repository, _evidence_storage
@@ -1613,6 +1381,7 @@ def configure_dependencies(
     global _asset_repository, _enrichment_pipeline, _ioc_feed_repository
     global _org_quota_repository, _source_cursor_repository
     global _integration_source_key_repository, _inbound_source_authenticator
+    global _connector_config_repository, _secret_store
     if audit_log_repository is not None:
         _audit_log_repository = audit_log_repository
     if evidence_repository is not None:
@@ -1678,6 +1447,10 @@ def configure_dependencies(
         _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(
             _integration_source_key_repository
         )
+    if connector_config_repository is not None:
+        _connector_config_repository = connector_config_repository
+    if secret_store is not None:
+        _secret_store = secret_store
 
 
 def reset_dependencies() -> None:
@@ -1700,11 +1473,7 @@ def reset_dependencies() -> None:
     global _org_quota_repository
     global _integration_source_registry, _source_cursor_repository
     global _inbound_source_authenticator, _integration_source_key_repository
-    global _splunk_hec_sink, _splunk_detection_mapper
-    global _cef_syslog_sink, _cef_detection_mapper
-    global _sentinel_sink, _sentinel_detection_mapper
-    global _defender_poll_source, _defender_http_client
-    global _defender_poll_org_id, _defender_poll_source_id
+    global _connector_config_repository, _secret_store
     global _keycloak_admin_client
     _step_up_auth = _StepUpAuth()
     _keycloak_admin_client = None
@@ -1740,20 +1509,12 @@ def reset_dependencies() -> None:
     _inbound_source_authenticator = StaticApiKeyInboundAuthenticator(
         _integration_source_key_repository
     )
+    _connector_config_repository = InMemoryConnectorConfigRepository()
+    _secret_store = InMemorySecretStore()
     _stream_ingest_adapter = InMemoryStreamIngestAdapter()
     _event_dedup_checker = InMemoryEventDedupChecker()
     _collector_ingest_service = None
     _timestamp_service = None
-    _splunk_hec_sink = None
-    _splunk_detection_mapper = None
-    _cef_syslog_sink = None
-    _cef_detection_mapper = None
-    _sentinel_sink = None
-    _sentinel_detection_mapper = None
-    _defender_poll_source = None
-    _defender_http_client = None
-    _defender_poll_org_id = None
-    _defender_poll_source_id = "ms-defender-alerts"
     _default_retention_days = 365
     _opensearch_security_enabled = False
     _rule_pack_repository = InMemoryRulePackRepository()

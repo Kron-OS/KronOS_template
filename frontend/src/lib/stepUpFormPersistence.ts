@@ -1,6 +1,6 @@
 /**
  * Gap Audit Milestone YYYY: closes Tier 1 item 3 of
- * `docs/HANDOFF_AND_ORCHESTRATION.md`. `apiClient`'s global response
+ * `docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current)`. `apiClient`'s global response
  * interceptor (`api/client.ts`) triggers a real, full browser redirect
  * (`keycloak.login({ acrValues: 'aal2', prompt: 'login' })`) on a step-up
  * challenge -- confirmed live across three separate features (quota,

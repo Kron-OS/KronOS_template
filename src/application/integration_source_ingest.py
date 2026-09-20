@@ -216,11 +216,12 @@ class IntegrationSourceIngestService:
             )
 
         return [
-            await self._produce_one(identity.org_id, identity.source_id, raw) for raw in raw_events
+            await self._produce_one(identity.org_id, identity.source_id, identity.source_type, raw)
+            for raw in raw_events
         ]
 
     async def _produce_one(
-        self, org_id: uuid.UUID, source_id: str, raw_event: bytes
+        self, org_id: uuid.UUID, source_id: str, source_type: str, raw_event: bytes
     ) -> EventOutcome:
         content_hash = hashlib.sha256(raw_event).hexdigest()
 
@@ -233,5 +234,5 @@ class IntegrationSourceIngestService:
             )
             return EventOutcome(accepted=False, duplicate=True, message_id=None)
 
-        message_id = await self._stream.produce(org_id, source_id, raw_event)
+        message_id = await self._stream.produce(org_id, source_id, raw_event, source_type=source_type)
         return EventOutcome(accepted=True, duplicate=False, message_id=message_id)

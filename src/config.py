@@ -150,6 +150,22 @@ class Settings(BaseSettings):
     vault_url: str = Field(description="HashiCorp Vault URL, e.g. https://vault:8200")
     vault_token: SecretStr
 
+    # Per-org connector secret storage (connector marketplace,
+    # `/admin/connectors`) -- deliberately a DEDICATED least-privilege
+    # AppRole against a dedicated `kronos-connectors` KV-v2 mount, never
+    # the root `vault_token` above (that stays reserved for KES/manual
+    # operator use). See poc/vault_secret_store/README.md for the real
+    # verification and docker-compose.dev.yml's `vault-connectors-init`
+    # service for how the creds file this points at is minted.
+    vault_connectors_approle_creds_file: str | None = Field(
+        default=None,
+        description=(
+            "Path to a JSON file {role_id, secret_id} for the "
+            "kronos-connectors-app AppRole. None means VaultSecretStore is "
+            "not configured (an honest, valid dev/test state)."
+        ),
+    )
+
     # Celery
     celery_broker_url: SecretStr = Field(description="Celery broker, defaults to Redis URL")
     celery_result_backend: SecretStr
@@ -236,223 +252,6 @@ class Settings(BaseSettings):
     ticketing_webhook_url: str | None = Field(
         default=None,
         description="Outbound webhook URL for the external ITSM/ticketing system, e.g. https://itsm.example.com/webhooks/kronos",
-    )
-
-    # Splunk HTTP Event Collector sink (roadmap M-integrations/R2) -- same
-    # "one global endpoint, not per-org config" shape as ticketing_webhook_url
-    # above. Both splunk_hec_url and splunk_hec_token must be set for
-    # get_splunk_hec_sink() to construct a real SplunkHecSink; either being
-    # None means "not configured," an honest, legitimate dev/test state, not
-    # an error (mirrors get_timestamp_service()'s own None-is-valid contract).
-    splunk_hec_url: str | None = Field(
-        default=None,
-        description=(
-            "Full Splunk HEC event-collector endpoint URL, e.g. "
-            "https://splunk.example.com:8088/services/collector/event"
-        ),
-    )
-    splunk_hec_token: SecretStr | None = Field(
-        default=None,
-        description="Splunk HEC token -- sent as 'Authorization: Splunk <token>', never logged.",
-    )
-    splunk_hec_source: str = Field(
-        default="kronos:detection_sink",
-        description="Splunk HEC 'source' field applied to every pushed Detection event.",
-    )
-    splunk_hec_sourcetype: str = Field(
-        default="kronos:detection",
-        description="Splunk HEC 'sourcetype' field applied to every pushed Detection event.",
-    )
-    splunk_hec_index: str | None = Field(
-        default=None,
-        description="Splunk HEC 'index' field -- omitted (token's default index applies) if unset.",
-    )
-    splunk_hec_verify_tls: bool = Field(
-        default=True,
-        description="Whether to verify the Splunk HEC endpoint's TLS cert (httpx 'verify=').",
-    )
-    # Indexer-acknowledgement polling (gap audit V6, P1-3) -- opt-in, since
-    # it requires the HEC token itself to have useACK=1 set (a real,
-    # separate admin action, not something KronOS can turn on remotely --
-    # see splunk_hec_sink.py's own module docstring). False/defaults here
-    # preserve the existing coarser code==0 confirmation for every
-    # deployment that hasn't opted a token into useACK.
-    splunk_hec_enable_indexer_ack: bool = Field(
-        default=False,
-        description=(
-            "Enable Splunk HEC indexer-acknowledgement polling (requires the "
-            "configured token to have useACK=1 set on the Splunk side)."
-        ),
-    )
-    splunk_hec_ack_poll_timeout: float = Field(
-        default=30.0,
-        description=(
-            "Real, bounded max seconds push_events() polls "
-            "/services/collector/ack before returning ACK_PENDING."
-        ),
-    )
-    splunk_hec_ack_poll_interval: float = Field(
-        default=1.0,
-        description=(
-            "Seconds between successive /services/collector/ack polls "
-            "while awaiting indexer confirmation."
-        ),
-    )
-
-    # Generic CEF-over-syslog sink (roadmap M-integrations/R3) -- the
-    # vendor-neutral universal fallback (no auth, fire-and-forget). Same
-    # "one global endpoint, not per-org config" shape as splunk_hec_url
-    # above. cef_syslog_host must be set for get_cef_syslog_sink() to
-    # construct a real SyslogIntegrationSink; None means "not configured,"
-    # an honest, legitimate dev/test state (mirrors splunk_hec_url's own
-    # None-is-valid contract), never an error.
-    cef_syslog_host: str | None = Field(
-        default=None,
-        description=(
-            "Hostname/IP of the real CEF-over-syslog receiver "
-            "(e.g. a QRadar/generic SIEM syslog listener)."
-        ),
-    )
-    cef_syslog_port: int = Field(
-        default=514,
-        description=(
-            "Port of the real CEF-over-syslog receiver (514 is syslog's own conventional default)."
-        ),
-    )
-    cef_syslog_protocol: str = Field(
-        default="tcp",
-        description=(
-            "'tcp' or 'udp' -- transport protocol for the CEF-over-syslog push "
-            "(SyslogTransportProtocol)."
-        ),
-    )
-    cef_device_vendor: str = Field(
-        default="KronOS",
-        description="CEF header 'Device Vendor' field applied to every pushed Detection event.",
-    )
-    cef_device_product: str = Field(
-        default="DetectionSink",
-        description="CEF header 'Device Product' field applied to every pushed Detection event.",
-    )
-    cef_device_version: str = Field(
-        default="1.0",
-        description="CEF header 'Device Version' field applied to every pushed Detection event.",
-    )
-
-    # Microsoft Sentinel Logs Ingestion API sink (roadmap M-integrations/R4)
-    # -- the OAuth2 + rigid-pre-provisioned-schema case. Same "one
-    # global endpoint, not per-org config" shape as splunk_hec_url/
-    # cef_syslog_host above. ALL FOUR of sentinel_dce_endpoint/
-    # sentinel_dcr_immutable_id/sentinel_client_id/sentinel_client_secret
-    # must be set for get_sentinel_sink() to construct a real
-    # SentinelHttpSink; any being None means "not configured," an honest,
-    # legitimate dev/test state (mirrors splunk_hec_url's own
-    # None-is-valid contract), never an error.
-    sentinel_dce_endpoint: str | None = Field(
-        default=None,
-        description=(
-            "Real Data Collection Endpoint (or DCR-embedded logs-ingestion "
-            "endpoint) base URL, e.g. "
-            "https://my-dce-5kyl.eastus-1.ingest.monitor.azure.com"
-        ),
-    )
-    sentinel_dcr_immutable_id: str | None = Field(
-        default=None,
-        description="The real DCR's own immutableId, e.g. dcr-000a00a000a00000a000000aa000a0aa.",
-    )
-    sentinel_stream_name: str = Field(
-        default="Custom-KronOSDetection",
-        description="The DCR streamDeclaration name matching SentinelDetectionMapper's schema.",
-    )
-    sentinel_api_version: str = Field(
-        default="2023-01-01",
-        description="Logs Ingestion API api-version query parameter (pinned, real, current value).",
-    )
-    sentinel_tenant_id: str | None = Field(
-        default=None, description="Entra ID (Azure AD) tenant id for the OAuth2 token endpoint."
-    )
-    sentinel_client_id: str | None = Field(
-        default=None,
-        description="Entra ID app registration's Application (client) ID, granted the DCR's "
-        "Monitoring Metrics Publisher role.",
-    )
-    sentinel_client_secret: SecretStr | None = Field(
-        default=None, description="Entra ID app registration's client secret -- never logged."
-    )
-    sentinel_oauth_scope: str = Field(
-        default="https://monitor.azure.com/.default",
-        description=(
-            "OAuth2 client-credentials scope -- the real, documented Azure "
-            "public cloud Logs Ingestion API audience "
-            "(https://monitor.azure.com) plus the v2.0 token endpoint's "
-            "own '/.default' suffix convention."
-        ),
-    )
-    sentinel_verify_tls: bool = Field(
-        default=True,
-        description="Whether to verify the Sentinel DCE endpoint's TLS cert (httpx 'verify=').",
-    )
-
-    # Microsoft Defender Graph Security API alerts_v2 poll source (roadmap
-    # M-integrations/Q4) -- same "all three must be set, honest disabled
-    # state otherwise" shape as splunk_hec_url/splunk_hec_token above. No
-    # real Entra ID tenant exists in this sandbox (verified: no
-    # AZURE_TENANT_ID/AZURE_CLIENT_ID/ENTRA-related config anywhere in this
-    # repo's env/secrets setup) -- these three being unset is the honest,
-    # expected state until a real deployment provisions a real Entra ID app
-    # registration with SecurityAlert.Read.All.
-    defender_tenant_id: str | None = Field(
-        default=None,
-        description=(
-            "Entra ID tenant ID (GUID or verified domain) for the Defender "
-            "Graph API app registration."
-        ),
-    )
-    defender_client_id: str | None = Field(
-        default=None,
-        description=(
-            "Entra ID app registration (client) ID for the Defender Graph "
-            "API OAuth2 client-credentials grant."
-        ),
-    )
-    defender_client_secret: SecretStr | None = Field(
-        default=None,
-        description="Entra ID app registration client secret -- never logged.",
-    )
-    defender_graph_base_url: str = Field(
-        default="https://graph.microsoft.com/v1.0",
-        description=(
-            "Microsoft Graph API base URL. Override for a real local stand-in "
-            "server in test/dev, or a sovereign-cloud Graph endpoint in prod."
-        ),
-    )
-    # Which KronOS org the poll_defender_alerts beat task (Gap Audit
-    # P1-2/V2) attributes this Entra ID app registration's alerts feed to.
-    # One Entra tenant/app registration maps to exactly one KronOS org --
-    # there is no honest per-alert attribution signal in the alert payload
-    # itself (mirrors IntegrationSourceIdentity's own "org_id must never be
-    # derived from the external tool's own payload" invariant), so this
-    # must be an explicit deployment-time setting, not inferred. Unset is
-    # the same honest "not provisioned yet" state as the three defender_*
-    # credentials above -- the beat task no-ops (logs, returns 0) rather
-    # than guessing an org.
-    defender_poll_org_id: str | None = Field(
-        default=None,
-        description=(
-            "KronOS org (UUID) this Defender alerts feed belongs to. Required, "
-            "alongside defender_tenant_id/client_id/client_secret, for "
-            "poll_defender_alerts to actually poll; unset is an honest "
-            "disabled state."
-        ),
-    )
-    defender_poll_source_id: str = Field(
-        default="ms-defender-alerts",
-        description=(
-            "IntegrationSourceIdentity.source_id this feed's SourceCursor/"
-            "dedup keys are stored under -- override only if a deployment "
-            "needs more than one Defender app registration polled into the "
-            "same org (each would need a distinct source_id)."
-        ),
     )
 
     # mTLS (internal service-to-service)

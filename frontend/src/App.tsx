@@ -17,7 +17,7 @@ import { LoginPage } from './pages/LoginPage'
 import { CasesPage } from './pages/CasesPage'
 import { CaseDetailPage } from './pages/CaseDetailPage'
 import { AdminPage } from './pages/AdminPage'
-import { ConnectorStatusPage } from './pages/ConnectorStatusPage'
+import { ConnectorMarketplacePage } from './pages/ConnectorMarketplacePage'
 import { DetectionsPage } from './pages/DetectionsPage'
 import { DetectionDetailPage } from './pages/DetectionDetailPage'
 import type { DetectionTriageState } from './types'
@@ -187,7 +187,7 @@ const connectorStatusRoute = createRoute({
     <AuthGuard>
       <RbacGuard requiredRole="org-admin">
         <Layout>
-          <ConnectorStatusPage />
+          <ConnectorMarketplacePage />
         </Layout>
       </RbacGuard>
     </AuthGuard>

@@ -121,11 +121,24 @@ class StreamNormalizationService:
                 context={"org_id": str(org_id), "batch_id": str(batch_id)},
             )
 
-        normalizer = self._registry.for_source(batch.source_id)
+        # Real, previously-reproduced bug (connector marketplace): the
+        # registry is keyed by the connector's real format identifier
+        # ("wazuh"), not by source_id (a freeform per-instance name an org
+        # admin picks, e.g. "wazuh-manager-1") -- see SealedBatch.source_type's
+        # own docstring. Falls back to source_id for batches sealed before
+        # that field existed (honestly matches this class's prior, buggy-
+        # for-custom-names-but-at-least-consistent behavior for those old
+        # rows, never silently "fixes" historical data retroactively).
+        lookup_key = batch.source_type or batch.source_id
+        normalizer = self._registry.for_source(lookup_key)
         if normalizer is None:
             raise ParsingError(
-                f"No stream normalizer registered for source_id={batch.source_id!r}",
-                context={"batch_id": str(batch_id), "source_id": batch.source_id},
+                f"No stream normalizer registered for source_type={lookup_key!r}",
+                context={
+                    "batch_id": str(batch_id),
+                    "source_id": batch.source_id,
+                    "source_type": batch.source_type,
+                },
             )
 
         manifest_bytes = await self._storage.get_batch(batch.worm_bucket, batch.worm_object_key)

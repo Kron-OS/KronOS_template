@@ -14,11 +14,12 @@ silently producing a broken connection string.
 
 No test in this repo constructs a fully-valid real `Settings()` today (every
 other unit test either patches `src.config.Settings` or exercises a single
-failure path — see test_splunk_hec_sink_wiring.py's own module docstring for
-why) since Settings() requires ~15 unrelated required fields. This module is
-the first to actually build one for real, so it defines its own minimal
-complete set of required kwargs rather than reusing a nonexistent shared
-fixture.
+failure path — a real, fully-valid `Settings()` needs ~15 unrelated required
+fields, so a lightweight `SimpleNamespace`/patch stand-in is the norm
+elsewhere in this test suite) since Settings() requires ~15 unrelated
+required fields. This module is the first to actually build one for real,
+so it defines its own minimal complete set of required kwargs rather than
+reusing a nonexistent shared fixture.
 """
 
 from __future__ import annotations

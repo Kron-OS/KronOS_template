@@ -182,6 +182,42 @@ export interface ConnectorStatus {
   note: string
 }
 
+// Field names match src/external/routes/admin_connector_config.py's DTOs
+// exactly (connector marketplace, `/admin/connectors`).
+export type ConnectorCatalogMode = 'push' | 'poll' | 'sink'
+
+export interface ConnectorParameter {
+  name: string
+  label: string
+  secret: boolean
+  required: boolean
+  default: string | null
+}
+
+export interface ConnectorDefinition {
+  sourceType: string
+  displayName: string
+  mode: ConnectorCatalogMode
+  description: string
+  parameters: ConnectorParameter[]
+  // What has to be configured on the OTHER side of this connection (the
+  // org's own Wazuh manager/Entra ID tenant/syslog receiver), not on
+  // KronOS -- see src/domain/connector.py's own docstring.
+  assetSetupNotes: string
+}
+
+export interface ConnectorConfig {
+  sourceType: string
+  enabled: boolean
+  nonSecretFields: Record<string, string>
+  secretFieldNames: string[]
+  secretsSet: boolean
+  consecutiveFailureCount: number
+  autoDisabledAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export type DetectionTriageState = 'NEW' | 'INVESTIGATING' | 'TRUE_POSITIVE' | 'FALSE_POSITIVE'
 
 export interface DetectionRuleMatch {

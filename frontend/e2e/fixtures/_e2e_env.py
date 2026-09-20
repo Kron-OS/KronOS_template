@@ -56,7 +56,7 @@ POSTGRES_DSN = os.environ.get(
 # matched-event indexing (it writes through the real OpenSearchClient, not
 # hand-rolled `requests` calls, same "reuse real code" reasoning as
 # POSTGRES_DSN above). `admin`/`admin` is the real dev-stack credential
-# documented in docs/HANDOFF_AND_ORCHESTRATION.md SS2.3; docker-compose.test.yml
+# documented in docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current) SS2.3; docker-compose.test.yml
 # uses the same self-signed-cert-with-verify_certs=False setup.
 OPENSEARCH_HOST = os.environ.get("KRONOS_E2E_OPENSEARCH_HOST", "localhost")
 OPENSEARCH_PORT = int(os.environ.get("KRONOS_E2E_OPENSEARCH_PORT", "9200"))

@@ -1,15 +1,23 @@
 """SyncDetectionToSiemAction: a ``PlaybookAction`` that pushes a real
-``Detection`` to one configured external SIEM sink via
-``DetectionSinkPushService`` (Gap Audit 2026-08 P1-1 / roadmap Milestone V2,
-item a).
+``Detection`` to one org's own configured external SIEM sink (connector
+marketplace, `/admin/connectors`), via ``DetectionSinkPushService`` (Gap
+Audit 2026-08 P1-1 / roadmap Milestone V2, item a).
 
-**The gap this closes.** ``DetectionSinkPushService``/``SplunkHecSink``/
-``CefSyslogSink``/``SentinelHttpSink`` (roadmap R1-R4) were all real, tested,
-and dev/prod-wired for config -- but zero routes and zero ``PlaybookAction``s
-ever called ``DetectionSinkPushService.push()``. The whole R-series sink
-work was unreachable from any real KronOS workflow. This is the concrete
-action ``DetectionSinkPushService``'s own module docstring named as R2-R4's
-explicit follow-up scope.
+**Per-org rewrite (connector marketplace).** This used to be constructed
+with one fixed, process-wide ``DetectionSinkPushService`` built once at
+DI-startup time from global ``Settings`` -- every org's detections pushed
+to the SAME configured Splunk/CEF/Sentinel destination regardless of
+tenant. It now resolves *this org's own* config at execute() time via
+``ConnectorConfigService.resolve_runtime_config(tenant.org_id, sink_name)``
+and builds a fresh sink/mapper pair from it
+(``build_sink_and_mapper_from_config`` in ``src/external/dependencies.py``)
+-- so each org's detections only ever reach that org's own destination,
+and an org with no config for this sink gets a loud, clear
+``PlaybookError`` instead of silently using (or silently no-op-ing on)
+whatever global sink used to be configured. This is a deliberate,
+recorded decision (no silent global-Settings fallback), matching the
+plan's own "no collision, independent per client" requirement exactly the
+same way ``celery_defender.py``'s per-org rewrite does.
 
 **Mirrors ``SyncDetectionTicketAction``'s exact shape (H4's own precedent
 for "a PlaybookAction that pushes a Detection to an external system"), not
@@ -19,43 +27,45 @@ here; the Detection is looked up scoped to ``(detection_id, tenant.org_id)``
 tenant isolation is computed from ``tenant``, never supplied via ``params``
 (invariant #3).
 
-**Audit discipline reused, not duplicated (roadmap invariant #4).** Unlike
-``SyncDetectionTicketAction`` (which audits its own
-``TICKET_SYNC_ATTEMPTED``/``_EXECUTED``/``_FAILED`` because
-``TicketingSystem`` itself has no audit discipline of its own), this
-action's ``execute()`` audits nothing directly -- ``DetectionSinkPushService
+**Audit discipline reused, not duplicated (roadmap invariant #4).** This
+action's ``execute()`` does not itself audit the push -- ``DetectionSinkPushService
 .push()`` already logs ``SINK_PUSH_ATTEMPTED``/``_EXECUTED``/``_FAILED``
-around the real outbound call (see that class's own docstring), so this
-action is a thin adapter: resolve the Detection, delegate, return the real
-result. Mirrors ``TransitionDetectionTriageAction``'s own "collaborator
-already audits itself, don't duplicate" division of labor exactly.
+around the real outbound call. It DOES call
+``ConnectorConfigService.record_success``/``record_failure`` after each
+attempt (same circuit-breaker bookkeeping the Defender poll loop uses) --
+that is genuinely new responsibility this action owns, not a duplicate of
+anything ``DetectionSinkPushService`` already does.
 
-**One instance per configured sink, not one instance switching on a
-``params`` field.** ``action_name`` is derived from the constructor's own
-``sink_name`` (e.g. ``"sync_detection_to_siem_splunk"``) so a deployment
-with more than one sink configured (e.g. Splunk AND Sentinel) can register
-one ``SyncDetectionToSiemAction`` per sink into the same
-``PlaybookActionRegistry`` without a second registration silently replacing
-the first (see that registry's own docstring on why a repeated
-``action_name`` replaces, not errors) -- a playbook step names exactly
-which sink it wants by using that sink's own action_name, the same
-explicit-by-name contract every other registered action already uses.
+**One instance per sink type, not one instance switching on a ``params``
+field.** ``action_name`` is derived from the constructor's own
+``sink_name`` (e.g. ``"sync_detection_to_siem_splunk-hec"``) so
+``PlaybookActionRegistry`` can register one ``SyncDetectionToSiemAction``
+per sink type unconditionally now (whether any org has actually configured
+it yet is a runtime, per-org question resolved inside ``execute()``, not a
+boot-time registration question) -- a playbook step names exactly which
+sink it wants by using that sink's own action_name.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Callable
 
+from src.adapter.integration_sink.integration_sink import IntegrationSink
 from src.adapter.repository.detection import DetectionRepository
+from src.application.audit_log import AuditLogService
+from src.application.connector_config import ConnectorConfigService
+from src.application.detection_sink_mapper import DetectionEventMapper
 from src.application.detection_sink_push import DetectionSinkPushService
 from src.application.playbook import PlaybookAction
 from src.domain.user import TenantContext
 from src.exceptions import PlaybookError
 
+SinkFactory = Callable[[str, dict[str, str]], tuple[IntegrationSink, DetectionEventMapper]]
+
 
 class SyncDetectionToSiemAction(PlaybookAction):
-    """Pushes one Detection to *push_service*'s configured sink.
+    """Pushes one Detection to the caller's own org's configured *sink_name*.
 
     Params:
       - ``detection_id`` (str UUID, required).
@@ -65,11 +75,15 @@ class SyncDetectionToSiemAction(PlaybookAction):
         self,
         sink_name: str,
         detection_repository: DetectionRepository,
-        push_service: DetectionSinkPushService,
+        connector_config_service: ConnectorConfigService,
+        sink_factory: SinkFactory,
+        audit_log: AuditLogService,
     ) -> None:
         self._sink_name = sink_name
         self._detections = detection_repository
-        self._push_service = push_service
+        self._connector_config_service = connector_config_service
+        self._sink_factory = sink_factory
+        self._audit_log = audit_log
 
     @property
     def action_name(self) -> str:
@@ -91,11 +105,31 @@ class SyncDetectionToSiemAction(PlaybookAction):
                 context={"detection_id": str(detection_id), "org_id": str(tenant.org_id)},
             )
 
+        resolved = await self._connector_config_service.resolve_runtime_config(
+            tenant.org_id, self._sink_name
+        )
+        if resolved is None:
+            raise PlaybookError(
+                f"{self.action_name}: {self._sink_name} is not configured (or is disabled) "
+                "for this organization",
+                context={"org_id": str(tenant.org_id), "sink_name": self._sink_name},
+            )
+
+        sink, mapper = self._sink_factory(self._sink_name, resolved)
+        push_service = DetectionSinkPushService(sink, mapper, self._audit_log)
+
         # DetectionSinkPushService.push() audits SINK_PUSH_ATTEMPTED/
         # _EXECUTED/_FAILED around this call and raises unchanged on any
         # batch failure (its own "fail-fast, not partial-success" idiom) --
-        # nothing here needs to catch/re-audit that outcome.
-        result = await self._push_service.push([detection], tenant)
+        # this action's own job on top of that is the per-org circuit
+        # breaker bookkeeping (record_success/record_failure), mirroring
+        # celery_defender.py's identical Defender-poll pattern.
+        try:
+            result = await push_service.push([detection], tenant)
+        except Exception:
+            await self._connector_config_service.record_failure(tenant.org_id, self._sink_name)
+            raise
+        await self._connector_config_service.record_success(tenant.org_id, self._sink_name)
 
         return {
             "detection_id": str(detection_id),

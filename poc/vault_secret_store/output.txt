@@ -1,0 +1,40 @@
+=== docker compose -p kronos-poc-vaultconnectors -f docker-compose.yml up -d vault ===
+(vault container started healthy on port 18220)
+
+=== docker compose ... run --rm vault-init ===
+Success! Enabled the kv secrets engine at: kronos-connectors/
+Success! Uploaded policy: kronos-connectors-app
+Success! Enabled approle auth method at: approle/
+Success! Data written to: auth/approle/role/kronos-connectors-app
+=== role_id ===
+Key        Value
+---        -----
+role_id    1b32276a-7af8-499b-2a38-05a22b4f3750
+=== secret_id ===
+Key                   Value
+---                   -----
+secret_id             151d6fc5-7dff-d954-69e2-f4a4f6f2401b
+secret_id_accessor    5393a897-0c54-c50e-6020-1dc5e4949648
+secret_id_num_uses    0
+secret_id_ttl         0s
+kronos-connectors Vault mount initialized successfully.
+
+=== python3 run_poc.py <role_id> <secret_id> ===
+Vault addr: http://localhost:18220, mount: kronos-connectors
+AppRole login OK, token is valid (client.is_authenticated() == True)
+org_a = c149ef16-bd74-4fc6-820f-31e4beb378dc
+org_b = 47f997de-3052-4616-9bd4-95a355cc99dd
+wrote secret_a to c149ef16-bd74-4fc6-820f-31e4beb378dc/sentinel
+wrote secret_b to 47f997de-3052-4616-9bd4-95a355cc99dd/sentinel
+read back org_a: {'client_secret': 'org-a-secret-08185128-d87a-4c46-be8a-90ae8bea5d9b', 'tenant_id': 'tenant-a'}
+read back org_b: {'client_secret': 'org-b-secret-5dd60b3f-0d6f-48d7-8642-6f8a79be0797', 'tenant_id': 'tenant-b'}
+vault kv list kronos-connectors/ -> ['1215d0ff-e843-4de1-9e0c-a017443ee8f7/', '47f997de-3052-4616-9bd4-95a355cc99dd/', 'c149ef16-bd74-4fc6-820f-31e4beb378dc/']
+deleted c149ef16-bd74-4fc6-820f-31e4beb378dc/sentinel
+/home/reca/Claude/Kronos/KronOS_template/poc/vault_secret_store/run_poc.py:127: DeprecationWarning: The raise_on_deleted_version parameter will change its default value to False in hvac v3.0.0. The current default of True will preserve previous behavior. To use the old behavior with no warning, explicitly set this value to True. See https://github.com/hvac/hvac/pull/907
+  client.secrets.kv.v2.read_secret_version(
+PASS: write/read round-trip correct, org_a != org_b (no collision)
+PASS: both org paths visible and distinct under the mount
+PASS: org_a secret cleanly gone after delete (InvalidPath, not a crash)
+PASS: org_b unaffected by org_a's deletion
+PASS: reading a never-written org path raises a clean InvalidPath
+ALL CHECKS PASSED

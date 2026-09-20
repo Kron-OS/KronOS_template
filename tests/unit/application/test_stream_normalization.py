@@ -66,10 +66,13 @@ def _manifest_bytes(
     return json.dumps(doc).encode()
 
 
-def _sealed_batch(org_id: uuid.UUID, source_id: str, event_count: int) -> SealedBatch:
+def _sealed_batch(
+    org_id: uuid.UUID, source_id: str, event_count: int, *, source_type: str | None = None
+) -> SealedBatch:
     return SealedBatch(
         org_id=org_id,
         source_id=source_id,
+        source_type=source_type,
         sealed_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
         event_count=event_count,
         leaf_hashes=tuple("a" * 64 for _ in range(event_count)),
@@ -133,6 +136,60 @@ class TestStreamNormalizationService:
         assert sample["kronos"]["batch_id"] == str(batch.batch_id)
         assert sample["kronos"]["org_id"] == str(org_id)
         assert "source" in sample or "network" in sample  # ECS extra fields present
+
+    @pytest.mark.asyncio
+    async def test_custom_named_instance_normalizes_via_source_type_not_source_id(self) -> None:
+        """Real, previously-reproduced bug (connector marketplace): an org
+        admin can name a PUSH connector instance anything (e.g.
+        "zeek-conn-log-site-2"), but StreamSourceNormalizerRegistry is keyed
+        by the connector's real format identifier ("zeek-conn-log"), not
+        the freeform instance name. Before SealedBatch.source_type existed,
+        this raised ParsingError for every non-default-named instance --
+        confirmed live this session with a real Wazuh instance provisioned
+        as "wazuh-e2e-final-verify" and, independently, with Defender's own
+        per-org source_id (f"ms-defender-alerts-{org_id}"). This test proves
+        the fix: source_id can be anything, source_type is what's looked up.
+        """
+        org_id = uuid.uuid4()
+        custom_source_id = "zeek-conn-log-site-2"
+        batch = _sealed_batch(
+            org_id, custom_source_id, event_count=2, source_type="zeek-conn-log"
+        )
+        events = [_zeek_event(i) for i in range(2)]
+        storage = AsyncMock()
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, custom_source_id, events
+        )
+
+        service, repo, os_client, dead_letters, _audit_repo = self._service(storage)
+        await repo.save(batch)
+
+        result = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+
+        assert result.indexed_count == 2
+        assert result.dead_lettered_count == 0
+        assert await dead_letters.list_for_batch(org_id, batch.batch_id) == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_batch_with_no_source_type_falls_back_to_source_id(self) -> None:
+        """Batches sealed before SealedBatch.source_type existed have
+        source_type=None -- must still normalize via source_id exactly like
+        before (no retroactive breakage of historical data)."""
+        org_id = uuid.uuid4()
+        batch = _sealed_batch(org_id, "zeek-conn-log", event_count=1, source_type=None)
+        events = [_zeek_event(0)]
+        storage = AsyncMock()
+        storage.get_batch.return_value = _manifest_bytes(
+            batch.batch_id, org_id, "zeek-conn-log", events
+        )
+
+        service, repo, _os, dead_letters, _audit_repo = self._service(storage)
+        await repo.save(batch)
+
+        result = await service.normalize_batch(org_id, batch.batch_id, org_alias="acme")
+
+        assert result.indexed_count == 1
+        assert await dead_letters.list_for_batch(org_id, batch.batch_id) == []
 
     @pytest.mark.asyncio
     async def test_event_offset_matches_position_within_batch(self) -> None:

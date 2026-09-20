@@ -456,10 +456,16 @@ async def sync_detection_to_siem(
     already-existing lookup this codebase's own DI wiring
     (``get_playbook_action_registry``) has used since roadmap V2.
 
-    404 when no ``SyncDetectionToSiemAction`` is registered for *sink_name*
-    (mirrors this file's own "404, not a fabricated success" idiom) --
-    happens when that sink's config (e.g. ``splunk_hec_url``) is unset in
-    this deployment, an honest "not configured" state, not a KronOS bug.
+    404 when *sink_name* names no real sink type at all (a typo, or a sink
+    type that has never existed) -- one ``SyncDetectionToSiemAction`` per
+    known sink type (splunk-hec/cef-syslog/sentinel) is always registered
+    now (connector marketplace, `/admin/connectors`: whether the CALLER's
+    own org has actually configured that sink is a separate, per-org
+    question the action itself resolves at execute() time, not a
+    registration-time one -- see that class's own docstring). An org with
+    no config for an otherwise-valid sink_name gets a real 200 with
+    ``stepResults[0].error`` describing the "not configured for this org"
+    ``PlaybookError``, same as any other action failure below.
 
     Otherwise always returns 200: whether the Detection existed in the
     caller's own org, and whether the real SIEM push itself succeeded, are

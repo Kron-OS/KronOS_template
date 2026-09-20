@@ -333,7 +333,7 @@ class TestListCaseMemberCandidates:
     """Gap Audit Milestone ZZZZ: GET /{case_id}/member-candidates, the
     new case-scoped user-search endpoint for add_case_member's own
     "how do I find a userId" gap (Tier 1 item 6 of
-    docs/HANDOFF_AND_ORCHESTRATION.md)."""
+    docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current))."""
 
     def _client_with_directory(self, *, directory: tuple[OrgMember, ...]):
         case_repo = InMemoryCaseRepository()

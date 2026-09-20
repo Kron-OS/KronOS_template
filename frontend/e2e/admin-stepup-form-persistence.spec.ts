@@ -6,7 +6,7 @@ import { SecondCaseLeadSeeder } from "./SecondCaseLeadSeeder";
 
 /**
  * Gap Audit Milestone YYYY: closes Tier 1 item 3 of
- * `docs/HANDOFF_AND_ORCHESTRATION.md`. Milestones TTTT/WWWW/XXXX all named
+ * `docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current)`. Milestones TTTT/WWWW/XXXX all named
  * (but didn't fix) the same real UX rough edge: `apiClient`'s step-up
  * redirect abandons whatever the user had typed, forcing them to retype
  * it after returning. `frontend/src/lib/stepUpFormPersistence.ts` stashes

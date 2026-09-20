@@ -6,14 +6,23 @@ import { generateTotp } from "./totp";
  * Shared step-up (MFA) re-authentication helper, extracted from
  * `admin-quota-ui.spec.ts` (Milestone TTTT, the first spec to ever drive a
  * real step-up flow) so `admin-user-management-stepup.spec.ts` (Milestone
- * WWWW, Tier 1 item 4 of `docs/HANDOFF_AND_ORCHESTRATION.md`) reuses the
+ * WWWW, Tier 1 item 4 of `docs/archive/status-history/HANDOFF_AND_ORCHESTRATION.md (historical; see STATUS.md for current)`) reuses the
  * same, already-proven window-aligned-retry logic rather than duplicating
  * it. Specific to the dev-seeded `admin` account (the only dev user with
  * both `ORG_ADMIN` and real TOTP enrollment, `poc/admin_totp_enrollment/`)
  * -- not generalized to other accounts/secrets since no other real caller
  * exists yet.
+ *
+ * This value must stay identical to `poc/auth_flow/dev_totp_secrets.py`'s
+ * `ADMIN_TOTP_SECRET` -- both are copies of the same real Keycloak-enrolled
+ * secret for the one `admin` user, kept in two files because one is
+ * consumed from Python PoC scripts and this one from Playwright. A prior
+ * re-registration (deleting and re-enrolling the admin's TOTP credential
+ * via the Admin REST API) updated only the Python copy and silently broke
+ * every step-up spec in this suite until this comment was added --
+ * whoever re-registers the credential next must update BOTH files.
  */
-const ADMIN_TOTP_SECRET = "JB3US4TBJNBEO32BOJJTSZCEI5WGYMKG";
+const ADMIN_TOTP_SECRET = "I5ZFIUZVHBVXIQ3HIVXDEMKEKJXHIZCK";
 
 const TOTP_STEP_MS = 30000;
 

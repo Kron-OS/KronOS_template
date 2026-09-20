@@ -209,6 +209,24 @@ class AuditEventType(StrEnum):
     INTEGRATION_SOURCE_KEY_PROVISIONED = "integration_source.key_provisioned"
     INTEGRATION_SOURCE_KEY_REVOKED = "integration_source.key_revoked"
 
+    # Per-org connector config (connector marketplace, `/admin/connectors`)
+    # -- setting/revoking POLL/SINK connector credentials (Defender/Sentinel/
+    # Splunk HEC/CEF syslog) is at least as sensitive as the API-key events
+    # above (same aal2 step-up gate), so it gets the same
+    # attempted/executed/failed granularity CLAUDE.md SS A.2 expects for a
+    # mutation that can itself fail partway (non-secret Postgres row
+    # written, Vault write fails, or vice versa). Audit details never
+    # include secret values -- only field names (CLAUDE.md SS B.4).
+    CONNECTOR_CONFIG_SET_ATTEMPTED = "connector_config.set_attempted"
+    CONNECTOR_CONFIG_SET_EXECUTED = "connector_config.set_executed"
+    CONNECTOR_CONFIG_SET_FAILED = "connector_config.set_failed"
+    CONNECTOR_CONFIG_REVOKED = "connector_config.revoked"
+    CONNECTOR_CONFIG_ENABLED = "connector_config.enabled"
+    CONNECTOR_CONFIG_DISABLED = "connector_config.disabled"
+    # System-set (circuit breaker), distinct from the admin-driven
+    # CONNECTOR_CONFIG_DISABLED above -- see ConnectorConfigService.record_failure.
+    CONNECTOR_CONFIG_AUTO_DISABLED = "connector_config.auto_disabled"
+
     # Derived artifact extraction (Milestone EEEEE, roadmap E5 follow-up) --
     # on-demand, analyst-triggered byte extraction (windows.dumpfiles) and
     # registry-key drill-down (windows.registry.printkey) from a memory

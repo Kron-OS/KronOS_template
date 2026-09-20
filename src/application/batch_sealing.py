@@ -222,6 +222,12 @@ class BatchSealingService:
         message_ids = [m.message_id for m in messages]
         merkle_root = build_merkle_root(leaf_hashes)
         manifest = _build_manifest(batch_id, org_id, source_id, messages, leaf_hashes)
+        # All messages on one (org_id, source_id) stream share the same
+        # connector instance, hence the same real source_type -- take the
+        # first non-None one seen (tolerates a stream with a mix of
+        # pre-fix messages that predate StreamMessage.source_type alongside
+        # newer ones that have it).
+        source_type = next((m.source_type for m in messages if m.source_type is not None), None)
 
         try:
             worm_bucket, worm_key = await self._storage.put_batch(
@@ -238,6 +244,7 @@ class BatchSealingService:
                 batch_id=batch_id,
                 org_id=org_id,
                 source_id=source_id,
+                source_type=source_type,
                 sealed_at=datetime.now(UTC),
                 event_count=len(messages),
                 leaf_hashes=tuple(leaf_hashes),

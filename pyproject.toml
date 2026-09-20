@@ -29,6 +29,7 @@ dependencies = [
     "pyyaml>=6.0",
     "yara-x==1.19.0",
     "alembic>=1.13",
+    "hvac==2.4.0",  # pinned per CLAUDE.md Section F -- verified current latest, see poc/vault_secret_store/
 ]
 
 [project.optional-dependencies]
@@ -150,6 +151,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A"]
 "src/external/routes/integration_source_push.py" = ["N815"]
 "src/external/routes/admin_integration_sources.py" = ["N815"]
 "src/external/routes/admin_connector_status.py" = ["N815"]
+"src/external/routes/admin_connector_config.py" = ["N815"]
 # Gap Audit Milestone AAA: EventOutcomeOut here is structurally identical to
 # integration_source_push.py's own (same accepted/duplicate/messageId
 # shape) -- missed when the sibling route got this ignore, not a

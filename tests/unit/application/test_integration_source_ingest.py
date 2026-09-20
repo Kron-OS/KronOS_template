@@ -141,7 +141,7 @@ class TestIngestPush:
         assert len(outcomes) == 1
         assert outcomes[0].accepted is True
         stream_adapter.produce.assert_awaited_once_with(
-            identity.org_id, identity.source_id, b"one-event"
+            identity.org_id, identity.source_id, b"one-event", source_type=identity.source_type
         )
         audit_log.log.assert_awaited_once()
         call_args = audit_log.log.await_args
