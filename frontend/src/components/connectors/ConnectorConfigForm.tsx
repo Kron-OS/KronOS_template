@@ -94,7 +94,7 @@ export function ConnectorConfigForm({ definition, onClose }: ConnectorConfigForm
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-lg rounded-lg border border-gray-300 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-gray-300 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
             Configure {definition.displayName}

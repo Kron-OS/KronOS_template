@@ -164,6 +164,23 @@ export class CaseDetailPage extends KronosPage {
   }
 
   /**
+   * Closes EvidenceDetailDrawer (its own `×` button, `aria-label="Close"`).
+   * `retryMutation.mutate()` (EvidenceDetailDrawer.tsx) does NOT call
+   * `onClose` on click -- every existing single-recovery spec only ever
+   * opens the drawer once so this was never needed; a caller that opens the
+   * drawer a second time in the same test (e.g. to drive a second recovery
+   * cycle) must close it first or the still-mounted backdrop
+   * (`bg-black/50`) intercepts the next row click.
+   */
+  async closeEvidenceDrawer(): Promise<void> {
+    await this.page.click('button[aria-label="Close"]');
+    await this.page.waitForSelector('[role="dialog"][aria-label="Evidence details"]', {
+      state: "detached",
+      timeout: 10000,
+    });
+  }
+
+  /**
    * Fresh, independent `GET /api/cases/{id}/evidence`, filtered to the
    * named file -- mirrors `CasesPage.fetchCaseById()`'s own "not trusted
    * from the same page load" pattern (docs/PLAYWRIGHT_E2E_TEST_PLAN.md

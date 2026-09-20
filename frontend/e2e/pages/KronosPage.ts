@@ -138,6 +138,17 @@ export abstract class KronosPage {
 
     const seenValues: string[] = [];
     let last: string | null = seedValue;
+    // Tracks whether a REAL transition away from the seed has happened yet,
+    // separately from whether `last` currently happens to equal `seedValue`
+    // (real, reproduced bug: a row that legitimately cycles back to the
+    // SAME terminal value as the seed -- e.g. Error -> Scanning -> Parsing
+    // -> Error again, the two-simultaneous-dependency-outage case -- was
+    // indistinguishable from "never left the stale seed reading" when both
+    // the break condition and the final null-vs-value decision used the
+    // same `last !== seedValue` check; the poll correctly observed every
+    // transition but then discarded the real second "Error" as if it were
+    // the stale leftover from before this poll even started).
+    let observedRealChange = false;
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
@@ -146,12 +157,13 @@ export abstract class KronosPage {
         if (text.includes(candidate) && candidate !== last) {
           seenValues.push(candidate);
           last = candidate;
+          observedRealChange = true;
         }
       }
-      if (last && last !== seedValue && terminalValues.includes(last)) break;
+      if (observedRealChange && last && terminalValues.includes(last)) break;
       await this.page.waitForTimeout(500);
     }
 
-    return { seenValues, terminal: last === seedValue ? null : last };
+    return { seenValues, terminal: observedRealChange ? last : null };
   }
 }
