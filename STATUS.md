@@ -164,14 +164,21 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   will see this one plugin fail while the other 8 in the Linux eager set
   succeed normally (same "one bad plugin doesn't sink the run" handling
   every other multi-plugin outcome already gets). Not urgent, named.
-- **Linux memory images produce no dual-emitted `TimelineRecord`s yet.**
+- **Linux memory images produce no dual-emitted `TimelineRecord`s yet —
+  investigated for real, verified blocked, not just unbuilt.**
   `linux.pstree`/`linux.psscan` carry no per-row wall-clock timestamp in
   this volatility3 version (real, verified against a real sample) — Linux
   findings surface entirely through `StructuredArtifact`s
-  (`extract_artifacts()`), never the case timeline. A real fix would
-  combine `linux.boottime.Boottime` with each process's boot-relative
-  start offset — not yet built, tracked in
-  `reviews/Volatility_Linux_Plugin_Research.md`.
+  (`extract_artifacts()`), never the case timeline. The planned fix
+  (combine `linux.boottime.Boottime` with each process's boot-relative
+  start offset) was tried for real against the self-generated sample and
+  is blocked: `boottime.Boottime` fails on this ISF
+  (`AttributeError: Unable to find timekeeper`) — the same
+  `btf2json`-vs-`dwarf2json` ISF-metadata gap already named below for
+  `hidden_modules`. The offset data itself (`task.start_time`) is real and
+  readable directly from the object layer even with the plugin broken; only
+  the wall-clock boot anchor is missing. Two named ways forward in
+  `poc/volatility_linux_boottime/README.md`, neither attempted yet.
 - **Dev OpenSearch's shard ceiling was raised (1000 → 2000) as a
   workaround, not fixed.** Root cause (ISM creates a new index per case
   per month, never deleted) is still real; the ceiling will be hit again

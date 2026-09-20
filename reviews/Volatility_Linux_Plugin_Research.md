@@ -11,7 +11,12 @@ real bug in this doc's own original plugin-path guess
 (`linux.malware.lsmod.Lsmod` → `linux.lsmod.Lsmod`) was found and
 corrected by that run. See `poc/volatility_linux_module/README.md` for
 the full real methodology and results table. Task #15 (OS-family
-detection + dispatch implementation) is next.
+detection + dispatch implementation) is **done** — see `STATUS.md` and
+`DECISIONS.md`'s Volatility section. The dual-emit timeline gap this left
+open (§"What's still needed" item 3 below, superseded) was investigated
+for real in `poc/volatility_linux_boottime/README.md`: **verified
+blocked** on the same real ISF-tool-compatibility gap as `hidden_modules`,
+not just unbuilt — see that PoC for the two named ways forward.
 
 ## Method
 
@@ -142,13 +147,26 @@ two Linux-native additions with no direct Windows-eager counterpart today
    context, per-plugin construct/render timing) — this is what turns the
    "candidate eager set" above into a verified `LINUX_DEFAULT_PLUGINS`
    constant.
-3. **OS-family detection** so `VolatilityModule`/`VolatilityLauncher`
-   actually choose the Linux set for a Linux image instead of always
-   requesting the Windows one — not yet implemented. `banners.Banners`
-   (OS-family-agnostic, scans for a kernel banner string without needing a
-   pre-resolved layer) is the natural real mechanism; needs its own real
-   verification against both a Windows and a Linux sample before being
-   trusted as the dispatch signal.
+3. ~~**OS-family detection**~~ **Done** (`VolatilityLauncher.detect_os_family()`,
+   real `banners.Banners`-based, verified against both a real Windows and
+   a real Linux sample) — see `STATUS.md`/`DECISIONS.md`.
+4. **Linux dual-emit `TimelineRecord`s (the `boottime` + per-process-offset
+   plan) — investigated for real, verified blocked, not just unbuilt.**
+   `poc/volatility_linux_boottime/README.md`: `linux.boottime.Boottime`
+   fails against this codebase's own real, self-generated ISF
+   (`AttributeError: Unable to find timekeeper`) — the same
+   `btf2json`-vs-`dwarf2json` ISF-metadata gap already documented for
+   `hidden_modules`. The underlying per-process boot-relative offset
+   (`task.start_time`, nanoseconds since boot) IS real and readable
+   directly from the object layer even with `boottime` broken — confirmed
+   live for real PIDs — so the *data* this plan needs exists; only the
+   wall-clock boot anchor `boottime.Boottime` would supply is missing.
+   Two named ways forward, neither attempted yet: (a) get a
+   `dwarf2json`-built ISF for a Linux sample and re-verify `boottime`
+   against it, or (b) write a `timekeeper`-independent wall-clock anchor
+   from scratch (its own real work, with real accuracy caveats, not a
+   small addition to this plan).
 
 See `TaskList` tasks #13 (this doc) → #14 (real sample + measurement) →
-#15 (implementation) for the tracked sequence.
+#15 (implementation, done) → #16 (Linux dual-emit timeline, blocked, see
+above) for the tracked sequence.

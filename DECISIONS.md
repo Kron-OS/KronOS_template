@@ -341,3 +341,31 @@ a second copy to disagree with), one file that is only ever appended to
 (so a past decision can't silently drift), and updating both is treated
 as part of finishing a task — the same discipline as running tests —
 rather than a separate documentation pass that's easy to skip.
+
+## Volatility / memory forensics (2026-09-20)
+
+### Linux dual-emit timeline fix is investigated and blocked, not skipped
+**Date:** 2026-09-20
+**Decision:** did not implement the "combine `linux.boottime.Boottime`
+with per-process boot-relative offset" plan for Linux `TimelineRecord`
+dual-emit that `reviews/Volatility_Linux_Plugin_Research.md` had flagged
+as the next step. Instead ran it for real against the existing
+self-generated Linux sample/ISF first (`poc/volatility_linux_boottime/`)
+and found it genuinely blocked: `linux.boottime.Boottime` raises
+`AttributeError: Unable to find timekeeper` against this codebase's own
+`btf2json`-built ISF — the same real ISF-metadata gap already documented
+for `linux.malware.hidden_modules.Hidden_modules`. Confirmed the
+underlying per-process offset (`task.start_time`) is real and readable
+directly via the object layer even with the plugin broken, so the data
+exists; only the wall-clock boot anchor does not resolve on this ISF.
+**Why:** `CLAUDE.md` §F/§G.5 requires running an integration against the
+real dependency before writing `src/` code, specifically to catch exactly
+this kind of gap between "the plan reads correctly" and "the plan
+actually executes." Writing the combine-logic without this check would
+have produced code that raises the same `AttributeError` the first time
+any Celery worker actually ran it against a real Linux image built the
+same way this codebase's own reference sample was. Left named and
+unimplemented with two real ways forward
+(`poc/volatility_linux_boottime/README.md`) rather than merging a
+plausible-looking fix that cannot work against this codebase's own real
+verification sample.
