@@ -369,3 +369,157 @@ unimplemented with two real ways forward
 (`poc/volatility_linux_boottime/README.md`) rather than merging a
 plausible-looking fix that cannot work against this codebase's own real
 verification sample.
+**Superseded:** by the entry immediately below (same day, later session)
+— option (a) was attempted and works.
+
+### Linux dual-emit timeline: implemented via `linux.pslist.PsList`, conditional on the ISF-generation tool
+**Date:** 2026-09-20
+**Decision:** implemented Linux `TimelineRecord` dual-emit using
+`linux.pslist.PsList`'s "CREATION TIME" column (added to
+`LINUX_DEFAULT_PLUGINS`, `src/external/sandbox/volatility_launcher.py`;
+`VolatilityModule._timeline_rows()`/`_row_to_timeline_record()`,
+`src/external/parsers/volatility.py`, generalized to handle Linux's
+different row field names via `_ROW_FIELD_NAMES`) — not the
+`linux.boottime.Boottime` + manual per-process-offset combination
+originally planned. volatility3 already computes this internally
+(`task.get_create_time()` = `boottime + task.start_time`); no manual
+combination was needed in KronOS's own code once a working ISF was
+available.
+**Why:** the previous entry's blocker (`linux.boottime.Boottime` fails
+against this codebase's own `btf2json`-built ISF because `tk_core`'s type
+doesn't resolve) turned out to be specific to *how the target image's
+symbol table was generated*, not a fundamental gap in volatility3 or this
+codebase's design. Downloaded the real, matching Ubuntu `-dbgsym` package
+for the identical kernel build (`5.15.0-191-generic`) already used by the
+existing self-generated sample, extracted the real debug `vmlinux`, and
+ran the real `dwarf2json` tool against it (real steps, real captured
+output — `poc/volatility_linux_boottime/README.md`'s "Part 2", per
+`CLAUDE.md` §F). Applied to the *same* memory capture (an ISF only needs
+to match the kernel build, not a specific boot of it — no new VM/sample
+needed), `linux.boottime.Boottime` and `linux.pslist.PsList` both resolved
+`tk_core`/`timekeeper` correctly and produced real, plausible timestamps
+for all 105 real sample rows. Fed the real captured rows through the
+actual (non-mocked) `src/` functions to confirm the production code path,
+not just the external tool, works. This makes the fix **conditional, not
+unconditional**: an org whose Linux ISF was built by `btf2json` (this
+codebase's own self-generated sample included) still gets zero Linux
+`TimelineRecord`s — handled as an honest "not a timeline-shaped row"
+outcome, not a crash or regression, exactly like a Windows row with no
+`CreateTime` already was. This is judged an acceptable, real improvement
+rather than "not good enough to ship until it works unconditionally":
+most distro kernels have a `dwarf2json`-compatible debug/dbgsym package
+available (this is precisely what made the comparison possible at all),
+so the conditional path covers the common real case, and the alternative
+(a from-scratch `timekeeper`-independent wall-clock anchor) is a separate
+piece of work with its own accuracy caveats that this fix makes
+unnecessary to build right now.
+**Also found and fixed this session:** while investigating, discovered
+`/tmp` on the shared host running this initiative's Docker stack is a
+RAM-backed `tmpfs` capped at 3.6GB — downloading the 1GB `.ddeb` and doing
+a full (not targeted) extraction there exhausted it and broke all shell
+command execution on the host (affecting any concurrent session, not just
+this one) until the large files were removed. Documented in
+`poc/volatility_linux_boottime/README.md`'s "Host gotcha" section as a
+standing caution for future large-file PoC work on this host: use a
+real-disk path (`/home/reca/scratch/<name>/`), never `/tmp`.
+
+## Connector marketplace (2026-09-20)
+
+### Connector config/key modals get `max-h-[90vh] overflow-y-auto`
+**Date:** 2026-09-20
+**Decision:** `ConnectorConfigForm.tsx`'s and `PushConnectorKeyPanel.tsx`'s
+inner modal container both gained `max-h-[90vh] overflow-y-auto`; previously
+neither had any height cap or scroll behavior.
+**Why:** closing the two connector-marketplace E2E coverage gaps named in
+`STATUS.md` (Wazuh/Zeek PUSH, Splunk HEC/Sentinel/Defender POLL config
+forms) surfaced a real bug, not a test artifact: Microsoft Sentinel's config
+form has 8 parameters, tall enough that the fixed-position, unscrollable
+modal pushed its own Save button below the visible viewport with no way to
+reach it — reproduced with a screenshot before fixing, per `CLAUDE.md` §F.
+`PushConnectorKeyPanel.tsx` doesn't currently have a connector with enough
+provisioned keys to trigger the same overflow, but has the identical
+structural risk (an unbounded list of API-key rows) so got the same fix
+pre-emptively rather than waiting for its own real failure. Real Playwright
+re-run of all 7 marketplace connectors (Suricata/Wazuh/Zeek PUSH,
+CEF-syslog/Splunk HEC/Sentinel SINK, Defender POLL) confirmed green after
+rebuilding and redeploying the nginx image with the fix.
+
+## Frontend E2E infrastructure (2026-09-20)
+
+### `KronosPage.pollLiveText`'s seed guard fixed to track a real transition, not just "current value != seed"
+**Date:** 2026-09-20
+**Decision:** `pollLiveText` (`frontend/e2e/pages/KronosPage.ts`) now tracks
+an explicit `observedRealChange` boolean, set the first time any state
+transition is observed, and uses that (not `last !== seedValue`) both to
+decide when to break out of the poll loop and whether to return a real
+terminal value or `null`.
+**Why:** real, reproduced bug, found writing `evidence-dual-dependency-outage.spec.ts`
+(the two-simultaneous-dependency-failure fault-injection gap named in
+`STATUS.md`) — the first spec in the suite to seed a watch with a terminal
+value (`"Error"`) and then legitimately expect the SAME terminal value
+again after a real intervening transition (`Error -> Scanning -> Parsing ->
+Error`, i.e. recovering ClamAV while OpenSearch was still down, so the
+retry correctly fails a second time). The old code used `last !== seedValue`
+for both the break condition and the final return, so it correctly kept
+polling through the real transitions (never broke early) but then, once
+`last` cycled back to equal `seedValue` again, silently returned `terminal:
+null` instead of the real second `"Error"` — indistinguishable, from the
+caller's point of view, from the exact stale-read case the seed guard was
+originally built to catch. Confirmed every OTHER existing call site
+(`evidence-retry.spec.ts`, `evidence-parse-retry.spec.ts`,
+`evidence-intake-retry.spec.ts`, `evidence-intake-retry-dev-stack.spec.ts`,
+and the no-seed callers) only ever seeds a DIFFERENT value than the one it
+waits for, so this fix is behavior-preserving for all of them — verified
+both by code inspection and by a real, live re-run of
+`evidence-retry.spec.ts` (green, 2.6min) after the fix, not just reasoning
+about it.
+
+### `EvidenceDetailDrawer`'s Retry click doesn't close the drawer — page object needs an explicit close between recovery cycles
+**Date:** 2026-09-20
+**Decision:** added `CaseDetailPage.closeEvidenceDrawer()` (clicks the
+drawer's own `×`, `aria-label="Close"`, waits for the dialog to detach) and
+call it after `clickRetry()` in `evidence-dual-dependency-outage.spec.ts`
+before opening the drawer again for a second recovery cycle.
+**Why:** real, reproduced bug (same spec as above) — `retryMutation.mutate()`
+in `EvidenceDetailDrawer.tsx` never calls `onClose`, so the drawer (and its
+`fixed inset-0 z-40 bg-black/50` backdrop) stays mounted after Retry is
+clicked. Every prior recovery spec only opens the drawer once per test, so
+this was never exercised before; a second `openEvidenceDrawer()` call in
+the same test hung for the full 15-minute test timeout with Playwright
+retrying a click intercepted by the leftover backdrop. Fixed in the test
+harness (an explicit close between cycles), not the component — leaving the
+drawer open after Retry is a real, deliberate UX choice (lets the user keep
+watching the row) that this decision does not second-guess.
+
+## Volatility / memory forensics (2026-09-20, continued)
+
+### Wired up real remote ISF lookup, accepting real outbound network access from the sandboxed worker
+**Date:** 2026-09-20
+**Decision:** `Settings.volatility_remote_isf_url` defaults to
+`https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json`
+-- volatility3's own project's real, CI-verified remote ISF index (see
+`github.com/volatilityfoundation/volatility3` PR #1316, "Enable Remote ISF
+server for Linux testcases") -- and the sandboxed Volatility worker
+subprocess now makes real outbound HTTPS requests to GitHub to fetch it
+and, when a match is found, the specific matched ISF file. Threaded
+through `VolatilityLauncher`'s multi-plugin/OS-detection path and the
+on-demand curated-plugin picker; empty string disables (fully offline).
+**Why:** real, reproduced bug against a real user-uploaded 4GB Ubuntu
+memory image -- every plugin failed with `UnsatisfiedException` because
+this worker calls volatility3's framework API directly, never its own CLI
+(the only other code that ever sets `constants.REMOTE_ISF_URL`), so remote
+symbol lookup was never attempted regardless of real network access;
+manually building a per-kernel ISF (the alternative explored first, see
+`poc/volatility_linux_boottime/`) does not scale to arbitrary
+user-uploaded images and was explicitly ruled out by the project owner as
+not viable "regardless of kernel version" for this use case. No evidence
+content or evidence-derived data is ever transmitted -- the fetched index
+is a public document, matching happens entirely locally against the
+already-downloaded image, and only the specific matched kernel build's ISF
+URL (not evidence bytes) is ever requested from GitHub, visible only in
+GitHub's own access logs. This is the explicitly-requested option between
+the two named in the original diagnosis (`STATUS.md`'s Volatility remote
+ISF entry) and is consistent with this component's existing trust tier
+(`CLAUDE.md` §G.3: sandboxed-subprocess-wrapping-an-external-tool, not the
+stricter no-network Track D tier) -- not a new sandboxing exception
+invented for this fix.

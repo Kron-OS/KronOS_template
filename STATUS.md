@@ -1,6 +1,6 @@
 # KronOS — Current Status
 
-**Last updated:** 2026-09-19
+**Last updated:** 2026-09-20
 **This is the only status document.** It is a living file, edited in
 place — not appended to, not superseded by a new dated copy. If you are
 about to write `docs/GAP_AUDIT_<date>_MILESTONE_<X>.md`, a new
@@ -46,9 +46,52 @@ plugin) picks the right curated eager plugin set per file automatically,
 real-verified end-to-end against both a real Windows sample (`cridex.vmem`)
 and a real self-generated Linux sample (Ubuntu 22.04, LiME capture) in the
 same run — see `poc/volatility_linux_module/README.md` and
-`reviews/Volatility_Linux_Plugin_Research.md`. Two named, real caveats in
-§2 below (an ISF-tool compatibility gap for one plugin; no Linux timeline
-records yet, artifacts only).
+`reviews/Volatility_Linux_Plugin_Research.md`. Linux images now also
+dual-emit real `TimelineRecord`s (not just `StructuredArtifact`s) via
+`linux.pslist.PsList`'s "CREATION TIME" column, **conditional on the
+image's ISF having been built by `dwarf2json` rather than `btf2json`** —
+real-verified both ways against the identical kernel build/memory capture
+(`poc/volatility_linux_boottime/README.md`): a `dwarf2json`-built ISF gave
+all 105 real sample rows a real timestamp; the codebase's own
+`btf2json`-built sample ISF gives every row `null` (handled honestly, zero
+records, not a crash — see known gaps below). One further named, real
+caveat in §2 below (an ISF-tool compatibility gap for one bonus plugin,
+`hidden_modules`).
+
+### Volatility remote ISF lookup — fixed 2026-09-20
+Real, reproduced bug found via a real user-uploaded 4GB memory image
+(`memory.vmem`, Ubuntu `6.5.0-41-generic`): every plugin failed with
+`UnsatisfiedException` even though OS-family detection correctly
+identified Linux. Root cause: this worker calls volatility3's framework
+API directly, never its CLI (`vol.py`) — the only other code that ever
+sets `volatility3.framework.constants.REMOTE_ISF_URL` — so remote symbol
+lookup was never attempted at all, regardless of this container's real
+network access; only a memory image whose exact kernel/PDB build already
+had a manually pre-installed local ISF could ever be analyzed. Fixed by
+wiring `Settings.volatility_remote_isf_url` (default: volatility3's own
+project's real, CI-verified remote ISF index, see
+`github.com/volatilityfoundation/volatility3` PR #1316) through
+`VolatilityLauncher`/the worker script's new `--remote-isf-url` flag,
+covering both the eager multi-plugin run and the on-demand curated-plugin
+picker. Real-verified end-to-end, twice: first a direct PoC against the
+worker module's own multi-plugin function
+(`poc/volatility_remote_isf/README.md`), then the real production Celery
+pipeline against the same real evidence file after rebuilding
+`celery-worker-plaso` — `linux.psscan.PsScan` went from `UnsatisfiedException`
+to 1493 real process rows, now persisted as a real `StructuredArtifact`
+in Postgres via the actual `kronos.parse_artefact_heavy` task, not a
+standalone script. Empty string disables (fully offline/air-gapped
+deployments); see `DECISIONS.md` for the real network/sandboxing tradeoff
+this accepts. One further real, disclosed finding from the same
+verification, **not fixed by this change**: most linked-list-walk plugins
+(`pstree`/`pslist`/`psaux`/`bash`/`malfind`/`library_list`/`lsof`/`lsmod`)
+still return zero rows against this exact file even with symbols now
+resolved, while pool-scan-based `psscan` recovers real data — likely tied
+to this being a bare `.vmem` with no paired `.vmss`/`.vmsn` snapshot
+metadata (volatility3 itself warns about exactly this), affecting
+KASLR/DTB-shift calculation for the walk-based plugins specifically. Not
+investigated further; a separate, real gap, tracked below, not silently
+folded into "fixed."
 
 ### Timeline & search
 OpenSearch, ECS + `kronos.*` schema, per-case-per-month index rollover
@@ -85,12 +128,25 @@ and were verified against the real dev stack, not just unit-tested — see
   CEF-syslog SINK configure/disable/enable/remove
   (`frontend/e2e/connector-marketplace-cef-syslog-sink.spec.ts`), both
   run live against the dev stack including the real step-up MFA redirect.
-- **Not yet covered by a dedicated E2E spec** (built and unit-tested, but
-  no live browser run): Wazuh/Zeek PUSH panels (share the same
-  `PushConnectorKeyPanel.tsx` component the Suricata spec exercises, so
-  risk is low but unconfirmed), Splunk HEC / Sentinel / Defender POLL
-  config forms (share `ConnectorConfigForm.tsx` with the CEF spec, same
-  caveat).
+- **All 7 marketplace connectors now have real, passing E2E coverage** —
+  Wazuh/Zeek PUSH panels
+  (`frontend/e2e/connector-marketplace-push-panels.spec.ts`) and Splunk
+  HEC/Sentinel/Defender POLL config forms
+  (`frontend/e2e/connector-marketplace-poll-sink-forms.spec.ts`), added and
+  run live against the dev stack 2026-09-20 alongside the pre-existing
+  Suricata PUSH and CEF-syslog SINK specs (all 7 re-run together, all
+  green). Config-form saves use well-formed fake credentials, not live
+  Splunk/Sentinel/Graph calls — confirmed by reading
+  `admin_connector_config.py`'s `set_connector_config`, which only
+  validates and persists to Postgres/Vault, never dials out on save.
+  **A real bug was found and fixed by this run**: `ConnectorConfigForm.tsx`
+  and `PushConnectorKeyPanel.tsx`'s modal had no `max-height`/scroll — the
+  Microsoft Sentinel form (8 parameters) overflowed the fixed-position
+  overlay with no way to reach the Save button, a real, reproducible
+  usability bug on any viewport shorter than the rendered form (not a test
+  artifact — confirmed via screenshot, then fixed with `max-h-[90vh]
+  overflow-y-auto` on both modals' inner container, rebuilt into the nginx
+  image, and re-verified green).
 - A real bug in stream ingestion was found and fixed in the same
   initiative: `StreamSourceNormalizerRegistry` was keyed on a connector
   *instance's* `source_id` (e.g. `wazuh-manager-1`) instead of its
@@ -152,6 +208,25 @@ Page-object pattern (`KronosPage` base + per-page subclasses),
 `DEV_USERS` fixture for the three static dev accounts. `workers: 1` —
 there is a documented Keycloak concurrent-login race, don't parallelize.
 
+**Two-simultaneous-dependency-failure fault injection — added 2026-09-20**
+(`evidence-dual-dependency-outage.spec.ts`): stops ClamAV *and* OpenSearch
+together (dev stack), confirms upload deterministically lands on
+`ERROR/intake_failed` (the ClamAV gate, unaffected by OpenSearch also being
+down), restores ClamAV only and confirms retry correctly fails a *second*
+time at `ERROR/ingest_failed` (the parse/OpenSearch stage, not a hang or a
+misattributed repeat of the first error), then restores OpenSearch and
+confirms full recovery to `COMPLETE` — three real stop/restart cycles, one
+spec, real-verified green (`~7.2min`, `CLAUDE.md` §F). Writing this spec
+surfaced and fixed two real, previously-hidden bugs in shared E2E
+infrastructure (not the app pipeline — see `DECISIONS.md`):
+`KronosPage.pollLiveText`'s seed-guard returned `null` instead of a
+genuine second terminal reading whenever a row legitimately cycled back to
+the *same* terminal value as its seed (every prior spec only ever seeded a
+*different* value than it waited for, so this never fired before); and
+`EvidenceDetailDrawer`'s Retry button doesn't close the drawer, so a second
+`openEvidenceDrawer()` in the same test was blocked by the still-mounted
+backdrop (fixed with a new `closeEvidenceDrawer()` page-object helper).
+
 ### CI / test suite
 `~/venv/bin/python3 -m pytest tests/` runs the full unit+integration
 suite in-process. As of the last full run this initiative is aware of:
@@ -187,21 +262,34 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   will see this one plugin fail while the other 8 in the Linux eager set
   succeed normally (same "one bad plugin doesn't sink the run" handling
   every other multi-plugin outcome already gets). Not urgent, named.
-- **Linux memory images produce no dual-emitted `TimelineRecord`s yet —
-  investigated for real, verified blocked, not just unbuilt.**
-  `linux.pstree`/`linux.psscan` carry no per-row wall-clock timestamp in
-  this volatility3 version (real, verified against a real sample) — Linux
-  findings surface entirely through `StructuredArtifact`s
-  (`extract_artifacts()`), never the case timeline. The planned fix
-  (combine `linux.boottime.Boottime` with each process's boot-relative
-  start offset) was tried for real against the self-generated sample and
-  is blocked: `boottime.Boottime` fails on this ISF
-  (`AttributeError: Unable to find timekeeper`) — the same
-  `btf2json`-vs-`dwarf2json` ISF-metadata gap already named below for
-  `hidden_modules`. The offset data itself (`task.start_time`) is real and
-  readable directly from the object layer even with the plugin broken; only
-  the wall-clock boot anchor is missing. Two named ways forward in
-  `poc/volatility_linux_boottime/README.md`, neither attempted yet.
+- **A bare `.vmem` with no paired `.vmss`/`.vmsn` may leave most
+  linked-list-walk Linux plugins returning zero rows even with symbols
+  correctly resolved.** Real, observed against a real user-uploaded 4GB
+  Ubuntu image (`poc/volatility_remote_isf/README.md`): after fixing
+  remote ISF lookup (above), automagic resolved the kernel for every
+  plugin, but `pstree`/`pslist`/`psaux`/`bash`/`malfind`/`library_list`/
+  `lsof`/`lsmod` still returned 0 real rows while pool-scan-based
+  `psscan` recovered 1493 rows from the identical file — both plugin
+  families need the same resolved symbols, so this isn't a second
+  symbol-resolution failure. volatility3 itself warns live that a
+  metadata-carrying `.vmss`/`.vmsn` companion may be required alongside a
+  bare `.vmem`, which plausibly affects KASLR/DTB-shift calculation used
+  by the walk-based plugins specifically. Not investigated further; a
+  real, separate, named gap, not folded into the remote-ISF fix above.
+- **Linux memory images only dual-emit `TimelineRecord`s when the image's
+  ISF was built by `dwarf2json` — a `btf2json`-built ISF still gets none.**
+  No longer a flat "not built" gap (fixed 2026-09-20, see `DECISIONS.md`'s
+  Volatility section and `poc/volatility_linux_boottime/README.md`'s "Part
+  2"): `linux.pslist.PsList`'s "CREATION TIME" column is real-verified to
+  give all rows a real timestamp when a `dwarf2json`-built ISF resolves
+  `tk_core`/`timekeeper` correctly, but this codebase's own
+  `btf2json`-built self-generated sample (and any org's BTF-only kernel)
+  leaves that symbol untyped, so every row's CREATION TIME is `null` —
+  same ISF-metadata gap already named below for `hidden_modules`, handled
+  the same honest way (zero records, not a crash). Not urgent to fix
+  further: most distro kernels have a `dwarf2json`-compatible debug
+  package available, and the alternative (a `timekeeper`-independent
+  wall-clock anchor) has its own real accuracy caveats.
 - **Dev OpenSearch's shard ceiling was raised (1000 → 2000) as a
   workaround, not fixed.** Root cause (ISM creates a new index per case
   per month, never deleted) is still real; the ceiling will be hit again
@@ -221,9 +309,10 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   started.** Gated behind first-party modules being solid, per
   `reviews/Extensibility_Architecture_Proposal.md`.
 - **A few named, small test-coverage gaps**: `StatusPill`'s transient
-  pipeline states have no visual-regression coverage; two-simultaneous-
-  dependency-failure fault injection has no coverage (every existing
-  fault-injection spec targets exactly one dependency, fully down).
+  pipeline states have no visual-regression coverage (deliberately scoped,
+  not an oversight — see `visual-regression-pills.spec.ts`'s own docstring).
+  Two-simultaneous-dependency-failure fault injection is now covered — see
+  below, no longer a gap.
 
 ## 3. Explicitly out of scope (standing product decisions — don't re-litigate without a fresh instruction)
 
