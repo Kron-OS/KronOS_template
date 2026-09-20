@@ -121,6 +121,29 @@ no port, PUT returned 200, finalize returned 202. Backend unit tests
 still pass. See `DECISIONS.md`'s connector/infra section for the full
 rationale.
 
+### Large-file client-side hash mismatch bug — fixed 2026-09-20
+Every real multi-GB evidence upload (this platform's own memory-forensics
+use case) was terminally failing intake with `hash_mismatch`, every time,
+not intermittently. Root cause: `computeSHA256()`
+(`frontend/src/store/uploads.ts`) called `crypto.subtle.digest()` over a
+single `file.arrayBuffer()` — for a multi-GB file that requires the
+*entire* file materialized as one in-memory `ArrayBuffer`, which silently
+produced a hash over truncated/corrupted bytes well below any visible
+browser error, while the real presigned PUT (`xhr.send(file)`) streams the
+actual full file straight from disk. The two never matched, so the
+server's real streamed-from-storage hash (`_run_hash`,
+`src/application/evidence_intake.py`) always disagreed — and
+`hash_mismatch` is backend-terminal (`is_retryable_error_reason()`), so
+the affected evidence item could never be retried in place, only
+re-uploaded fresh after the client fix. Fixed by hashing in fixed-size
+(32 MiB) chunks via `@noble/hashes`' incremental `sha256.create()` (Web
+Crypto's `SubtleCrypto` has no chunked/streaming digest API), keeping peak
+hashing memory bounded regardless of file size. Verified with a real unit
+test computing the hash of a real 75 MiB file (crossing the chunk boundary
+twice) and comparing against a one-shot digest over the same bytes —
+not just re-testing the old tiny fixture. Rebuilt and redeployed to the
+dev nginx image the same session.
+
 ### Frontend E2E (`frontend/e2e/`)
 Real browser tests against the live dev stack (`https://kronos.local`),
 not mocked — evidence upload through to `COMPLETE` via SSE, admin

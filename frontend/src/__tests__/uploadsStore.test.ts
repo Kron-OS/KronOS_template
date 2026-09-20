@@ -1,5 +1,6 @@
+import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useUploadsStore, hasActiveJobs } from '../store/uploads'
+import { useUploadsStore, hasActiveJobs, computeSHA256 } from '../store/uploads'
 
 const requestUploadMock = vi.fn()
 const finalizeUploadWithHashMock = vi.fn()
@@ -40,14 +41,34 @@ beforeEach(() => {
   validateFileMagicMock.mockReset().mockResolvedValue({ ok: true })
   FakeXHR.instances = []
   vi.stubGlobal('XMLHttpRequest', FakeXHR)
-  vi.stubGlobal('crypto', {
-    subtle: { digest: vi.fn().mockResolvedValue(new ArrayBuffer(32)) },
-  })
 })
 
 function makeFile(name: string): File {
   return new File(['content'], name, { type: 'text/plain' })
 }
+
+describe('computeSHA256', () => {
+  it('matches a real streamed hash across multiple chunk boundaries', async () => {
+    // Real regression test for the bug this replaced: a single
+    // `file.arrayBuffer()` + `crypto.subtle.digest()` call silently broke
+    // for large files. 75 MiB crosses the internal 32 MiB chunk boundary
+    // twice, so a chunking bug in computeSHA256 (dropped bytes, wrong
+    // offset, hasher reused across files) would produce a mismatch against
+    // this one-shot digest over the same bytes, even though it wouldn't
+    // show up against the tiny fixtures the other tests use.
+    const size = 75 * 1024 * 1024
+    const bytes = new Uint8Array(size)
+    for (let i = 0; i < size; i++) bytes[i] = i % 256
+    const file = new File([bytes], 'large.bin')
+
+    const actual = await computeSHA256(file)
+    const expected = Array.from(sha256(bytes))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+
+    expect(actual).toBe(expected)
+  }, 20_000)
+})
 
 describe('useUploadsStore drawer state', () => {
   it('openDrawer sets the active case and opens un-minimized', () => {
@@ -138,7 +159,16 @@ describe('useUploadsStore.enqueueFiles', () => {
     expect(job.status).toBe('done')
     expect(job.progress).toBe(100)
     expect(hasActiveJobs()).toBe(false)
-    expect(finalizeUploadWithHashMock).toHaveBeenCalledWith('ev-1', expect.any(String))
+    // Real regression check for the chunked-hashing fix (previously
+    // `crypto.subtle.digest` over a single `file.arrayBuffer()` -- broke
+    // silently for multi-GB files, see store/uploads.ts's own docstring):
+    // asserts the exact SHA-256 of makeFile()'s real content ("content"),
+    // not just "some string", so a chunking bug that produces *a* hash
+    // that merely looks well-formed would still fail this test.
+    expect(finalizeUploadWithHashMock).toHaveBeenCalledWith(
+      'ev-1',
+      'ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73',
+    )
   })
 
   it('marks the job as error (not the whole batch) when the PUT fails, without aborting other jobs', async () => {

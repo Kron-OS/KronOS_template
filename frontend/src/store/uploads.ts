@@ -1,3 +1,4 @@
+import { sha256 } from '@noble/hashes/sha2.js'
 import { create } from 'zustand'
 import { requestUpload, finalizeUploadWithHash } from '../api/evidence'
 import { validateFileMagic } from '../utils/validateFileMagic'
@@ -27,10 +28,31 @@ interface UploadsState {
   ) => Promise<void>
 }
 
-async function computeSHA256(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer()
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-  return Array.from(new Uint8Array(hashBuffer))
+// Real bug this replaced: `crypto.subtle.digest()` over a single
+// `file.arrayBuffer()` call needs the ENTIRE file materialized as one
+// in-memory ArrayBuffer -- for a multi-GB memory dump (this platform's
+// own memory-forensics use case) that silently produces a hash over
+// truncated/corrupted bytes well before any browser OOM error surfaces,
+// while the actual PUT below (`xhr.send(file)`) streams the real, full
+// file straight from disk without ever going through that buffer. The
+// two diverge, and the server's real streamed-from-storage hash
+// (`_run_hash`, src/application/evidence_intake.py) never matches the
+// declared one -- a real, reproduced `hash_mismatch` on every large-file
+// upload, not an intermittent fluke. Fixed by hashing in fixed-size
+// chunks via an incremental hasher (`@noble/hashes` -- Web Crypto's
+// SubtleCrypto has no chunked/streaming digest API) so peak memory stays
+// bounded regardless of file size.
+const _HASH_CHUNK_BYTES = 32 * 1024 * 1024
+
+// Exported so a test can exercise chunk-boundary correctness directly
+// against a large file without driving the whole upload store.
+export async function computeSHA256(file: File): Promise<string> {
+  const hasher = sha256.create()
+  for (let offset = 0; offset < file.size; offset += _HASH_CHUNK_BYTES) {
+    const chunk = file.slice(offset, offset + _HASH_CHUNK_BYTES)
+    hasher.update(new Uint8Array(await chunk.arrayBuffer()))
+  }
+  return Array.from(hasher.digest())
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
 }
