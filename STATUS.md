@@ -177,6 +177,25 @@ no port, PUT returned 200, finalize returned 202. Backend unit tests
 still pass. See `DECISIONS.md`'s connector/infra section for the full
 rationale.
 
+### nginx request buffering made large evidence uploads look stuck — fixed 2026-09-20
+Real, reproduced bug found via a real user report: a multi-GB PUT to
+`location ~ ^/kronos-evidence-` (the same-origin MinIO proxy above) sat at
+0% with no visible progress. Confirmed live in nginx's own error log --
+`"a client request body is buffered to a temporary file"` -- nginx's
+default `proxy_request_buffering on` writes the ENTIRE request body to
+`/var/cache/nginx/client_temp/` before forwarding any of it to MinIO, so a
+multi-GB upload is serialized behind a second full disk write+read on top
+of the browser's own transfer, degrading sharply under real disk
+contention (this host's own dev stack + concurrent work already keeps the
+disk busy). Not a total stall -- the two uploads that triggered this report
+did eventually complete end to end (confirmed: both evidence items reached
+`COMPLETE`, one after several minutes) -- but indistinguishable from a
+genuine hang within any reasonable UI-watching timeframe. Fixed with
+`proxy_request_buffering off;`, verified with a real 1GiB presigned PUT
+through the real nginx container before asking the user to retry: 23s
+(~44MB/s) with no buffering warning in the log, vs. multi-minute
+buffered transfers for similarly-sized real uploads before the fix.
+
 ### Large-file client-side hash mismatch bug — fixed 2026-09-20
 Every real multi-GB evidence upload (this platform's own memory-forensics
 use case) was terminally failing intake with `hash_mismatch`, every time,
@@ -262,9 +281,10 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   will see this one plugin fail while the other 8 in the Linux eager set
   succeed normally (same "one bad plugin doesn't sink the run" handling
   every other multi-plugin outcome already gets). Not urgent, named.
-- **A bare `.vmem` with no paired `.vmss`/`.vmsn` may leave most
+- **A bare `.vmem` with no co-located `.vmss`/`.vmsn` leaves most
   linked-list-walk Linux plugins returning zero rows even with symbols
-  correctly resolved.** Real, observed against a real user-uploaded 4GB
+  correctly resolved — and there is no way today to actually supply the
+  companion file.** Real, observed against a real user-uploaded 4GB
   Ubuntu image (`poc/volatility_remote_isf/README.md`): after fixing
   remote ISF lookup (above), automagic resolved the kernel for every
   plugin, but `pstree`/`pslist`/`psaux`/`bash`/`malfind`/`library_list`/
@@ -274,8 +294,22 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   symbol-resolution failure. volatility3 itself warns live that a
   metadata-carrying `.vmss`/`.vmsn` companion may be required alongside a
   bare `.vmem`, which plausibly affects KASLR/DTB-shift calculation used
-  by the walk-based plugins specifically. Not investigated further; a
-  real, separate, named gap, not folded into the remote-ISF fix above.
+  by the walk-based plugins specifically. **Confirmed real, not just
+  theoretical**: the user re-uploaded both `memory.vmem` and its real
+  `memory.vmsn` to the same case as two separate evidence items — both
+  completed real parses, but the results were byte-identical to the
+  `.vmem`-only run (same 0 rows for every walk-based plugin), because
+  `VolatilityModule` has no mechanism to associate one evidence item with
+  another; each writes only its own bytes to its own temp file.
+  volatility3's own companion-file detection only works when both files
+  sit in the same directory under the same basename — confirmed by
+  reading `archive.py`'s own container-recursion code that even zipping
+  the two together wouldn't help (members are extracted and dispatched to
+  a sub-parser one at a time, never co-resident on disk). A real
+  companion-file feature (associate a second upload with an existing
+  memory-forensics evidence item; `VolatilityModule` downloads and stages
+  both under matching basenames before invoking the worker) does not
+  exist yet — real, scoped follow-up work, not attempted in this pass.
 - **Linux memory images only dual-emit `TimelineRecord`s when the image's
   ISF was built by `dwarf2json` — a `btf2json`-built ISF still gets none.**
   No longer a flat "not built" gap (fixed 2026-09-20, see `DECISIONS.md`'s

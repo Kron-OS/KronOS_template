@@ -166,6 +166,21 @@ server {
     # both `"kronos-evidence"`), not a generic catch-all, so it can never
     # shadow a real SPA route by accident.
     location ~ ^/kronos-evidence- {
+        # Real, reproduced bug (2026-09-20): nginx's default
+        # `proxy_request_buffering on` writes the ENTIRE client request body
+        # to a temp file under /var/cache/nginx/client_temp/ before sending
+        # any of it upstream to MinIO -- confirmed live via nginx's own
+        # access/error log ("a client request body is buffered to a
+        # temporary file") on a real multi-GB evidence PUT. For a large
+        # memory-dump upload this serializes the whole transfer behind a
+        # second full disk write+read on top of the browser's own transfer,
+        # and degrades sharply under real disk contention -- observed live
+        # as a presigned PUT that looked permanently stuck at 0% progress,
+        # not a slow-but-moving transfer. `off` streams the request body
+        # straight through to MinIO as it arrives, matching how every other
+        # proxied body in this file (finalize, etc.) already behaves and
+        # how a presigned-URL direct-to-storage upload is supposed to work.
+        proxy_request_buffering off;
         proxy_pass         http://minio:9000;
         proxy_http_version 1.1;
         proxy_set_header   Host              $http_host;

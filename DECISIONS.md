@@ -523,3 +523,45 @@ ISF entry) and is consistent with this component's existing trust tier
 (`CLAUDE.md` §G.3: sandboxed-subprocess-wrapping-an-external-tool, not the
 stricter no-network Track D tier) -- not a new sandboxing exception
 invented for this fix.
+
+## Evidence upload / infra (2026-09-20, continued)
+
+### nginx's evidence-proxy location needs proxy_request_buffering off
+**Date:** 2026-09-20
+**Decision:** `location ~ ^/kronos-evidence-` in
+`docker/nginx/nginx-lan-https.conf.template` sets
+`proxy_request_buffering off;`.
+**Why:** real user report of a multi-GB upload sitting at 0% with no
+visible progress. Confirmed live in nginx's own error log:
+`"a client request body is buffered to a temporary file"` -- nginx's
+default (`on`) writes the whole request body to
+`/var/cache/nginx/client_temp/` before forwarding any of it upstream,
+serializing a multi-GB transfer behind a second full disk write+read on
+top of the browser's own transfer. Not a total hang -- both real uploads
+that triggered the report did eventually reach `COMPLETE` -- but
+indistinguishable from one within any realistic UI-watching window,
+especially on a disk-contended host. Verified fixed with a real 1GiB
+presigned PUT through the rebuilt nginx container (23s, no buffering
+warning) before asking the user to retry, not assumed from reading the
+nginx docs alone.
+
+### Companion-file (.vmss/.vmsn) support does not exist, confirmed by direct test, not just theory
+**Date:** 2026-09-20
+**Decision:** did not build "attach a companion file" as part of this
+session's work, despite verifying (`poc/volatility_remote_isf/`) that a
+missing `.vmss`/`.vmsn` plausibly explains zero-row walk-based Linux
+plugins.
+**Why:** the project owner supplied the real `.vmsn` for the exact file
+already under investigation, uploaded as a second evidence item on the
+same case. Real result: both parses completed, but with byte-identical
+output to the `.vmem`-only run -- confirming (not just theorizing) that
+two independent evidence uploads never become co-resident on disk the
+way volatility3's own same-directory/same-basename companion-file
+detection requires, and that zipping them together wouldn't help either
+(`archive.py`'s container recursion dispatches members one at a time,
+never simultaneously on disk). Building the real feature (associate a
+second upload with an existing memory-forensics evidence item; download
+and stage both under matching basenames before invoking the worker) is
+real, separate, scoped work -- left as a named follow-up, not attempted
+speculatively before confirming the underlying assumption with the real
+files in hand.
