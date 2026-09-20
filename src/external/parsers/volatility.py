@@ -77,6 +77,22 @@ just raw kernel page-table bytes with no header at all. This module's
 ``src/application/validation.py``'s own ``_MEMORY_DUMP_EXTENSIONS`` for the
 matching upload-time validator change and its identical honesty note.
 
+**Real Linux support (TaskList #13-15, reviews/Volatility_Linux_Plugin_Research.md,
+poc/volatility_linux_module/).** ``VolatilityModule()`` (no explicit
+``plugins`` argument -- the real production construction,
+``get_parser_registry()``) now detects the target image's real OS family
+per file via ``VolatilityLauncher.detect_os_family()`` (the OS-agnostic
+``banners.Banners`` plugin, real-verified against both a real Windows and
+a real self-generated Linux sample) and requests ``LINUX_DEFAULT_PLUGINS``
+instead of ``DEFAULT_PLUGINS`` for a Linux image. An explicit ``plugins``
+argument (tests, the on-demand picker) bypasses detection entirely and is
+used as given -- detection only ever fills in for "the real default,"
+never overrides a caller's own explicit choice. See ``_timeline_rows``'s
+own docstring for the one real, verified gap this doesn't close yet:
+Linux's ``pstree``/``psscan`` carry no per-row timestamp in this
+volatility3 version, so Linux images currently produce
+``StructuredArtifact``s only, no dual-emitted ``TimelineRecord``s.
+
 **Registration order matters.** Must be registered LAST in
 ``get_parser_registry`` (``src/external/dependencies.py``), after
 ``PlasoParser``: a ``.raw`` extension is ambiguous between "unwrapped disk
@@ -108,7 +124,7 @@ from src.domain.evidence import Evidence
 from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.domain.user import TenantContext
 from src.exceptions import VolatilityScanError
-from src.external.sandbox.volatility_launcher import DEFAULT_PLUGINS
+from src.external.sandbox.volatility_launcher import DEFAULT_PLUGINS, LINUX_DEFAULT_PLUGINS
 
 if TYPE_CHECKING:
     from src.external.sandbox.volatility_launcher import (
@@ -171,6 +187,13 @@ _MAX_ROWS_CONTENT_BYTES = 7 * 1024 * 1024
 # checked before the generic derivation in _plugin_to_kind.
 _PLUGIN_KIND_OVERRIDES: dict[str, str] = {
     "windows.malware.malfind.Malfind": "volatility.malfind",
+    # Same real cross-OS kind-unification this class already does for
+    # same-named plugins (pstree/psscan naturally unify via the generic
+    # prefix-strip in _plugin_to_kind) -- malfind needs an explicit entry
+    # on both OS families because both real class paths live one level
+    # deeper, under `*.malware.*`, which the generic derivation can't
+    # collapse on its own (see the Windows entry above, added first).
+    "linux.malware.malfind.Malfind": "volatility.malfind",
 }
 
 
@@ -186,10 +209,17 @@ class VolatilityModule(ForensicParser):
 
     def __init__(
         self,
-        plugins: Sequence[str] = DEFAULT_PLUGINS,
+        plugins: Sequence[str] | None = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._plugins = tuple(plugins)
+        # None (the real production default, see get_parser_registry()) means
+        # "detect for real, per evidence file" -- see _run_volatility()'s own
+        # real banners.Banners-based OS-family detection
+        # (VolatilityLauncher.detect_os_family). An explicit *plugins*
+        # sequence bypasses detection entirely and is used verbatim, same as
+        # before this method existed -- a caller who asked for a specific
+        # plugin list is never second-guessed.
+        self._plugins = tuple(plugins) if plugins is not None else None
         self._timeout_seconds = timeout_seconds
 
     @property
@@ -358,8 +388,20 @@ class VolatilityModule(ForensicParser):
             launcher = VolatilityLauncher(
                 worker_path=worker_path, timeout_seconds=self._timeout_seconds
             )
+            plugins_to_run = self._plugins
+            if plugins_to_run is None:
+                os_family = await launcher.detect_os_family(tmp_path)
+                plugins_to_run = LINUX_DEFAULT_PLUGINS if os_family == "linux" else DEFAULT_PLUGINS
+                logger.info(
+                    "volatility_os_family_detected",
+                    extra={
+                        "evidence_id": str(evidence.evidence_id),
+                        "os_family": os_family,
+                        "plugins": list(plugins_to_run),
+                    },
+                )
             try:
-                return await launcher.run(evidence_path=tmp_path, plugins=self._plugins)
+                return await launcher.run(evidence_path=tmp_path, plugins=plugins_to_run)
             except VolatilityScanError as exc:
                 logger.warning(
                     "volatility_scan_failed",
@@ -379,6 +421,21 @@ def _timeline_rows(
     same process-creation event when both plugins recover the same
     process, the common case once pstree succeeds; see this module's own
     docstring). Neither present/ok, or both empty, returns (None, ()).
+
+    **Windows-only, deliberately, real finding not an oversight**: only
+    checks the ``windows.pstree``/``windows.psscan`` plugin names. Real,
+    verified against a real Linux sample (``poc/volatility_linux_module/``):
+    ``linux.pstree.PsTree``/``linux.psscan.PsScan`` rows in this pinned
+    volatility3 version carry no per-row wall-clock timestamp field at all
+    (no ``CreateTime`` or equivalent -- just ``PID``/``TID``/``PPID``/
+    ``COMM``/offset). Checking the Linux plugin names here would only ever
+    return ``(plugin, rows)`` where every row then fails
+    ``_row_to_timeline_record``'s own ``CreateTime`` check, silently -- so
+    Linux images currently get zero TimelineRecords from ``parse()``,
+    surfacing entirely through ``extract_artifacts()`` instead. A real
+    Linux timeline source would need combining ``linux.boottime.Boottime``
+    (real, not yet run by this module) with a process's boot-relative start
+    offset -- out of scope for this pass; tracked, not silently missing.
     """
     pstree = result.for_plugin(_PSTREE_PLUGIN)
     if pstree is not None and pstree.ok and pstree.rows:

@@ -105,6 +105,28 @@ DEFAULT_PLUGINS: tuple[str, ...] = (
     "windows.registry.hivelist.HiveList",
 )
 
+# Real, curated Linux eager set (reviews/Volatility_Linux_Plugin_Research.md,
+# real-sample-verified in poc/volatility_linux_module/ against a
+# self-generated Ubuntu 22.04/5.15.0-191-generic LiME capture -- 8 of 9
+# plugins here produced real, plausible rows; `hidden_modules` is real but
+# sensitive to which tool generated the target org's ISF symbol table
+# (dwarf2json vs. btf2json) and may legitimately come back as a per-run
+# scan_error on some real images -- expected, not a bug, same "one bad
+# plugin doesn't sink the run" precedent every other multi-plugin outcome
+# here already has). Same "must match kronos-volatility-worker.py exactly"
+# mirroring discipline as DEFAULT_PLUGINS above.
+LINUX_DEFAULT_PLUGINS: tuple[str, ...] = (
+    "linux.pstree.PsTree",
+    "linux.psscan.PsScan",
+    "linux.psaux.PsAux",
+    "linux.bash.Bash",
+    "linux.malware.malfind.Malfind",
+    "linux.library_list.LibraryList",
+    "linux.lsof.Lsof",
+    "linux.lsmod.Lsmod",
+    "linux.malware.hidden_modules.Hidden_modules",
+)
+
 # Doubled from the single-plugin era's 300s: 7 plugins now run sequentially
 # in one process instead of 1-2 `vol` subprocess invocations. Real-measured
 # combined cost on a 1.6GB image was ~40s (poc/volatility_multiplugin/); a
@@ -184,6 +206,41 @@ class VolatilityRegistryKeyResult:
     ok: bool
     error: str | None
     rows: tuple[dict[str, Any], ...]
+
+
+# Real, top-level (not windows.*/linux.*-namespaced) plugin -- requires only
+# a `primary` TranslationLayerRequirement, auto-resolved by the LayerStacker
+# automagic without needing OS-specific symbol resolution, so it can run
+# BEFORE deciding whether the rest of a scan should request DEFAULT_PLUGINS
+# or LINUX_DEFAULT_PLUGINS. Real-verified against both families
+# (poc/volatility_linux_module/): a Windows image's banner is a PDB
+# reference (`ntkrnlpa.pdb|<hex-guid>|<age>`); a Linux image's banner is the
+# literal `/proc/version`-style string, always starting with
+# "Linux version ". No macOS eager set exists yet in this codebase, so a mac
+# banner (also detectable via this same plugin) currently falls through to
+# "unknown" -- see _detect_os_family_from_banners' own docstring.
+_BANNER_PLUGIN = "banners.Banners"
+
+
+def _detect_os_family_from_banners(rows: tuple[dict[str, Any], ...]) -> str:
+    """Classify a real ``banners.Banners`` result into ``"windows"``,
+    ``"linux"``, or ``"unknown"`` (no bannner found, or a family this
+    codebase has no eager plugin set for yet, e.g. macOS).
+
+    Real, verified string shapes (poc/volatility_linux_module/README.md):
+    Linux banners always start with ``"Linux version "`` (the literal
+    ``/proc/version`` content each kernel embeds); Windows banners are a
+    ``<pdb-name>|<hex-guid>|<age>`` PDB reference with no such prefix.
+    """
+    for row in rows:
+        banner = row.get("Banner")
+        if isinstance(banner, str) and banner.startswith("Linux version "):
+            return "linux"
+    for row in rows:
+        banner = row.get("Banner")
+        if isinstance(banner, str) and banner.endswith(("|1", "|2")) and ".pdb|" in banner:
+            return "windows"
+    return "unknown"
 
 
 class VolatilityLauncher:
@@ -313,6 +370,31 @@ class VolatilityLauncher:
                 ok=False, error=payload.get("error") or "Unknown registry error", rows=()
             )
         return VolatilityRegistryKeyResult(ok=True, error=None, rows=tuple(payload.get("rows", [])))
+
+    async def detect_os_family(self, evidence_path: str) -> str:
+        """Run the real, OS-agnostic ``banners.Banners`` plugin against
+        *evidence_path* and classify the result into ``"windows"``,
+        ``"linux"``, or ``"unknown"`` -- the real signal ``VolatilityModule``
+        uses to pick ``DEFAULT_PLUGINS`` vs. ``LINUX_DEFAULT_PLUGINS`` for
+        the real multi-plugin scan that follows. A separate, cheap worker
+        launch (one plugin only) rather than folding into the main run: the
+        plugin list to request is exactly the question this answers, so it
+        must complete first. Never raises -- a worker-level failure here
+        (couldn't even launch, bad output) is reported as ``"unknown"``,
+        same fail-open-to-Windows-default posture as before this method
+        existed, not a new failure mode for callers to handle.
+        """
+        return await asyncio.to_thread(self._detect_os_family_sync, evidence_path)
+
+    def _detect_os_family_sync(self, evidence_path: str) -> str:
+        try:
+            result = self._run_sync(evidence_path, (_BANNER_PLUGIN,))
+        except VolatilityScanError:
+            return "unknown"
+        outcome = result.for_plugin(_BANNER_PLUGIN)
+        if outcome is None or not outcome.ok:
+            return "unknown"
+        return _detect_os_family_from_banners(outcome.rows)
 
     def _run_worker(self, cmd: list[str]) -> dict[str, Any]:
         """Shared subprocess-launch + JSON-parse logic for the two on-demand

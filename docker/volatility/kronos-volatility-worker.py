@@ -127,6 +127,27 @@ _DEFAULT_PLUGINS = (
     "windows.registry.hivelist.HiveList",
 )
 
+# Real, curated Linux eager set -- must match
+# src/external/sandbox/volatility_launcher.py's own LINUX_DEFAULT_PLUGINS
+# exactly (same "mirror, don't import across the sandbox boundary"
+# discipline as _DEFAULT_PLUGINS above). Only used as this CLI's own
+# `--plugins` default when invoked directly for a Linux image without an
+# explicit list -- the real caller (VolatilityModule) always passes an
+# explicit, freshly-detected plugin list, so this default rarely matters in
+# production; kept mirrored anyway for anyone invoking this script by hand.
+# Real-sample-verified: poc/volatility_linux_module/.
+_LINUX_DEFAULT_PLUGINS = (
+    "linux.pstree.PsTree",
+    "linux.psscan.PsScan",
+    "linux.psaux.PsAux",
+    "linux.bash.Bash",
+    "linux.malware.malfind.Malfind",
+    "linux.library_list.LibraryList",
+    "linux.lsof.Lsof",
+    "linux.lsmod.Lsmod",
+    "linux.malware.hidden_modules.Hidden_modules",
+)
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="KronOS volatility3 sandboxed multi-plugin runner")

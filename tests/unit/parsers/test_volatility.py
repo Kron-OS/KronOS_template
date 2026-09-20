@@ -59,7 +59,13 @@ def _outcome(
 
 
 class _FakeLauncher:
-    """Drop-in for VolatilityLauncher: returns a canned result or raises."""
+    """Drop-in for VolatilityLauncher: returns a canned result or raises.
+
+    ``os_family`` defaults to ``"windows"`` -- matches this fake's
+    pre-detection behavior (VolatilityModule always requested
+    ``DEFAULT_PLUGINS``), so every existing test that doesn't care about
+    OS-family dispatch keeps exercising the Windows path unchanged.
+    """
 
     last_kwargs: dict[str, Any] | None = None
 
@@ -67,10 +73,12 @@ class _FakeLauncher:
         self,
         result: VolatilityMultiPluginResult | None = None,
         error: Exception | None = None,
+        os_family: str = "windows",
         **_kw: Any,
     ) -> None:
         self._result = result
         self._error = error
+        self._os_family = os_family
 
     async def run(self, **kwargs: Any) -> VolatilityMultiPluginResult:
         _FakeLauncher.last_kwargs = kwargs
@@ -79,16 +87,20 @@ class _FakeLauncher:
         assert self._result is not None
         return self._result
 
+    async def detect_os_family(self, _evidence_path: str) -> str:
+        return self._os_family
+
 
 def _install_fake_launcher(
     monkeypatch: pytest.MonkeyPatch,
     result: VolatilityMultiPluginResult | None = None,
     error: Exception | None = None,
+    os_family: str = "windows",
 ) -> None:
     monkeypatch.setattr("src.config.Settings", _FakeSettings)
 
     def _factory(**kwargs: Any) -> _FakeLauncher:
-        return _FakeLauncher(result=result, error=error, **kwargs)
+        return _FakeLauncher(result=result, error=error, os_family=os_family, **kwargs)
 
     monkeypatch.setattr("src.external.sandbox.volatility_launcher.VolatilityLauncher", _factory)
 
@@ -604,3 +616,89 @@ class TestParseDualEmit:
 
         assert len(artifacts) == 1
         assert artifacts[0].content["rows"] == list(rows)
+
+
+class TestOsFamilyDispatch:
+    """Real dispatch logic (TaskList #15): VolatilityModule() with no
+    explicit `plugins` detects the real OS family per evidence file and
+    picks LINUX_DEFAULT_PLUGINS vs DEFAULT_PLUGINS accordingly. An
+    explicit `plugins` argument bypasses detection entirely (see
+    test_launcher_receives_the_configured_plugin_list above, unchanged)."""
+
+    async def test_linux_image_gets_linux_default_plugins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("linux.pstree.PsTree", ()),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="linux")
+        parser = VolatilityModule()
+
+        await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), make_evidence(), make_tenant_context())
+        )
+
+        assert _FakeLauncher.last_kwargs is not None
+        assert _FakeLauncher.last_kwargs["plugins"] == volatility_module.LINUX_DEFAULT_PLUGINS
+
+    async def test_windows_image_gets_windows_default_plugins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("windows.pstree.PsTree", ()),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="windows")
+        parser = VolatilityModule()
+
+        await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), make_evidence(), make_tenant_context())
+        )
+
+        assert _FakeLauncher.last_kwargs is not None
+        assert _FakeLauncher.last_kwargs["plugins"] == volatility_module.DEFAULT_PLUGINS
+
+    async def test_unknown_os_family_fails_open_to_windows_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A banner that's neither a real Windows PDB reference nor a real
+        Linux version string (unreadable image, mac, corrupt banner, worker
+        failure) must never crash the whole parse -- fails open to the
+        same DEFAULT_PLUGINS this module always requested before OS-family
+        detection existed, not a new failure mode."""
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("windows.pstree.PsTree", ()),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="unknown")
+        parser = VolatilityModule()
+
+        await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), make_evidence(), make_tenant_context())
+        )
+
+        assert _FakeLauncher.last_kwargs is not None
+        assert _FakeLauncher.last_kwargs["plugins"] == volatility_module.DEFAULT_PLUGINS
+
+    async def test_explicit_plugins_bypass_detection_even_for_a_linux_family(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Detection only ever fills in for the real default -- it must
+        never override a caller's own explicit plugin list, even if the
+        (unused) detected family would suggest a different set."""
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("windows.dlllist.DllList", ()),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="linux")
+        parser = VolatilityModule(plugins=("windows.dlllist.DllList",))
+
+        await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), make_evidence(), make_tenant_context())
+        )
+
+        assert _FakeLauncher.last_kwargs is not None
+        assert _FakeLauncher.last_kwargs["plugins"] == ("windows.dlllist.DllList",)
+
+
+class TestPluginKindOverridesForLinux:
+    def test_linux_malware_malfind_unifies_with_windows_malfind_kind(self) -> None:
+        assert _plugin_to_kind("linux.malware.malfind.Malfind") == "volatility.malfind"
+
+    def test_linux_pstree_and_windows_pstree_share_a_kind(self) -> None:
+        assert _plugin_to_kind("linux.pstree.PsTree") == _plugin_to_kind("windows.pstree.PsTree")
+        assert _plugin_to_kind("linux.pstree.PsTree") == "volatility.pstree"
+
+    def test_linux_only_plugins_get_their_own_distinct_kinds(self) -> None:
+        assert _plugin_to_kind("linux.bash.Bash") == "volatility.bash"
+        assert _plugin_to_kind("linux.lsmod.Lsmod") == "volatility.lsmod"
+        assert _plugin_to_kind("linux.psaux.PsAux") == "volatility.psaux"

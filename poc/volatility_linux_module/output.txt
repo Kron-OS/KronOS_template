@@ -1,0 +1,160 @@
+INFO Starting volatility3 multi-plugin run: evidence=/tmp/kronos-linux-sample.lime plugins=['linux.pstree.PsTree', 'linux.psscan.PsScan', 'linux.psaux.PsAux', 'linux.bash.Bash', 'linux.malware.malfind.Malfind', 'linux.library_list.LibraryList', 'linux.lsof.Lsof', 'linux.lsmod.Lsmod', 'linux.malware.hidden_modules.Hidden_modules']
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.pstree.PsTree: 2 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.psscan.PsScan: 197 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.psaux.PsAux: 105 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO adding vma: 5561277f3000 55612796b000 | 55612796b000 5561277f3000
+INFO adding vma: 563b84638000 563b84659000 | 563b84659000 563b84638000
+INFO volatility3 plugin linux.bash.Bash: 1 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.malware.malfind.Malfind: 2 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.library_list.LibraryList: 564 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.lsof.Lsof: 671 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.lsmod.Lsmod: 43 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Running automagic: KernelModule
+WARNING volatility3 plugin linux.malware.hidden_modules.Hidden_modules ran but row extraction failed: SymbolSpaceError: Invalid symbol table, please ensure the ISF table produced by dwarf2json was created with version 0.8.0 or later
+{
+  "linux.pstree.PsTree": {
+    "status": "ok",
+    "row_count": 2
+  },
+  "linux.psscan.PsScan": {
+    "status": "ok",
+    "row_count": 197
+  },
+  "linux.psaux.PsAux": {
+    "status": "ok",
+    "row_count": 105
+  },
+  "linux.bash.Bash": {
+    "status": "ok",
+    "row_count": 1
+  },
+  "linux.malware.malfind.Malfind": {
+    "status": "ok",
+    "row_count": 2
+  },
+  "linux.library_list.LibraryList": {
+    "status": "ok",
+    "row_count": 564
+  },
+  "linux.lsof.Lsof": {
+    "status": "ok",
+    "row_count": 671
+  },
+  "linux.lsmod.Lsmod": {
+    "status": "ok",
+    "row_count": 43
+  },
+  "linux.malware.hidden_modules.Hidden_modules": {
+    "status": "scan_error",
+    "row_count": 0
+  }
+}
+
+=== Sample rows (real content, not fabricated) ===
+linux.bash.Bash (real command recovered from a live bash process in memory):
+[
+  {
+    "__children": [],
+    "PID": 856,
+    "Process": "bash",
+    "CommandTime": "2026-09-19T14:50:52+00:00",
+    "Command": "sudo whoami"
+  }
+]
+
+linux.lsmod.Lsmod (first 3 of 43 real kernel modules):
+[
+  {
+    "__children": [],
+    "Offset": 281473909387328,
+    "Module Name": "lime",
+    "Code Size": 24576,
+    "Taints": "OOT_MODULE,UNSIGNED_MODULE",
+    "Load Arguments": "compress=None, timeout=None, digest=, localhostonly=None, format=, dio=None, path=",
+    "File Output": null
+  },
+  {
+    "__children": [],
+    "Offset": 281473908541184,
+    "Module Name": "isofs",
+    "Code Size": 53248,
+    "Taints": "",
+    "Load Arguments": "",
+    "File Output": null
+  },
+  {
+    "__children": [],
+    "Offset": 281473908253824,
+    "Module Name": "binfmt_misc",
+    "Code Size": 24576,
+    "Taints": "",
+    "Load Arguments": "",
+    "File Output": null
+  }
+]
+
+linux.malware.malfind.Malfind (2 real flagged RWX regions, real known Ubuntu processes -- plausible false positives, not confirmed malicious):
+{'PID': 571, 'Process': 'networkd-dispat', 'Protection': 'rwx', 'Path': 'Anonymous Mapping'}
+{'PID': 620, 'Process': 'unattended-upgr', 'Protection': 'rwx', 'Path': 'Anonymous Mapping'}

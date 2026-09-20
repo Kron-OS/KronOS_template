@@ -443,6 +443,84 @@ async def test_run_registry_key_reports_not_ok_on_scan_error(tmp_path: Path) -> 
     assert "printkey failed" in (result.error or "")
 
 
+# --- detect_os_family (TaskList #15) ----------------------------------
+
+
+async def test_detect_os_family_returns_linux_for_a_real_linux_banner(tmp_path: Path) -> None:
+    """Real, exact banner string captured live against a self-generated
+    Ubuntu 22.04/5.15.0-191-generic sample (poc/volatility_linux_module/)."""
+    payload = {
+        "status": "ok",
+        "error": None,
+        "plugins": {
+            "banners.Banners": {
+                "status": "ok",
+                "rows": [
+                    {
+                        "Offset": 284830200,
+                        "Banner": "Linux version 5.15.0-191-generic (buildd@lcy02-amd64-042) "
+                        "(gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0, GNU ld "
+                        "(GNU Binutils for Ubuntu) 2.38) #201-Ubuntu SMP Fri Aug 7 "
+                        "18:39:04 UTC 2026",
+                    }
+                ],
+                "error": None,
+            }
+        },
+    }
+    script = _write_worker(tmp_path, f"import json\nprint(json.dumps({payload!r}))")
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    assert await launcher.detect_os_family("/tmp/fake.lime") == "linux"
+
+
+async def test_detect_os_family_returns_windows_for_a_real_pdb_banner(tmp_path: Path) -> None:
+    """Real, exact banner string captured live against the classic
+    cridex.vmem sample (poc/volatility_memory_module/)."""
+    payload = {
+        "status": "ok",
+        "error": None,
+        "plugins": {
+            "banners.Banners": {
+                "status": "ok",
+                "rows": [
+                    {
+                        "Offset": 5113208,
+                        "Banner": "ntkrnlpa.pdb|30B5FB31AE7E4ACAABA750AA241FF331|1",
+                    }
+                ],
+                "error": None,
+            }
+        },
+    }
+    script = _write_worker(tmp_path, f"import json\nprint(json.dumps({payload!r}))")
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    assert await launcher.detect_os_family("/tmp/fake.vmem") == "windows"
+
+
+async def test_detect_os_family_returns_unknown_when_no_banner_found(tmp_path: Path) -> None:
+    payload = {
+        "status": "ok",
+        "error": None,
+        "plugins": {"banners.Banners": {"status": "ok", "rows": [], "error": None}},
+    }
+    script = _write_worker(tmp_path, f"import json\nprint(json.dumps({payload!r}))")
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    assert await launcher.detect_os_family("/tmp/fake.dat") == "unknown"
+
+
+async def test_detect_os_family_returns_unknown_on_worker_failure(tmp_path: Path) -> None:
+    """A real whole-run failure (worker couldn't even launch) must fail
+    open to "unknown", never raise -- OS detection is a real signal, not a
+    hard requirement to complete a parse."""
+    script = _write_worker(tmp_path, "import sys\nsys.exit(1)")
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    assert await launcher.detect_os_family("/tmp/fake.dat") == "unknown"
+
+
 # --- Real worker + real volatility3 (pinned volatility3==2.28.0) -----------
 
 
