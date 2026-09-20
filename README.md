@@ -8,19 +8,21 @@ formats), enforces chain-of-custody with a tamper-evident hash chain + RFC 3161
 timestamping, scans and WORM-locks evidence, parses it into an ECS timeline in
 OpenSearch, and isolates every tenant via Keycloak Organizations + RBAC.
 
+- **Current status (start here — what's built/verified, known gaps, what's out of scope):** [`STATUS.md`](./STATUS.md)
+- **Why things are the way they are:** [`DECISIONS.md`](./DECISIONS.md)
 - **Design authority:** [`Project_Specifications.md`](./Project_Specifications.md) + [`reviews/Part_*.md`](./reviews)
 - **Backend implementation guide:** [`CLAUDE.md`](./CLAUDE.md)
-- **Roadmap & progress:** [`roadmap.md`](./roadmap.md), [`PROGRESS.md`](./PROGRESS.md)
-- **Product status & v2 preview (start here for a quick, honest overview):** [`docs/PRODUCT_STATUS_AND_V2_PREVIEW.md`](./docs/PRODUCT_STATUS_AND_V2_PREVIEW.md)
-- **Handoff: priority-ordered TODO + orchestration/process guide (start here to pick up the work):** [`docs/HANDOFF_AND_ORCHESTRATION.md`](./docs/HANDOFF_AND_ORCHESTRATION.md)
-- **Security & deployment audit:** [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md) ⚠️ read before deploying
+- **Roadmap (original design intent, not a live tracker — see `STATUS.md` for that):** [`roadmap.md`](./roadmap.md)
+- **Historical status/audit snapshots** (superseded by `STATUS.md`/`DECISIONS.md`, kept for the record): [`docs/archive/status-history/`](./docs/archive/status-history)
 
-> ⚠️ **Pre-deployment notice.** A 2026-06 audit found a small number of
-> deployment-blocking defects (NGINX upstream name, Docker runtime user, the
-> Keycloak `organization` scope, and S3 bucket routing/naming). They are
-> documented with severities and fixes in
-> [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md). Resolve the **Critical**
-> and **High** items before running in any shared or production environment.
+> ⚠️ **Pre-deployment notice.** A 2026-06 audit
+> ([`docs/archive/status-history/SECURITY_AUDIT.md`](./docs/archive/status-history/SECURITY_AUDIT.md))
+> found deployment-blocking defects (NGINX upstream name, Docker runtime
+> user, the Keycloak `organization` scope, S3 bucket routing/naming).
+> Whether each has since been fixed is not independently re-verified here —
+> check `STATUS.md`'s known-gaps section and the audit itself before
+> running in any shared or production environment; don't assume "found in
+> 2026-06" means "still open" or "already fixed."
 
 ---
 

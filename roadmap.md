@@ -1,18 +1,19 @@
 # KronOS — Full Implementation Roadmap
 
-> **Correction 2026-08-31: this file's per-item checkboxes (Sections 2-8)
-> were never updated after initial authoring and are now substantially
-> stale — do not trust an unchecked `- [ ]` here to mean "not built."**
-> Concretely: most of Section 2 (Frontend SPA — cases/evidence list,
-> upload, SSE status, error UX), all of Section 3.1's Plaso integration,
-> and large parts of Sections 4-6 have real, shipped, verified
-> implementations that this file's checkboxes don't reflect. `PROGRESS.md`
-> is the actively-maintained, dated, sourced tracker — its own Part 1/2
-> ("What Works Right Now" / "Done Checklist") is the real status; its
-> Part 3 ("Remaining / Known Gaps") is the accurate list of what's
-> genuinely still open. Treat this file as the original design intent
-> (still useful for *how* something should be built), not a live progress
-> tracker.
+> **Correction 2026-08-31, updated 2026-09-19: this file's per-item
+> checkboxes (Sections 2-8) were never updated after initial authoring and
+> are now substantially stale — do not trust an unchecked `- [ ]` here to
+> mean "not built."** Concretely: most of Section 2 (Frontend SPA —
+> cases/evidence list, upload, SSE status, error UX), all of Section 3.1's
+> Plaso integration, and large parts of Sections 4-6 have real, shipped,
+> verified implementations that this file's checkboxes don't reflect.
+> `STATUS.md` (repo root) is the actively-maintained current-state
+> document — update it in place, don't add a new dated tracker (see that
+> file's own header for why). `PROGRESS.md` (the tracker this note used to
+> point to) is archived at `docs/archive/status-history/PROGRESS.md` — a
+> historical snapshot, not current. Treat this file as the original design
+> intent (still useful for *how* something should be built), not a live
+> progress tracker.
 >
 > **Status:** Backend complete (Phases 1–5). Roadmap covers all remaining implementation work through production-ready v1.
 >

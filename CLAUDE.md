@@ -7,6 +7,29 @@
 
 ---
 
+## 📍 Project state lives in `STATUS.md` and `DECISIONS.md` — read before assuming
+
+`STATUS.md` (repo root) is the **only** current-state document — what's
+built/verified, known gaps, and things explicitly out of scope. `DECISIONS.md`
+(repo root) is an **append-only** log of why non-obvious choices were made.
+Read both before starting non-trivial work; they're short by design.
+
+**Non-negotiable going forward: do not create a new dated status/handoff/
+gap-audit document (e.g. `docs/GAP_AUDIT_<date>_MILESTONE_<X>.md`, a new
+`PROGRESS.md`/`HANDOFF_*.md`/`*_STATUS.md`).** Update `STATUS.md` in place
+instead, and add a `DECISIONS.md` entry if what you did has lasting
+rationale someone would otherwise have to re-derive. This replaced a prior
+pattern that produced 93 gap-audit docs and three separate, overlapping
+"the real status" documents, none aware it was superseding the others —
+see `docs/archive/status-history/README.md` for the full account and
+`DECISIONS.md`'s "Documentation process" entry for why the fix is
+structural (one file edited in place, one file only ever appended to)
+rather than "write a better doc." Updating `STATUS.md` (and `DECISIONS.md`
+where relevant) is part of finishing a task, the same as running tests —
+not a separate documentation pass to skip when short on time.
+
+---
+
 ## 🚀 Quick Start for All Agents
 
 ### Current focus: verification-first PoC hardening
