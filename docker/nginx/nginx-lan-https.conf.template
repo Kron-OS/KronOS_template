@@ -142,6 +142,40 @@ server {
         proxy_pass  http://backend/healthz;
         access_log  off;
     }
+
+    # Real, reproduced bug fix (STATUS.md known-gaps, DECISIONS.md): presigned
+    # evidence-upload PUTs used to target :9444 below -- a DIFFERENT browser
+    # origin from this main site purely because the port differs, even
+    # though it's the same hostname/cert. A browser that had only ever
+    # visited this :443 origin had never been prompted to accept :9444's
+    # self-signed cert, so the upload failed at the TLS handshake with no
+    # HTTP request ever completing -- nginx logged nothing at all, and the
+    # browser's XHR reported a bare, undiagnosable "Network error" (confirmed
+    # live via a real HAR: status 0 on both the CORS preflight and the PUT).
+    # Fix: proxy MinIO's real bucket-name-prefixed paths (path-style S3
+    # addressing -- boto3's presigned URL puts the bucket as the first path
+    # segment) on THIS SAME origin instead, so there is only ever one cert
+    # to trust. `src/adapter/storage/s3.py`'s `presign_endpoint_url` (driven
+    # by `MINIO_PUBLIC_ENDPOINT`) must point here (no port) to match --
+    # see docker-compose.dev.yml's own comment on that env var.
+    # Regex (not prefix) location so it's matched before `location /`'s
+    # SPA catch-all regardless of definition order (nginx always prefers a
+    # matching regex location over a prefix one) -- scoped to the real,
+    # specific bucket prefix this app actually uses
+    # (`Settings.minio_evidence_bucket_prefix`/`minio_quarantine_bucket_prefix`,
+    # both `"kronos-evidence"`), not a generic catch-all, so it can never
+    # shadow a real SPA route by accident.
+    location ~ ^/kronos-evidence- {
+        proxy_pass         http://minio:9000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 0;
+    }
 }
 
 # -----------------------------------------------------------------------
@@ -175,43 +209,22 @@ server {
 }
 
 # -----------------------------------------------------------------------
-# :9444 -- MinIO (browser-direct presigned evidence upload/download).
-# Host MUST be forwarded unchanged, port included: MinIO's SigV4 validates
-# a presigned URL's signature against the Host header it actually receives,
-# and MINIO_PUBLIC_ENDPOINT (docker-compose.dev.yml) signs URLs against
-# "192.168.5.13:9444" -- the exact host:port. Real, reproduced bug found
-# building this: nginx's `$host` variable silently DROPS the port (it's
-# nginx's normalized hostname-only value), so `proxy_set_header Host $host`
-# forwarded "192.168.5.13" without ":9444" to MinIO -- a real presigned PUT
-# through this proxy came back 403 SignatureDoesNotMatch (verified with a
-# real boto3-signed PUT, poc/tls_lan_https/README.md). `$http_host` is the
-# exact incoming Host header, port included -- that's what belongs here (and
-# in every other server block below, for the same reason, even where it
-# isn't cryptographically load-bearing like it is here). No body-size cap
-# (evidence files can be large, streamed straight through) and a long read
-# timeout, mirroring the :443 server's /api/evidence/upload/ location above.
+# :9444 (MinIO browser-direct presigned upload) -- RETIRED, real reproduced
+# bug fix (STATUS.md/DECISIONS.md): a dedicated port meant a dedicated
+# browser origin (by port, same hostname/cert) that a browser which had
+# only ever visited the main :443 site had never been prompted to trust,
+# so every presigned PUT failed at the TLS handshake with a bare, silent
+# "Network error" -- confirmed live via a real HAR (status 0 on both the
+# CORS preflight and the PUT, nginx logging nothing at all). Presigned
+# uploads now proxy through the main :443 server's own
+# `location ~ ^/kronos-evidence-` block above -- same origin as everything
+# else, so there's only ever one cert to trust, and one fewer published
+# port for a firewall/router rule to ever miss. Was also the one place
+# `$host`'s port-dropping silently broke MinIO's SigV4 signature
+# validation (real, reproduced 403 SignatureDoesNotMatch,
+# poc/tls_lan_https/README.md) -- moot now: `kronos.local` on its default
+# HTTPS port carries no explicit port in the Host header to drop.
 # -----------------------------------------------------------------------
-server {
-    listen 9444 ssl;
-    server_name _;
-
-    ssl_certificate     /etc/kronos/tls/server.crt;
-    ssl_certificate_key /etc/kronos/tls/server.key;
-    ssl_protocols       TLSv1.3;
-
-    client_max_body_size 0;
-
-    location / {
-        proxy_pass         http://minio:9000;
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $http_host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-}
 
 # -----------------------------------------------------------------------
 # :5602 -- OpenSearch Dashboards (Timeline tab iframe embed). An HTTP

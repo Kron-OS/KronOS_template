@@ -80,25 +80,104 @@ services:
       timeout: 3s
       retries: 5
 
+  # Real Vault, for real, for the first time: `Settings.vault_url`/
+  # `vault_token` and this exact `VAULT_URL: http://vault:8200` env var were
+  # already set on kronos-backend/celery-worker/celery-worker-plaso/
+  # celery-beat below, but nothing in src/ ever actually called Vault and no
+  # `vault:` service existed anywhere in this file -- confirmed by grepping
+  # `settings.vault_url`/`settings.vault_token` outside config.py itself
+  # (zero hits) before this was added. Config referencing a host you never
+  # ran is a latent bug independent of the connector-marketplace feature
+  # that motivated actually fixing it now. Mirrors docker-compose.prod.yml's
+  # already-correct dev-mode block (same image tag, same HTTP-not-HTTPS
+  # healthcheck fix documented in that file's own comment) rather than
+  # re-deriving it.
+  vault:
+    image: hashicorp/vault:1.17
+    cap_add: [IPC_LOCK]
+    # WARNING: -dev mode is in-memory, auto-unsealed and root-token only.
+    # Fine for this dev stack; per-org connector secrets stored here are
+    # lost on every container recreation. Production MUST run a sealed
+    # Vault with persistent storage -- see poc/vault_secret_store/README.md.
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_TOKEN:-root}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports: ["8200:8200"]
+    healthcheck:
+      # `vault status` with no VAULT_ADDR defaults to https://127.0.0.1:8200,
+      # but -dev mode always serves plain HTTP -- same real, reproduced
+      # finding as docker-compose.prod.yml's own vault healthcheck comment.
+      test: ["CMD-SHELL", "VAULT_ADDR=http://localhost:8200 vault status 2>/dev/null || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: enables a KV-v2 mount dedicated to per-org connector secrets
+  # (src/adapter/secret/vault_secret_store.py), deliberately separate from
+  # KES's own transit/kv mount+policy (docker-compose.prod.yml's vault-init)
+  # -- different consumer, different lifecycle, and reusing the KES
+  # policy/AppRole would over-broaden its access to unrelated customer
+  # secret material. `kronos-connectors-app`'s policy is least-privilege:
+  # read/write/delete only under this one mount's data/metadata paths.
+  vault-connectors-init:
+    image: hashicorp/vault:1.17
+    restart: "no"
+    depends_on:
+      vault: { condition: service_healthy }
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_TOKEN:-root}
+    # Shared with kronos-backend/celery-* below: this container writes the
+    # AppRole role_id+secret_id here once, those containers mount it
+    # read-only and log in with it at startup (src/adapter/secret/
+    # vault_secret_store.py) -- the exact "who fetches role-id/secret-id
+    # and injects them" gap docker-compose.prod.yml's own KES setup left
+    # explicitly open (its comment: "nothing in this file fetches the real
+    # role-id/secret-id... needs either a manual step or a new
+    # init-container automation"). Solved here rather than repeated,
+    # dev-mode only -- Vault -dev resets every recreation anyway, so a
+    # fresh secret_id each `up` is correct, not a rotation problem to solve.
+    volumes:
+      - vault_connectors_creds:/vault-creds
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        vault secrets enable -path=kronos-connectors -version=2 kv 2>/dev/null || echo "kronos-connectors already enabled"
+        vault policy write kronos-connectors-app - <<'POLICY'
+        path "kronos-connectors/data/*"     { capabilities = ["create","read","update","delete"] }
+        path "kronos-connectors/metadata/*" { capabilities = ["read","list","delete"] }
+        POLICY
+        vault auth enable approle 2>/dev/null || echo "approle already enabled"
+        vault write auth/approle/role/kronos-connectors-app \
+          policies=kronos-connectors-app \
+          token_ttl=1h \
+          token_max_ttl=4h 2>/dev/null || echo "role already exists"
+        ROLE_ID=$$(vault read -field=role_id auth/approle/role/kronos-connectors-app/role-id)
+        SECRET_ID=$$(vault write -f -field=secret_id auth/approle/role/kronos-connectors-app/secret-id)
+        printf '{"role_id": "%s", "secret_id": "%s"}' "$$ROLE_ID" "$$SECRET_ID" > /vault-creds/kronos-connectors-approle.json
+        echo "kronos-connectors Vault mount initialized successfully."
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
-      # Browsers PUT evidence directly to MinIO (presigned URLs), which is
-      # cross-origin (different port) from the app's own origin. MinIO's
-      # S3-style PutBucketCors bucket API returns "NotImplemented" on this
-      # image -- CORS here is a server-level setting instead. Must match
-      # CORS_ALLOWED_ORIGINS on kronos-backend below. kronos.local
-      # (nginx-terminated) is the browser's actual origin even though the
-      # presigned PUT itself lands on MinIO via nginx's :9444 reverse
-      # proxy (see nginx service below) -- CORS is about the requesting
-      # page's origin, not the request's destination. kronos.local is the
-      # sole authorized domain -- see docs/lan-dev-access.md; no
-      # localhost/127.0.0.1/bare-IP entries, by design (real bug history
-      # in poc/tls_lan_https/README.md: every one of those used to be a
-      # second, independently-maintained value that drifted out of sync).
+      # Vestigial since the presigned-upload TLS-origin fix (STATUS.md/
+      # DECISIONS.md): browsers PUT evidence directly to MinIO via
+      # presigned URLs, which used to be cross-origin (different port,
+      # :9444) from the app's own origin, requiring this. Presigned PUTs
+      # now land on MinIO via nginx's same-origin `location ~
+      # ^/kronos-evidence-` proxy (see nginx service below) -- a genuine
+      # same-origin request, which browsers never send a CORS preflight
+      # for at all, making this setting unused. Left set (harmless,
+      # matches the one real allowed origin either way) rather than
+      # removed outright, since MinIO's own S3-style PutBucketCors bucket
+      # API returns "NotImplemented" on this image and this server-level
+      # setting is the only other real lever if a genuine cross-origin
+      # MinIO caller is ever added back.
       MINIO_API_CORS_ALLOW_ORIGIN: "https://kronos.local"
     volumes:
       - minio_dev_data:/data
@@ -536,6 +615,7 @@ services:
       # SIEM pipeline (COMP-8) instead of only going to stdout, which
       # nothing was tailing.
       - kronos_app_logs:/var/log/kronos
+      - vault_connectors_creds:/vault-creds:ro
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       # fluent-bit.conf tails this exact path (kronos.backend input).
@@ -572,12 +652,25 @@ services:
       # bare host:port) so its scheme can differ from MINIO_USE_TLS below,
       # which only governs the *internal* minio:9000 connection: LAN
       # browsers reach MinIO's presigned URLs via nginx's TLS-terminated
-      # :9444 reverse proxy (see nginx service), not MinIO's own listener
-      # directly, so the internal hop stays plain HTTP while the
-      # browser-facing URL is HTTPS. src/external/startup.py's
+      # reverse proxy (see nginx service's `location ~ ^/kronos-evidence-`),
+      # not MinIO's own listener directly, so the internal hop stays plain
+      # HTTP while the browser-facing URL is HTTPS. src/external/startup.py's
       # `_minio_scheme` derivation was fixed to honor an explicit scheme
       # here rather than always reusing MINIO_USE_TLS for both endpoints.
-      MINIO_PUBLIC_ENDPOINT: https://kronos.local:9444
+      #
+      # No port here (real, reproduced bug fix, STATUS.md/DECISIONS.md):
+      # this used to be `https://kronos.local:9444`, a dedicated port with
+      # its own TLS listener. A browser treats a different port as a
+      # different origin for certificate-trust purposes even with the same
+      # hostname/cert -- one that had only ever visited the main site (this
+      # same origin, no port) had never been prompted to trust :9444's
+      # self-signed cert, so every upload PUT failed at the TLS handshake
+      # with a bare, undiagnosable "Network error" (confirmed live via a
+      # real HAR capture: status 0 on both the CORS preflight and the PUT,
+      # nginx's access log showing nothing at all for the failed attempts).
+      # Routing through this same origin means there is only ever one cert
+      # to trust, full stop -- see the nginx location block's own comment.
+      MINIO_PUBLIC_ENDPOINT: https://kronos.local
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-kronos_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-kronos_minio_dev_password}
       MINIO_USE_TLS: "false"
@@ -625,6 +718,11 @@ services:
       KEYCLOAK_SPA_CLIENT_ID: kronos-frontend
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      # AppRole creds minted once by vault-connectors-init (see that
+      # service's own comment) -- VaultSecretStore logs in with these
+      # rather than using the root VAULT_TOKEN above, which stays reserved
+      # for KES/manual-operator use only (least privilege).
+      VAULT_CONNECTORS_APPROLE_CREDS_FILE: /vault-creds/kronos-connectors-approle.json
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
@@ -636,6 +734,8 @@ services:
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
       db-migrate: { condition: service_completed_successfully }
+      vault: { condition: service_healthy }
+      vault-connectors-init: { condition: service_completed_successfully }
     command: uvicorn src.external.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
 
   celery-worker:
@@ -654,6 +754,7 @@ services:
       # workstream in this multi-agent effort); this volume/env var is the
       # infra half of COMP-8 so the pipeline is ready the moment it lands.
       - kronos_app_logs:/var/log/kronos
+      - vault_connectors_creds:/vault-creds:ro
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
@@ -690,6 +791,11 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      # AppRole creds minted once by vault-connectors-init (see that
+      # service's own comment) -- VaultSecretStore logs in with these
+      # rather than using the root VAULT_TOKEN above, which stays reserved
+      # for KES/manual-operator use only (least privilege).
+      VAULT_CONNECTORS_APPROLE_CREDS_FILE: /vault-creds/kronos-connectors-approle.json
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
@@ -712,6 +818,8 @@ services:
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
       db-migrate: { condition: service_completed_successfully }
+      vault: { condition: service_healthy }
+      vault-connectors-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.fast,q.index,q.intake -c 4 --loglevel=info
 
   celery-worker-plaso:
@@ -721,6 +829,7 @@ services:
     volumes:
       - ../src:/app/src:ro
       - kronos_app_logs:/var/log/kronos
+      - vault_connectors_creds:/vault-creds:ro
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
@@ -751,6 +860,11 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      # AppRole creds minted once by vault-connectors-init (see that
+      # service's own comment) -- VaultSecretStore logs in with these
+      # rather than using the root VAULT_TOKEN above, which stays reserved
+      # for KES/manual-operator use only (least privilege).
+      VAULT_CONNECTORS_APPROLE_CREDS_FILE: /vault-creds/kronos-connectors-approle.json
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
@@ -766,6 +880,8 @@ services:
       opensearch: { condition: service_healthy }
       opensearch-init: { condition: service_completed_successfully }
       db-migrate: { condition: service_completed_successfully }
+      vault: { condition: service_healthy }
+      vault-connectors-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app worker -Q q.parse.plaso -c 1 --loglevel=info
 
   celery-beat:
@@ -773,6 +889,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: kronos-backend:dev
+    volumes:
+      - vault_connectors_creds:/vault-creds:ro
     environment:
       DATABASE_URL: postgresql+asyncpg://kronos:${POSTGRES_PASSWORD:-kronos_dev_password}@postgres:5432/kronos
       REDIS_URL: redis://redis:6379/0
@@ -803,6 +921,11 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-kronos-backend-secret}
       VAULT_URL: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      # AppRole creds minted once by vault-connectors-init (see that
+      # service's own comment) -- VaultSecretStore logs in with these
+      # rather than using the root VAULT_TOKEN above, which stays reserved
+      # for KES/manual-operator use only (least privilege).
+      VAULT_CONNECTORS_APPROLE_CREDS_FILE: /vault-creds/kronos-connectors-approle.json
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       TSA_URL: http://tsa:318/api/v1/timestamp
@@ -810,6 +933,8 @@ services:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
       db-migrate: { condition: service_completed_successfully }
+      vault: { condition: service_healthy }
+      vault-connectors-init: { condition: service_completed_successfully }
     command: celery -A src.external.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   nginx:
@@ -836,7 +961,9 @@ services:
     environment:
       KEYCLOAK_PUBLIC_URL: "https://kronos.local:8443"
       BACKEND_PUBLIC_URL: "https://kronos.local"
-      MINIO_PUBLIC_URL: "https://kronos.local:9444"
+      # No port -- see MINIO_PUBLIC_ENDPOINT's own comment on the
+      # kronos-backend service above for the real bug this fixes.
+      MINIO_PUBLIC_URL: "https://kronos.local"
       OPENSEARCH_DASHBOARDS_URL: "https://kronos.local:5602"
     volumes:
       - tls_certs:/etc/kronos/tls:ro
@@ -851,8 +978,11 @@ services:
       - "80:80"
       - "443:443"
       - "8443:8443"
-      - "9444:9444"
       - "5602:5602"
+      # No :9444 anymore -- retired with the presigned-upload TLS-origin
+      # fix (STATUS.md/DECISIONS.md). Presigned uploads now proxy through
+      # :443 itself (`location ~ ^/kronos-evidence-` below), one fewer
+      # port for a firewall/router rule to ever miss.
     # keycloak/minio/opensearch-dashboards added -- real, reproduced finding:
     # nginx-lan-https.conf.template's proxy_pass targets are static hostnames
     # nginx resolves via Docker DNS once, at config-load/startup time (not
@@ -879,6 +1009,10 @@ volumes:
   opensearch_dev_data:
   clamav_dev_data:
   step_ca_data:
+  # AppRole role_id/secret_id minted by vault-connectors-init, read by
+  # kronos-backend/celery-* at startup to authenticate to the
+  # kronos-connectors Vault mount (see vault-connectors-init's own comment).
+  vault_connectors_creds:
   # Shared with docker/fluent-bit/docker-compose.fluent-bit.yml (mounted
   # read-only there as `kronos_app_logs: external: true`) — declared here as
   # the canonical, non-external definition, matching the same pattern

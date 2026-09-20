@@ -727,31 +727,14 @@ services:
       # build_step_up_ticket_store(settings) into create_app().
       STEP_UP_TICKET_STORE: redis
       # SIEM/SOAR outbound sink connectors + Defender inbound poll source
-      # (roadmap Milestones R2-R4/Q4, wired 2026-08-09 Milestone S). All
-      # optional -- ${VAR:-} defaults to empty/unset, which
-      # configure_*_from_settings() (src/external/dependencies.py) treats
-      # as an honest "not configured" state, never an error. See
-      # docker/.env.example for what each one means. Names verified 1:1
-      # against src/config.py's Settings field names.
-      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-}
-      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-}
-      CEF_SYSLOG_HOST: ${CEF_SYSLOG_HOST:-}
-      CEF_SYSLOG_PORT: ${CEF_SYSLOG_PORT:-514}
-      SENTINEL_DCE_ENDPOINT: ${SENTINEL_DCE_ENDPOINT:-}
-      SENTINEL_DCR_IMMUTABLE_ID: ${SENTINEL_DCR_IMMUTABLE_ID:-}
-      SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
-      SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
-      SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
-      # Defender's poll source is only wired from the async startup path
-      # (wire_dependencies_async(), which kronos-backend runs) --
-      # deliberately not added to celery-worker below, see
-      # wire_dependencies_sync()'s own 2026-08-09 comment in
-      # src/external/startup.py for why (its OAuth2 client keeps a
-      # process-lifetime httpx.AsyncClient that would not survive Celery's
-      # per-task fresh-event-loop model safely).
-      DEFENDER_TENANT_ID: ${DEFENDER_TENANT_ID:-}
-      DEFENDER_CLIENT_ID: ${DEFENDER_CLIENT_ID:-}
-      DEFENDER_CLIENT_SECRET: ${DEFENDER_CLIENT_SECRET:-}
+      # env vars (SPLUNK_HEC_*/CEF_SYSLOG_*/SENTINEL_*/DEFENDER_*) were
+      # removed here in the connector marketplace's Phase 7 cleanup --
+      # every one of those is now real, per-org connector_configs +
+      # per-org Vault secrets, configured through `/admin/connectors`
+      # (`ConnectorConfigService`), never a deployment-wide env var. See
+      # docker-compose.dev.yml's own `vault`/`vault-connectors-init`
+      # services for the real per-org secret storage this replaced them
+      # with.
     # Gap Audit Milestone MM: the real DSN material (was DATABASE_URL/
     # REDIS_URL/CELERY_BROKER_URL/CELERY_RESULT_BACKEND above) now arrives as
     # mounted secret files under KRONOS_SECRETS_DIR instead. `redis_url`'s
@@ -871,21 +854,9 @@ services:
       # below.
       VAULT_URL: http://vault:8200
       # VAULT_TOKEN -- resolved via KRONOS_SECRETS_DIR + secrets: below.
-      # SIEM/SOAR outbound sink connectors (roadmap Milestones R2-R4, wired
-      # 2026-08-09 Milestone S -- see kronos-backend's identical block
-      # above for the full comment). NOT including DEFENDER_* here on
-      # purpose -- wire_dependencies_sync() (src/external/startup.py)
-      # deliberately does not call configure_defender_poll_source_from_settings()
-      # for this worker, see that function's own 2026-08-09 comment.
-      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-}
-      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-}
-      CEF_SYSLOG_HOST: ${CEF_SYSLOG_HOST:-}
-      CEF_SYSLOG_PORT: ${CEF_SYSLOG_PORT:-514}
-      SENTINEL_DCE_ENDPOINT: ${SENTINEL_DCE_ENDPOINT:-}
-      SENTINEL_DCR_IMMUTABLE_ID: ${SENTINEL_DCR_IMMUTABLE_ID:-}
-      SENTINEL_TENANT_ID: ${SENTINEL_TENANT_ID:-}
-      SENTINEL_CLIENT_ID: ${SENTINEL_CLIENT_ID:-}
-      SENTINEL_CLIENT_SECRET: ${SENTINEL_CLIENT_SECRET:-}
+      # SIEM/SOAR outbound sink connector env vars removed here (connector
+      # marketplace Phase 7 cleanup -- see kronos-backend's identical block
+      # above for the full comment).
     # Gap Audit Milestone MM -- same four secrets/targets as kronos-backend
     # above (this worker needs the identical DSNs: DB0 on redis-auth-streams,
     # DB1/DB2 on redis-celery, same Postgres primary).
