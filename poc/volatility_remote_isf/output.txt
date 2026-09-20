@@ -1,0 +1,60 @@
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+INFO Dependency for validation unavailable: jsonschema
+INFO volatility3 plugin linux.bash.Bash: 0 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.malware.malfind.Malfind: 0 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.library_list.LibraryList: 0 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.lsof.Lsof: 0 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+INFO volatility3 plugin linux.lsmod.Lsmod: 0 rows
+INFO Detected a linux category plugin
+INFO Running automagic: ConstructionMagic
+INFO Running automagic: SymbolCacheMagic
+INFO Running automagic: LayerStacker
+INFO Running automagic: SymbolFinder
+INFO Running automagic: LinuxSymbolFinder
+INFO Dependency for validation unavailable: jsonschema
+INFO Running automagic: KernelModule
+WARNING volatility3 plugin linux.malware.hidden_modules.Hidden_modules ran but row extraction failed: PagedInvalidAddressException: Page Fault at entry 0x117a3a001 in table page map layer 4
+ELAPSED 157.43324327468872
+linux.pstree.PsTree ok rows: 0 
+linux.psscan.PsScan ok rows: 1493 
+linux.pslist.PsList ok rows: 0 
+linux.psaux.PsAux ok rows: 0 
+linux.bash.Bash ok rows: 0 
+linux.malware.malfind.Malfind ok rows: 0 
+linux.library_list.LibraryList ok rows: 0 
+linux.lsof.Lsof ok rows: 0 
+linux.lsmod.Lsmod ok rows: 0 
+linux.malware.hidden_modules.Hidden_modules scan_error rows: 0 row extraction failed: PagedInvalidAddressException: Page Fault at entry 0x117a3a001 in table page map layer 4

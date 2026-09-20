@@ -40,12 +40,13 @@ from tests.fixtures.factories import make_evidence, make_tenant_context
 
 
 class _FakeSettings:
-    """Stands in for src.config.Settings -- only the one attribute
-    VolatilityModule reads is needed, avoiding the real Settings' many
+    """Stands in for src.config.Settings -- only the attributes
+    VolatilityModule reads are needed, avoiding the real Settings' many
     required env vars (database_url, redis_url, etc.) in these unit tests.
     """
 
     volatility_worker_path: str | None = None
+    volatility_remote_isf_url: str = ""
 
 
 def _outcome(
@@ -596,6 +597,74 @@ class TestParseDualEmit:
         assert len(records) == 1
         assert len(artifacts) == 1
         assert artifacts[0].content["rows"] == list(rows)
+
+    async def test_parse_yields_records_from_linux_pslist_creation_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real, verified shape (poc/volatility_linux_boottime/): when the
+        target image's ISF was built by dwarf2json, linux.pslist.PsList's
+        "CREATION TIME" column is a real absolute datetime, using
+        different field names (CREATION TIME/COMM/OFFSET (V)) than the
+        Windows pstree/psscan rows _row_to_timeline_record was originally
+        written against."""
+        rows = (
+            {
+                "OFFSET (V)": 157442782855168,
+                "PID": 1,
+                "PPID": 0,
+                "COMM": "systemd",
+                "CREATION TIME": "2026-09-19T14:50:06.111155+00:00",
+            },
+            {
+                "OFFSET (V)": 157442782861376,
+                "PID": 2,
+                "PPID": 0,
+                "COMM": "kthreadd",
+                "CREATION TIME": None,  # real shape: btf2json-ISF rows carry null
+            },
+        )
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("linux.pslist.PsList", rows),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="linux")
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.process_pid == 1
+        assert record.process_name == "systemd"
+        assert record.event_category == ["process"]
+        assert record.event_type == ["start"]
+        assert record.extra["volatility.offset_v"] == 157442782855168
+        assert record.timestamp.isoformat() == "2026-09-19T14:50:06.111155+00:00"
+        assert record.kronos.parser == "volatility3"
+
+    async def test_parse_yields_nothing_from_linux_pslist_when_isf_is_btf2json_derived(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real, verified negative case (poc/volatility_linux_boottime/):
+        a btf2json-built ISF leaves tk_core/timekeeper unresolved, so every
+        pslist row's CREATION TIME comes back null -- zero TimelineRecords,
+        not a crash, exactly today's pre-fix behavior (StructuredArtifacts
+        still cover this via extract_artifacts(), unaffected by this test).
+        """
+        rows = (
+            {"OFFSET (V)": 1, "PID": 1, "PPID": 0, "COMM": "systemd", "CREATION TIME": None},
+            {"OFFSET (V)": 2, "PID": 2, "PPID": 0, "COMM": "kthreadd", "CREATION TIME": None},
+        )
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("linux.pslist.PsList", rows),))
+        _install_fake_launcher(monkeypatch, result=result, os_family="linux")
+        evidence = make_evidence()
+        parser = VolatilityModule()
+
+        records = await _drain_records(
+            parser.parse(_bytes_stream(b"fake"), evidence, make_tenant_context())
+        )
+
+        assert records == []
 
     async def test_extract_artifacts_still_runs_volatility_when_called_standalone(
         self, monkeypatch: pytest.MonkeyPatch

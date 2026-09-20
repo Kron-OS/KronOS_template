@@ -4,8 +4,21 @@
 `reviews/Volatility_Linux_Plugin_Research.md`** ("A real Linux timeline
 source would need combining `linux.boottime.Boottime` with a process's
 boot-relative start offset") before writing any `src/` code, per
-`CLAUDE.md` §F/§G.5. Answer: **currently blocked, not just unbuilt** — real
-finding below, not a guess.
+`CLAUDE.md` §F/§G.5.
+
+**Update (later session, same investigation): option (a) below (get a
+real `dwarf2json`-built ISF) was attempted and works.** See "Part 2:
+positive verification" below — `linux.pslist.PsList`'s "CREATION TIME"
+column (not a hand-combined boottime+offset calculation — volatility3
+computes it internally) is real and populated when the image's ISF was
+built by `dwarf2json`. `src/external/parsers/volatility.py` and
+`src/external/sandbox/volatility_launcher.py` (`LINUX_DEFAULT_PLUGINS`)
+were updated accordingly. Part 1 below (the original negative finding
+against this codebase's own `btf2json`-built ISF) is left as-written —
+it's still real and still true for that ISF, and explains exactly why
+the fix is conditional rather than unconditional.
+
+## Part 1: original finding — blocked against the btf2json-built ISF
 
 ## Version pinned
 
@@ -86,3 +99,95 @@ Until one of those lands, Linux memory images correctly continue to
 produce zero `TimelineRecord`s from `parse()` (artifacts only) — this
 PoC does not change that; it only replaces "not yet built" with "verified
 blocked, two named ways forward" in `STATUS.md`/the research doc.
+
+## Part 2: positive verification — option (a), a real `dwarf2json` ISF, works
+
+**Method — real, step by step, same sample/kernel build, no new VM.**
+
+1. Downloaded the real, matching Ubuntu `-dbgsym` package for the exact
+   kernel this sample's memory dump was captured from
+   (`linux-image-unsigned-5.15.0-191-generic-dbgsym_5.15.0-191.201_amd64.ddeb`,
+   ~1.03GB, `https://ddebs.ubuntu.com/ubuntu/pool/main/l/linux/`) — no new
+   VM/capture needed, since an ISF only needs to match the *kernel build*,
+   not a specific boot of it, and applies directly to the existing
+   `/tmp/kronos-linux-sample.lime` capture still present in
+   `docker-celery-worker-plaso-1`.
+2. Extracted `usr/lib/debug/boot/vmlinux-5.15.0-191-generic` from the
+   `.ddeb` (real Debian binary package format 2.0: `ar x` for
+   `control.tar.xz`/`data.tar.xz`, then a targeted `tar -xJf data.tar.xz
+   <path>` for just the one file needed — a full extraction is unnecessary
+   and, on a memory-constrained host, actively risky, see host note below).
+   Real file: 755,518,320 bytes, ELF 64-bit, `with debug_info, not stripped`.
+3. Ran the real `dwarf2json` binary (`/home/reca/vol-linux-vm/dwarf2json`,
+   already present on this host from the original `poc/volatility_linux_module/`
+   session, `producer.version: "0.9.0"` per its own output metadata)
+   against that vmlinux: `dwarf2json linux --elf <path> > ubuntu-dwarf.json`.
+   Real output: 46,028,930 bytes of valid ISF JSON, confirmed
+   `tk_core` present in `symbols` and `timekeeper` present in `user_types`
+   (neither guaranteed — this is exactly the metadata the btf2json-built
+   ISF was missing).
+4. Installed the new ISF into the **live, shared, production**
+   `docker-celery-worker-plaso-1` container's real volatility3 symbol
+   cache (`/home/nonroot/.cache/volatility3/symbols/linux/`) under a
+   distinct filename, and **temporarily moved the existing btf2json-built
+   ISF aside** (same directory, `.btf2json_bak` suffix) for the duration of
+   the test only — both ISFs otherwise claim the same kernel banner, so
+   volatility3's automagic banner-matching would nondeterministically pick
+   between them. **Restored immediately after the test** (moved the
+   original back, deleted the temporary one) since this is a live worker
+   container that could pick up a real production Celery task at any
+   moment, not an isolated PoC container.
+5. Ran `linux.boottime.Boottime` and `linux.pslist.PsList` for real via
+   the actual `kronos-volatility-worker.py` production script against
+   `/tmp/kronos-linux-sample.lime`, and separately fed the real captured
+   JSON rows through the actual (non-mocked) `_timeline_rows()`/
+   `_row_to_timeline_record()` functions from `src/external/parsers/
+   volatility.py` to confirm the real `src/` code path, not just the
+   external tool, produces correct output.
+
+**Real results — see `output_dwarf2json_positive.json`** (captured,
+not paraphrased):
+
+- `linux.boottime.Boottime`: **`status: "ok"`**, real recovered boot time
+  `2026-09-19T14:50:06.605516+00:00` — `tk_core.timekeeper` resolved
+  correctly this time, no `AttributeError`.
+- `linux.pslist.PsList`: all **105/105 rows** now carry a real, non-null,
+  monotonically-plausible `CREATION TIME` (e.g. PID 1 `systemd` at
+  `2026-09-19T14:50:06.111155+00:00`, ~0.5s before the recovered boot
+  time's own timestamp per `tk_core`'s coarser rounding — consistent, not
+  a discrepancy).
+- Fed through the real, unmodified `src/external/parsers/volatility.py`
+  functions (not test mocks): `_timeline_rows()` correctly selects
+  `linux.pslist.PsList` (Linux's `pstree`/`psscan` plugin names don't
+  match the Windows-specific constants those checks use, so they fall
+  through as designed) and `_row_to_timeline_record()` correctly maps the
+  Linux field names (`CREATION TIME`/`COMM`/`OFFSET (V)`, added via
+  `_ROW_FIELD_NAMES`) into **105 real `TimelineRecord`s**.
+
+## Host gotcha found and fixed during this verification
+
+`/tmp` on this host is a RAM-backed `tmpfs` capped at 3.6GB, not real
+disk. An earlier attempt to download the 1GB `.ddeb` and `dpkg-deb -x` it
+there (a full extraction, not the targeted one used above) filled the
+tmpfs completely, which broke **all** shell command execution on the host
+(even `echo`/`true` returned exit 1 with empty output) until the large
+files were removed — confirmed via a fresh subagent hitting the identical
+failure, ruling out session-local shell corruption. Also, `dwarf2json`
+itself is memory-hungry (~3.5GB+ RSS observed climbing on a host with
+only 7.1GB total RAM and already-exhausted swap) — it completed
+successfully here, but on a more memory-constrained host this should be
+run with a memory limit or on a bigger box, not assumed safe. **Lesson
+for future large-file work on this host: use a real-disk path (e.g.
+`/home/reca/scratch/<name>/`), never `/tmp`, and watch `free -h` for
+memory-hungry native tools.**
+
+## Conclusion
+
+Both real options named in Part 1 are now resolved: (a) works and is what
+got implemented. `LINUX_DEFAULT_PLUGINS` now includes
+`linux.pslist.PsList`; `VolatilityModule`'s dual-emit logic dispatches to
+it for Linux images. Whether a *specific* org's Linux images actually get
+real Linux `TimelineRecord`s depends on how their ISF was built
+(`dwarf2json` → yes; `btf2json` → still zero, honestly, not a crash) —
+this is now a documented, understood dependency, not a silent gap. See
+`STATUS.md`/`DECISIONS.md` for the production-facing summary.

@@ -87,11 +87,34 @@ a real self-generated Linux sample) and requests ``LINUX_DEFAULT_PLUGINS``
 instead of ``DEFAULT_PLUGINS`` for a Linux image. An explicit ``plugins``
 argument (tests, the on-demand picker) bypasses detection entirely and is
 used as given -- detection only ever fills in for "the real default,"
-never overrides a caller's own explicit choice. See ``_timeline_rows``'s
-own docstring for the one real, verified gap this doesn't close yet:
-Linux's ``pstree``/``psscan`` carry no per-row timestamp in this
-volatility3 version, so Linux images currently produce
-``StructuredArtifact``s only, no dual-emitted ``TimelineRecord``s.
+never overrides a caller's own explicit choice.
+
+**Linux dual-emit (poc/volatility_linux_boottime/, real-verified both
+ways).** Linux's ``pstree``/``psscan`` carry no per-row timestamp in this
+volatility3 version, but ``linux.pslist.PsList``'s "CREATION TIME" column
+does -- a real absolute wall-clock datetime volatility3 computes
+internally (``task.get_create_time()`` = boot time + the task's
+boot-relative ``start_time``), not something this module combines by
+hand. Whether that column is actually populated depends on the target
+image's ISF (symbol table) having been built by ``dwarf2json`` rather than
+``btf2json``: ``dwarf2json``-derived ISFs correctly type the kernel's
+``tk_core``/``timekeeper`` symbol, so ``linux.boottime.Boottime`` (and
+therefore every ``pslist`` row's CREATION TIME) resolves to a real
+timestamp; ``btf2json``-derived ISFs (this codebase's own self-generated
+sample, and likely any BTF-only kernel) leave that symbol's type
+unresolved (``Void``), so CREATION TIME comes back ``null`` for every row.
+Verified both ways against the identical real kernel build/memory capture
+(``poc/volatility_linux_boottime/``): a real ``dwarf2json``-built ISF for
+the same ``5.15.0-191-generic`` kernel (built from the matching Ubuntu
+``-dbgsym`` package) gave all 105 real sample rows a real, plausible,
+monotonically-increasing CREATION TIME; the codebase's own ``btf2json``
+ISF gives every row ``null``. This is handled honestly, not as a
+regression risk: a ``null`` CREATION TIME is just another "not a
+timeline-shaped row" case (see ``_row_to_timeline_record``), so a
+``btf2json``-ISF org continues to get zero Linux ``TimelineRecord``s
+(exactly today's behavior), while a ``dwarf2json``-ISF org (the common
+case for most distro kernels with a debug/dbgsym package available) now
+gets real ones.
 
 **Registration order matters.** Must be registered LAST in
 ``get_parser_registry`` (``src/external/dependencies.py``), after
@@ -158,6 +181,22 @@ _MEMORY_DUMP_EXTENSIONS: frozenset[str] = frozenset({".vmem", ".mem", ".raw", ".
 # legitimately empty and psscan is the only real source).
 _PSTREE_PLUGIN = "windows.pstree.PsTree"
 _PSSCAN_PLUGIN = "windows.psscan.PsScan"
+# Real Linux dual-emit source (poc/volatility_linux_boottime/) -- see this
+# module's own docstring for the dwarf2json-vs-btf2json ISF dependency.
+# Checked only after both Windows sources contribute nothing, since a given
+# run only ever has one OS family's plugins present (LINUX_DEFAULT_PLUGINS
+# vs DEFAULT_PLUGINS) unless a caller passed an explicit mixed list.
+_LINUX_PSLIST_PLUGIN = "linux.pslist.PsList"
+
+# Real, per-plugin row field names for the two shapes this module dual-emits
+# from -- Windows pstree/psscan rows use CreateTime/ImageFileName; Linux
+# pslist rows use CREATION TIME/COMM (confirmed live,
+# poc/volatility_linux_boottime/). Keyed by plugin so _row_to_timeline_record
+# doesn't need to guess which shape a row came from.
+_ROW_FIELD_NAMES: dict[str, tuple[str, str]] = {
+    _LINUX_PSLIST_PLUGIN: ("CREATION TIME", "COMM"),
+}
+_DEFAULT_ROW_FIELD_NAMES = ("CreateTime", "ImageFileName")
 
 _DEFAULT_TIMEOUT_SECONDS = 600
 
@@ -386,7 +425,9 @@ class VolatilityModule(ForensicParser):
 
         try:
             launcher = VolatilityLauncher(
-                worker_path=worker_path, timeout_seconds=self._timeout_seconds
+                worker_path=worker_path,
+                timeout_seconds=self._timeout_seconds,
+                remote_isf_url=settings.volatility_remote_isf_url or None,
             )
             plugins_to_run = self._plugins
             if plugins_to_run is None:
@@ -420,22 +461,23 @@ def _timeline_rows(
     contributed nothing (real, verified: this avoids double-emitting the
     same process-creation event when both plugins recover the same
     process, the common case once pstree succeeds; see this module's own
-    docstring). Neither present/ok, or both empty, returns (None, ()).
+    docstring). Neither present/ok, or both empty, falls through to the
+    real Linux source (``linux.pslist.PsList``); if that's absent/empty
+    too, returns ``(None, ())``.
 
-    **Windows-only, deliberately, real finding not an oversight**: only
-    checks the ``windows.pstree``/``windows.psscan`` plugin names. Real,
-    verified against a real Linux sample (``poc/volatility_linux_module/``):
+    **Linux uses a different plugin, real finding not an oversight**:
     ``linux.pstree.PsTree``/``linux.psscan.PsScan`` rows in this pinned
     volatility3 version carry no per-row wall-clock timestamp field at all
     (no ``CreateTime`` or equivalent -- just ``PID``/``TID``/``PPID``/
-    ``COMM``/offset). Checking the Linux plugin names here would only ever
-    return ``(plugin, rows)`` where every row then fails
-    ``_row_to_timeline_record``'s own ``CreateTime`` check, silently -- so
-    Linux images currently get zero TimelineRecords from ``parse()``,
-    surfacing entirely through ``extract_artifacts()`` instead. A real
-    Linux timeline source would need combining ``linux.boottime.Boottime``
-    (real, not yet run by this module) with a process's boot-relative start
-    offset -- out of scope for this pass; tracked, not silently missing.
+    ``COMM``/offset, confirmed live, ``poc/volatility_linux_module/``), so
+    they're never checked for Linux. ``linux.pslist.PsList``'s "CREATION
+    TIME" column is the real source instead (see this module's own
+    docstring for the dwarf2json-vs-btf2json ISF dependency that
+    determines whether it's actually populated for a given image) --
+    ``_row_to_timeline_record`` handles its different field names via
+    ``_ROW_FIELD_NAMES`` and a ``null``/missing value there is handled the
+    same honest way as a Windows row with no ``CreateTime``: no record for
+    that row, not an error.
     """
     pstree = result.for_plugin(_PSTREE_PLUGIN)
     if pstree is not None and pstree.ok and pstree.rows:
@@ -443,6 +485,9 @@ def _timeline_rows(
     psscan = result.for_plugin(_PSSCAN_PLUGIN)
     if psscan is not None and psscan.ok and psscan.rows:
         return _PSSCAN_PLUGIN, psscan.rows
+    pslist = result.for_plugin(_LINUX_PSLIST_PLUGIN)
+    if pslist is not None and pslist.ok and pslist.rows:
+        return _LINUX_PSLIST_PLUGIN, pslist.rows
     return None, ()
 
 
@@ -582,17 +627,22 @@ def _build_diagnostic_artifact(
 
 
 def _parse_create_time(raw: Any) -> datetime | None:
-    """Return a real, aware datetime for a row's ``CreateTime``, or None.
+    """Return a real, aware datetime for a row's create-time field, or None.
 
-    Real volatility3 ``psscan``/``pstree`` rows render ``CreateTime`` as an
-    ISO-8601 string with an explicit UTC offset (confirmed against the real
+    Real volatility3 ``psscan``/``pstree`` (Windows, ``CreateTime``) and
+    ``pslist`` (Linux, ``CREATION TIME``) rows render it as an ISO-8601
+    string with an explicit UTC offset (confirmed against the real
     captured ``cridex.vmem`` output, e.g. ``"2012-07-22T02:42:33+00:00"`` --
-    ``poc/volatility_pipeline_ingest/artifact_verification.json``) --
-    ``datetime.fromisoformat`` parses that directly, no replace() tricks
-    needed (unlike Plaso's own epoch-microsecond convention,
-    ``firecracker.py``). A row can genuinely have no ``CreateTime`` at all
-    (e.g. some plugins/rows only carry ``ExitTime``) or a null value --
-    both are honest "not a timeline-shaped row," not an error.
+    ``poc/volatility_pipeline_ingest/artifact_verification.json`` --
+    and, for Linux, ``poc/volatility_linux_boottime/``, e.g.
+    ``"2026-09-19T14:50:06.111155+00:00"``) -- ``datetime.fromisoformat``
+    parses both directly, no replace() tricks needed (unlike Plaso's own
+    epoch-microsecond convention, ``firecracker.py``). A row can genuinely
+    have no create-time at all (e.g. some Windows rows only carry
+    ``ExitTime``; every Linux row when the image's ISF was built by
+    ``btf2json`` rather than ``dwarf2json``, see this module's own
+    docstring) or a null value -- both are honest "not a timeline-shaped
+    row," not an error.
     """
     if not isinstance(raw, str) or not raw:
         return None
@@ -610,7 +660,7 @@ def _row_to_timeline_record(
     record_index: int,
 ) -> TimelineRecord | None:
     """Return a process-creation TimelineRecord for *row*, or None if it
-    carries no real, parseable ``CreateTime`` (see this module's own
+    carries no real, parseable create-time (see this module's own
     docstring for the dual-emit design this backs).
 
     ECS mapping: ``event.category=["process"]``/``event.type=["start"]``
@@ -622,13 +672,19 @@ def _row_to_timeline_record(
     targeted re-scan) into ``extra`` with dotted ECS-style keys, the same
     convention ``FastEvtxParser``/``PlasoParser`` already use for
     format-specific fields ``TimelineRecord`` has no dedicated column for.
+
+    Field names differ by plugin/OS family (``_ROW_FIELD_NAMES``): Windows
+    ``pstree``/``psscan`` rows use ``CreateTime``/``ImageFileName``; Linux
+    ``pslist`` rows use ``CREATION TIME``/``COMM`` (real, verified,
+    ``poc/volatility_linux_boottime/``).
     """
-    timestamp = _parse_create_time(row.get("CreateTime"))
+    create_time_field, image_name_field = _ROW_FIELD_NAMES.get(plugin, _DEFAULT_ROW_FIELD_NAMES)
+    timestamp = _parse_create_time(row.get(create_time_field))
     if timestamp is None:
         return None
 
     pid = row.get("PID")
-    image_name = row.get("ImageFileName")
+    image_name = row.get(image_name_field)
     message = (
         f"Process {image_name} (PID {pid}) created"
         if image_name is not None and pid is not None
@@ -642,7 +698,12 @@ def _row_to_timeline_record(
         extra["process.thread.count"] = row["Threads"]
     if row.get("SessionId") is not None:
         extra["volatility.session_id"] = row["SessionId"]
+    # Windows rows render "Offset(V)"; Linux pslist renders "OFFSET (V)"
+    # (confirmed live, poc/volatility_linux_boottime/) -- both checked since
+    # a plugin only ever populates one of the two.
     offset = row.get("Offset(V)")
+    if offset is None:
+        offset = row.get("OFFSET (V)")
     if offset is not None:
         extra["volatility.offset_v"] = offset
 

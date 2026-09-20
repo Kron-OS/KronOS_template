@@ -1,0 +1,87 @@
+{
+  "linux.boottime.Boottime": {
+    "status": "ok",
+    "rows": [
+      {
+        "__children": [],
+        "TIME NS": 4026531834,
+        "Boot Time": "2026-09-19T14:50:06.605516+00:00"
+      }
+    ],
+    "error": null
+  },
+  "linux.pslist.PsList_sample_rows": [
+    {
+      "__children": [],
+      "OFFSET (V)": 157442782855168,
+      "PID": 1,
+      "TID": 1,
+      "PPID": 0,
+      "COMM": "systemd",
+      "UID": 0,
+      "GID": 0,
+      "EUID": 0,
+      "EGID": 0,
+      "CREATION TIME": "2026-09-19T14:50:06.111155+00:00",
+      "File output": "Disabled"
+    },
+    {
+      "__children": [],
+      "OFFSET (V)": 157442782861376,
+      "PID": 2,
+      "TID": 2,
+      "PPID": 0,
+      "COMM": "kthreadd",
+      "UID": 0,
+      "GID": 0,
+      "EUID": 0,
+      "EGID": 0,
+      "CREATION TIME": "2026-09-19T14:50:06.111155+00:00",
+      "File output": "Disabled"
+    },
+    {
+      "__children": [],
+      "OFFSET (V)": 157442782867584,
+      "PID": 3,
+      "TID": 3,
+      "PPID": 2,
+      "COMM": "rcu_gp",
+      "UID": 0,
+      "GID": 0,
+      "EUID": 0,
+      "EGID": 0,
+      "CREATION TIME": "2026-09-19T14:50:06.219155+00:00",
+      "File output": "Disabled"
+    },
+    {
+      "__children": [],
+      "OFFSET (V)": 157442782880000,
+      "PID": 4,
+      "TID": 4,
+      "PPID": 2,
+      "COMM": "rcu_par_gp",
+      "UID": 0,
+      "GID": 0,
+      "EUID": 0,
+      "EGID": 0,
+      "CREATION TIME": "2026-09-19T14:50:06.219155+00:00",
+      "File output": "Disabled"
+    },
+    {
+      "__children": [],
+      "OFFSET (V)": 157442782873792,
+      "PID": 5,
+      "TID": 5,
+      "PPID": 2,
+      "COMM": "slub_flushwq",
+      "UID": 0,
+      "GID": 0,
+      "EUID": 0,
+      "EGID": 0,
+      "CREATION TIME": "2026-09-19T14:50:06.219155+00:00",
+      "File output": "Disabled"
+    }
+  ],
+  "linux.pslist.PsList_row_count": 105,
+  "linux.pslist.PsList_non_null_creation_time_count": 105
+}

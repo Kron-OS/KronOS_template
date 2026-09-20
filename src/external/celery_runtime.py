@@ -119,6 +119,7 @@ async def _build_task_resources() -> tuple[TaskResources, object, OpenSearchClie
         worker_path=Path(settings.volatility_worker_path)
         if settings.volatility_worker_path
         else None,
+        remote_isf_url=settings.volatility_remote_isf_url or None,
     )
 
     intake_service = EvidenceIntakeService(

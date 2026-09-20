@@ -241,6 +241,32 @@ class Settings(BaseSettings):
         description="Absolute path to kronos-volatility-worker.py; None uses computed default",
     )
 
+    # Real, verified finding (2026-09-20): this worker calls volatility3's
+    # framework API directly rather than its CLI (vol.py), so
+    # volatility3.framework.constants.REMOTE_ISF_URL is never set by
+    # anything -- meaning every memory image whose exact kernel/PDB build
+    # has no locally pre-installed ISF fails every symbol-dependent plugin
+    # with UnsatisfiedException, regardless of RAM/CPU/network, even though
+    # the OS family itself is correctly identified (banners.Banners needs
+    # no symbol table). Default value is volatility3's own project's real,
+    # CI-verified remote ISF index (see
+    # github.com/volatilityfoundation/volatility3 PR #1316, "Enable Remote
+    # ISF server for Linux testcases") -- a community-maintained,
+    # dwarf2json-generated symbol index covering thousands of real Linux
+    # kernel builds. Real-verified end-to-end against a genuine 4GB user
+    # upload (Ubuntu 6.5.0-41-generic) that previously failed every plugin
+    # with UnsatisfiedException: after wiring this in, automagic resolved
+    # the kernel and linux.psscan recovered 1493 real process rows from the
+    # same file -- see poc/volatility_remote_isf/README.md. Empty string
+    # disables remote lookup entirely (fully offline/air-gapped
+    # deployments) -- the worker only sets constants.REMOTE_ISF_URL when
+    # this is truthy, so an empty value reproduces the exact pre-fix
+    # behavior, not a new failure mode.
+    volatility_remote_isf_url: str = Field(
+        default="https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json",
+        description="Remote ISF index URL for volatility3 symbol auto-download; empty disables",
+    )
+
     # Case/ticket integration (roadmap M7/H4) -- a single, deployment-wide
     # outbound webhook URL for WebhookTicketingSystem, the same "one global
     # endpoint, not per-org config" shape this codebase already uses for

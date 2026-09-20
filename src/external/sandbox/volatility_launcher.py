@@ -115,9 +115,28 @@ DEFAULT_PLUGINS: tuple[str, ...] = (
 # plugin doesn't sink the run" precedent every other multi-plugin outcome
 # here already has). Same "must match kronos-volatility-worker.py exactly"
 # mirroring discipline as DEFAULT_PLUGINS above.
+#
+# `linux.pslist.PsList` added real-verified this session
+# (poc/volatility_linux_boottime/, reviews/Volatility_Linux_Plugin_Research.md):
+# unlike pstree/psscan, its "CREATION TIME" column is a real absolute
+# wall-clock datetime volatility3 computes internally
+# (task.get_create_time() = boottime + task_start_time) -- the real source
+# ``VolatilityModule._timeline_rows()`` now dual-emits Linux
+# ``TimelineRecord``s from. Same ISF-tool sensitivity as `hidden_modules`
+# above, verified both ways against the identical kernel build/memory
+# capture: a dwarf2json-built ISF resolves `tk_core`/`timekeeper` correctly
+# (all rows got a real, monotonically-plausible CREATION TIME); the
+# btf2json-built ISF this codebase's own self-generated sample uses does
+# not (every row's CREATION TIME comes back null, same as pstree/psscan
+# always have) -- handled honestly, not a crash: a null CREATION TIME is
+# just "not a timeline-shaped row," so a btf2json-ISF org continues to get
+# zero Linux TimelineRecords (no regression) while a dwarf2json-ISF org
+# (most distro kernels with a debug/dbgsym package available) now gets
+# real ones.
 LINUX_DEFAULT_PLUGINS: tuple[str, ...] = (
     "linux.pstree.PsTree",
     "linux.psscan.PsScan",
+    "linux.pslist.PsList",
     "linux.psaux.PsAux",
     "linux.bash.Bash",
     "linux.malware.malfind.Malfind",
@@ -256,10 +275,23 @@ class VolatilityLauncher:
         worker_path: Path | None = None,
         python_bin: str = sys.executable,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        remote_isf_url: str | None = None,
     ) -> None:
         self._worker_path = worker_path or _VOLATILITY_WORKER_PATH
         self._python_bin = python_bin
         self._timeout = timeout_seconds
+        # Real, verified fix (poc/volatility_remote_isf/): without this, the
+        # worker's own volatility3.framework.constants.REMOTE_ISF_URL is
+        # never set (this worker uses the framework API directly, not
+        # volatility3's CLI, which is the only other thing that ever sets
+        # it) -- every image whose exact kernel/PDB build has no locally
+        # pre-installed ISF then fails every symbol-dependent plugin with
+        # UnsatisfiedException, indistinguishable from a genuinely
+        # unsupported image. Only threaded into the multi-plugin run/OS
+        # detection below (_run_sync) -- the on-demand Windows dumpfiles/
+        # registry-printkey paths target an already-identified kernel and
+        # have no Linux equivalent today.
+        self._remote_isf_url = remote_isf_url
 
     async def run(
         self,
@@ -456,6 +488,8 @@ class VolatilityLauncher:
             "--timeout-seconds",
             str(self._timeout),
         ]
+        if self._remote_isf_url:
+            cmd.extend(["--remote-isf-url", self._remote_isf_url])
 
         logger.info(
             "volatility_launch", extra={"worker": str(self._worker_path), "plugins": list(plugins)}

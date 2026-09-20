@@ -135,10 +135,14 @@ _DEFAULT_PLUGINS = (
 # explicit list -- the real caller (VolatilityModule) always passes an
 # explicit, freshly-detected plugin list, so this default rarely matters in
 # production; kept mirrored anyway for anyone invoking this script by hand.
-# Real-sample-verified: poc/volatility_linux_module/.
+# Real-sample-verified: poc/volatility_linux_module/. `linux.pslist.PsList`
+# added real-verified in poc/volatility_linux_boottime/ -- see
+# volatility_launcher.py's own LINUX_DEFAULT_PLUGINS comment for the full
+# dwarf2json-vs-btf2json ISF finding this addition depends on.
 _LINUX_DEFAULT_PLUGINS = (
     "linux.pstree.PsTree",
     "linux.psscan.PsScan",
+    "linux.pslist.PsList",
     "linux.psaux.PsAux",
     "linux.bash.Bash",
     "linux.malware.malfind.Malfind",
@@ -181,6 +185,13 @@ def _parse_args() -> argparse.Namespace:
         "--registry-key",
         default=None,
         help="Optional subkey path (on-demand registry mode); omitted = hive root.",
+    )
+    p.add_argument(
+        "--remote-isf-url",
+        default=None,
+        help="Remote ISF index URL (volatility3.framework.constants.REMOTE_ISF_URL) -- "
+        "same flag name/semantics as volatility3's own CLI. Unset means fully offline, "
+        "the pre-fix behavior: only locally pre-installed ISFs are ever considered.",
     )
     return p.parse_args()
 
@@ -514,6 +525,19 @@ def main() -> None:
             }
         )
         sys.exit(0)
+
+    if args.remote_isf_url:
+        # Real, verified fix (poc/volatility_remote_isf/): this worker calls
+        # volatility3's framework API directly, never its CLI (vol.py) --
+        # the only other code that ever sets this constant -- so without
+        # this, remote ISF lookup was silently never attempted, regardless
+        # of this container's real network access. Must be set before any
+        # automagic runs below (SymbolCacheMagic reads it during its own
+        # update() pass).
+        from volatility3.framework import constants  # noqa: PLC0415
+
+        constants.REMOTE_ISF_URL = args.remote_isf_url
+        logger.info("volatility3 remote ISF lookup enabled: %s", args.remote_isf_url)
 
     if args.dumpfiles_physaddr is not None:
         logger.info(

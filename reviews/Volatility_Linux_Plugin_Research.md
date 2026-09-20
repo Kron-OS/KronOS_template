@@ -14,9 +14,18 @@ the full real methodology and results table. Task #15 (OS-family
 detection + dispatch implementation) is **done** — see `STATUS.md` and
 `DECISIONS.md`'s Volatility section. The dual-emit timeline gap this left
 open (§"What's still needed" item 3 below, superseded) was investigated
-for real in `poc/volatility_linux_boottime/README.md`: **verified
-blocked** on the same real ISF-tool-compatibility gap as `hidden_modules`,
-not just unbuilt — see that PoC for the two named ways forward.
+for real in `poc/volatility_linux_boottime/README.md`: **first verified
+blocked** on a real ISF-tool-compatibility gap (same class as
+`hidden_modules`), **then, in a later session of that same
+investigation, verified fixed** via a real `dwarf2json`-built ISF for the
+identical kernel build — `linux.pslist.PsList` (added to
+`LINUX_DEFAULT_PLUGINS`) now dual-emits real Linux `TimelineRecord`s
+whenever the target image's ISF was built by `dwarf2json` (the common
+case for most distro kernels with a debug/dbgsym package available);
+`btf2json`-built ISFs (including this codebase's own self-generated
+sample) still get zero, honestly, not a crash. See that PoC's "Part 2"
+section and `STATUS.md`/`DECISIONS.md`'s Volatility sections for the
+production-facing summary.
 
 ## Method
 
@@ -150,23 +159,34 @@ two Linux-native additions with no direct Windows-eager counterpart today
 3. ~~**OS-family detection**~~ **Done** (`VolatilityLauncher.detect_os_family()`,
    real `banners.Banners`-based, verified against both a real Windows and
    a real Linux sample) — see `STATUS.md`/`DECISIONS.md`.
-4. **Linux dual-emit `TimelineRecord`s (the `boottime` + per-process-offset
-   plan) — investigated for real, verified blocked, not just unbuilt.**
-   `poc/volatility_linux_boottime/README.md`: `linux.boottime.Boottime`
-   fails against this codebase's own real, self-generated ISF
-   (`AttributeError: Unable to find timekeeper`) — the same
-   `btf2json`-vs-`dwarf2json` ISF-metadata gap already documented for
-   `hidden_modules`. The underlying per-process boot-relative offset
-   (`task.start_time`, nanoseconds since boot) IS real and readable
-   directly from the object layer even with `boottime` broken — confirmed
-   live for real PIDs — so the *data* this plan needs exists; only the
-   wall-clock boot anchor `boottime.Boottime` would supply is missing.
-   Two named ways forward, neither attempted yet: (a) get a
-   `dwarf2json`-built ISF for a Linux sample and re-verify `boottime`
-   against it, or (b) write a `timekeeper`-independent wall-clock anchor
-   from scratch (its own real work, with real accuracy caveats, not a
-   small addition to this plan).
+4. ~~**Linux dual-emit `TimelineRecord`s**~~ **Done, conditionally.**
+   `poc/volatility_linux_boottime/README.md` (both parts): first verified
+   blocked against this codebase's own `btf2json`-built ISF
+   (`linux.boottime.Boottime` failed: `AttributeError: Unable to find
+   timekeeper`, same ISF-metadata gap as `hidden_modules`), then, in a
+   later session, verified fixed via option (a) below — a real
+   `dwarf2json`-built ISF for the identical kernel build resolved
+   `tk_core`/`timekeeper` correctly, and `linux.pslist.PsList`'s own
+   "CREATION TIME" column (volatility3 computes it internally as
+   `boottime + task.start_time` — no manual combination needed in
+   KronOS's own code, unlike this doc's original plan assumed) came back
+   real and populated for all 105 real sample rows. `linux.pslist.PsList`
+   was added to `LINUX_DEFAULT_PLUGINS`
+   (`src/external/sandbox/volatility_launcher.py`) and
+   `VolatilityModule._timeline_rows()`/`_row_to_timeline_record()`
+   (`src/external/parsers/volatility.py`) now dispatch to it for Linux
+   images. **This remains conditional on the target image's ISF having
+   been built by `dwarf2json` rather than `btf2json`** — a `btf2json`-ISF
+   org (including this codebase's own self-generated sample) still gets
+   zero Linux `TimelineRecord`s, honestly, not a crash (same "not a
+   timeline-shaped row" handling every other missing-timestamp case
+   already gets). Original two named ways forward, for reference — (a) get
+   a `dwarf2json`-built ISF and re-verify `boottime` against it, or (b)
+   write a `timekeeper`-independent wall-clock anchor from scratch: (a) is
+   what got implemented; (b) was never needed.
 
-See `TaskList` tasks #13 (this doc) → #14 (real sample + measurement) →
-#15 (implementation, done) → #16 (Linux dual-emit timeline, blocked, see
-above) for the tracked sequence.
+Historical task sequence from the original tracker instance this doc was
+written against (since superseded — see current `TaskList`/`STATUS.md`
+for live state): #13 (this doc) → #14 (real sample + measurement) → #15
+(implementation, done) → #16 (Linux dual-emit timeline — done,
+conditionally, see above).

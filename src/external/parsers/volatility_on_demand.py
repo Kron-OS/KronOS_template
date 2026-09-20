@@ -147,6 +147,7 @@ class VolatilityOnDemandService:
         launcher: VolatilityLauncher | None = None,
         worker_path: Path | None = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        remote_isf_url: str | None = None,
     ) -> None:
         self._evidence_repository = evidence_repository
         self._evidence_storage = evidence_storage
@@ -164,7 +165,9 @@ class VolatilityOnDemandService:
         # needs the identical real value threaded through by the caller
         # (celery_runtime.py's _build_task_resources()).
         self._launcher = launcher or VolatilityLauncher(
-            worker_path=worker_path, timeout_seconds=timeout_seconds
+            worker_path=worker_path,
+            timeout_seconds=timeout_seconds,
+            remote_isf_url=remote_isf_url,
         )
 
     async def extract_dump_file(

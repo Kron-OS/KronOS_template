@@ -89,6 +89,69 @@ async def test_run_returns_rows_from_ok_payload(tmp_path: Path) -> None:
     assert outcome.rows[0]["PID"] == 4
 
 
+async def test_run_passes_remote_isf_url_to_worker_when_set(tmp_path: Path) -> None:
+    """Real regression test for the UnsatisfiedException-on-every-plugin bug
+    (poc/volatility_remote_isf/): without --remote-isf-url reaching the
+    worker's own argv, volatility3.framework.constants.REMOTE_ISF_URL is
+    never set and remote symbol lookup is silently never attempted. Echoes
+    sys.argv back inside the plugin's own row (the real payload shape,
+    per _payload_to_result) so this asserts the actual subprocess command
+    line, not just that run() doesn't crash.
+    """
+    script = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        payload = {
+            "status": "ok",
+            "error": None,
+            "plugins": {
+                "windows.pstree.PsTree": {"status": "ok", "rows": [{"argv": sys.argv}], "error": None}
+            },
+        }
+        print(json.dumps(payload))
+        """,
+    )
+    launcher = VolatilityLauncher(
+        worker_path=script,
+        python_bin=sys.executable,
+        remote_isf_url="https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json",
+    )
+
+    result = await launcher.run("/tmp/fake.vmem", plugins=["windows.pstree.PsTree"])
+
+    argv = result.for_plugin("windows.pstree.PsTree").rows[0]["argv"]
+    assert "--remote-isf-url" in argv
+    assert argv[argv.index("--remote-isf-url") + 1] == (
+        "https://github.com/Abyss-W4tcher/volatility3-symbols/raw/master/banners/banners.json"
+    )
+
+
+async def test_run_omits_remote_isf_url_when_unset(tmp_path: Path) -> None:
+    """Default (no remote_isf_url passed) must reproduce the exact pre-fix,
+    fully-offline behavior -- no flag at all, not an empty-string flag."""
+    script = _write_worker(
+        tmp_path,
+        """
+        import json, sys
+        payload = {
+            "status": "ok",
+            "error": None,
+            "plugins": {
+                "windows.pstree.PsTree": {"status": "ok", "rows": [{"argv": sys.argv}], "error": None}
+            },
+        }
+        print(json.dumps(payload))
+        """,
+    )
+    launcher = VolatilityLauncher(worker_path=script, python_bin=sys.executable)
+
+    result = await launcher.run("/tmp/fake.vmem", plugins=["windows.pstree.PsTree"])
+
+    argv = result.for_plugin("windows.pstree.PsTree").rows[0]["argv"]
+    assert "--remote-isf-url" not in argv
+
+
 async def test_run_returns_independent_outcome_per_plugin(tmp_path: Path) -> None:
     """A mixed run (some plugins ok, one genuinely failed) must not raise --
     each plugin's own outcome carries its own status, per this module's own
