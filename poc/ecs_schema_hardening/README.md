@@ -89,5 +89,5 @@ default registry, and a regression guard confirming the validator actually
 *catches* a deliberately-unmapped field rather than trivially passing
 everything.
 
-Full unit suite: see `PROGRESS.md`/task tracker for the latest confirmed
+Full unit suite: see `docs/archive/status-history/PROGRESS.md` (historical; see STATUS.md for current)/task tracker for the latest confirmed
 count (baseline before this change was 622 passed).

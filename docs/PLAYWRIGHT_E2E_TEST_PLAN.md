@@ -1,7 +1,13 @@
 # KronOS — Advanced Playwright E2E Test Plan
 
-**See `docs/GAP_AUDIT_2026-09-03_MILESTONE_FFFFF.md` for the latest
-cycle** — checkpoint 4 (final) of the project owner's real CERT-analyst
+**For current connector/evidence E2E coverage, see `STATUS.md`'s "Frontend
+E2E" section (repo root) — that file is the maintained current-state
+document; this test plan's own "latest cycle" pointers below are historical
+and were not kept in sync.** The gap-audit doc referenced next is archived
+at `docs/archive/status-history/GAP_AUDIT_2026-09-03_MILESTONE_FFFFF.md`.
+
+**See that archived doc for the historical "latest cycle" it describes**
+— checkpoint 4 (final) of the project owner's real CERT-analyst
 memory-forensics expansion (checkpoint 1: Milestone CCCCC's backend
 multi-plugin rewrite; checkpoint 2: Milestone DDDDD's eager-kind frontend
 nav; checkpoint 3: Milestone EEEEE's on-demand backend). `ArtifactsTab`

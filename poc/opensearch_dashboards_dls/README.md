@@ -171,7 +171,7 @@ synthetic token/API check.
 ## Remaining (not this PoC's scope)
 
 - The tenant-selector dialog Dashboards shows on first load ("Select your
-  tenant") is a separate, already-documented gap (`PROGRESS.md`'s
+  tenant") is a separate, already-documented gap (`docs/archive/status-history/PROGRESS.md` (historical; see STATUS.md for current)'s
   "Dashboards embed URL never sets an index-pattern app-state" flag) — the
   embed URL should ideally auto-select the case's org tenant so the user
   never sees this dialog. Unaffected by (and unrelated to) this fix.

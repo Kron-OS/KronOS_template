@@ -19,7 +19,7 @@ Index Patterns wizard every time, which is what the prior PoC's browser
 pass had to do by hand.
 
 This is already documented as a known, pre-existing gap
-(`PROGRESS.md`'s flag E, `poc/dashboards_embed/README.md`) — not something
+(`docs/archive/status-history/PROGRESS.md` (historical; see STATUS.md for current)'s flag E, `poc/dashboards_embed/README.md`) — not something
 either DLS fix introduced.
 
 ## Design constraint (confirmed against real 2.11.1 source, not assumed)
