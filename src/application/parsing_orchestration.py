@@ -275,6 +275,103 @@ class ParsingOrchestrationService:
         )
         return evidence
 
+    async def attach_companion_and_reparse(
+        self,
+        evidence_id: uuid.UUID,
+        companion_evidence_id: uuid.UUID,
+        tenant: TenantContext,
+    ) -> Evidence:
+        """Link *companion_evidence_id* onto *evidence_id* and re-enter PARSING.
+
+        Real use case (poc/volatility_vmware_companion/): a VMware .vmem
+        image already reached COMPLETE (parsing ran, but a real memory
+        image needs its .vmsn/.vmss companion co-located to be correctly
+        interpreted -- see VolatilityModule's CompanionFileResolver). The
+        companion is itself an ordinary, already-uploaded evidence item in
+        the same case, not a special upload path. Unlike retry_parse (ERROR
+        only), this is offered from COMPLETE too -- see Evidence's own FSM
+        comment for why COMPLETE -> PARSING is a deliberate, real re-entry
+        point and not a bug.
+        """
+        evidence = await self._repo.get_by_id(evidence_id, tenant.org_id)
+        if evidence is None:
+            raise ValidationError(
+                "Evidence not found",
+                context={"evidence_id": str(evidence_id), "org_id": str(tenant.org_id)},
+            )
+        if evidence.state not in (EvidenceState.COMPLETE, EvidenceState.ERROR):
+            raise EvidenceStateConflictError(
+                f"Evidence is in state {evidence.state.value}, expected COMPLETE or ERROR",
+                context={"evidence_id": str(evidence_id), "state": evidence.state.value},
+            )
+        if companion_evidence_id == evidence_id:
+            raise ValidationError(
+                "Evidence cannot be its own companion",
+                context={"evidence_id": str(evidence_id)},
+            )
+
+        companion = await self._repo.get_by_id(companion_evidence_id, tenant.org_id)
+        if companion is None:
+            raise ValidationError(
+                "Companion evidence not found",
+                context={"companion_evidence_id": str(companion_evidence_id)},
+            )
+        if companion.metadata.case_id != evidence.metadata.case_id:
+            raise ValidationError(
+                "Companion evidence must be in the same case",
+                context={
+                    "evidence_id": str(evidence_id),
+                    "companion_evidence_id": str(companion_evidence_id),
+                },
+            )
+        if not companion.minio_evidence_key:
+            raise ValidationError(
+                "Companion evidence has not finished intake yet",
+                context={"companion_evidence_id": str(companion_evidence_id)},
+            )
+
+        evidence_key = evidence.minio_evidence_key
+        if not evidence_key:
+            raise ParsingError(
+                "Evidence has no storage key",
+                context={"evidence_id": str(evidence_id)},
+            )
+
+        parser = await self._detect_parser(evidence, evidence_key)
+
+        expected_state = evidence.state
+        evidence = evidence.with_companion(companion_evidence_id)
+        evidence = evidence.with_state(EvidenceState.PARSING)
+        await self._repo.update(evidence, expected_state=expected_state)
+        await self._audit.log(
+            AuditEventType.EVIDENCE_COMPANION_ATTACHED,
+            org_id=tenant.org_id,
+            actor_user_id=tenant.user_id,
+            actor_username=tenant.username,
+            evidence_id=evidence.evidence_id,
+            details={
+                "companion_evidence_id": str(companion_evidence_id),
+                "parser": parser.parser_name,
+                "parser_type": parser.parser_type.value,
+            },
+        )
+
+        if parser.parser_type == ParserType.FAST:
+            await self._task_queue.enqueue_parse_fast(evidence_id, tenant)
+        else:
+            await self._task_queue.enqueue_parse_heavy(evidence_id, tenant)
+
+        logger.info(
+            "companion_attached_reparse_queued",
+            extra={
+                "evidence_id": str(evidence_id),
+                "companion_evidence_id": str(companion_evidence_id),
+                "parser": parser.parser_name,
+                "queue": parser.parser_type.value,
+            },
+        )
+        return evidence
+
     async def execute_parse(
         self,
         evidence_id: uuid.UUID,

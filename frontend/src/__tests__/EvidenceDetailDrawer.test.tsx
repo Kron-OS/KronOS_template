@@ -8,11 +8,13 @@ import type { Evidence, EvidenceState } from '../types'
 const downloadEvidenceMock = vi.fn().mockResolvedValue(undefined)
 const retryIntakeMock = vi.fn().mockResolvedValue(undefined)
 const retryParseMock = vi.fn().mockResolvedValue(undefined)
+const attachCompanionMock = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../api/evidence', () => ({
   downloadEvidence: (...args: unknown[]) => downloadEvidenceMock(...args),
   retryIntake: (...args: unknown[]) => retryIntakeMock(...args),
   retryParse: (...args: unknown[]) => retryParseMock(...args),
+  attachCompanion: (...args: unknown[]) => attachCompanionMock(...args),
 }))
 
 function makeEvidence(
@@ -38,13 +40,15 @@ function makeEvidence(
     uploadedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     rfc3161Token: null,
+    companionEvidenceId: null,
+    canAttachCompanion: state === 'COMPLETE' || state === 'ERROR',
   }
 }
 
 function renderDrawer(
   state: EvidenceState,
   retryAction: Evidence['retryAction'] = null,
-  options: { filename?: string; artifactCount?: number } = {},
+  options: { filename?: string; artifactCount?: number; otherEvidence?: Evidence[] } = {},
 ) {
   const queryClient = new QueryClient()
   return render(
@@ -54,6 +58,7 @@ function renderDrawer(
         onClose={() => {}}
         artifactCount={options.artifactCount ?? 0}
         onViewArtifacts={() => {}}
+        otherEvidence={options.otherEvidence ?? []}
       />
     </QueryClientProvider>,
   )
@@ -176,4 +181,68 @@ describe('EvidenceDetailDrawer retry recovery', () => {
       }
     },
   )
+})
+
+describe('EvidenceDetailDrawer companion-file attach (poc/volatility_vmware_companion/)', () => {
+  beforeEach(() => {
+    attachCompanionMock.mockClear()
+  })
+
+  function makeOther(id: string, filename: string, state: EvidenceState = 'COMPLETE'): Evidence {
+    return { ...makeEvidence(state, null, filename), id }
+  }
+
+  it('hides the attach section when there is no other evidence in the case', () => {
+    renderDrawer('COMPLETE')
+    expect(screen.queryByText(/attach companion file/i)).not.toBeInTheDocument()
+  })
+
+  it('hides the attach section when canAttachCompanion is false, even with other evidence present', () => {
+    renderDrawer('PARSING', null, { otherEvidence: [makeOther('ev-2', 'memory.vmsn')] })
+    expect(screen.queryByText(/attach companion file/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the attach section for COMPLETE evidence with other evidence available', () => {
+    renderDrawer('COMPLETE', null, { otherEvidence: [makeOther('ev-2', 'memory.vmsn')] })
+    expect(screen.getByText(/attach companion file/i)).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /memory\.vmsn/i })).toBeInTheDocument()
+  })
+
+  it('excludes the evidence itself from the candidate list', () => {
+    renderDrawer('COMPLETE', null, {
+      otherEvidence: [makeOther('ev-1', 'self.vmem'), makeOther('ev-2', 'memory.vmsn')],
+    })
+    expect(screen.queryByRole('option', { name: /self\.vmem/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /memory\.vmsn/i })).toBeInTheDocument()
+  })
+
+  it('disables Attach & reparse until a candidate is selected', () => {
+    renderDrawer('COMPLETE', null, { otherEvidence: [makeOther('ev-2', 'memory.vmsn')] })
+    expect(screen.getByRole('button', { name: /attach & reparse/i })).toBeDisabled()
+  })
+
+  it('calls attachCompanion with the selected companion id', async () => {
+    const user = userEvent.setup()
+    renderDrawer('COMPLETE', null, { otherEvidence: [makeOther('ev-2', 'memory.vmsn')] })
+
+    await user.selectOptions(screen.getByRole('combobox'), 'ev-2')
+    await user.click(screen.getByRole('button', { name: /attach & reparse/i }))
+
+    await waitFor(() => expect(attachCompanionMock).toHaveBeenCalledWith('ev-1', 'ev-2'))
+  })
+
+  it('shows the linked companion filename once companionEvidenceId is set', () => {
+    const queryClient = new QueryClient()
+    const evidence: Evidence = { ...makeEvidence('PARSING'), companionEvidenceId: 'ev-2' }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EvidenceDetailDrawer
+          evidence={evidence}
+          onClose={() => {}}
+          otherEvidence={[makeOther('ev-2', 'memory.vmsn')]}
+        />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('memory.vmsn')).toBeInTheDocument()
+  })
 })

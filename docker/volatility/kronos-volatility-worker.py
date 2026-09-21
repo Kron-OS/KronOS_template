@@ -139,14 +139,17 @@ _DEFAULT_PLUGINS = (
 # added real-verified in poc/volatility_linux_boottime/ -- see
 # volatility_launcher.py's own LINUX_DEFAULT_PLUGINS comment for the full
 # dwarf2json-vs-btf2json ISF finding this addition depends on.
+# `linux.malware.malfind.Malfind`/`linux.library_list.LibraryList` removed
+# real-measured, not guessed (poc/volatility_vmware_companion/): 304s and
+# a >320s timeout respectively, in isolation, against a real 4GiB image --
+# see volatility_launcher.py's own LINUX_DEFAULT_PLUGINS comment for the
+# full measurement.
 _LINUX_DEFAULT_PLUGINS = (
     "linux.pstree.PsTree",
     "linux.psscan.PsScan",
     "linux.pslist.PsList",
     "linux.psaux.PsAux",
     "linux.bash.Bash",
-    "linux.malware.malfind.Malfind",
-    "linux.library_list.LibraryList",
     "linux.lsof.Lsof",
     "linux.lsmod.Lsmod",
     "linux.malware.hidden_modules.Hidden_modules",

@@ -365,8 +365,32 @@ def parse_artefact_fast(
     max_retries=2,
     default_retry_delay=120,
     queue="q.parse.plaso",
-    time_limit=600,
-    soft_time_limit=540,
+    # Real, reproduced incident (poc/volatility_vmware_companion/), raised
+    # twice on real, measured evidence, not guessed:
+    # 1) a companion-linked Volatility re-parse (10-plugin Linux eager set,
+    #    real 4GB image, remote ISF lookup) was SIGKILLed by Celery's own
+    #    hard limit at 600s while still actively running (confirmed live:
+    #    real plugin progress logged seconds before the kill) -- the same
+    #    failure mode a genuinely slow host under real memory pressure
+    #    produces for a heavy Plaso disk-image parse too, not something
+    #    specific to Volatility. Raised to 1500s/1620s.
+    # 2) even after removing the two pathologically slow plugins from the
+    #    Linux eager set (see LINUX_DEFAULT_PLUGINS's own comment) and the
+    #    scan itself completing reliably, a real, correctly-functioning
+    #    companion-linked run legitimately recovered 24,562 real
+    #    linux.lsof.Lsof rows (a properly-mapped companion surfaces
+    #    dramatically more real per-process file-descriptor data than a
+    #    bare, incorrectly-addressed .vmem ever could) -- persisting that
+    #    much real data (split across several 7MiB-capped
+    #    StructuredArtifacts, src/application/artifact_ingest.py) still
+    #    exceeded the 1500s budget. Raised again, generously, since this is
+    #    genuine forensic tooling processing genuine large datasets, not a
+    #    request/response API call.
+    # A SIGKILL/hard-timeout bypasses this module's own try/finally cleanup
+    # entirely (a real, separate, disclosed gap -- see STATUS.md), so a
+    # bigger, realistic budget also reduces how often that's even reached.
+    time_limit=2520,
+    soft_time_limit=2400,
 )
 def parse_artefact_heavy(
     self: object, evidence_id: str, *, org_id: str, user_id: str

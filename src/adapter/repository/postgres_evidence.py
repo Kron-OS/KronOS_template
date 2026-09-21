@@ -55,6 +55,11 @@ evidence_table = sa.Table(
     # additive column, same "existing deployments need a manual ALTER
     # TABLE" caveat as legal_hold/rfc3161_token/quota_held above.
     sa.Column("declared_format", sa.String(32)),
+    # poc/volatility_vmware_companion/ -- see Evidence.companion_evidence_id's
+    # own docstring; same additive-column caveat as the columns above.
+    sa.Column(
+        "companion_evidence_id", sa.UUID(as_uuid=True), sa.ForeignKey("evidence.evidence_id")
+    ),
     sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False),
     sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False),
 )
@@ -240,6 +245,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             "rfc3161_token": ev.rfc3161_token,
             "quota_held": ev.quota_held,
             "declared_format": ev.metadata.declared_format,
+            "companion_evidence_id": ev.companion_evidence_id,
             "created_at": ev.created_at,
             "updated_at": ev.updated_at,
         }
@@ -270,6 +276,7 @@ class PostgresEvidenceRepository(EvidenceRepository):
             object_lock_until=_ensure_utc_optional(row.get("object_lock_until")),
             rfc3161_token=row.get("rfc3161_token"),
             quota_held=row.get("quota_held", False) or False,
+            companion_evidence_id=row.get("companion_evidence_id"),
             created_at=_ensure_utc(row["created_at"]),
             updated_at=_ensure_utc(row["updated_at"]),
         )

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Evidence } from '../types'
-import { downloadEvidence, retryIntake, retryParse } from '../api/evidence'
+import { attachCompanion, downloadEvidence, retryIntake, retryParse } from '../api/evidence'
 import { ErrorCatalogueChip } from './ErrorCatalogue'
 import { Spinner } from './Spinner'
 import { StatusPill } from './StatusPill'
@@ -48,6 +48,12 @@ interface EvidenceDetailDrawerProps {
   // every existing caller (none currently pass them) keeps working.
   artifactCount?: number
   onViewArtifacts?: () => void
+  // poc/volatility_vmware_companion/: every other evidence item in the same
+  // case, so the drawer can offer them as companion-file candidates (e.g. a
+  // VMware .vmsn to attach to a .vmem that already reached COMPLETE without
+  // one). Optional, defaults to none, same "every existing caller keeps
+  // working unchanged" shape as artifactCount/onViewArtifacts above.
+  otherEvidence?: Evidence[]
 }
 
 export function EvidenceDetailDrawer({
@@ -55,8 +61,10 @@ export function EvidenceDetailDrawer({
   onClose,
   artifactCount = 0,
   onViewArtifacts,
+  otherEvidence = [],
 }: EvidenceDetailDrawerProps) {
   const [copied, setCopied] = useState(false)
+  const [companionCandidateId, setCompanionCandidateId] = useState('')
   const queryClient = useQueryClient()
 
   const retryMutation = useMutation({
@@ -76,6 +84,21 @@ export function EvidenceDetailDrawer({
         // reconnect with a fresh ticket.
         window.dispatchEvent(new CustomEvent('kronos:sse-reconnect', { detail: { caseId: evidence.caseId } }))
       }
+    },
+  })
+
+  const attachCompanionMutation = useMutation({
+    mutationFn: (companionEvidenceId: string) => attachCompanion(evidence!.id, companionEvidenceId),
+    onSuccess: () => {
+      if (evidence) {
+        void queryClient.invalidateQueries({ queryKey: ['evidence', evidence.caseId] })
+        // Same real bug/fix as retryMutation above: attaching a companion
+        // re-enters PARSING server-side (un-terminating a COMPLETE/ERROR
+        // evidence item), and useEvidenceSSE has already closed its stream
+        // for a terminal state -- reconnect it the same way.
+        window.dispatchEvent(new CustomEvent('kronos:sse-reconnect', { detail: { caseId: evidence.caseId } }))
+      }
+      setCompanionCandidateId('')
     },
   })
 
@@ -231,6 +254,68 @@ export function EvidenceDetailDrawer({
                 }
               />
             )}
+
+          {evidence.companionEvidenceId && (
+            <FieldRow
+              label="Companion file"
+              value={
+                <span className="text-gray-700 dark:text-gray-300">
+                  {otherEvidence.find((e) => e.id === evidence.companionEvidenceId)?.filename ??
+                    evidence.companionEvidenceId}
+                </span>
+              }
+            />
+          )}
+
+          {evidence.canAttachCompanion && otherEvidence.length > 0 && (
+            // poc/volatility_vmware_companion/: a memory image (e.g. a
+            // VMware .vmem) that reached COMPLETE/ERROR without its
+            // .vmsn/.vmss companion co-located can be re-parsed once that
+            // companion is uploaded separately and linked here -- no
+            // second file input, the companion is an ordinary evidence
+            // item already in this case.
+            <div className="mt-4 flex flex-col gap-2 border-t border-gray-200 pt-4 dark:border-gray-800">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Attach companion file
+              </span>
+              <p className="text-xs text-gray-500">
+                For a VMware memory image, attaching its .vmsn/.vmss (already uploaded as
+                separate evidence) and re-running analysis can recover data a bare .vmem alone
+                cannot.
+              </p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={companionCandidateId}
+                  onChange={(e) => setCompanionCandidateId(e.target.value)}
+                  className="flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                >
+                  <option value="">Select evidence…</option>
+                  {otherEvidence
+                    .filter((e) => e.id !== evidence.id)
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.filename} ({e.state})
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => attachCompanionMutation.mutate(companionCandidateId)}
+                  disabled={!companionCandidateId || attachCompanionMutation.isPending}
+                  className="flex shrink-0 items-center gap-2 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  {attachCompanionMutation.isPending && <Spinner size="sm" />}
+                  Attach &amp; reparse
+                </button>
+              </div>
+              {attachCompanionMutation.isError && (
+                <span className="text-xs text-red-600 dark:text-red-400">
+                  Could not attach that file — it may not be in this case, or hasn't finished
+                  uploading yet.
+                </span>
+              )}
+            </div>
+          )}
 
           {evidence.errorReason && (
             <div className="mt-4 flex flex-col gap-2">

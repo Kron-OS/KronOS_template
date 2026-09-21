@@ -67,10 +67,11 @@ def make_evidence_metadata(
 def make_evidence(
     state: EvidenceState = EvidenceState.UPLOADING,
     org_id: uuid.UUID | None = None,
+    case_id: uuid.UUID | None = None,
     size_bytes: int = 1024,
 ) -> Evidence:
     return Evidence(
-        metadata=make_evidence_metadata(org_id=org_id, size_bytes=size_bytes),
+        metadata=make_evidence_metadata(org_id=org_id, case_id=case_id, size_bytes=size_bytes),
         state=state,
     )
 

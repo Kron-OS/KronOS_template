@@ -30,7 +30,7 @@ from src.domain.evidence import Evidence, EvidenceState
 from src.domain.ioc_feed import IOCFeedVersion, IOCIndicator, IOCType
 from src.domain.timeline import KronosProvenance, TimelineRecord
 from src.domain.user import TenantContext
-from src.exceptions import EvidenceStateConflictError, ParsingError
+from src.exceptions import EvidenceStateConflictError, ParsingError, ValidationError
 from tests.conftest import InMemoryAuditLogRepository, InMemoryEvidenceRepository
 from tests.fixtures.factories import make_evidence_metadata, make_tenant_context
 
@@ -512,6 +512,208 @@ class TestRetryParse:
         stored = await evidence_repo.get_by_id(evidence.evidence_id, tenant.org_id)
         assert stored is not None
         assert stored.state == EvidenceState.COMPLETE
+
+
+# ---------------------------------------------------------------------------
+# Tests: attach_companion_and_reparse (poc/volatility_vmware_companion/)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_complete_evidence(
+    evidence_repo: InMemoryEvidenceRepository,
+    local_storage: LocalEvidenceStorage,
+    tenant: TenantContext,
+    case_id: uuid.UUID | None = None,
+    data: bytes = _CLOUDTRAIL_BYTES,
+) -> Evidence:
+    """Create evidence already in COMPLETE state, object still in the
+    evidence bucket -- the real shape a VMware .vmem reaches after parsing
+    once, unsuccessfully, without its companion."""
+    meta = make_evidence_metadata(org_id=tenant.org_id, case_id=case_id)
+    evidence_key = f"{meta.org_alias}/{meta.case_id}/{uuid.uuid4()}"
+    local_storage.write_evidence(evidence_key, data)
+    evidence = Evidence(
+        metadata=meta,
+        state=EvidenceState.PARSING,
+        sha256="a" * 64,
+        minio_evidence_key=evidence_key,
+    ).with_state(EvidenceState.COMPLETE)
+    await evidence_repo.save(evidence)
+    return evidence
+
+
+class TestAttachCompanionAndReparse:
+    @pytest.mark.asyncio
+    async def test_attaches_companion_and_transitions_to_parsing(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+
+        result = await orchestrator.attach_companion_and_reparse(
+            primary.evidence_id, companion.evidence_id, tenant
+        )
+
+        assert result.state == EvidenceState.PARSING
+        assert result.companion_evidence_id == companion.evidence_id
+
+    @pytest.mark.asyncio
+    async def test_works_from_error_state_too(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_parse_error_evidence(evidence_repo, local_storage, tenant)
+        primary = primary.model_copy(update={"metadata": primary.metadata.model_copy(
+            update={"case_id": case_id}
+        )})
+        await evidence_repo.save(primary)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+
+        result = await orchestrator.attach_companion_and_reparse(
+            primary.evidence_id, companion.evidence_id, tenant
+        )
+        assert result.state == EvidenceState.PARSING
+
+    @pytest.mark.asyncio
+    async def test_enqueues_reparse_task(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.attach_companion_and_reparse(
+            primary.evidence_id, companion.evidence_id, tenant
+        )
+        assert len(task_queue.enqueued) == 1
+
+    @pytest.mark.asyncio
+    async def test_logs_companion_attached_audit_event(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.attach_companion_and_reparse(
+            primary.evidence_id, companion.evidence_id, tenant
+        )
+        types = [e.event_type for e in audit_repo.events]
+        assert AuditEventType.EVIDENCE_COMPANION_ATTACHED in types
+
+    @pytest.mark.asyncio
+    async def test_wrong_state_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_received_evidence(evidence_repo, local_storage, tenant)
+        primary = primary.model_copy(update={"metadata": primary.metadata.model_copy(
+            update={"case_id": case_id}
+        )})
+        await evidence_repo.save(primary)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(EvidenceStateConflictError, match="expected COMPLETE or ERROR"):
+            await orchestrator.attach_companion_and_reparse(
+                primary.evidence_id, companion.evidence_id, tenant
+            )
+
+    @pytest.mark.asyncio
+    async def test_self_companion_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(ValidationError, match="own companion"):
+            await orchestrator.attach_companion_and_reparse(
+                primary.evidence_id, primary.evidence_id, tenant
+            )
+
+    @pytest.mark.asyncio
+    async def test_companion_not_found_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(ValidationError, match="Companion evidence not found"):
+            await orchestrator.attach_companion_and_reparse(
+                primary.evidence_id, uuid.uuid4(), tenant
+            )
+
+    @pytest.mark.asyncio
+    async def test_companion_in_different_case_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, uuid.uuid4())
+        companion = await _seed_complete_evidence(
+            evidence_repo, local_storage, tenant, uuid.uuid4()
+        )
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(ValidationError, match="same case"):
+            await orchestrator.attach_companion_and_reparse(
+                primary.evidence_id, companion.evidence_id, tenant
+            )
+
+    @pytest.mark.asyncio
+    async def test_companion_without_evidence_key_raises(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        case_id = uuid.uuid4()
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        companion = Evidence(
+            metadata=make_evidence_metadata(org_id=tenant.org_id, case_id=case_id),
+            state=EvidenceState.UPLOADING,
+        )
+        await evidence_repo.save(companion)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        with pytest.raises(ValidationError, match="not finished intake"):
+            await orchestrator.attach_companion_and_reparse(
+                primary.evidence_id, companion.evidence_id, tenant
+            )
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_reaches_complete_again(
+        self, evidence_repo, local_storage, audit_repo, task_queue, tenant
+    ) -> None:
+        """Full loop: COMPLETE -> attach_companion_and_reparse -> PARSING ->
+        execute_parse (simulating the re-enqueued Celery task) -> COMPLETE,
+        against the same still-promoted evidence-bucket object."""
+        case_id = uuid.uuid4()
+        primary = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        companion = await _seed_complete_evidence(evidence_repo, local_storage, tenant, case_id)
+        orchestrator = _make_orchestrator(
+            evidence_repo, local_storage, audit_repo, task_queue, _FakeCloudTrailParser()
+        )
+        await orchestrator.attach_companion_and_reparse(
+            primary.evidence_id, companion.evidence_id, tenant
+        )
+        count = await orchestrator.execute_parse(primary.evidence_id, tenant)
+        assert count == 2
+        stored = await evidence_repo.get_by_id(primary.evidence_id, tenant.org_id)
+        assert stored is not None
+        assert stored.state == EvidenceState.COMPLETE
+        assert stored.companion_evidence_id == companion.evidence_id
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,10 @@ class AuditEventType(StrEnum):
     EVIDENCE_ERROR = "evidence.error"
     EVIDENCE_LEGAL_HOLD_SET = "evidence.legal_hold_set"
     EVIDENCE_LEGAL_HOLD_CLEARED = "evidence.legal_hold_cleared"
+    # poc/volatility_vmware_companion/ -- attaching a companion file (e.g. a
+    # VMware .vmsn alongside a .vmem) and the COMPLETE -> PARSING re-entry
+    # this triggers.
+    EVIDENCE_COMPANION_ATTACHED = "evidence.companion_attached"
     # Gap Audit X1 (docs/GAP_AUDIT_2026-08-17.md, closes COMP-11): full
     # custody trail must include reads of WORM objects, not just writes --
     # logged on every real download-route access attempt.

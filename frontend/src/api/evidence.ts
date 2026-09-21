@@ -91,6 +91,20 @@ export async function retryParse(evidenceId: string): Promise<Evidence> {
   return res.data
 }
 
+// poc/volatility_vmware_companion/: links an already-uploaded evidence item
+// (e.g. a VMware .vmsn) as evidenceId's companion file and re-triggers
+// parsing. companionEvidenceId must already be a COMPLETE evidence item in
+// the same case -- this does not accept a new file upload itself.
+export async function attachCompanion(
+  evidenceId: string,
+  companionEvidenceId: string,
+): Promise<Evidence> {
+  const res = await apiClient.post<Evidence>(`/api/evidence/${evidenceId}/companion`, {
+    companionEvidenceId,
+  })
+  return res.data
+}
+
 export function filenameFromContentDisposition(headerValue: string | undefined, fallback: string): string {
   if (!headerValue) return fallback
   const match = /filename="?([^";]+)"?/i.exec(headerValue)

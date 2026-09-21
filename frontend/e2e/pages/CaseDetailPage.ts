@@ -158,6 +158,21 @@ export class CaseDetailPage extends KronosPage {
     await this.page.waitForSelector("text=Retry", { timeout: 10000 });
   }
 
+  /**
+   * Same as `openEvidenceDrawer()`, but waits on the drawer's own
+   * `role="dialog"` instead of the Retry button -- `openEvidenceDrawer()`'s
+   * wait only works for a retryable-ERROR row (`evidence.retryAction`
+   * gates that button, see EvidenceDetailDrawer.tsx); a COMPLETE row (e.g.
+   * evidence-companion-attach.spec.ts, opening the drawer to use the
+   * companion-attach UI) never renders Retry at all.
+   */
+  async openEvidenceDrawerAnyState(fileName: string): Promise<void> {
+    await this.page.locator(`tr:has-text('${fileName}')`).click();
+    await this.page.waitForSelector('[role="dialog"][aria-label="Evidence details"]', {
+      timeout: 10000,
+    });
+  }
+
   /** Clicks the real Retry button (retryAction-gated -- only rendered for a retryable ERROR). */
   async clickRetry(): Promise<void> {
     await this.page.click("button:has-text('Retry')");

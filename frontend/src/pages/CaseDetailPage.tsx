@@ -198,6 +198,7 @@ function EvidenceTab({
           onViewArtifacts(selectedEvidence.id)
           setSelectedEvidence(null)
         }}
+        otherEvidence={data?.items ?? []}
       />
     </div>
   )

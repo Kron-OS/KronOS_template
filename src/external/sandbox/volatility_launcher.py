@@ -133,14 +133,25 @@ DEFAULT_PLUGINS: tuple[str, ...] = (
 # zero Linux TimelineRecords (no regression) while a dwarf2json-ISF org
 # (most distro kernels with a debug/dbgsym package available) now gets
 # real ones.
+# `linux.malware.malfind.Malfind` and `linux.library_list.LibraryList`
+# deliberately excluded, real-measured, not guessed
+# (poc/volatility_vmware_companion/): run in ISOLATION (fresh subprocess
+# each, no cumulative shared-context memory pressure from other plugins)
+# against the same real 4GiB user-uploaded image, malfind took 304s and
+# library_list didn't even finish within a 320s budget -- both far more
+# expensive than every other plugin here (all under 90s). This is the
+# same real, measured-not-assumed reasoning `windows.consoles` was already
+# excluded from `DEFAULT_PLUGINS` for (too slow for eager, see that
+# plugin's own history) -- not a new precedent. Both remain real,
+# available options via the on-demand curated-plugin picker
+# (VolatilityOnDemandService) for an analyst who explicitly wants them and
+# can accept the real cost.
 LINUX_DEFAULT_PLUGINS: tuple[str, ...] = (
     "linux.pstree.PsTree",
     "linux.psscan.PsScan",
     "linux.pslist.PsList",
     "linux.psaux.PsAux",
     "linux.bash.Bash",
-    "linux.malware.malfind.Malfind",
-    "linux.library_list.LibraryList",
     "linux.lsof.Lsof",
     "linux.lsmod.Lsmod",
     "linux.malware.hidden_modules.Hidden_modules",

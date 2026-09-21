@@ -70,6 +70,10 @@ export interface Evidence {
   uploadedAt: string
   updatedAt: string
   rfc3161Token: string | null
+  // poc/volatility_vmware_companion/: a second, already-uploaded evidence
+  // item this one depends on (e.g. a VMware .vmsn alongside a .vmem).
+  companionEvidenceId: string | null
+  canAttachCompanion: boolean
 }
 
 export interface AuditEvent {

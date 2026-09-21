@@ -418,6 +418,122 @@ class TestRetryParseRoute:
         assert resp.status_code == 404
 
 
+class TestAttachCompanionRoute:
+    """POST /evidence/{id}/companion (poc/volatility_vmware_companion/):
+    links an already-uploaded evidence item as a companion and re-enters
+    PARSING. Reuses TestRetryParseRoute's own _finalize_to_received/
+    _wire_real_orchestrator helpers -- same app_client fixture, same
+    "override the orchestrator to use this test's local storage" idiom."""
+
+    def _finalize_and_complete(self, client, storage, evidence_repo, org_id, case_id) -> str:  # type: ignore[no-untyped-def]
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "cloudtrail.json",
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
+            },
+        )
+        evidence_id = req_resp.json()["evidenceId"]
+        object_key = req_resp.json()["objectKey"]
+        storage.write_quarantine(object_key, _JSON_CONTENT)
+        client.post(
+            f"/api/evidence/upload/finalize/{evidence_id}",
+            json={"client_sha256": _sha256(_JSON_CONTENT)},
+        )
+        ev = asyncio.run(evidence_repo.get_by_id(uuid.UUID(evidence_id), org_id))
+        assert ev is not None
+        ev2 = ev.with_state(EvidenceState.PARSING).with_state(EvidenceState.COMPLETE)
+        asyncio.run(evidence_repo.update(ev2))
+        return evidence_id
+
+    def test_attach_companion_transitions_to_parsing(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_repo = TestRetryParseRoute()._wire_real_orchestrator(  # noqa: SLF001
+            client, storage, org_id, case_id
+        )
+        primary_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+        companion_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+
+        resp = client.post(
+            f"/api/evidence/{primary_id}/companion",
+            json={"companionEvidenceId": companion_id},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["state"] == EvidenceState.PARSING.value
+        assert body["companionEvidenceId"] == companion_id
+
+    def test_wrong_state_returns_409(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_repo = TestRetryParseRoute()._wire_real_orchestrator(  # noqa: SLF001
+            client, storage, org_id, case_id
+        )
+        # RECEIVED, not COMPLETE/ERROR.
+        req_resp = client.post(
+            "/api/evidence/upload/request",
+            json={
+                "filename": "cloudtrail.json",
+                "contentType": "application/json",
+                "sizeBytes": len(_JSON_CONTENT),
+                "caseId": str(case_id),
+            },
+        )
+        primary_id = req_resp.json()["evidenceId"]
+        storage.write_quarantine(req_resp.json()["objectKey"], _JSON_CONTENT)
+        client.post(
+            f"/api/evidence/upload/finalize/{primary_id}",
+            json={"client_sha256": _sha256(_JSON_CONTENT)},
+        )
+        companion_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+
+        resp = client.post(
+            f"/api/evidence/{primary_id}/companion",
+            json={"companionEvidenceId": companion_id},
+        )
+        assert resp.status_code == 409
+
+    def test_unknown_evidence_returns_404(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_repo = TestRetryParseRoute()._wire_real_orchestrator(  # noqa: SLF001
+            client, storage, org_id, case_id
+        )
+        companion_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+
+        resp = client.post(
+            f"/api/evidence/{uuid.uuid4()}/companion",
+            json={"companionEvidenceId": companion_id},
+        )
+        assert resp.status_code == 404
+
+    def test_self_reference_returns_422(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_repo = TestRetryParseRoute()._wire_real_orchestrator(  # noqa: SLF001
+            client, storage, org_id, case_id
+        )
+        primary_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+
+        resp = client.post(
+            f"/api/evidence/{primary_id}/companion",
+            json={"companionEvidenceId": primary_id},
+        )
+        assert resp.status_code == 422
+
+    def test_companion_not_found_returns_422(self, app_client) -> None:
+        client, storage, _, org_id, case_id = app_client
+        evidence_repo = TestRetryParseRoute()._wire_real_orchestrator(  # noqa: SLF001
+            client, storage, org_id, case_id
+        )
+        primary_id = self._finalize_and_complete(client, storage, evidence_repo, org_id, case_id)
+
+        resp = client.post(
+            f"/api/evidence/{primary_id}/companion",
+            json={"companionEvidenceId": str(uuid.uuid4())},
+        )
+        assert resp.status_code == 422
+
+
 def _override_tenant_role(
     client: TestClient,
     org_id: uuid.UUID,

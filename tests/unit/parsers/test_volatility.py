@@ -21,22 +21,37 @@ real one).
 from __future__ import annotations
 
 import json
+import tempfile
+import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from src.adapter.storage.local import LocalEvidenceStorage
 from src.application.parsing import ParserType
 from src.domain.artifact import StructuredArtifact
+from src.domain.evidence import EvidenceState
 from src.domain.timeline import EvidenceProvenance, TimelineRecord
 from src.exceptions import VolatilityScanError
 from src.external.parsers import volatility as volatility_module
-from src.external.parsers.volatility import VolatilityModule, _plugin_to_kind
+from src.external.parsers.volatility import CompanionFileResolver, VolatilityModule, _plugin_to_kind
 from src.external.sandbox.volatility_launcher import (
     VolatilityMultiPluginResult,
     VolatilityPluginOutcome,
 )
+from tests.conftest import InMemoryEvidenceRepository
 from tests.fixtures.factories import make_evidence, make_tenant_context
+
+
+class _FakeSecretURL:
+    """Stands in for pydantic's SecretStr -- only .get_secret_value() is
+    used (by _run_volatility's own companion-path engine construction,
+    mirroring celery_runtime.py's _build_task_resources())."""
+
+    def get_secret_value(self) -> str:
+        return "postgresql+asyncpg://fake:fake@localhost/fake"
 
 
 class _FakeSettings:
@@ -46,6 +61,7 @@ class _FakeSettings:
     """
 
     volatility_worker_path: str | None = None
+    database_url: _FakeSecretURL = _FakeSecretURL()
     volatility_remote_isf_url: str = ""
 
 
@@ -375,6 +391,39 @@ class TestExtractArtifacts:
         for a in artifacts:
             size = len(json.dumps(a.content["rows"], default=str).encode("utf-8"))
             assert size <= 1024 or len(a.content["rows"]) == 1
+
+    def test_batching_is_linear_not_quadratic_in_row_count(self) -> None:
+        """Real, reproduced incident (poc/volatility_vmware_companion/): the
+        previous version re-serialized the entire growing batch to JSON on
+        every row (O(n^2)) -- invisible against every plugin this module
+        had ever been real-verified against (a few hundred rows), but a
+        real companion-linked linux.lsof.Lsof result (24,562 real rows)
+        turned that into a 30+ minute silent hang inside one Python loop.
+        A raw 7MiB Postgres insert of the equivalent content took 17.6ms,
+        ruling out the database -- this was purely the batching loop. This
+        test uses a real row count in that same order of magnitude and
+        asserts it completes fast; the O(n^2) version would not finish
+        this within any reasonable test timeout.
+        """
+        import time
+
+        rows = tuple({"PID": i, "COMM": "proc", "FD": i % 64} for i in range(25_000))
+        t0 = time.monotonic()
+        artifacts = list(
+            volatility_module.rows_to_artifacts(
+                rows,
+                plugin="linux.lsof.Lsof",
+                evidence=make_evidence(),
+                record_index_start=0,
+                parser_name="volatility3",
+                parser_version="2.28.0",
+            )
+        )
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 5.0, f"rows_to_artifacts took {elapsed:.1f}s for 25k rows -- O(n^2) regression"
+        recovered = [row for a in artifacts for row in a.content["rows"]]
+        assert recovered == list(rows)
 
     async def test_launcher_receives_the_configured_plugin_list(
         self, monkeypatch: pytest.MonkeyPatch
@@ -771,3 +820,216 @@ class TestPluginKindOverridesForLinux:
         assert _plugin_to_kind("linux.bash.Bash") == "volatility.bash"
         assert _plugin_to_kind("linux.lsmod.Lsmod") == "volatility.lsmod"
         assert _plugin_to_kind("linux.psaux.PsAux") == "volatility.psaux"
+
+
+# ---------------------------------------------------------------------------
+# CompanionFileResolver (poc/volatility_vmware_companion/)
+# ---------------------------------------------------------------------------
+
+
+class TestCompanionFileResolver:
+    """Real, decisive PoC result this backs: staging a VMware .vmsn next to
+    its .vmem under a matching basename took linux.pstree.PsTree/
+    linux.pslist.PsList from 0 rows to a full real process tree/344 rows on
+    the identical file (poc/volatility_vmware_companion/README.md). Mocks
+    only the two external collaborators (repository, storage) -- never the
+    domain Evidence objects -- same idiom every other parser test in this
+    codebase already follows (CLAUDE.md §B.5).
+    """
+
+    async def test_returns_none_when_no_companion(self, tmp_path: Path) -> None:
+        repo = InMemoryEvidenceRepository()
+        storage = LocalEvidenceStorage(base_dir=tmp_path)
+        resolver = CompanionFileResolver(repo, storage)
+        evidence = make_evidence(EvidenceState.COMPLETE)
+        primary_path = tmp_path / "primary.vmem"
+        primary_path.write_bytes(b"fake-vmem")
+
+        result = await resolver.stage(evidence, make_tenant_context(), primary_path)
+
+        assert result is None
+
+    async def test_stages_companion_under_matching_basename(self, tmp_path: Path) -> None:
+        repo = InMemoryEvidenceRepository()
+        storage = LocalEvidenceStorage(base_dir=tmp_path / "storage")
+        tenant = make_tenant_context()
+        companion = make_evidence(EvidenceState.COMPLETE, org_id=tenant.org_id).model_copy(
+            update={
+                "metadata": make_evidence(org_id=tenant.org_id).metadata.model_copy(
+                    update={"original_filename": "memory.vmsn"}
+                ),
+                "minio_evidence_key": "some/key/memory.vmsn",
+            }
+        )
+        storage.write_evidence("some/key/memory.vmsn", b"real-vmsn-bytes")
+        await repo.save(companion)
+        evidence = make_evidence(
+            EvidenceState.COMPLETE, org_id=tenant.org_id
+        ).with_companion(companion.evidence_id)
+        primary_dir = tmp_path / "run"
+        primary_dir.mkdir()
+        primary_path = primary_dir / "tmpABC123.vmem"
+        primary_path.write_bytes(b"fake-vmem")
+        resolver = CompanionFileResolver(repo, storage)
+
+        result = await resolver.stage(evidence, tenant, primary_path)
+
+        assert result == primary_dir / "tmpABC123.vmsn"
+        assert result.read_bytes() == b"real-vmsn-bytes"
+
+    async def test_returns_none_when_companion_not_found(self, tmp_path: Path) -> None:
+        repo = InMemoryEvidenceRepository()
+        storage = LocalEvidenceStorage(base_dir=tmp_path)
+        tenant = make_tenant_context()
+        evidence = make_evidence(EvidenceState.COMPLETE, org_id=tenant.org_id).with_companion(
+            uuid.uuid4()
+        )
+        primary_path = tmp_path / "primary.vmem"
+        primary_path.write_bytes(b"fake-vmem")
+        resolver = CompanionFileResolver(repo, storage)
+
+        result = await resolver.stage(evidence, tenant, primary_path)
+
+        assert result is None
+
+    async def test_returns_none_when_companion_has_no_evidence_key(self, tmp_path: Path) -> None:
+        """A companion that hasn't finished intake yet (no minio_evidence_key)
+        degrades to no-companion rather than raising -- consistent with this
+        module's own "one bad thing doesn't sink the evidence" precedent."""
+        repo = InMemoryEvidenceRepository()
+        storage = LocalEvidenceStorage(base_dir=tmp_path)
+        tenant = make_tenant_context()
+        companion = make_evidence(EvidenceState.UPLOADING, org_id=tenant.org_id)
+        await repo.save(companion)
+        evidence = make_evidence(EvidenceState.COMPLETE, org_id=tenant.org_id).with_companion(
+            companion.evidence_id
+        )
+        primary_path = tmp_path / "primary.vmem"
+        primary_path.write_bytes(b"fake-vmem")
+        resolver = CompanionFileResolver(repo, storage)
+
+        result = await resolver.stage(evidence, tenant, primary_path)
+
+        assert result is None
+
+
+class TestVolatilityModuleStagesCompanionBeforeLaunch:
+    """End-to-end (within VolatilityModule) proof that a linked companion is
+    physically present on disk, next to the primary temp file, by the time
+    VolatilityLauncher.run() is invoked -- the exact ordering
+    poc/volatility_vmware_companion/ proved volatility3's own automagic
+    requires."""
+
+    async def test_companion_file_exists_when_launcher_runs(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        repo = InMemoryEvidenceRepository()
+        storage = LocalEvidenceStorage(base_dir=tmp_path / "storage")
+        tenant = make_tenant_context()
+        companion = make_evidence(EvidenceState.COMPLETE, org_id=tenant.org_id).model_copy(
+            update={
+                "metadata": make_evidence(org_id=tenant.org_id).metadata.model_copy(
+                    update={"original_filename": "memory.vmsn"}
+                ),
+                "minio_evidence_key": "some/key/memory.vmsn",
+            }
+        )
+        storage.write_evidence("some/key/memory.vmsn", b"real-vmsn-bytes")
+        await repo.save(companion)
+        evidence = make_evidence(
+            EvidenceState.COMPLETE, org_id=tenant.org_id
+        ).with_companion(companion.evidence_id)
+
+        # PostgresEvidenceRepository is constructed fresh, inline, per call
+        # -- mirrors celery_runtime.py's _build_task_resources() (real,
+        # live-verified reason: get_evidence_repository() is never
+        # configured inside a Celery worker process). Patched at its
+        # source module so _run_volatility's own inline `from ... import`
+        # picks up the fake.
+        monkeypatch.setattr(
+            "src.adapter.repository.postgres_evidence.PostgresEvidenceRepository",
+            lambda _engine: repo,
+        )
+        monkeypatch.setattr(
+            "src.external.dependencies.get_evidence_storage", lambda: storage
+        )
+
+        seen: dict[str, bool] = {}
+
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("linux.pstree.PsTree", ()),))
+
+        class _CheckingLauncher(_FakeLauncher):
+            async def run(self, **kwargs: Any) -> VolatilityMultiPluginResult:
+                primary_path = Path(kwargs["evidence_path"])
+                companion_path = primary_path.with_name(primary_path.stem + ".vmsn")
+                seen["companion_exists"] = companion_path.exists()
+                seen["companion_bytes"] = (
+                    companion_path.read_bytes() if companion_path.exists() else b""
+                )
+                return await super().run(**kwargs)
+
+        monkeypatch.setattr("src.config.Settings", _FakeSettings)
+        monkeypatch.setattr(
+            "src.external.sandbox.volatility_launcher.VolatilityLauncher",
+            lambda **kw: _CheckingLauncher(result=result, os_family="linux", **kw),
+        )
+
+        parser = VolatilityModule()
+        await _drain(parser.extract_artifacts(_bytes_stream(b"fake-vmem"), evidence, tenant))
+
+        assert seen["companion_exists"] is True
+        assert seen["companion_bytes"] == b"real-vmsn-bytes"
+
+    async def test_primary_temp_file_cleaned_up_even_if_companion_staging_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Real, reproduced bug (found live inside celery-worker-plaso, not
+        guessed): the companion-staging block used to run BEFORE the
+        try/finally that deletes the primary temp file, so any exception
+        raised while staging (the real one hit: get_evidence_repository()
+        not being configured inside a Celery worker) leaked a full-size
+        (real run: 4 GiB) evidence temp file every single time. Fixed by
+        moving companion staging inside the same try/finally.
+        """
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        monkeypatch.setattr("src.config.Settings", _FakeSettings)
+
+        def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("EvidenceRepository is not configured")
+
+        monkeypatch.setattr(
+            "src.adapter.repository.postgres_evidence.PostgresEvidenceRepository", _boom
+        )
+        evidence = make_evidence(EvidenceState.COMPLETE).with_companion(uuid.uuid4())
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            await _drain(
+                VolatilityModule().extract_artifacts(
+                    _bytes_stream(b"fake-vmem"), evidence, make_tenant_context()
+                )
+            )
+
+        leftover = [p for p in tmp_path.iterdir() if p.suffix == ".vmem"]
+        assert leftover == []
+
+    async def test_no_companion_lookup_when_none_linked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The overwhelmingly common case (no companion) must never touch
+        the DI accessor or construct a companion-lookup DB engine at all --
+        proven by making them raise if called."""
+
+        def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("should not be called when there is no companion")
+
+        monkeypatch.setattr("src.external.dependencies.get_evidence_storage", _boom)
+        monkeypatch.setattr(
+            "src.adapter.repository.postgres_evidence.PostgresEvidenceRepository", _boom
+        )
+        result = VolatilityMultiPluginResult(outcomes=(_outcome("windows.pstree.PsTree", ()),))
+        _install_fake_launcher(monkeypatch, result=result)
+        parser = VolatilityModule()
+
+        await _drain(
+            parser.extract_artifacts(_bytes_stream(b"fake"), make_evidence(), make_tenant_context())
+        )

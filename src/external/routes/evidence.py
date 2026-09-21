@@ -110,6 +110,18 @@ class EvidenceOut(BaseModel):
     rfc3161Token: str | None = None
     legalHold: bool = False
     objectLockUntil: str | None = None
+    # poc/volatility_vmware_companion/ -- a second, already-uploaded evidence
+    # item this one depends on (e.g. a VMware .vmsn alongside a .vmem).
+    companionEvidenceId: uuid.UUID | None = None
+    # Whether POST /{evidence_id}/companion is currently offered — mirrors
+    # retryAction's own "server computes the gate, frontend just renders it"
+    # shape rather than the frontend re-deriving the same COMPLETE/ERROR
+    # check independently.
+    canAttachCompanion: bool = False
+
+
+class AttachCompanionIn(BaseModel):
+    companionEvidenceId: uuid.UUID
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +355,64 @@ async def retry_parse(
 
 
 @router.post(
+    "/{evidence_id}/companion",
+    response_model=EvidenceOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def attach_companion(
+    evidence_id: uuid.UUID,
+    body: AttachCompanionIn,
+    tenant: Annotated[
+        TenantContext, Depends(requires_role(Role.ORG_ADMIN, Role.CASE_LEAD, Role.ANALYST))
+    ],
+    orchestrator: Annotated[
+        ParsingOrchestrationService, Depends(get_parsing_orchestration_service)
+    ],
+    evidence_repo: Annotated[EvidenceRepository, Depends(get_evidence_repository)],
+) -> EvidenceOut:
+    """Link an already-uploaded evidence item as this one's companion file
+    and re-enter PARSING (poc/volatility_vmware_companion/).
+
+    Real use case: a VMware .vmem image already reached COMPLETE without
+    a .vmsn/.vmss companion co-located, so every plugin needing correct
+    address translation returned zero rows. The companion is an ordinary
+    evidence item already uploaded to the same case -- this route only
+    records the relationship and re-triggers parsing, it does not accept
+    a second file upload itself.
+
+    409 for the wrong FSM state (same "route pre-checks, service re-checks"
+    split retry-intake/retry-parse already use) — 422 is reserved for the
+    companion relationship itself being invalid (not found, different case,
+    self-reference, not yet intake-complete).
+    """
+    evidence = await evidence_repo.get_by_id(evidence_id, tenant.org_id)
+    if evidence is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+    if evidence.state not in (EvidenceState.COMPLETE, EvidenceState.ERROR):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Evidence is in state {evidence.state.value}, expected COMPLETE or ERROR",
+        )
+
+    try:
+        evidence = await orchestrator.attach_companion_and_reparse(
+            evidence_id=evidence_id,
+            companion_evidence_id=body.companionEvidenceId,
+            tenant=tenant,
+        )
+    except (ValidationError, ParsingError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except KronOSException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    return to_evidence_out(evidence)
+
+
+@router.post(
     "/parse/start/{evidence_id}",
     response_model=EvidenceOut,
     status_code=status.HTTP_202_ACCEPTED,
@@ -514,6 +584,13 @@ def _retry_action_for(ev: Evidence) -> str | None:
     return "parse" if is_parse_stage_error_reason(ev.error_reason) else "intake"
 
 
+def _can_attach_companion(ev: Evidence) -> bool:
+    """Mirrors ParsingOrchestrationService.attach_companion_and_reparse's own
+    state gate exactly — COMPLETE or ERROR, same states retry_parse already
+    treats as "safe to re-enter PARSING from"."""
+    return ev.state in (EvidenceState.COMPLETE, EvidenceState.ERROR)
+
+
 def to_evidence_out(ev: Evidence) -> EvidenceOut:
     """Serialize an Evidence domain entity to the shared API DTO.
 
@@ -540,4 +617,6 @@ def to_evidence_out(ev: Evidence) -> EvidenceOut:
         rfc3161Token=ev.rfc3161_token.hex() if ev.rfc3161_token else None,
         legalHold=ev.legal_hold,
         objectLockUntil=ev.object_lock_until.isoformat() if ev.object_lock_until else None,
+        companionEvidenceId=ev.companion_evidence_id,
+        canAttachCompanion=_can_attach_companion(ev),
     )

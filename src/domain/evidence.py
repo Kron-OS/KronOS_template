@@ -25,7 +25,16 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "HASHING": {"RECEIVED", "ERROR", "PURGED"},
     "RECEIVED": {"PARSING", "ERROR", "PURGED"},
     "PARSING": {"COMPLETE", "ERROR", "PURGED"},
-    "COMPLETE": {"PURGED"},
+    # COMPLETE -> PARSING (added for the companion-file feature,
+    # poc/volatility_vmware_companion/): re-entering PARSING after a
+    # *successful* completion is a real, deliberate case, not a bug --
+    # attaching a companion file (e.g. a VMware .vmsn alongside a .vmem
+    # that already parsed to COMPLETE with zero usable rows) means the
+    # exact same object should be re-parsed with new information, not
+    # treated as an error recovery. Only ParsingOrchestrationService.
+    # attach_companion_and_reparse() ever performs this transition --
+    # never a bare retry of an already-successful parse for its own sake.
+    "COMPLETE": {"PARSING", "PURGED"},
     # SCANNING and PARSING are legitimate re-entry points, not just terminal
     # dead ends: POST /evidence/{id}/retry-intake re-runs process_intake from
     # ERROR for a retryable intake-stage reason (is_retryable_error_reason),
@@ -165,6 +174,17 @@ class Evidence(BaseModel):
     quota_held: bool = False
     # RFC 3161 TSA-signed timestamp of `sha256`, stored as raw DER TimeStampToken bytes.
     rfc3161_token: bytes | None = None
+    # A second, already-uploaded evidence item this one depends on to be
+    # correctly interpreted -- e.g. a VMware .vmsn/.vmss alongside a .vmem
+    # (poc/volatility_vmware_companion/: volatility3's own VmwareStacker
+    # only finds a companion via same-directory/same-basename filesystem
+    # adjacency, never a flag/API, so a parser that needs one must download
+    # and stage it itself -- see VolatilityModule's CompanionFileResolver).
+    # Deliberately generic (not VMware-specific): any parser could use this
+    # same relationship for its own multi-file format in the future without
+    # a domain-model change. None (the default) means "no companion,"
+    # true for every existing evidence item and every non-VMware format.
+    companion_evidence_id: uuid.UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -254,6 +274,14 @@ class Evidence(BaseModel):
     def with_rfc3161_token(self, token: bytes) -> Evidence:
         """Return a copy with the RFC 3161 TSA timestamp token attached."""
         return self.model_copy(update={"rfc3161_token": token, "updated_at": datetime.now(UTC)})
+
+    def with_companion(self, companion_evidence_id: uuid.UUID) -> Evidence:
+        """Return a copy linking *companion_evidence_id* as this evidence's
+        companion file (no state change — ParsingOrchestrationService pairs
+        this with with_state(PARSING) in the same mutation)."""
+        return self.model_copy(
+            update={"companion_evidence_id": companion_evidence_id, "updated_at": datetime.now(UTC)}
+        )
 
     def with_purge(self) -> Evidence:
         """Transition to PURGED — the terminal soft-delete state.

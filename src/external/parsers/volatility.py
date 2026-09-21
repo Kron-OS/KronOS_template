@@ -150,6 +150,8 @@ from src.exceptions import VolatilityScanError
 from src.external.sandbox.volatility_launcher import DEFAULT_PLUGINS, LINUX_DEFAULT_PLUGINS
 
 if TYPE_CHECKING:
+    from src.adapter.repository.evidence import EvidenceRepository
+    from src.adapter.storage.storage import EvidenceStorage
     from src.external.sandbox.volatility_launcher import (
         VolatilityMultiPluginResult,
     )
@@ -198,7 +200,14 @@ _ROW_FIELD_NAMES: dict[str, tuple[str, str]] = {
 }
 _DEFAULT_ROW_FIELD_NAMES = ("CreateTime", "ImageFileName")
 
-_DEFAULT_TIMEOUT_SECONDS = 600
+# Real, reproduced incident (poc/volatility_vmware_companion/), raised
+# twice on real measurement, see celery_app.py's kronos.parse_artefact_heavy
+# for the full account of both incidents this tracks. Kept comfortably
+# under that task's own soft_time_limit (2400s) so a genuine timeout raises
+# here first as a catchable VolatilityScanError (see _run_volatility's own
+# try/except) rather than only ever being caught by Celery's own hard
+# SIGKILL, which bypasses this class's cleanup entirely.
+_DEFAULT_TIMEOUT_SECONDS = 2200
 
 # The real, pinned external tool version (see
 # poc/volatility_memory_module/README.md) -- a module constant (not just a
@@ -234,6 +243,83 @@ _PLUGIN_KIND_OVERRIDES: dict[str, str] = {
     # collapse on its own (see the Windows entry above, added first).
     "linux.malware.malfind.Malfind": "volatility.malfind",
 }
+
+
+class CompanionFileResolver:
+    """Downloads and stages an evidence item's companion file next to its
+    primary temp file, under a matching basename -- the one thing
+    volatility3's own ``VmwareStacker`` requires to find a VMware
+    ``.vmsn``/``.vmss`` alongside a ``.vmem`` (poc/volatility_vmware_companion/,
+    ``volatility3/framework/layers/vmware.py``: ``vmss = location[:-5] +
+    ".vmss"`` -- same-directory, same-basename filesystem adjacency, no
+    flag or API exists to point volatility3 at a companion living
+    elsewhere). Single responsibility, independently unit-testable with a
+    fake repository/storage -- this is the one class that knows how to turn
+    ``Evidence.companion_evidence_id`` into real bytes on disk; everything
+    else about the companion relationship (attaching it, gating the FSM
+    re-entry) lives in ``ParsingOrchestrationService``, not here.
+
+    Not registered anywhere by name -- constructed inline by
+    ``VolatilityModule._run_volatility()`` the same way that method already
+    constructs ``Settings()`` inline rather than through
+    ``get_parser_registry()`` (which has no per-request DI seam of its own).
+    Deliberately generic: nothing here mentions VMware or Volatility by name
+    in its public contract, so a future parser with its own multi-file
+    format need not invent a second resolver.
+    """
+
+    def __init__(
+        self, evidence_repository: EvidenceRepository, evidence_storage: EvidenceStorage
+    ) -> None:
+        self._repo = evidence_repository
+        self._storage = evidence_storage
+
+    async def stage(
+        self,
+        evidence: Evidence,
+        tenant: TenantContext,
+        primary_path: Path,
+    ) -> Path | None:
+        """If *evidence* has a companion, download it and write it next to
+        *primary_path* under a matching basename (same stem, companion's own
+        real extension). Returns the companion's real path, or ``None`` if
+        there is no companion (the common case, every non-VMware format) or
+        the companion can't actually be resolved -- logged, never raised,
+        matching this module's own "one bad thing doesn't sink the evidence"
+        precedent: a broken companion link degrades to the pre-companion
+        behavior, it never fails the whole scan.
+        """
+        if evidence.companion_evidence_id is None:
+            return None
+
+        companion = await self._repo.get_by_id(evidence.companion_evidence_id, tenant.org_id)
+        if companion is None or not companion.minio_evidence_key:
+            logger.warning(
+                "volatility_companion_unresolvable",
+                extra={
+                    "evidence_id": str(evidence.evidence_id),
+                    "companion_evidence_id": str(evidence.companion_evidence_id),
+                },
+            )
+            return None
+
+        companion_suffix = Path(companion.metadata.original_filename).suffix
+        companion_path = primary_path.with_name(primary_path.stem + companion_suffix)
+
+        stream = await self._storage.stream_object(companion.minio_evidence_key, bucket="evidence")
+        with companion_path.open("wb") as f:
+            async for chunk in stream:
+                f.write(chunk)
+
+        logger.info(
+            "volatility_companion_staged",
+            extra={
+                "evidence_id": str(evidence.evidence_id),
+                "companion_evidence_id": str(companion.evidence_id),
+                "companion_path": str(companion_path),
+            },
+        )
+        return companion_path
 
 
 class VolatilityModule(ForensicParser):
@@ -294,7 +380,7 @@ class VolatilityModule(ForensicParser):
         design and why this is the ONE place the scan actually runs (cached
         for ``extract_artifacts()`` via ``_cached_scan_result``).
         """
-        result = await self._run_volatility(stream, evidence)
+        result = await self._run_volatility(stream, evidence, tenant)
         _cached_scan_result.set(result)
         if result is None:
             return
@@ -334,7 +420,7 @@ class VolatilityModule(ForensicParser):
             _cached_scan_result.set(None)  # consume-once: never reused stale
             result = cached
         else:
-            maybe_result = await self._run_volatility(stream, evidence)
+            maybe_result = await self._run_volatility(stream, evidence, tenant)
             if maybe_result is None:
                 return
             result = maybe_result
@@ -386,7 +472,7 @@ class VolatilityModule(ForensicParser):
     # ------------------------------------------------------------------
 
     async def _run_volatility(
-        self, stream: AsyncIterator[bytes], evidence: Evidence
+        self, stream: AsyncIterator[bytes], evidence: Evidence, tenant: TenantContext
     ) -> VolatilityMultiPluginResult | None:
         """Write the memory image to a temp file and run the full,
         real multi-plugin volatility3 scan once.
@@ -423,7 +509,77 @@ class VolatilityModule(ForensicParser):
             Path(settings.volatility_worker_path) if settings.volatility_worker_path else None
         )
 
+        # poc/volatility_vmware_companion/: a VMware .vmem needs its
+        # .vmsn/.vmss co-located under a matching basename before automagic
+        # runs -- must happen before detect_os_family/launcher.run below,
+        # not after, since both read this same tmp_path. Real, decisive
+        # PoC result: linux.pstree.PsTree/linux.pslist.PsList went from 0
+        # rows to a full real process tree/344 rows on the identical file
+        # once staged this way. Guarded on companion_evidence_id being set
+        # so the overwhelmingly common no-companion case never touches any
+        # of this at all -- keeps every existing test unaffected.
+        #
+        # Real, live-verified finding (not the design originally assumed):
+        # get_evidence_repository() -- unlike get_evidence_storage() --
+        # is NEVER configured inside a Celery worker process.
+        # celery_runtime.py's own module docstring explains why:
+        # wire_dependencies_sync() (worker_init) deliberately leaves the
+        # Postgres repositories unconfigured as process singletons, and
+        # each task instead builds a fresh, event-loop-scoped
+        # PostgresEvidenceRepository over a fresh NullPool engine inside
+        # _build_task_resources() -- reusing a pooled asyncpg connection
+        # across a different asyncio.run() event loop is a real, documented
+        # bug class this codebase already engineered around once. Calling
+        # get_evidence_repository() here raised a real RuntimeError
+        # ("EvidenceRepository is not configured") the first time this ran
+        # for real inside celery-worker-plaso. Mirrors
+        # _build_task_resources()'s own fresh-engine-per-task pattern
+        # exactly, not a new one -- disposed in the same finally block that
+        # cleans up the temp files, since it's scoped to this one call.
+        # Both declared before the try below, and both cleanup steps live in
+        # that same try's finally -- a real bug found and fixed while
+        # verifying this against the real dev stack: the companion-staging
+        # block used to run BEFORE this try/finally, so an exception raised
+        # while staging the companion (a real one hit live: the
+        # get_evidence_repository() design this replaced didn't work inside
+        # a Celery worker, see below) leaked the primary temp file (tmp_path)
+        # entirely -- the finally that deletes it was never reached at all.
+        companion_path: Path | None = None
+        companion_engine = None
         try:
+            if evidence.companion_evidence_id is not None:
+                from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+                from sqlalchemy.pool import NullPool  # noqa: PLC0415
+
+                from src.adapter.repository.postgres_evidence import (  # noqa: PLC0415
+                    PostgresEvidenceRepository,
+                )
+                from src.external.dependencies import get_evidence_storage  # noqa: PLC0415
+
+                # Real, live-verified finding (not the design originally
+                # assumed): get_evidence_repository() -- unlike
+                # get_evidence_storage() -- is NEVER configured inside a
+                # Celery worker process. celery_runtime.py's own module
+                # docstring explains why: wire_dependencies_sync()
+                # (worker_init) deliberately leaves the Postgres
+                # repositories unconfigured as process singletons, and each
+                # task instead builds a fresh, event-loop-scoped
+                # PostgresEvidenceRepository over a fresh NullPool engine
+                # inside _build_task_resources() -- reusing a pooled asyncpg
+                # connection across a different asyncio.run() event loop is
+                # a real, documented bug class this codebase already
+                # engineered around once. Calling get_evidence_repository()
+                # here raised a real RuntimeError ("EvidenceRepository is
+                # not configured") the first time this ran for real inside
+                # celery-worker-plaso. Mirrors _build_task_resources()'s own
+                # fresh-engine-per-task pattern exactly, not a new one.
+                companion_engine = create_async_engine(
+                    settings.database_url.get_secret_value(), poolclass=NullPool
+                )
+                companion_repo = PostgresEvidenceRepository(companion_engine)
+                resolver = CompanionFileResolver(companion_repo, get_evidence_storage())
+                companion_path = await resolver.stage(evidence, tenant, Path(tmp_path))
+
             launcher = VolatilityLauncher(
                 worker_path=worker_path,
                 timeout_seconds=self._timeout_seconds,
@@ -451,6 +607,10 @@ class VolatilityModule(ForensicParser):
                 return None
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+            if companion_path is not None:
+                companion_path.unlink(missing_ok=True)
+            if companion_engine is not None:
+                await companion_engine.dispose()
 
 
 def _timeline_rows(
@@ -550,19 +710,37 @@ def rows_to_artifacts(
         )
         return
 
+    # Real, reproduced incident (poc/volatility_vmware_companion/): the
+    # previous version re-serialized the ENTIRE growing `batch` to JSON on
+    # every row to measure its size -- an O(n^2) cost that was invisible
+    # against every plugin this module was ever real-verified against
+    # before (a few hundred rows at most), but a real companion-linked
+    # linux.lsof.Lsof result (24,562 real rows, correctly recovered only
+    # because the companion fix made lsof's underlying data walkable at
+    # all) turned that into a genuine 30+ minute silent hang inside one
+    # Python loop with no intermediate logging -- confirmed live: a real,
+    # full-size 7MiB Postgres JSONB insert of the exact same content took
+    # 17.6ms, ruling out the database. Fixed by computing each row's own
+    # serialized size exactly once and keeping a running total instead of
+    # re-serializing the whole batch -- O(n), not O(n^2). The `+1` per row
+    # approximates the JSON array's own comma separators; this cap was
+    # always a soft engineering boundary (splitting artifacts, not a byte-
+    # exact contract), so the small, constant per-row undercount is fine.
     batch: list[dict[str, Any]] = []
+    batch_bytes = 2  # "[" + "]"
     index = record_index_start
     for row in rows:
-        candidate = [*batch, row]
-        size = len(json.dumps(candidate, default=str).encode("utf-8"))
-        if size > _MAX_ROWS_CONTENT_BYTES and batch:
+        row_bytes = len(json.dumps(row, default=str).encode("utf-8")) + 1
+        if batch and batch_bytes + row_bytes > _MAX_ROWS_CONTENT_BYTES:
             yield _build_artifact(
                 tuple(batch), kind, plugin, evidence, parser_name, parser_version, index
             )
             index += 1
             batch = [row]
+            batch_bytes = 2 + row_bytes
         else:
-            batch = candidate
+            batch.append(row)
+            batch_bytes += row_bytes
     if batch:
         yield _build_artifact(
             tuple(batch), kind, plugin, evidence, parser_name, parser_version, index

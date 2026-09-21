@@ -50,10 +50,22 @@ class TestEvidenceStateFSM:
         with pytest.raises(EvidenceStateError):
             ev.with_state(EvidenceState.COMPLETE)
 
-    def test_complete_is_terminal(self) -> None:
+    def test_complete_to_parsing_for_companion_reparse(self) -> None:
+        """COMPLETE -> PARSING is a real, deliberate re-entry point (added
+        for the companion-file feature, poc/volatility_vmware_companion/) —
+        not a bug. Only ParsingOrchestrationService.attach_companion_and_reparse()
+        performs it in practice, but the FSM itself allows it unconditionally,
+        same as every other transition."""
+        ev = make_evidence(EvidenceState.COMPLETE)
+        ev2 = ev.with_state(EvidenceState.PARSING)
+        assert ev2.state == EvidenceState.PARSING
+
+    def test_complete_to_scanning_is_invalid(self) -> None:
+        """COMPLETE only ever re-enters via PARSING (companion reparse) or
+        terminates via PURGED — every other target is still invalid."""
         ev = make_evidence(EvidenceState.COMPLETE)
         with pytest.raises(EvidenceStateError):
-            ev.with_state(EvidenceState.PARSING)
+            ev.with_state(EvidenceState.SCANNING)
 
     def test_error_from_scanning(self) -> None:
         ev = make_evidence(EvidenceState.SCANNING)
@@ -172,6 +184,16 @@ class TestEvidenceModel:
         ev2 = ev.with_keys("quarantine/key", "evidence/key")
         assert ev2.minio_quarantine_key == "quarantine/key"
         assert ev2.minio_evidence_key == "evidence/key"
+
+    def test_with_companion(self) -> None:
+        ev = make_evidence()
+        companion_id = uuid.uuid4()
+        ev2 = ev.with_companion(companion_id)
+        assert ev2.companion_evidence_id == companion_id
+        assert ev.companion_evidence_id is None  # original unchanged
+
+    def test_companion_defaults_to_none(self) -> None:
+        assert make_evidence().companion_evidence_id is None
 
     def test_evidence_id_generated(self) -> None:
         ev = make_evidence()

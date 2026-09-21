@@ -42,3 +42,10 @@ scripts/dev_autoresume/.state/
 # reproduces the same versions everywhere) -- only the tarballs themselves
 # are ignored.
 charts/kronos/charts/*.tgz
+
+# Real memory-forensics samples (poc/volatility_vmware_companion/,
+# poc/volatility_multiplugin/, etc.) -- multi-GB real evidence bytes kept
+# locally for fast repeated PoC iteration, never committed. Every real
+# sample this repo's Volatility PoCs reference (cridex.vmem, the real
+# user-uploaded .vmem/.vmsn pair) lives under poc/*/samples/.
+poc/*/samples/
