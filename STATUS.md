@@ -93,6 +93,112 @@ KASLR/DTB-shift calculation for the walk-based plugins specifically. Not
 investigated further; a separate, real gap, tracked below, not silently
 folded into "fixed."
 
+### Volatility companion-file (.vmss/.vmsn) support — built 2026-09-20
+Closes the gap above: a VMware `.vmem` can now be linked to an
+already-uploaded `.vmsn`/`.vmss` evidence item and re-parsed with it
+staged correctly, recovering the walk-based-plugin rows the remote-ISF
+fix alone could not. New: `Evidence.companion_evidence_id` (nullable,
+generic, not VMware-specific — domain layer, migration
+`a1f4c9e2b6d7_add_evidence_companion_evidence_id`, applied to the real
+dev Postgres, confirmed via `alembic current` and a direct `\d evidence`
+check), `Evidence` FSM gains `COMPLETE → PARSING` as a real, deliberate
+re-entry point (only reachable via the new service method, never a bare
+retry), `ParsingOrchestrationService.attach_companion_and_reparse()`,
+`POST /api/evidence/{id}/companion`, and `VolatilityModule`'s new
+`CompanionFileResolver` (downloads the companion, stages it next to the
+primary temp file under a matching basename — the exact filesystem
+adjacency volatility3's own `VmwareStacker` requires, confirmed by
+reading `volatility3/framework/layers/vmware.py` directly). Frontend:
+`EvidenceDetailDrawer` gained an "Attach companion file" picker (offered
+whenever `canAttachCompanion` — COMPLETE or ERROR — and other evidence
+exists in the case) and a "Companion file" display row once linked.
+Real, decisive verification, not assumed, per `CLAUDE.md` §F/§G.5, in
+layers:
+- **Plugin level**: `poc/volatility_vmware_companion/README.md` — the
+  project owner's own real `memory.vmsn` staged correctly alongside the
+  same 4GB `memory.vmem` from the remote-ISF fix above.
+  `linux.pstree.PsTree` went from 0 rows to a full real process tree;
+  `linux.pslist.PsList` went from 0 rows to 344 real rows with real
+  `CREATION TIME` values (this ISF is `dwarf2json`-built, so this also
+  unlocks real dual-emitted `TimelineRecord`s for this specific image).
+  Also surfaced and fixed two real bugs found only by running this for
+  real inside `celery-worker-plaso`: `get_evidence_repository()` is never
+  configured inside a Celery worker process (mirrors
+  `_build_task_resources()`'s own fresh-engine-per-task pattern instead),
+  and the companion-staging step used to run outside the primary temp
+  file's own `try`/`finally`, leaking it on a staging exception.
+- **Backend**: full unit suite (2088 tests) and the companion-specific
+  domain/orchestration/route/parser tests (164 tests) pass; the migration
+  is live-applied to the real dev Postgres (not just `alembic upgrade
+  --sql`).
+- **End-to-end, real browser**: `frontend/e2e/evidence-companion-attach.spec.ts`
+  (new) — real Keycloak login, uploads two small real fixtures
+  (`apache_access.log`, `linux_auth.log`) rather than the 4GB image
+  (avoids the real OOM risk the plugin-level PoC found — see its "OOM
+  risk" section — while exercising the identical generic route/
+  service/FSM/audit path), attaches one as the other's companion through
+  the real UI, confirms the real server-side reparse via a fresh
+  independent GET (not the transient UI state text — apache log parsing
+  is fast enough to legitimately skip past the intermediate `Parsing`
+  render between two 500ms polls), and confirms the drawer shows the
+  linked companion filename afterward. Run live twice, both green
+  (~45s and ~40s). `frontend/e2e/pages/CaseDetailPage.ts` gained
+  `openEvidenceDrawerAnyState()` alongside this — the existing
+  `openEvidenceDrawer()` waits on the Retry button, which only renders
+  for a retryable ERROR row, not a COMPLETE one.
+- **Frontend unit**: `EvidenceDetailDrawer.test.tsx`'s new
+  companion-attach describe block (7 tests) passes; `tsc -b --noEmit` and
+  the full `vitest run` suite (143 tests) are both clean.
+
+Not yet done: no coverage of `canAttachCompanion` being offered from an
+ERROR (not COMPLETE) row specifically — same underlying gate and service
+method, judged low-risk, not a gap worth naming further.
+
+**Two further real bugs found and fixed running the real 4GB companion
+pair through the actual production Celery pipeline (beyond the two named
+above), plus full end-to-end success — 2026-09-20/21:**
+- **Two Linux plugins are pathologically slow on real data.** Real,
+  isolated per-plugin timing (fresh subprocess each, no cumulative
+  memory pressure from other plugins) against the real 4GB image:
+  `linux.malware.malfind.Malfind` took 304s; `linux.library_list.LibraryList`
+  didn't finish within a 320s budget at all. Both removed from
+  `LINUX_DEFAULT_PLUGINS` — same real, measured reasoning `windows.consoles`
+  was already excluded from `DEFAULT_PLUGINS` for. Both remain available
+  via the on-demand curated-plugin picker.
+- **The real root cause of persistent "still doesn't finish" failures:
+  an O(n²) artifact-batching bug**, not Volatility itself. Even after
+  removing the two slow plugins, a real run still hit
+  `SoftTimeLimitExceeded` — but the scan itself now completed in ~7
+  minutes. Process-of-elimination timing (a real 7MiB Postgres JSONB
+  insert of the exact production content took 17.6ms, ruling out the
+  database) found `rows_to_artifacts()`'s batching loop re-serialized
+  the *entire growing batch* to JSON on every row to measure its size —
+  O(n²) overall, invisible against every plugin this module had ever
+  been verified against before (a few hundred rows), but a real
+  companion-linked `linux.lsof.Lsof` result correctly recovered 24,562
+  real rows (only possible *because* the companion fix works), turning
+  the quadratic cost into a 30+ minute silent hang inside one Python
+  loop with zero intermediate logging. Fixed to O(n) (compute each row's
+  own size once, keep a running total). Regression test:
+  `test_batching_is_linear_not_quadratic_in_row_count` (25,000 rows,
+  asserts under 5s — the old code would not finish within any reasonable
+  test timeout).
+- `kronos.parse_artefact_heavy`'s Celery time limits and
+  `VolatilityModule`'s own internal timeout raised to a realistic budget
+  for genuine forensic tooling processing genuine large datasets
+  (bounded, not infinite) — see `celery_app.py`'s own comment for the
+  two real incidents this tracks.
+- **Final, complete, real, end-to-end success**: with all four fixes
+  applied, the real production task succeeded in 513s against the real
+  4GB `.vmem` + `.vmsn` pair — evidence reached `COMPLETE`, `parse()`
+  dual-emitted 344 real `TimelineRecord`s, and `extract_artifacts()`
+  persisted real, correct `StructuredArtifact`s for every plugin in the
+  trimmed eager set (`pstree`, `psscan` 1493 rows, `pslist` 344, `psaux`
+  344, `bash` 28, `lsof` 24,562 rows split across multiple 7MiB-capped
+  artifacts, `lsmod`, `hidden_modules`). Full account, including the
+  per-plugin timing table and a real Celery-retry race condition also
+  found along the way, in `poc/volatility_vmware_companion/README.md`.
+
 ### Timeline & search
 OpenSearch, ECS + `kronos.*` schema, per-case-per-month index rollover
 under ISM. Dashboards field discovery verified live against real Plaso
@@ -281,35 +387,10 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   will see this one plugin fail while the other 8 in the Linux eager set
   succeed normally (same "one bad plugin doesn't sink the run" handling
   every other multi-plugin outcome already gets). Not urgent, named.
-- **A bare `.vmem` with no co-located `.vmss`/`.vmsn` leaves most
-  linked-list-walk Linux plugins returning zero rows even with symbols
-  correctly resolved — and there is no way today to actually supply the
-  companion file.** Real, observed against a real user-uploaded 4GB
-  Ubuntu image (`poc/volatility_remote_isf/README.md`): after fixing
-  remote ISF lookup (above), automagic resolved the kernel for every
-  plugin, but `pstree`/`pslist`/`psaux`/`bash`/`malfind`/`library_list`/
-  `lsof`/`lsmod` still returned 0 real rows while pool-scan-based
-  `psscan` recovered 1493 rows from the identical file — both plugin
-  families need the same resolved symbols, so this isn't a second
-  symbol-resolution failure. volatility3 itself warns live that a
-  metadata-carrying `.vmss`/`.vmsn` companion may be required alongside a
-  bare `.vmem`, which plausibly affects KASLR/DTB-shift calculation used
-  by the walk-based plugins specifically. **Confirmed real, not just
-  theoretical**: the user re-uploaded both `memory.vmem` and its real
-  `memory.vmsn` to the same case as two separate evidence items — both
-  completed real parses, but the results were byte-identical to the
-  `.vmem`-only run (same 0 rows for every walk-based plugin), because
-  `VolatilityModule` has no mechanism to associate one evidence item with
-  another; each writes only its own bytes to its own temp file.
-  volatility3's own companion-file detection only works when both files
-  sit in the same directory under the same basename — confirmed by
-  reading `archive.py`'s own container-recursion code that even zipping
-  the two together wouldn't help (members are extracted and dispatched to
-  a sub-parser one at a time, never co-resident on disk). A real
-  companion-file feature (associate a second upload with an existing
-  memory-forensics evidence item; `VolatilityModule` downloads and stages
-  both under matching basenames before invoking the worker) does not
-  exist yet — real, scoped follow-up work, not attempted in this pass.
+- ~~A bare `.vmem` with no co-located `.vmss`/`.vmsn` leaves most
+  linked-list-walk Linux plugins returning zero rows~~ — **fixed
+  2026-09-20**, see "Volatility companion-file (.vmss/.vmsn) support" in
+  §1 above. No longer a gap.
 - **Linux memory images only dual-emit `TimelineRecord`s when the image's
   ISF was built by `dwarf2json` — a `btf2json`-built ISF still gets none.**
   No longer a flat "not built" gap (fixed 2026-09-20, see `DECISIONS.md`'s

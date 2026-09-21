@@ -565,3 +565,148 @@ and stage both under matching basenames before invoking the worker) is
 real, separate, scoped work -- left as a named follow-up, not attempted
 speculatively before confirming the underlying assumption with the real
 files in hand.
+**Superseded:** by the entry immediately below (same day, later session)
+— the real `.vmsn` was used to build and verify the feature this entry
+scoped but did not attempt.
+
+## Volatility / memory forensics (2026-09-20, continued further)
+
+### Companion-file (.vmss/.vmsn) feature implemented, using the project owner's real `.vmsn`
+**Date:** 2026-09-20
+**Decision:** built the companion-file feature scoped (not attempted) by
+the entry immediately above: `Evidence.companion_evidence_id` (nullable,
+deliberately generic — not VMware-specific, any future multi-file format
+could reuse it), migration `a1f4c9e2b6d7`, `Evidence` FSM gaining
+`COMPLETE → PARSING` as a real, deliberate re-entry point (gated to only
+`ParsingOrchestrationService.attach_companion_and_reparse()`, never a
+bare retry), `POST /api/evidence/{id}/companion`, and
+`VolatilityModule.CompanionFileResolver` (downloads the companion,
+stages it next to the primary temp file under a matching basename —
+the exact filesystem adjacency `volatility3.framework.layers.vmware
+.VmwareStacker.stack()` requires, read directly from its source rather
+than assumed). Frontend: `EvidenceDetailDrawer` gained an attach-picker
+and a linked-companion display row.
+**Why now, not still blocked:** the scoping entry above named two ways
+forward — a real VMware-produced pair, or an explicit call that
+unit-test-level verification was an acceptable bar. The project owner
+had already supplied their own real `.vmsn` for the exact `.vmem` under
+investigation (uploaded as a second evidence item, per the entry two
+above this one), removing the blocker outright — no VMware tooling
+install was needed, the real pair already existed in the dev stack's own
+Postgres/MinIO. `poc/volatility_vmware_companion/README.md` used it to
+verify the mechanism directly against the real worker function before
+any `src/` code was written (`CLAUDE.md` §F/§G.5): `linux.pstree.PsTree`
+went from 0 rows to a full real process tree, `linux.pslist.PsList` from
+0 to 344 real rows, on the identical file the remote-ISF fix alone could
+not recover. That same real run surfaced and fixed two further real bugs
+before `src/` code was written: `get_evidence_repository()` is never
+configured inside a Celery worker process (`celery_runtime.py`
+deliberately leaves Postgres repositories unconfigured as process
+singletons — mirrored `_build_task_resources()`'s own
+fresh-engine-per-task pattern instead of assuming the DI container would
+just work), and an early draft ran the companion-staging step outside
+the primary temp file's own `try`/`finally`, leaking it on a staging
+exception.
+**Verification, layered, not just "tests pass":** full backend unit
+suite (2088 tests) and the companion-specific tests (164) pass; the
+migration is live-applied to the real dev Postgres (confirmed via
+`alembic current` and `\d evidence`, not assumed from the migration file
+alone); a new real-browser spec
+(`frontend/e2e/evidence-companion-attach.spec.ts`) exercises the full
+route → service → FSM → audit → real Celery reparse → UI path live
+against the dev stack using two small real fixtures rather than the 4GB
+image (avoids the real OOM risk `poc/volatility_vmware_companion/README.md`
+found running the full curated Linux plugin set against a 4GB image on
+this host's 7.1GB RAM) — run live twice, both green. Ground truth for
+the reparse completing is a fresh independent GET, not the transient UI
+state text: apache log parsing is fast enough to legitimately complete
+between two of `pollLiveText`'s own 500ms polls, so the intermediate
+`Parsing` render can never be observed in the DOM even though the
+server-side re-entry is real — this is the same class of race the
+suite's existing seed-guard machinery already exists to work around, not
+a new problem. `frontend/e2e/pages/CaseDetailPage.ts` gained
+`openEvidenceDrawerAnyState()` because the existing `openEvidenceDrawer()`
+waits on the Retry button, which `EvidenceDetailDrawer.tsx` only renders
+for a retryable ERROR row — every prior caller only ever opened the
+drawer on an ERROR row, so this gap in the page object was never hit
+before a COMPLETE-row caller (this spec) needed it.
+**What this does not cover:** `canAttachCompanion` being offered from an
+ERROR (not COMPLETE) row specifically has no dedicated E2E coverage —
+same underlying gate and service method as the COMPLETE case this spec
+does cover, judged low-risk enough not to need a second full spec.
+
+## Volatility / memory forensics (2026-09-21, continued)
+
+### Removed two pathologically slow Linux plugins from the eager set, real-measured not guessed
+**Date:** 2026-09-21
+**Decision:** `linux.malware.malfind.Malfind` and `linux.library_list.LibraryList`
+removed from `LINUX_DEFAULT_PLUGINS`.
+**Why:** real, isolated per-plugin timing against the real 4GB companion-linked
+image (fresh subprocess per plugin, no cumulative shared-context memory
+pressure from other plugins) measured `malfind` at 304s and `library_list`
+not finishing within a 320s budget at all -- both far more expensive than
+every other plugin in the set (all under 90s). Same real, measured
+reasoning `windows.consoles` was already excluded from the Windows eager
+set for -- not a new precedent. Both remain real, available options via
+the on-demand curated-plugin picker (`VolatilityOnDemandService`) for an
+analyst who explicitly wants them and can accept the real cost.
+
+### Fixed an O(n²) artifact-batching bug that was the real root cause of persistent Volatility timeout failures
+**Date:** 2026-09-21
+**Decision:** `rows_to_artifacts()` (`src/external/parsers/volatility.py`)
+now computes each row's own JSON-serialized size exactly once and keeps a
+running total, instead of re-serializing the entire growing batch on
+every row to measure its size.
+**Why:** even after removing the two slow plugins above, a real
+companion-linked run still hit Celery's `SoftTimeLimitExceeded` -- but
+the actual Volatility scan now completed in ~7 minutes, ruling out
+Volatility itself. Timed a real 7MiB Postgres JSONB insert of the exact
+production content at 17.6ms, ruling out the database. That left the
+application-layer batching loop, which was O(n²): re-serializing a
+growing list to JSON on every single row is invisible against a few
+hundred rows (every plugin this module had ever been real-verified
+against before this session) but becomes catastrophic at real scale --
+a real companion-linked `linux.lsof.Lsof` result correctly recovered
+24,562 real rows (only possible *because* the companion-file fix
+actually works, unlocking data no bare `.vmem` could ever produce), and
+batching those took 30+ minutes of silent, unlogged CPU time inside one
+Python loop. This was the actual reason multiple real end-to-end attempts
+kept failing throughout this investigation even as the Volatility scan
+itself, the companion staging, and the DI wiring were all already
+correct -- worth recording precisely because it would have been easy to
+keep blaming Volatility, memory pressure, or timeout tuning indefinitely
+without the process-of-elimination timing (isolate the DB, isolate the
+scan, what's left) that actually found it.
+
+### Raised kronos.parse_artefact_heavy's Celery time limits again, generously
+**Date:** 2026-09-21
+**Decision:** `time_limit`/`soft_time_limit` raised to 2520s/2400s (from
+an earlier same-day raise to 1620s/1500s, itself raised from the
+original 600s/540s).
+**Why:** two real, separate incidents on real evidence, not one. The
+first raise addressed a real companion-linked scan being SIGKILLed by
+Celery's hard limit while still actively running. The second-largest
+raise was made before the O(n²) bug above was found, to buy headroom
+for investigation; it stayed in place afterward as real, deliberate
+margin -- genuine forensic tooling processing genuine multi-GB evidence
+and tens of thousands of real recovered rows is not a request/response
+workload, and a SIGKILL/hard-timeout bypasses this module's own
+try/finally cleanup entirely (see the temp-file-leak decision above),
+so a realistic budget also reduces how often that's reached at all.
+Still bounded, not infinite.
+
+### A real Celery automatic-retry race, not a code bug -- an operational lesson
+**Date:** 2026-09-21
+**Decision:** no code change; recorded so a future investigation doesn't
+re-lose time to the same confusion.
+**Why:** `kronos.parse_artefact_heavy` has `max_retries=2`. A task that
+hit `SoftTimeLimitExceeded` earlier in this investigation was silently
+retried by Celery itself roughly 2 minutes later, sitting in the Redis
+broker independent of any container restart -- and that zombie retry's
+own final-attempt failure raced against a fresh, manually re-dispatched
+task for the same evidence, flipping its state to `ERROR` moments after
+the fresh task had legitimately started succeeding underneath it (its
+real artifacts were already correctly persisted in Postgres). Checking
+`celery_app.control.inspect().scheduled()/.reserved()/.active()` before
+assuming a queue is "empty" -- rather than inferring it from container
+`docker ps` state alone -- would have caught this immediately.
