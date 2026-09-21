@@ -1,6 +1,6 @@
 # KronOS — Current Status
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-21
 **This is the only status document.** It is a living file, edited in
 place — not appended to, not superseded by a new dated copy. If you are
 about to write `docs/GAP_AUDIT_<date>_MILESTONE_<X>.md`, a new
@@ -325,6 +325,28 @@ twice) and comparing against a one-shot digest over the same bytes —
 not just re-testing the old tiny fixture. Rebuilt and redeployed to the
 dev nginx image the same session.
 
+### Intake `ReadTimeoutError` on large evidence under resource contention — fixed 2026-09-22
+Real user report: `intake_failed:ReadTimeoutError` during validation/
+scanning/hashing on large evidence, worse on a lower-RAM host running the
+whole stack at once. Root cause: `S3EvidenceStorage`/`S3DerivedArtifactStorage`/
+`S3SealedBatchStorage` (`src/adapter/storage/`) each construct their boto3
+`Config` with `read_timeout=60`. `_run_scan`/`_run_hash`
+(`src/application/evidence_intake.py`) each stream a multi-GB evidence
+object *in full* via `_s3_stream`'s manual `body.read(chunk_size)` loop —
+botocore's own `retries={"max_attempts": 3}` wraps only the initial
+`get_object` call, not a `StreamingBody.read()` mid-stream, so any single
+64 KiB read that stalls past 60s (real cause: MinIO's own available-RAM-
+sized concurrent-request throttling — see the companion-file section above
+for the verified mechanism — or plain disk contention under several large
+uploads/scans in flight at once) raises `ReadTimeoutError` straight into
+application code with no retry. 60s was sized for small compliance-log
+evidence, never revisited for this platform's own multi-GB memory-dump use
+case. Fixed by raising `read_timeout` to 300s in all three clients, matching
+the `proxy_read_timeout 300s` this codebase already uses for the same
+evidence-upload path in nginx. `connect_timeout=10` left unchanged — the
+failure is specifically a read timeout on an already-open connection, not a
+slow connect.
+
 ### Frontend E2E (`frontend/e2e/`)
 Real browser tests against the live dev stack (`https://kronos.local`),
 not mocked — evidence upload through to `COMPLETE` via SSE, admin
@@ -428,6 +450,20 @@ host (an older `asyncpg`/`greenlet` deadlock is no longer reproducible).
   not an oversight — see `visual-regression-pills.spec.ts`'s own docstring).
   Two-simultaneous-dependency-failure fault injection is now covered — see
   below, no longer a gap.
+- **CEF-over-syslog egress connector still uses a raw outbound TCP/UDP
+  socket** (`SyslogIntegrationSink`, `src/adapter/integration_sink/syslog_sink.py`
+  — confirmed by direct read 2026-09-21, not assumed), not fluent-bit. The
+  project owner flagged a raw outbound socket as fragile in real infra and
+  asked to move this transport to fluent-bit (already the verified
+  log-shipping reference for PUSH connectors — see the dev-stage fluent-bit
+  PoC in `docs/KAFKA_AND_INTEGRATIONS_ROADMAP.md`). **Blocked on one
+  unanswered product decision, asked but not yet resolved**: should
+  per-org destination config stay self-service (today's model —
+  `connector_configs` in Postgres/Vault, one row per org) or become a
+  shared/ops-managed fluent-bit route? Do not pick either silently —
+  this is exactly the kind of multi-tenancy-shaped call CLAUDE.md's
+  verification-first process defers to the project owner. See TaskList
+  for the tracked pending item.
 
 ## 3. Explicitly out of scope (standing product decisions — don't re-litigate without a fresh instruction)
 

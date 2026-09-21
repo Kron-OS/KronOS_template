@@ -44,7 +44,10 @@ class S3DerivedArtifactStorage(DerivedArtifactStorage):
         client_config = Config(
             signature_version="s3v4",
             connect_timeout=10,
-            read_timeout=60,
+            # See src/adapter/storage/s3.py's own client_config comment:
+            # same real ReadTimeoutError-under-load failure mode applies to
+            # any full-object stream read here, raised to the same value.
+            read_timeout=300,
             retries={"max_attempts": 3},
         )
         self._client = boto3.client(

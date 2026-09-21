@@ -710,3 +710,27 @@ real artifacts were already correctly persisted in Postgres). Checking
 `celery_app.control.inspect().scheduled()/.reserved()/.active()` before
 assuming a queue is "empty" -- rather than inferring it from container
 `docker ps` state alone -- would have caught this immediately.
+
+### S3 client `read_timeout` raised 60s -> 300s across all three storage adapters
+**Date:** 2026-09-22
+**Decision:** `read_timeout=60` -> `read_timeout=300` in the boto3 `Config`
+used by `S3EvidenceStorage`, `S3DerivedArtifactStorage`, and
+`S3SealedBatchStorage` (`src/adapter/storage/`); `connect_timeout=10` left
+unchanged.
+**Why:** real user report of `intake_failed:ReadTimeoutError` during
+validation/scanning/hashing on large evidence, worse on a lower-RAM host.
+`_run_scan`/`_run_hash` each stream a multi-GB object in full via a manual
+`body.read(chunk_size)` loop that botocore's own retry config does not
+cover (retries wrap only the initial `get_object` call, not a
+`StreamingBody.read()` mid-stream) -- so any single 64 KiB read that stalls
+past the configured timeout (MinIO's own available-RAM-sized concurrent-
+request throttling, or disk contention under several large operations at
+once) surfaces directly as an application error with zero retries
+attempted. 60s was never revisited since this platform's own multi-GB
+memory-dump use case was added. 300s matches nginx's existing
+`proxy_read_timeout 300s` for the same evidence-upload path rather than
+being a new, independently-chosen number.
+**How to apply:** if `ReadTimeoutError` still surfaces above 300s of real
+stall, that means MinIO itself was unavailable for that long (check its
+own logs / the `X-Ratelimit-Remaining` response header first) -- raising
+this value further would hide that rather than fix it.

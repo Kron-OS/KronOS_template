@@ -45,7 +45,23 @@ class S3EvidenceStorage(EvidenceStorage):
         client_config = Config(
             signature_version="s3v4",
             connect_timeout=10,
-            read_timeout=60,
+            # Real, reproduced bug: `_run_scan`/`_run_hash` each stream a
+            # multi-GB evidence object in full via `_s3_stream`'s manual
+            # `body.read(chunk_size)` loop -- botocore's own retry config
+            # below wraps only the initial `get_object` call, not a
+            # `StreamingBody.read()` mid-stream, so any single read that
+            # stalls past this timeout (real cause: MinIO's own available-
+            # RAM-sized concurrent-request throttling, or plain disk
+            # contention, under several large uploads/scans in flight at
+            # once -- see STATUS.md) raises `ReadTimeoutError` straight
+            # into application code with no retry, surfacing as
+            # `intake_failed:ReadTimeoutError` during validation/scanning/
+            # hashing. 60s was sized for small compliance-log evidence, not
+            # a genuine multi-GB forensic file under real resource
+            # contention -- raised to match this codebase's other
+            # large-file timeouts (nginx's own `proxy_read_timeout 300s`
+            # for the same evidence-upload path).
+            read_timeout=300,
             retries={"max_attempts": 3},
         )
         self._client = boto3.client(
